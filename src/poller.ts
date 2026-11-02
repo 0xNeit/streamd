@@ -26,6 +26,11 @@ export class EventPoller {
   private _active = false;
   /** Bumped by start(), so a poll left over from an earlier run can tell. */
   private generation = 0;
+  /**
+   * The page still being delivered, if any. A restart's first poll waits for
+   * it, so a new run never delivers alongside a handler from the old one.
+   */
+  private delivering: Promise<void> = Promise.resolve();
   private readonly position: CursorManager;
 
   private readonly pollInterval: number;
@@ -103,6 +108,8 @@ export class EventPoller {
   private async poll(): Promise<void> {
     const gen = this.generation;
     try {
+      await this.delivering;
+      if (!this.isCurrent(gen)) return;
       const page = await this.adapter.fetchEvents(this.descriptor, {
         // Once we have a cursor it supersedes fromVersion, which only seeds
         // the very first poll.
@@ -116,7 +123,8 @@ export class EventPoller {
       // not touch the cursor or the error budget the live run resumes with.
       if (!this.isCurrent(gen)) return;
 
-      await this.processPage(page, gen);
+      this.delivering = this.processPage(page, gen);
+      await this.delivering;
       // The callback may have stopped or restarted the poller.
       if (!this.isCurrent(gen)) return;
       this.consecutiveErrors = 0;

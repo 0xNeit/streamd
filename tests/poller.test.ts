@@ -772,6 +772,61 @@ describe("EventPoller", () => {
       expect(poller.cursor).toBe("1");
     });
 
+    it("does not deliver alongside a pending handler after stop() and start()", async () => {
+      const adapter = createMockAdapter([
+        page([makeEvent(1), makeEvent(2)], 3),
+        page([makeEvent(1), makeEvent(2)], 3),
+      ]);
+      const pending = deferred();
+      const order: string[] = [];
+      const callback = vi.fn((e: StreamdEvent) => {
+        order.push(`start ${e.version}`);
+        if (e.version === 1n) return pending.promise.then(() => void order.push("end 1"));
+      });
+      const poller = new EventPoller(adapter, descriptor, callback, {
+        pollInterval: 100,
+        cursor: "1",
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+
+      poller.stop();
+      poller.start();
+      await advanceTimersByTimeAsync(300);
+      expect(order).toEqual(["start 1"]);
+      expect(poller.cursor).toBe("1");
+
+      pending.resolve();
+      await advanceTimersByTimeAsync(0);
+      expect(order).toEqual(["start 1", "end 1", "start 2"]);
+      // The restarted run refetches the page the old one never finished.
+      expect(mocked(adapter.fetchEvents).mock.calls[1]![1].cursor).toBe("1");
+      expect(poller.cursor).toBe("3");
+
+      poller.stop();
+    });
+
+    it("keeps the held cursor when a restarted page's last handler settles late", async () => {
+      const adapter = createMockAdapter([page([makeEvent(1)], 2), page([], 2)]);
+      const pending = deferred();
+      const callback = vi
+        .fn<(e: StreamdEvent) => Promise<void> | void>()
+        .mockReturnValueOnce(pending.promise);
+      const poller = new EventPoller(adapter, descriptor, callback, { cursor: "1" });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+
+      poller.stop();
+      poller.start();
+      pending.resolve();
+      await advanceTimersByTimeAsync(0);
+
+      // The stale run must not write its page's cursor over the live run's.
+      expect(mocked(adapter.fetchEvents).mock.calls[1]![1].cursor).toBe("1");
+
+      poller.stop();
+    });
+
     it("reports a rejected handler and carries on with the page", async () => {
       const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
       const first = deferred();
