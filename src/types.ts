@@ -203,10 +203,14 @@ export interface Subscription {
  * before the next event and before the cursor moves past the page, so a slow
  * handler slows polling down. A rejection is reported through `onError` and
  * delivery carries on, as for a synchronous throw.
+ *
+ * Typed `void` rather than `void | Promise<void>` on purpose: `void` accepts
+ * async functions and also expression bodies such as `(e) => list.push(e)`,
+ * which the union would reject.
  */
 export type EventCallback<TData = unknown> = (
   event: StreamdEvent<TData>,
-) => void | Promise<void>;
+) => void;
 
 // ---- Adapter interface ----
 
