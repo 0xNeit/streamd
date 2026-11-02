@@ -14,6 +14,7 @@ import { EventPoller } from "./poller.js";
 import { EventQuery } from "./query.js";
 import { StreamdPollingError } from "./errors.js";
 import { generateId } from "./utils.js";
+import { eventStream } from "./stream.js";
 
 export class StreamdClient {
   private readonly aptos: Aptos;
@@ -117,6 +118,28 @@ export class StreamdClient {
         },
       );
     });
+  }
+
+  /**
+   * Live events as an async iterable: `for await (const e of client.stream(d))`.
+   * Leaving the loop unsubscribes. Each event holds back the next poll until
+   * the loop asks for the following one, and the loop throws if polling gives
+   * up (after `maxErrors`, or at once on invalid input). Other errors go to
+   * `options.onError`.
+   */
+  stream<TData = unknown>(
+    descriptor: EventDescriptor,
+    options?: ListenerOptions,
+  ): AsyncIterableIterator<StreamdEvent<TData>> {
+    return eventStream<TData>((callback, onError) =>
+      this.on<TData>(descriptor, callback, {
+        ...options,
+        onError: (err) => {
+          onError(err);
+          options?.onError?.(err);
+        },
+      }),
+    );
   }
 
   /**
