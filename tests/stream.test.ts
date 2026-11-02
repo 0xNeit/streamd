@@ -28,6 +28,11 @@ function subscriptionCount(c: StreamdClient): number {
   return (c as unknown as { subscriptions: Map<string, unknown> }).subscriptions.size;
 }
 
+function openStreams(c: StreamdClient): number {
+  // Reads the private set of open streams, for the same reason.
+  return (c as unknown as { streams: Set<unknown> }).streams.size;
+}
+
 describe("StreamdClient.stream", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -48,6 +53,7 @@ describe("StreamdClient.stream", () => {
 
     expect(seen).toEqual([1n, 2n]);
     expect(subscriptionCount(c)).toBe(0);
+    expect(openStreams(c)).toBe(0);
     await advanceTimersByTimeAsync(500);
     expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
   });
@@ -85,6 +91,7 @@ describe("StreamdClient.stream", () => {
 
     expect(await outcome).toBeInstanceOf(StreamdPollingError);
     expect(subscriptionCount(c)).toBe(0);
+    expect(openStreams(c)).toBe(0);
   });
 
   it("is done after the failure has been reported", async () => {
@@ -126,6 +133,7 @@ describe("StreamdClient.stream", () => {
 
     c.destroy();
     expect(await pending).toEqual({ value: undefined, done: true });
+    expect(openStreams(c)).toBe(0);
     expect(await it.next()).toEqual({ value: undefined, done: true });
   });
 
@@ -184,6 +192,7 @@ describe("StreamdClient.stream", () => {
     await advanceTimersByTimeAsync(500);
     expect(adapter.fetchEvents).not.toHaveBeenCalled();
     expect(subscriptionCount(c)).toBe(0);
+    expect(openStreams(c)).toBe(0);
     await it.return!();
   });
 });

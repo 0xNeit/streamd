@@ -133,19 +133,21 @@ export class StreamdClient {
     descriptor: EventDescriptor,
     options?: ListenerOptions,
   ): AsyncIterableIterator<StreamdEvent<TData>> {
+    // Registered only once the stream subscribes, so an unused stream costs nothing.
+    const close = () => void stream.return?.();
     const stream = eventStream<TData>(
-      (callback, onError) =>
-        this.on<TData>(descriptor, callback, {
+      (callback, onError) => {
+        this.streams.add(close);
+        return this.on<TData>(descriptor, callback, {
           ...options,
           onError: (err) => {
             onError(err);
             options?.onError?.(err);
           },
-        }),
+        });
+      },
       () => this.streams.delete(close),
     );
-    const close = () => void stream.return?.();
-    this.streams.add(close);
     return stream;
   }
 
