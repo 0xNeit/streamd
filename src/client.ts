@@ -83,9 +83,10 @@ export class StreamdClient {
         {
           ...options,
           onError: (err) => {
-            options?.onError?.(err);
-            // If polling auto-stopped due to max errors, reject
+            // Settle before the caller's handler runs, so a throw from it
+            // cannot leave the promise pending.
             if (!sub.active) {
+              // Polling auto-stopped after maxErrors.
               reject(err);
             } else if (!(err instanceof StreamdPollingError)) {
               // Filter and callback errors never stop the poller, so a
@@ -93,6 +94,7 @@ export class StreamdClient {
               sub.unsubscribe();
               reject(err);
             }
+            options?.onError?.(err);
           },
         },
       );

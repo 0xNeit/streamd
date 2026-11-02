@@ -351,4 +351,41 @@ describe("StreamdClient", () => {
 
     client.destroy();
   });
+
+  it("once() still rejects when the caller's onError throws", async () => {
+    const event: StreamdEvent = {
+      type: "0x1::test::Event",
+      data: {},
+      version: 1n,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+    };
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async () => ({ events: [event], nextCursor: "2", hasMore: false })),
+    };
+
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const promise = client.once(
+      { kind: "module", eventType: "0x1::test::Event" },
+      {
+        pollInterval: 100,
+        where: () => {
+          throw new Error("predicate bug");
+        },
+        onError: () => {
+          throw new Error("handler bug");
+        },
+      },
+    );
+    let outcome: unknown = "pending";
+    promise.then(
+      () => (outcome = "resolved"),
+      (err) => (outcome = err),
+    );
+
+    await advanceTimersByTimeAsync(0);
+    expect(outcome).toBeInstanceOf(StreamdError);
+
+    client.destroy();
+  });
 });
