@@ -315,6 +315,51 @@ describe("StreamdClient", () => {
     client.destroy();
   });
 
+  const failing = (): EventAdapter => ({
+    fetchEvents: vi.fn(async () => {
+      throw new Error("network down");
+    }),
+  });
+
+  // Reads the private `subscriptions` map: nothing public reports how many
+  // pollers the client still holds, which is what these tests are about.
+  function subscriptionCount(client: StreamdClient): number {
+    return (client as unknown as { subscriptions: Map<string, unknown> })
+      .subscriptions.size;
+  }
+
+  it("on() forgets a subscription that stopped itself after maxErrors", async () => {
+    const client = new StreamdClient({ aptos: makeAptos(), adapter: failing() });
+    const errors: Error[] = [];
+    const sub = client.on(
+      { kind: "module", eventType: "0x1::test::Event" },
+      () => {},
+      { pollInterval: 100, maxErrors: 2, onError: (e) => errors.push(e) },
+    );
+    expect(subscriptionCount(client)).toBe(1);
+
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(200);
+
+    expect(sub.active).toBe(false);
+    expect(subscriptionCount(client)).toBe(0);
+    expect(errors).toHaveLength(2);
+  });
+
+  it("once() forgets its subscription when polling gives up", async () => {
+    const client = new StreamdClient({ aptos: makeAptos(), adapter: failing() });
+    const promise = client.once(
+      { kind: "module", eventType: "0x1::test::Event" },
+      { pollInterval: 100, maxErrors: 2 },
+    );
+    promise.catch(() => {});
+
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(200);
+    await expect(promise).rejects.toThrow(/Polling failed/);
+    expect(subscriptionCount(client)).toBe(0);
+  });
+
   it("once() rejects when its where predicate throws", async () => {
     const event: StreamdEvent = {
       type: "0x1::test::Event",
