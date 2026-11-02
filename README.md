@@ -65,6 +65,20 @@ On errors it backs off exponentially, and stops after `maxErrors` failures in
 a row. Invalid input, such as a malformed address or cursor, stops it at once,
 since retrying cannot fix it.
 
+### Iterate live events
+
+```ts
+for await (const event of streamd.stream(descriptor, { where: involvesAddress(wallet) })) {
+  await handle(event);
+  if (done) break; // leaving the loop unsubscribes
+}
+```
+
+`stream()` takes the same options as `on()`. Nothing is fetched ahead of your loop: the
+next poll waits until the body asks for the following event, so a slow body slows the
+subscription down. The loop throws if polling gives up (after `maxErrors`, or at once on
+invalid input); other errors go to `onError`. One loop per stream.
+
 ### Resume after a restart
 
 Save a subscription's `cursor` when you stop, and pass it back to `on()` to pick up
