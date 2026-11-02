@@ -5,6 +5,7 @@ import type {
   EventPage,
   EventPredicate,
   ListenerOptions,
+  StreamdEvent,
 } from "./types.js";
 import { StreamdError, StreamdPollingError } from "./errors.js";
 import { CursorManager } from "./cursor.js";
@@ -19,6 +20,8 @@ export class EventPoller {
   private consecutiveErrors = 0;
   private currentInterval: number;
   private _active = false;
+  /** Bumped by start(), so a poll left over from an earlier run can tell. */
+  private generation = 0;
   private cursor: CursorManager;
 
   private readonly pollInterval: number;
@@ -51,6 +54,7 @@ export class EventPoller {
   start(): void {
     if (this._active) return;
     this._active = true;
+    this.generation++;
     this.schedulePoll(0);
   }
 
@@ -67,7 +71,28 @@ export class EventPoller {
     this.timer = setTimeout(() => void this.poll(), delay);
   }
 
+  /**
+   * The caller's handler is outside the poller's control. A throw from it is
+   * rethrown on a microtask: still surfaced as uncaught, but off this stack,
+   * so scheduling and the error budget never depend on it.
+   */
+  private report(error: Error): void {
+    try {
+      this.onError?.(error);
+    } catch (handlerError) {
+      queueMicrotask(() => {
+        throw handlerError;
+      });
+    }
+  }
+
+  /** True while the run that started poll `gen` is still the live one. */
+  private isCurrent(gen: number): boolean {
+    return this._active && gen === this.generation;
+  }
+
   private async poll(): Promise<void> {
+    const gen = this.generation;
     try {
       const page = await this.adapter.fetchEvents(this.descriptor, {
         // Once we have a cursor it supersedes fromVersion, which only seeds
@@ -78,18 +103,20 @@ export class EventPoller {
         limit: this.batchSize,
         orderBy: "asc",
       });
-      // A fetch that resolves after stop() must not touch the cursor or the
-      // error budget a later start() resumes with.
-      if (!this._active) return;
+      // A fetch that resolves after stop(), or after stop() and start(), must
+      // not touch the cursor or the error budget the live run resumes with.
+      if (!this.isCurrent(gen)) return;
 
-      this.processPage(page);
+      this.processPage(page, gen);
+      // The callback may have stopped or restarted the poller.
+      if (!this.isCurrent(gen)) return;
       this.consecutiveErrors = 0;
       this.currentInterval = this.pollInterval;
 
       // Catch-up mode: the adapter says more is waiting, so don't idle.
       this.schedulePoll(page.hasMore ? 0 : this.pollInterval);
     } catch (err) {
-      if (!this._active) return;
+      if (!this.isCurrent(gen)) return;
       this.consecutiveErrors++;
 
       const pollingError = new StreamdPollingError(
@@ -102,11 +129,11 @@ export class EventPoller {
         // Stop before notifying, so a handler inspecting `active` sees the
         // subscription already dead rather than briefly alive.
         this.stop();
-        this.onError?.(pollingError);
+        this.report(pollingError);
         return;
       }
 
-      this.onError?.(pollingError);
+      this.report(pollingError);
 
       // Exponential backoff capped at MAX_BACKOFF
       this.currentInterval = Math.min(this.currentInterval * 2, MAX_BACKOFF);
@@ -114,10 +141,10 @@ export class EventPoller {
     }
   }
 
-  private processPage(page: EventPage): void {
+  private processPage(page: EventPage, gen: number): void {
     for (const event of page.events) {
       // The callback itself may have unsubscribed.
-      if (!this._active) return;
+      if (!this.isCurrent(gen)) return;
       if (this.cursor.hasSeen(event)) continue;
       // Mark before filtering: a rejected event has still been processed, and
       // marking it keeps overlapping pages from re-testing it.
@@ -126,15 +153,19 @@ export class EventPoller {
       // it without counting toward maxErrors or abandoning the rest of the page.
       try {
         if (this.where !== undefined && !this.where(event)) continue;
-        this.callback(event);
+        const result: unknown = this.callback(event);
+        // An async callback's rejection never reaches this catch, so it gets
+        // its own handler. Delivery does not wait for it.
+        if (isThenable(result)) {
+          // Reported while any run is live: the handler is the same one, and
+          // this path touches neither the cursor nor the error budget.
+          result.then(undefined, (err: unknown) => {
+            if (this._active) this.report(callbackError(event, err));
+          });
+        }
       } catch (err) {
-        if (!this._active) return;
-        this.onError?.(
-          new StreamdError(
-            `Event filter or callback threw for ${event.version}:${event.eventIndex}`,
-            err,
-          ),
-        );
+        if (this._active) this.report(callbackError(event, err));
+        if (!this.isCurrent(gen)) return;
       }
     }
 
@@ -145,4 +176,19 @@ export class EventPoller {
       this.cursor.token = page.nextCursor;
     }
   }
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+function callbackError(event: StreamdEvent, cause: unknown): StreamdError {
+  return new StreamdError(
+    `Event filter or callback threw for ${event.version}:${event.eventIndex}`,
+    cause,
+  );
 }

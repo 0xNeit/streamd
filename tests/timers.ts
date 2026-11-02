@@ -28,3 +28,21 @@ export async function advanceTimersToNextTimerAsync(): Promise<void> {
 
 export const mocked = <T extends (...args: any[]) => any>(fn: T) =>
   fn as unknown as Mock<T>;
+
+/**
+ * Captures what the code under test rethrows through `queueMicrotask`, which
+ * would otherwise surface as an uncaught error and fail the run.
+ */
+export function captureMicrotaskThrows(): { thrown: unknown[]; restore: () => void } {
+  const original = globalThis.queueMicrotask;
+  const thrown: unknown[] = [];
+  globalThis.queueMicrotask = (task: () => void) =>
+    original(() => {
+      try {
+        task();
+      } catch (err) {
+        thrown.push(err);
+      }
+    });
+  return { thrown, restore: () => (globalThis.queueMicrotask = original) };
+}

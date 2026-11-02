@@ -146,7 +146,11 @@ export interface ListenerOptions {
    * fetching. See `involvesAddress`.
    */
   where?: EventPredicate;
-  /** Custom error handler */
+  /**
+   * Receives polling failures and errors thrown by `where` or the callback.
+   * A throw from it does not stop polling: it is rethrown on a microtask and
+   * surfaces as an uncaught error.
+   */
   onError?: (error: Error) => void;
 }
 
@@ -179,6 +183,10 @@ export interface Subscription {
 
 // ---- Callback ----
 
+/**
+ * Called once per delivered event. It is not awaited: an async callback's
+ * rejection is reported through `onError`, but the next event does not wait.
+ */
 export type EventCallback<TData = unknown> = (
   event: StreamdEvent<TData>,
 ) => void;
