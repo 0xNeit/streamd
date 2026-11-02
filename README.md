@@ -53,6 +53,11 @@ const sub = streamd.on(
 sub.unsubscribe();
 ```
 
+Handlers may be `async`: each one is awaited before the next event, and polling waits
+for the page to finish, so a slow handler slows the subscription down instead of piling
+up work. A rejected handler is reported through `onError` and the next event is still
+delivered.
+
 Listening polls under the hood. When the source reports more data is waiting,
 the poller fetches again immediately instead of waiting for the next interval.
 On errors it backs off exponentially, and stops after `maxErrors` failures in
@@ -75,9 +80,9 @@ const sub = streamd.on(descriptor, handle, { cursor: saved });
 ```
 
 The cursor is the adapter's own token, so it only works with the same descriptor and
-adapter that produced it, and it wins over `fromVersion`. It moves once a page has been
-handed to your callback, and the dedup window is not saved, so events from the page in
-flight when the process stopped can arrive again after a restart: make your handler
+adapter that produced it, and it wins over `fromVersion`. It moves only once every handler
+on a page has settled, and the dedup window is not saved, so events from the page in
+flight when the process stopped arrive again after a restart: make your handler
 idempotent on `(version, eventIndex)`.
 
 ### Wait for one event
