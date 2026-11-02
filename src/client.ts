@@ -173,7 +173,9 @@ export class StreamdClient {
   }
 
   /**
-   * Stop all active subscriptions and clean up.
+   * Stop all active subscriptions and end open streams. It ends what is
+   * running rather than retiring the client: `on()` or a stream first iterated
+   * afterwards still starts polling.
    */
   destroy(): void {
     for (const close of [...this.streams]) close();

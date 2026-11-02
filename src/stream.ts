@@ -20,9 +20,10 @@ const DONE = { value: undefined, done: true } as const;
  * handlers) neither fetches ahead nor moves the cursor past an event the loop
  * body has not finished. `onClose` runs once, however the stream ends.
  *
- * Because the poller only runs again once `next()` has released the previous
- * handler, and `next()` sets the waiter in that same call, every event and
- * every fatal error finds a waiting `next()`.
+ * Every event and every fatal error finds a waiting `next()`: the poller only
+ * runs again once `next()` has released the previous handler, `next()` sets
+ * the waiter in that same synchronous call, and the poller resumes on a later
+ * microtask.
  */
 export function eventStream<TData>(
   subscribe: Subscribe<TData>,
