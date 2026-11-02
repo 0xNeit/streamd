@@ -210,6 +210,63 @@ describe("EventPoller", () => {
     poller.stop();
   });
 
+  describe("backoff", () => {
+    /** Fails unless `succeeds(n)` for the nth call, recording the fake clock per call. */
+    function timedAdapter(succeeds: (n: number) => boolean = () => false) {
+      const at: number[] = [];
+      const fetchEvents = vi.fn(async (): Promise<EventPage> => {
+        at.push(Date.now());
+        if (!succeeds(at.length)) throw new Error("network error");
+        return page([], at.length);
+      });
+      const gaps = () => at.slice(1).map((t, i) => t - at[i]!);
+      return { fetchEvents, gaps };
+    }
+
+    it("doubles the wait after each consecutive failure", async () => {
+      const { fetchEvents, gaps } = timedAdapter();
+      const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+        pollInterval: 100,
+        maxErrors: 10,
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(1500);
+
+      expect(gaps()).toEqual([200, 400, 800]);
+      poller.stop();
+    });
+
+    it("never waits longer than a minute", async () => {
+      const { fetchEvents, gaps } = timedAdapter();
+      const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+        pollInterval: 40_000,
+        maxErrors: 10,
+      });
+      poller.start();
+      // Step to each pending timer rather than tick through two minutes.
+      for (let i = 0; i < 3; i++) await advanceTimersToNextTimerAsync();
+
+      // Doubling 40s would give 80s; the cap holds every wait at 60s.
+      expect(gaps()).toEqual([60_000, 60_000]);
+      poller.stop();
+    });
+
+    it("starts backing off from the poll interval again after a success", async () => {
+      const { fetchEvents, gaps } = timedAdapter((n) => n === 3);
+      const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+        pollInterval: 100,
+        maxErrors: 10,
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(1000);
+
+      // Fail, fail, succeed, fail: 200 then 400, 100 after the success, and the
+      // next failure backs off 200 again rather than doubling from 400.
+      expect(gaps()).toEqual([200, 400, 100, 200]);
+      poller.stop();
+    });
+  });
+
   it("is already inactive when the final error is reported", async () => {
     // once() rejects by checking `active` inside onError, so the poller must
     // stop before it notifies on the fatal error.
