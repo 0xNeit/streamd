@@ -790,6 +790,11 @@ describe("EventPoller", () => {
       poller.start();
       await advanceTimersByTimeAsync(0);
 
+      // Restart twice while the handler is pending: the middle run is left
+      // waiting on the handler and must not fetch once it settles.
+      poller.stop();
+      poller.start();
+      await advanceTimersByTimeAsync(0);
       poller.stop();
       poller.start();
       await advanceTimersByTimeAsync(300);
@@ -799,7 +804,9 @@ describe("EventPoller", () => {
       pending.resolve();
       await advanceTimersByTimeAsync(0);
       expect(order).toEqual(["start 1", "end 1", "start 2"]);
-      // The restarted run refetches the page the old one never finished.
+      // The live run refetches the page the first never finished; the run
+      // stopped while waiting makes no fetch of its own.
+      expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
       expect(mocked(adapter.fetchEvents).mock.calls[1]![1].cursor).toBe("1");
       expect(poller.cursor).toBe("3");
 
@@ -823,6 +830,25 @@ describe("EventPoller", () => {
 
       // The stale run must not write its page's cursor over the live run's.
       expect(mocked(adapter.fetchEvents).mock.calls[1]![1].cursor).toBe("1");
+
+      poller.stop();
+    });
+
+    it("recovers on the next poll after a malformed page", async () => {
+      const bad = { events: null, nextCursor: "1", hasMore: false } as unknown as EventPage;
+      const adapter = createMockAdapter([bad, page([makeEvent(2)], 3)]);
+      const callback = vi.fn();
+      const onError = vi.fn();
+      const poller = new EventPoller(adapter, descriptor, callback, {
+        pollInterval: 100,
+        onError,
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(300);
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(poller.active).toBe(true);
 
       poller.stop();
     });

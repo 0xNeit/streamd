@@ -123,8 +123,10 @@ export class EventPoller {
       // not touch the cursor or the error budget the live run resumes with.
       if (!this.isCurrent(gen)) return;
 
-      this.delivering = this.processPage(page, gen);
-      await this.delivering;
+      const delivery = this.processPage(page, gen);
+      // A failed page is this poll's error alone; later polls must not inherit it.
+      this.delivering = delivery.catch(() => {});
+      await delivery;
       // The callback may have stopped or restarted the poller.
       if (!this.isCurrent(gen)) return;
       this.consecutiveErrors = 0;
