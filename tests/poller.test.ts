@@ -339,6 +339,22 @@ describe("EventPoller", () => {
     poller.stop();
   });
 
+  it("reports nothing when the callback unsubscribes and then throws", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1)], 2)]);
+    const onError = vi.fn();
+    let poller!: EventPoller;
+    const callback = vi.fn(() => {
+      poller.stop();
+      throw new Error("after stop");
+    });
+    poller = new EventPoller(adapter, descriptor, callback, { onError });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("stops delivering the page when stopped from the callback", async () => {
     const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
     let poller!: EventPoller;

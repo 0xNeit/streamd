@@ -129,6 +129,7 @@ export class EventPoller {
       try {
         this.callback(event);
       } catch (err) {
+        if (!this._active) return;
         this.onError?.(
           new StreamdError(
             `Event callback threw for ${event.version}:${event.eventIndex}`,
