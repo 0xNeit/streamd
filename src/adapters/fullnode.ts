@@ -1,4 +1,4 @@
-import { AptosApiType, type Aptos } from "@aptos-labs/ts-sdk";
+import { getAptosFullNode, type Aptos } from "@aptos-labs/ts-sdk";
 import type {
   AccountEventDescriptor,
   EventAdapter,
@@ -9,7 +9,8 @@ import type {
   ModuleEventDescriptor,
   StreamdEvent,
 } from "../types.js";
-import { StreamdNetworkError } from "../errors.js";
+import { StreamdError, StreamdNetworkError } from "../errors.js";
+import { normalizeAddress } from "../filter.js";
 
 interface RawEvent {
   guid?: { creation_number: string; account_address: string };
@@ -33,6 +34,45 @@ const DEFAULT_SCAN_BATCH = 100;
  */
 const DEFAULT_MAX_SCAN = 1000;
 const DEFAULT_LIMIT = 25;
+
+/** Events of one transaction whose type passes `keep`, indexed by position in it. */
+function toStreamdEvents(
+  txn: TransactionWithEvents,
+  version: bigint,
+  keep: (type: string) => boolean,
+): StreamdEvent[] {
+  const out: StreamdEvent[] = [];
+  txn.events?.forEach((event, eventIndex) => {
+    if (!keep(event.type)) return;
+    out.push({
+      type: event.type,
+      data: event.data,
+      version,
+      sequenceNumber: BigInt(event.sequence_number ?? "0"),
+      eventIndex,
+    });
+  });
+  return out;
+}
+
+/**
+ * Caller input is refused as a plain `StreamdError` before any request, so it
+ * is never mistaken for a network failure worth retrying.
+ */
+function requireAddress(value: string): string {
+  const address = normalizeAddress(value);
+  if (address === undefined) {
+    throw new StreamdError(`Not a valid Aptos address: ${value}`);
+  }
+  return address;
+}
+
+function parseCursor(cursor: string): bigint {
+  if (!/^\d+$/.test(cursor)) {
+    throw new StreamdError(`Not a cursor this adapter issued: ${cursor}`);
+  }
+  return BigInt(cursor);
+}
 
 export interface FullnodeScanAdapterOptions {
   /** Transactions per underlying REST call (default: 100). */
@@ -79,7 +119,34 @@ export class FullnodeScanAdapter implements EventAdapter {
     this.maxScan = options.maxScan ?? DEFAULT_MAX_SCAN;
   }
 
+  /** Only ever rejects with a `StreamdError`, whichever path failed. */
   async fetchEvents(
+    descriptor: EventDescriptor,
+    options: FetchOptions,
+  ): Promise<EventPage> {
+    try {
+      if (options.cursor !== undefined) parseCursor(options.cursor);
+      if (
+        options.offset !== undefined &&
+        !(Number.isSafeInteger(options.offset) && options.offset >= 0)
+      ) {
+        throw new StreamdError(`Not a valid offset: ${options.offset}`);
+      }
+      return await this.dispatch(descriptor, options);
+    } catch (err) {
+      if (err instanceof StreamdError) throw err;
+      const status = (err as { status?: unknown } | null)?.status;
+      throw new StreamdNetworkError(
+        `Fullnode request for ${descriptor.kind} events failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        typeof status === "number" ? status : undefined,
+        err,
+      );
+    }
+  }
+
+  private dispatch(
     descriptor: EventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage> {
@@ -141,16 +208,9 @@ export class FullnodeScanAdapter implements EventAdapter {
 
         next = version + 1n;
 
-        txn.events?.forEach((event, eventIndex) => {
-          if (event.type !== descriptor.eventType) return;
-          events.push({
-            type: event.type,
-            data: event.data,
-            version,
-            sequenceNumber: BigInt(event.sequence_number ?? "0"),
-            eventIndex,
-          });
-        });
+        events.push(
+          ...toStreamdEvents(txn, version, (t) => t === descriptor.eventType),
+        );
       }
 
       scanned += txns.length;
@@ -181,6 +241,7 @@ export class FullnodeScanAdapter implements EventAdapter {
     descriptor: AccountEventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage> {
+    requireAddress(descriptor.accountAddress);
     const wanted = options.limit ?? DEFAULT_LIMIT;
     if (wanted <= 0) return { events: [], hasMore: false };
 
@@ -232,16 +293,9 @@ export class FullnodeScanAdapter implements EventAdapter {
           continue;
         }
 
-        txn.events?.forEach((event, eventIndex) => {
-          if (types !== undefined && !types.has(event.type)) return;
-          events.push({
-            type: event.type,
-            data: event.data,
-            version,
-            sequenceNumber: BigInt(event.sequence_number ?? "0"),
-            eventIndex,
-          });
-        });
+        events.push(
+          ...toStreamdEvents(txn, version, (t) => types === undefined || types.has(t)),
+        );
       }
 
       if (pastToVersion) {
@@ -270,32 +324,35 @@ export class FullnodeScanAdapter implements EventAdapter {
 
     const start =
       options.cursor !== undefined
-        ? BigInt(options.cursor)
+        ? parseCursor(options.cursor)
         : BigInt(options.offset ?? 0);
 
-    const baseUrl = this.aptos.config.getRequestUrl(AptosApiType.FULLNODE);
-    const url =
-      `${baseUrl}/accounts/${descriptor.accountAddress}/events/` +
-      `${encodeURIComponent(descriptor.eventHandleStruct)}/` +
-      `${encodeURIComponent(descriptor.fieldName)}` +
-      `?start=${start}&limit=${limit}`;
+    // The address lands in the URL path, so it is validated before use.
+    const address = requireAddress(descriptor.accountAddress);
 
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new StreamdNetworkError(
-        `Failed to fetch handle events: ${response.status} ${response.statusText}`,
-        response.status,
-      );
-    }
+    // Through the SDK, not bare fetch, so the config's headers and API key apply.
+    const { data: raw } = await getAptosFullNode<
+      {},
+      Array<RawEvent & { version: string }>
+    >({
+      aptosConfig: this.aptos.config,
+      originMethod: "fetchHandleEvents",
+      path:
+        `accounts/${address}/events/` +
+        `${encodeURIComponent(descriptor.eventHandleStruct)}/` +
+        `${encodeURIComponent(descriptor.fieldName)}`,
+      params: { start: start.toString(), limit },
+    });
 
-    const raw = (await response.json()) as Array<RawEvent & { version: string }>;
-
-    let events: StreamdEvent[] = raw.map((e, eventIndex) => ({
+    // This endpoint does not say where an event sits in its transaction, and a
+    // page position restarts at 0 every page. The handle's sequence number is
+    // unique and stable, so it stands in as the index.
+    let events: StreamdEvent[] = raw.map((e) => ({
       type: e.type,
       data: e.data,
       version: BigInt(e.version),
       sequenceNumber: BigInt(e.sequence_number),
-      eventIndex,
+      eventIndex: Number(e.sequence_number),
     }));
 
     if (options.fromVersion !== undefined) {
@@ -314,7 +371,7 @@ export class FullnodeScanAdapter implements EventAdapter {
 
   /** Cursor wins over fromVersion; neither means "start at the head". */
   private resolveStart(options: FetchOptions, head: bigint): bigint {
-    if (options.cursor !== undefined) return BigInt(options.cursor);
+    if (options.cursor !== undefined) return parseCursor(options.cursor);
     if (options.fromVersion !== undefined) return options.fromVersion;
     return head;
   }
@@ -328,7 +385,7 @@ export class FullnodeScanAdapter implements EventAdapter {
     descriptor: AccountEventDescriptor,
     options: FetchOptions,
   ): Promise<bigint> {
-    if (options.cursor !== undefined) return BigInt(options.cursor);
+    if (options.cursor !== undefined) return parseCursor(options.cursor);
     if (options.offset !== undefined) return BigInt(options.offset);
     if (options.fromVersion !== undefined || options.toVersion !== undefined) {
       return 0n;

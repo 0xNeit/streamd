@@ -34,6 +34,11 @@ export class StreamdClient {
 
   /**
    * Subscribe to real-time events. Polls under the hood.
+   *
+   * Every subscription polls on its own. For a `module` descriptor on the
+   * default adapter that means its own ledger read and transaction scan per
+   * poll, so N module subscriptions scan the same transactions N times. Keep
+   * them few on a shared or rate-limited node.
    */
   on<TData = unknown>(
     descriptor: EventDescriptor,
@@ -48,6 +53,12 @@ export class StreamdClient {
       {
         pollInterval: this.defaultPollInterval,
         ...options,
+        onError: (err) => {
+          // The poller stops itself before reporting its last failure, so an
+          // inactive poller here has given up and must not stay in the map.
+          if (!poller.active) this.subscriptions.delete(id);
+          options?.onError?.(err);
+        },
       },
     );
 
