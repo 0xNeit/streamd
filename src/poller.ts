@@ -26,7 +26,7 @@ export class EventPoller {
   private _active = false;
   /** Bumped by start(), so a poll left over from an earlier run can tell. */
   private generation = 0;
-  private cursor: CursorManager;
+  private readonly position: CursorManager;
 
   private readonly pollInterval: number;
   private readonly batchSize: number;
@@ -48,11 +48,16 @@ export class EventPoller {
     this.where = options.where;
     this.onError = options.onError;
     this.currentInterval = this.pollInterval;
-    this.cursor = new CursorManager();
+    this.position = new CursorManager(options.cursor);
   }
 
   get active(): boolean {
     return this._active;
+  }
+
+  /** The adapter's resume token after the last finished page; see `ListenerOptions.cursor`. */
+  get cursor(): string | undefined {
+    return this.position.token;
   }
 
   start(): void {
@@ -101,9 +106,9 @@ export class EventPoller {
       const page = await this.adapter.fetchEvents(this.descriptor, {
         // Once we have a cursor it supersedes fromVersion, which only seeds
         // the very first poll.
-        cursor: this.cursor.token,
+        cursor: this.position.token,
         fromVersion:
-          this.cursor.token === undefined ? this.fromVersion : undefined,
+          this.position.token === undefined ? this.fromVersion : undefined,
         limit: this.batchSize,
         orderBy: "asc",
       });
@@ -157,10 +162,10 @@ export class EventPoller {
     for (const event of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
-      if (this.cursor.hasSeen(event)) continue;
+      if (this.position.hasSeen(event)) continue;
       // Mark before filtering: a rejected event has still been processed, and
       // marking it keeps overlapping pages from re-testing it.
-      this.cursor.mark(event);
+      this.position.mark(event);
       // A predicate or handler bug is the caller's, not the source's: report
       // it without counting toward maxErrors or abandoning the rest of the page.
       try {
@@ -185,7 +190,7 @@ export class EventPoller {
     // not where the last match was. Without this, an event type sparser than
     // the scan window would re-read the same transactions forever.
     if (page.nextCursor !== undefined) {
-      this.cursor.token = page.nextCursor;
+      this.position.token = page.nextCursor;
     }
   }
 }

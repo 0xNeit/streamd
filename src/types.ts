@@ -140,6 +140,12 @@ export interface ListenerOptions {
   /** Start from this version; undefined = chain head */
   fromVersion?: bigint;
   /**
+   * Resume from a token a previous subscription reported as `cursor`. It wins
+   * over `fromVersion`, and is only meaningful with the same descriptor and
+   * adapter that produced it.
+   */
+  cursor?: string;
+  /**
    * Max consecutive errors before auto-stopping (default: 10). An adapter
    * error that is a `StreamdError` but not a `StreamdNetworkError` is invalid
    * input and stops the subscription on the first occurrence.
