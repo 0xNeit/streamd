@@ -551,6 +551,44 @@ describe("EventPoller", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("reports a late async rejection from before a restart", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1)], 2)]);
+    let reject!: (e: Error) => void;
+    const callback = vi.fn(() => new Promise<void>((_, r) => (reject = r)));
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, callback, { onError });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    poller.stop();
+    poller.start();
+    reject(new Error("late"));
+    await advanceTimersByTimeAsync(0);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]![0].cause.message).toBe("late");
+
+    poller.stop();
+  });
+
+  it("reports a callback that restarts the poller and then throws", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
+    const onError = vi.fn();
+    const callback = vi.fn(() => {
+      poller.stop();
+      poller.start();
+      throw new Error("after restart");
+    });
+    const poller = new EventPoller(adapter, descriptor, callback, { onError });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    poller.stop();
+  });
+
   it("isolates a throwing where predicate from the rest of the page", async () => {
     const events = [makeEvent(1), makeEvent(2), makeEvent(3)];
     const adapter = createMockAdapter([page(events, 4)]);

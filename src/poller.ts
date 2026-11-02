@@ -154,13 +154,15 @@ export class EventPoller {
         // An async callback's rejection never reaches this catch, so it gets
         // its own handler. Delivery does not wait for it.
         if (isThenable(result)) {
+          // Reported while any run is live: the handler is the same one, and
+          // this path touches neither the cursor nor the error budget.
           result.then(undefined, (err: unknown) => {
-            if (this.isCurrent(gen)) this.report(callbackError(event, err));
+            if (this._active) this.report(callbackError(event, err));
           });
         }
       } catch (err) {
+        if (this._active) this.report(callbackError(event, err));
         if (!this.isCurrent(gen)) return;
-        this.report(callbackError(event, err));
       }
     }
 
