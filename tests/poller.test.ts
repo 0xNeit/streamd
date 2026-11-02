@@ -441,6 +441,44 @@ describe("EventPoller", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("reports a rejecting async callback through onError", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
+    const boom = new Error("async handler bug");
+    const callback = vi.fn(async () => {
+      throw boom;
+    });
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, callback, { onError });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(callback).toHaveBeenCalledTimes(2);
+    expect(onError).toHaveBeenCalledTimes(2);
+    const err = onError.mock.calls[0]![0];
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdPollingError);
+    expect(err.cause).toBe(boom);
+    expect(poller.active).toBe(true);
+
+    poller.stop();
+  });
+
+  it("reports nothing from an async callback that rejects after stop", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1)], 2)]);
+    let reject!: (e: Error) => void;
+    const callback = vi.fn(() => new Promise<void>((_, r) => (reject = r)));
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, callback, { onError });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    poller.stop();
+    reject(new Error("late"));
+    await advanceTimersByTimeAsync(0);
+
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("isolates a throwing where predicate from the rest of the page", async () => {
     const events = [makeEvent(1), makeEvent(2), makeEvent(3)];
     const adapter = createMockAdapter([page(events, 4)]);

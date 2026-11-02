@@ -5,6 +5,7 @@ import type {
   EventPage,
   EventPredicate,
   ListenerOptions,
+  StreamdEvent,
 } from "./types.js";
 import { StreamdError, StreamdPollingError } from "./errors.js";
 import { CursorManager } from "./cursor.js";
@@ -137,15 +138,17 @@ export class EventPoller {
       // it without counting toward maxErrors or abandoning the rest of the page.
       try {
         if (this.where !== undefined && !this.where(event)) continue;
-        this.callback(event);
+        const result: unknown = this.callback(event);
+        // An async callback's rejection never reaches this catch, so it gets
+        // its own handler. Delivery does not wait for it.
+        if (isThenable(result)) {
+          result.then(undefined, (err: unknown) => {
+            if (this.isCurrent(gen)) this.onError?.(callbackError(event, err));
+          });
+        }
       } catch (err) {
         if (!this.isCurrent(gen)) return;
-        this.onError?.(
-          new StreamdError(
-            `Event filter or callback threw for ${event.version}:${event.eventIndex}`,
-            err,
-          ),
-        );
+        this.onError?.(callbackError(event, err));
       }
     }
 
@@ -156,4 +159,19 @@ export class EventPoller {
       this.cursor.token = page.nextCursor;
     }
   }
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
+}
+
+function callbackError(event: StreamdEvent, cause: unknown): StreamdError {
+  return new StreamdError(
+    `Event filter or callback threw for ${event.version}:${event.eventIndex}`,
+    cause,
+  );
 }

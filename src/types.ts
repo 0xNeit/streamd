@@ -179,6 +179,10 @@ export interface Subscription {
 
 // ---- Callback ----
 
+/**
+ * Called once per delivered event. It is not awaited: an async callback's
+ * rejection is reported through `onError`, but the next event does not wait.
+ */
 export type EventCallback<TData = unknown> = (
   event: StreamdEvent<TData>,
 ) => void;
