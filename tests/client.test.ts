@@ -362,6 +362,23 @@ describe("StreamdClient", () => {
     expect(subscriptionCount(client)).toBe(0);
   });
 
+  it("once() rejects on the first poll when the descriptor is invalid", async () => {
+    // The default adapter refuses the address before building any request.
+    const client = new StreamdClient({ aptos: makeAptos() });
+    const promise = client.once({ kind: "account", accountAddress: "nope" });
+    let outcome: unknown = "pending";
+    promise.then(
+      () => (outcome = "resolved"),
+      (err) => (outcome = err),
+    );
+
+    await advanceTimersByTimeAsync(0);
+    expect(outcome).toBeInstanceOf(StreamdError);
+    expect(((outcome as Error).cause as Error).message).toMatch(/Not a valid Aptos address/);
+
+    client.destroy();
+  });
+
   it("once() rejects when its where predicate throws", async () => {
     const event: StreamdEvent = {
       type: "0x1::test::Event",

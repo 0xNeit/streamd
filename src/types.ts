@@ -139,7 +139,11 @@ export interface ListenerOptions {
   batchSize?: number;
   /** Start from this version; undefined = chain head */
   fromVersion?: bigint;
-  /** Max consecutive errors before auto-stopping (default: 10) */
+  /**
+   * Max consecutive errors before auto-stopping (default: 10). An adapter
+   * error that is a `StreamdError` but not a `StreamdNetworkError` is invalid
+   * input and stops the subscription on the first occurrence.
+   */
   maxErrors?: number;
   /**
    * Deliver only events satisfying this predicate. Applied client-side after
@@ -207,6 +211,10 @@ export type EventCallback<TData = unknown> = (
  *  - return a `nextCursor` that advances even when `events` is empty, so
  *    callers can page past regions containing no matches;
  *  - set `hasMore` when another page is immediately available.
+ *
+ * Throw `StreamdNetworkError` for failures worth retrying. Any other
+ * `StreamdError` means the request itself is wrong, and a live subscription
+ * stops on it rather than retrying.
  */
 export interface EventAdapter {
   fetchEvents(
