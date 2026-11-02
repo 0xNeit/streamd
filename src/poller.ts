@@ -80,6 +80,8 @@ export class EventPoller {
         limit: this.batchSize,
         orderBy: "asc",
       });
+      // stop() may have run while the fetch was in flight.
+      if (!this._active) return;
 
       this.processPage(page);
       this.consecutiveErrors = 0;
@@ -88,6 +90,7 @@ export class EventPoller {
       // Catch-up mode: the adapter says more is waiting, so don't idle.
       this.schedulePoll(page.hasMore ? 0 : this.pollInterval);
     } catch (err) {
+      if (!this._active) return;
       this.consecutiveErrors++;
 
       const pollingError = new StreamdPollingError(
@@ -114,6 +117,8 @@ export class EventPoller {
 
   private processPage(page: EventPage): void {
     for (const event of page.events) {
+      // The callback itself may have unsubscribed.
+      if (!this._active) return;
       if (this.cursor.hasSeen(event)) continue;
       // Mark before filtering: a rejected event has still been processed, and
       // marking it keeps overlapping pages from re-testing it.

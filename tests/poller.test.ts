@@ -275,4 +275,49 @@ describe("EventPoller", () => {
     // Only the initial poll (if it fired) should have happened
     expect(adapter.fetchEvents).toHaveBeenCalledTimes(0);
   });
+
+  it("delivers nothing from a fetch that resolves after stop", async () => {
+    let release!: (p: EventPage) => void;
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(() => new Promise<EventPage>((r) => (release = r))),
+    };
+    const callback = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, callback);
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    poller.stop();
+    release(page([makeEvent(1)], 2));
+    await advanceTimersByTimeAsync(0);
+
+    expect(callback).not.toHaveBeenCalled();
+  });
+
+  it("reports nothing from a fetch that fails after stop", async () => {
+    let fail!: (e: Error) => void;
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(() => new Promise<EventPage>((_, r) => (fail = r))),
+    };
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { onError });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    poller.stop();
+    fail(new Error("boom"));
+    await advanceTimersByTimeAsync(0);
+
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("stops delivering the page when stopped from the callback", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
+    let poller!: EventPoller;
+    const callback = vi.fn(() => poller.stop());
+    poller = new EventPoller(adapter, descriptor, callback);
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(callback).toHaveBeenCalledTimes(1);
+  });
 });
