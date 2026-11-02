@@ -374,7 +374,6 @@ describe("StreamdClient", () => {
       fetchEvents: vi.fn(async () => ({ events: [event], nextCursor: "2", hasMore: false })),
     };
 
-    const surfaced = captureMicrotaskThrows();
     const client = new StreamdClient({ aptos: makeAptos(), adapter });
     const promise = client.once(
       { kind: "module", eventType: "0x1::test::Event" },
