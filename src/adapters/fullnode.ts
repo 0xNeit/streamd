@@ -323,12 +323,15 @@ export class FullnodeScanAdapter implements EventAdapter {
       params: { start: start.toString(), limit },
     });
 
-    let events: StreamdEvent[] = raw.map((e, eventIndex) => ({
+    // This endpoint does not say where an event sits in its transaction, and a
+    // page position restarts at 0 every page. The handle's sequence number is
+    // unique and stable, so it stands in as the index.
+    let events: StreamdEvent[] = raw.map((e) => ({
       type: e.type,
       data: e.data,
       version: BigInt(e.version),
       sequenceNumber: BigInt(e.sequence_number),
-      eventIndex,
+      eventIndex: Number(e.sequence_number),
     }));
 
     if (options.fromVersion !== undefined) {

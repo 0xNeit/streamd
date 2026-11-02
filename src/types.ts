@@ -56,6 +56,10 @@ export interface StreamdEvent<TData = unknown> {
   /**
    * Position of this event within its transaction. Combined with `version`
    * this uniquely identifies an event, which `sequenceNumber` alone does not.
+   *
+   * Handle events are the exception: their endpoint omits the position, so
+   * `FullnodeScanAdapter` sets this to the handle's sequence number instead,
+   * which keeps the pair unique and stable across pages.
    */
   eventIndex: number;
 }

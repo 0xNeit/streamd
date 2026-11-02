@@ -208,6 +208,19 @@ describe("FullnodeScanAdapter handle events", () => {
     expect(page.hasMore).toBe(true);
   });
 
+  it("gives an event the same index whichever page it arrives on", async () => {
+    const events = [handleEvent(0, 3), handleEvent(1, 3), handleEvent(2, 4)];
+    const { aptos } = fakeNode(handle(events));
+    const adapter = new FullnodeScanAdapter(aptos);
+    const first = await adapter.fetchEvents(handleDesc, { limit: 2 });
+    const second = await adapter.fetchEvents(handleDesc, { cursor: "1", limit: 2 });
+
+    const indexOf = (page: typeof first) =>
+      page.events.find((e) => e.sequenceNumber === 1n)?.eventIndex;
+    expect(indexOf(first)).toBe(1);
+    expect(indexOf(second)).toBe(1);
+  });
+
   it("throws on a non-ok response", async () => {
     const { aptos } = fakeNode(() => ({ status: 503, data: { message: "down" } }));
     await expect(
