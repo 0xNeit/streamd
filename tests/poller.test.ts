@@ -261,6 +261,18 @@ describe("EventPoller", () => {
     poller.stop();
   });
 
+  it("ignores start() while already running", async () => {
+    const adapter = createMockAdapter([]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { pollInterval: 100 });
+    poller.start();
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+
+    poller.stop();
+  });
+
   it("stop prevents further polling", async () => {
     const adapter = createMockAdapter([]);
     const callback = vi.fn();
@@ -407,10 +419,11 @@ describe("EventPoller", () => {
     const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
     let poller!: EventPoller;
     const callback = vi.fn(() => poller.stop());
-    poller = new EventPoller(adapter, descriptor, callback);
+    poller = new EventPoller(adapter, descriptor, callback, { pollInterval: 100 });
     poller.start();
-    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(300);
 
     expect(callback).toHaveBeenCalledTimes(1);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
   });
 });

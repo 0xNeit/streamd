@@ -68,8 +68,6 @@ export class EventPoller {
   }
 
   private async poll(): Promise<void> {
-    if (!this._active) return;
-
     try {
       const page = await this.adapter.fetchEvents(this.descriptor, {
         // Once we have a cursor it supersedes fromVersion, which only seeds
