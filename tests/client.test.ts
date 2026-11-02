@@ -144,7 +144,8 @@ describe("StreamdClient", () => {
       { limit: 3 },
     );
 
-    expect(logs.length).toBeLessThanOrEqual(3);
+    expect(logs.map((l) => l.version)).toEqual([1n, 2n, 3n]);
+    expect(mocked(adapter.fetchEvents).mock.calls[1]![1].limit).toBe(1);
 
     client.destroy();
   });
@@ -373,7 +374,6 @@ describe("StreamdClient", () => {
       fetchEvents: vi.fn(async () => ({ events: [event], nextCursor: "2", hasMore: false })),
     };
 
-    const surfaced = captureMicrotaskThrows();
     const client = new StreamdClient({ aptos: makeAptos(), adapter });
     const promise = client.once(
       { kind: "module", eventType: "0x1::test::Event" },
