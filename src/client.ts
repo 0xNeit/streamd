@@ -22,6 +22,8 @@ export class StreamdClient {
   private readonly adapter: EventAdapter;
   private readonly query: EventQuery;
   private readonly subscriptions = new Map<string, EventPoller>();
+  /** Open streams, so destroy() can end their loops rather than strand them. */
+  private readonly streams = new Set<() => void>();
 
   constructor(config: StreamdConfig) {
     this.aptos =
@@ -131,15 +133,20 @@ export class StreamdClient {
     descriptor: EventDescriptor,
     options?: ListenerOptions,
   ): AsyncIterableIterator<StreamdEvent<TData>> {
-    return eventStream<TData>((callback, onError) =>
-      this.on<TData>(descriptor, callback, {
-        ...options,
-        onError: (err) => {
-          onError(err);
-          options?.onError?.(err);
-        },
-      }),
+    const stream = eventStream<TData>(
+      (callback, onError) =>
+        this.on<TData>(descriptor, callback, {
+          ...options,
+          onError: (err) => {
+            onError(err);
+            options?.onError?.(err);
+          },
+        }),
+      () => this.streams.delete(close),
     );
+    const close = () => void stream.return?.();
+    this.streams.add(close);
+    return stream;
   }
 
   /**
@@ -167,6 +174,7 @@ export class StreamdClient {
    * Stop all active subscriptions and clean up.
    */
   destroy(): void {
+    for (const close of [...this.streams]) close();
     for (const [id, poller] of this.subscriptions) {
       poller.stop();
       this.subscriptions.delete(id);

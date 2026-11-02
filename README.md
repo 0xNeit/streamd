@@ -77,7 +77,8 @@ for await (const event of streamd.stream(descriptor, { where: involvesAddress(wa
 `stream()` takes the same options as `on()`. Nothing is fetched ahead of your loop: the
 next poll waits until the body asks for the following event, so a slow body slows the
 subscription down. The loop throws if polling gives up (after `maxErrors`, or at once on
-invalid input); other errors go to `onError`. One loop per stream.
+invalid input); other errors go to `onError`. `destroy()` ends any open loop. One loop
+per stream: the stream subscribes when the loop first asks for an event.
 
 ### Resume after a restart
 

@@ -87,12 +87,13 @@ describe("StreamdClient.stream", () => {
     expect(subscriptionCount(c)).toBe(0);
   });
 
-  it("reports a failure that arrives before the first next()", async () => {
+  it("is done after the failure has been reported", async () => {
     const c = client();
     const it = c.stream({ kind: "account", accountAddress: "nope" });
+    const first = it.next().catch((e: unknown) => e);
     await advanceTimersByTimeAsync(0);
 
-    await expect(it.next()).rejects.toBeInstanceOf(StreamdPollingError);
+    expect(await first).toBeInstanceOf(StreamdPollingError);
     expect(await it.next()).toEqual({ value: undefined, done: true });
   });
 
@@ -114,6 +115,75 @@ describe("StreamdClient.stream", () => {
     expect(onError).toHaveBeenCalledTimes(1);
     expect(onError.mock.calls[0]![0]).toBeInstanceOf(StreamdError);
 
+    await it.return!();
+  });
+
+  it("ends an open loop when the client is destroyed", async () => {
+    const c = client(adapterOf([]));
+    const it = c.stream(descriptor);
+    const pending = it.next();
+    await advanceTimersByTimeAsync(0);
+
+    c.destroy();
+    expect(await pending).toEqual({ value: undefined, done: true });
+    expect(await it.next()).toEqual({ value: undefined, done: true });
+  });
+
+  it("lets the held handler finish when the loop breaks", async () => {
+    const adapter = adapterOf([{ events: [ev(1)], nextCursor: "2", hasMore: false }]);
+    const c = client(adapter);
+    const it = c.stream(descriptor);
+    await advanceTimersByTimeAsync(0);
+    const first = it.next();
+    await advanceTimersByTimeAsync(0);
+    expect((await first).value?.version).toBe(1n);
+
+    // The poller is parked on this event's handler until it is released.
+    type Parked = { cursor?: string; delivering: Promise<void> };
+    const poller = [
+      ...(c as unknown as { subscriptions: Map<string, Parked> }).subscriptions.values(),
+    ][0]!;
+    let settled = false;
+    void poller.delivering.then(() => (settled = true));
+    await it.return!();
+    await advanceTimersByTimeAsync(0);
+
+    // Released while stopped: nothing is left suspended, and the page counts as
+    // unfinished, so the cursor stays put.
+    expect(settled).toBe(true);
+    expect(poller.cursor).toBeUndefined();
+    expect(subscriptionCount(c)).toBe(0);
+  });
+
+  it("is done after return()", async () => {
+    const c = client(adapterOf([]));
+    const it = c.stream(descriptor);
+    await it.return!();
+    expect(await it.next()).toEqual({ value: undefined, done: true });
+  });
+
+  it("refuses a second next() while one is pending", async () => {
+    const c = client(adapterOf([]));
+    const it = c.stream(descriptor);
+    const first = it.next();
+    let outcome: unknown = "pending";
+    it.next().then(
+      () => (outcome = "resolved"),
+      (e: unknown) => (outcome = e),
+    );
+    await advanceTimersByTimeAsync(0);
+    expect(outcome).toBeInstanceOf(TypeError);
+    await it.return!();
+    expect(await first).toEqual({ value: undefined, done: true });
+  });
+
+  it("does not subscribe until the loop asks for an event", async () => {
+    const adapter = adapterOf([]);
+    const c = client(adapter);
+    const it = c.stream(descriptor);
+    await advanceTimersByTimeAsync(500);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+    expect(subscriptionCount(c)).toBe(0);
     await it.return!();
   });
 });
