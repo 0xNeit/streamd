@@ -8,6 +8,7 @@ import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { StreamdClient } from "../src/client.js";
 import { involvesAddress } from "../src/filter.js";
 import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
+import { StreamdError } from "../src/errors.js";
 
 function makeAptos() {
   // Constructing the SDK performs no network I/O; the injected adapter below
@@ -310,6 +311,43 @@ describe("StreamdClient", () => {
     await advanceTimersByTimeAsync(0);
     await advanceTimersByTimeAsync(200);
     await expect(promise).rejects.toThrow(/Polling failed/);
+
+    client.destroy();
+  });
+
+  it("once() rejects when its where predicate throws", async () => {
+    const event: StreamdEvent = {
+      type: "0x1::test::Event",
+      data: {},
+      version: 1n,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+    };
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async () => ({ events: [event], nextCursor: "2", hasMore: false })),
+    };
+
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const promise = client.once(
+      { kind: "module", eventType: "0x1::test::Event" },
+      {
+        pollInterval: 100,
+        where: () => {
+          throw new Error("predicate bug");
+        },
+      },
+    );
+    // Observe settlement without awaiting, so a promise that never settles
+    // fails the assertion instead of hanging the test.
+    let outcome: unknown = "pending";
+    promise.then(
+      () => (outcome = "resolved"),
+      (err) => (outcome = err),
+    );
+
+    await advanceTimersByTimeAsync(0);
+    expect(outcome).toBeInstanceOf(StreamdError);
+    expect((outcome as Error).message).toMatch(/filter or callback threw/);
 
     client.destroy();
   });

@@ -12,6 +12,7 @@ import type {
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
 import { EventPoller } from "./poller.js";
 import { EventQuery } from "./query.js";
+import { StreamdPollingError } from "./errors.js";
 import { generateId } from "./utils.js";
 
 export class StreamdClient {
@@ -85,6 +86,11 @@ export class StreamdClient {
             options?.onError?.(err);
             // If polling auto-stopped due to max errors, reject
             if (!sub.active) {
+              reject(err);
+            } else if (!(err instanceof StreamdPollingError)) {
+              // Filter and callback errors never stop the poller, so a
+              // predicate that always throws would otherwise wait forever.
+              sub.unsubscribe();
               reject(err);
             }
           },
