@@ -540,6 +540,29 @@ describe("EventPoller", () => {
     poller.stop();
   });
 
+  it("runs one poll chain when onError restarts the poller", async () => {
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockRejectedValueOnce(new Error("down"))
+      .mockImplementation(async () => page([], 1));
+    let restarted = false;
+    const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+      pollInterval: 100,
+      onError: () => {
+        if (restarted) return;
+        restarted = true;
+        poller.stop();
+        poller.start();
+      },
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(1000);
+
+    // The failed poll, the restart's immediate poll, then one per interval.
+    expect(fetchEvents).toHaveBeenCalledTimes(11);
+    poller.stop();
+  });
+
   it("reports nothing from a fetch that fails after stop", async () => {
     let fail!: (e: Error) => void;
     const adapter: EventAdapter = {
