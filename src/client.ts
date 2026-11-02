@@ -48,6 +48,12 @@ export class StreamdClient {
       {
         pollInterval: this.defaultPollInterval,
         ...options,
+        onError: (err) => {
+          // The poller stops itself before reporting its last failure, so an
+          // inactive poller here has given up and must not stay in the map.
+          if (!poller.active) this.subscriptions.delete(id);
+          options?.onError?.(err);
+        },
       },
     );
 
