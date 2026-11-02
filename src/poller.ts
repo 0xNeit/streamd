@@ -80,6 +80,9 @@ export class EventPoller {
         limit: this.batchSize,
         orderBy: "asc",
       });
+      // A fetch that resolves after stop() must not touch the cursor or the
+      // error budget a later start() resumes with.
+      if (!this._active) return;
 
       this.processPage(page);
       this.consecutiveErrors = 0;

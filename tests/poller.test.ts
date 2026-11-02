@@ -294,6 +294,29 @@ describe("EventPoller", () => {
     expect(callback).not.toHaveBeenCalled();
   });
 
+  it("resumes from the old cursor after a fetch that resolved post-stop", async () => {
+    let release!: (p: EventPage) => void;
+    const fetchEvents = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<EventPage>((r) => (release = r)))
+      .mockImplementation(async () => page([], 1));
+    const adapter: EventAdapter = { fetchEvents };
+    const poller = new EventPoller(adapter, descriptor, vi.fn());
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    poller.stop();
+    release(page([], 99));
+    await advanceTimersByTimeAsync(0);
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+    expect(fetchEvents.mock.calls[1]![1].cursor).toBeUndefined();
+
+    poller.stop();
+  });
+
   it("reports nothing from a fetch that fails after stop", async () => {
     let fail!: (e: Error) => void;
     const adapter: EventAdapter = {
