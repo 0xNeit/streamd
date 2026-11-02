@@ -232,6 +232,50 @@ describe("EventPoller", () => {
     expect(activeAtError).toEqual([true, false]);
   });
 
+  it("keeps polling until maxErrors when onError always throws", async () => {
+    const fetchEvents = vi.fn(async () => {
+      throw new Error("network down");
+    });
+    const onError = vi.fn(() => {
+      throw new Error("handler bug");
+    });
+    const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+      pollInterval: 100,
+      maxErrors: 3,
+      onError,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(700);
+
+    expect(fetchEvents).toHaveBeenCalledTimes(3);
+    expect(onError).toHaveBeenCalledTimes(3);
+    expect(poller.active).toBe(false);
+  });
+
+  it("does not count a throwing callback and onError as a polling failure", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1)], 2)]);
+    const onError = vi.fn((_: Error) => {
+      throw new Error("handler bug");
+    });
+    const callback = vi.fn(() => {
+      throw new Error("callback bug");
+    });
+    const poller = new EventPoller(adapter, descriptor, callback, {
+      pollInterval: 100,
+      onError,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(200);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]![0]).not.toBeInstanceOf(StreamdPollingError);
+    expect(mocked(adapter.fetchEvents).mock.calls.length).toBeGreaterThanOrEqual(3);
+
+    poller.stop();
+  });
+
   it("resets error count on successful poll", async () => {
     let callCount = 0;
     const adapter: EventAdapter = {

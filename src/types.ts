@@ -146,7 +146,10 @@ export interface ListenerOptions {
    * fetching. See `involvesAddress`.
    */
   where?: EventPredicate;
-  /** Custom error handler */
+  /**
+   * Receives polling failures and errors thrown by `where` or the callback.
+   * It must not throw: a throw is ignored so that polling carries on.
+   */
   onError?: (error: Error) => void;
 }
 

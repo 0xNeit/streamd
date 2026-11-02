@@ -71,6 +71,18 @@ export class EventPoller {
     this.timer = setTimeout(() => void this.poll(), delay);
   }
 
+  /**
+   * The caller's handler is outside the poller's control: a throw from it is
+   * dropped, so scheduling and the error budget never depend on it.
+   */
+  private report(error: Error): void {
+    try {
+      this.onError?.(error);
+    } catch {
+      // Nowhere left to report it; see ListenerOptions.onError.
+    }
+  }
+
   /** True while the run that started poll `gen` is still the live one. */
   private isCurrent(gen: number): boolean {
     return this._active && gen === this.generation;
@@ -114,11 +126,11 @@ export class EventPoller {
         // Stop before notifying, so a handler inspecting `active` sees the
         // subscription already dead rather than briefly alive.
         this.stop();
-        this.onError?.(pollingError);
+        this.report(pollingError);
         return;
       }
 
-      this.onError?.(pollingError);
+      this.report(pollingError);
 
       // Exponential backoff capped at MAX_BACKOFF
       this.currentInterval = Math.min(this.currentInterval * 2, MAX_BACKOFF);
@@ -143,12 +155,12 @@ export class EventPoller {
         // its own handler. Delivery does not wait for it.
         if (isThenable(result)) {
           result.then(undefined, (err: unknown) => {
-            if (this.isCurrent(gen)) this.onError?.(callbackError(event, err));
+            if (this.isCurrent(gen)) this.report(callbackError(event, err));
           });
         }
       } catch (err) {
         if (!this.isCurrent(gen)) return;
-        this.onError?.(callbackError(event, err));
+        this.report(callbackError(event, err));
       }
     }
 
