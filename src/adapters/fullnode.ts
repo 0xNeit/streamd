@@ -126,6 +126,12 @@ export class FullnodeScanAdapter implements EventAdapter {
   ): Promise<EventPage> {
     try {
       if (options.cursor !== undefined) parseCursor(options.cursor);
+      if (
+        options.offset !== undefined &&
+        !(Number.isSafeInteger(options.offset) && options.offset >= 0)
+      ) {
+        throw new StreamdError(`Not a valid offset: ${options.offset}`);
+      }
       return await this.dispatch(descriptor, options);
     } catch (err) {
       if (err instanceof StreamdError) throw err;

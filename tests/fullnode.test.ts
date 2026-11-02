@@ -269,6 +269,8 @@ describe("FullnodeScanAdapter errors", () => {
     ["module cursor", moduleDesc, { cursor: "abc" }],
     ["account cursor", accountDesc, { cursor: "abc" }],
     ["handle cursor", handleDesc, { cursor: "abc" }],
+    ["account offset", accountDesc, { offset: 1.5 }],
+    ["handle offset", handleDesc, { offset: -1 }],
   ];
 
   for (const [name, descriptor, options] of badInput) {
