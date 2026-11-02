@@ -34,6 +34,26 @@ const DEFAULT_SCAN_BATCH = 100;
 const DEFAULT_MAX_SCAN = 1000;
 const DEFAULT_LIMIT = 25;
 
+/** Events of one transaction whose type passes `keep`, indexed by position in it. */
+function toStreamdEvents(
+  txn: TransactionWithEvents,
+  version: bigint,
+  keep: (type: string) => boolean,
+): StreamdEvent[] {
+  const out: StreamdEvent[] = [];
+  txn.events?.forEach((event, eventIndex) => {
+    if (!keep(event.type)) return;
+    out.push({
+      type: event.type,
+      data: event.data,
+      version,
+      sequenceNumber: BigInt(event.sequence_number ?? "0"),
+      eventIndex,
+    });
+  });
+  return out;
+}
+
 export interface FullnodeScanAdapterOptions {
   /** Transactions per underlying REST call (default: 100). */
   scanBatch?: number;
@@ -141,16 +161,9 @@ export class FullnodeScanAdapter implements EventAdapter {
 
         next = version + 1n;
 
-        txn.events?.forEach((event, eventIndex) => {
-          if (event.type !== descriptor.eventType) return;
-          events.push({
-            type: event.type,
-            data: event.data,
-            version,
-            sequenceNumber: BigInt(event.sequence_number ?? "0"),
-            eventIndex,
-          });
-        });
+        events.push(
+          ...toStreamdEvents(txn, version, (t) => t === descriptor.eventType),
+        );
       }
 
       scanned += txns.length;
@@ -232,16 +245,9 @@ export class FullnodeScanAdapter implements EventAdapter {
           continue;
         }
 
-        txn.events?.forEach((event, eventIndex) => {
-          if (types !== undefined && !types.has(event.type)) return;
-          events.push({
-            type: event.type,
-            data: event.data,
-            version,
-            sequenceNumber: BigInt(event.sequence_number ?? "0"),
-            eventIndex,
-          });
-        });
+        events.push(
+          ...toStreamdEvents(txn, version, (t) => types === undefined || types.has(t)),
+        );
       }
 
       if (pastToVersion) {
