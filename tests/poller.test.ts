@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import {
   advanceTimersByTimeAsync,
   advanceTimersToNextTimerAsync,
+  captureMicrotaskThrows,
   mocked,
 } from "./timers.js";
 import { EventPoller } from "../src/poller.js";
@@ -232,13 +233,14 @@ describe("EventPoller", () => {
     expect(activeAtError).toEqual([true, false]);
   });
 
-  it("keeps polling until maxErrors when onError always throws", async () => {
+  it("keeps polling until maxErrors and surfaces each onError throw", async () => {
     const fetchEvents = vi.fn(async () => {
       throw new Error("network down");
     });
     const onError = vi.fn(() => {
       throw new Error("handler bug");
     });
+    const surfaced = captureMicrotaskThrows();
     const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
       pollInterval: 100,
       maxErrors: 3,
@@ -247,10 +249,12 @@ describe("EventPoller", () => {
     poller.start();
     await advanceTimersByTimeAsync(0);
     await advanceTimersByTimeAsync(700);
+    surfaced.restore();
 
     expect(fetchEvents).toHaveBeenCalledTimes(3);
     expect(onError).toHaveBeenCalledTimes(3);
     expect(poller.active).toBe(false);
+    expect(surfaced.thrown).toHaveLength(3);
   });
 
   it("does not count a throwing callback and onError as a polling failure", async () => {
@@ -261,6 +265,7 @@ describe("EventPoller", () => {
     const callback = vi.fn(() => {
       throw new Error("callback bug");
     });
+    const surfaced = captureMicrotaskThrows();
     const poller = new EventPoller(adapter, descriptor, callback, {
       pollInterval: 100,
       onError,
@@ -268,8 +273,10 @@ describe("EventPoller", () => {
     poller.start();
     await advanceTimersByTimeAsync(0);
     await advanceTimersByTimeAsync(200);
+    surfaced.restore();
 
     expect(onError).toHaveBeenCalledTimes(1);
+    expect(surfaced.thrown.map((e) => (e as Error).message)).toEqual(["handler bug"]);
     expect(onError.mock.calls[0]![0]).not.toBeInstanceOf(StreamdPollingError);
     expect(mocked(adapter.fetchEvents).mock.calls.length).toBeGreaterThanOrEqual(3);
 

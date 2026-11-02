@@ -148,7 +148,8 @@ export interface ListenerOptions {
   where?: EventPredicate;
   /**
    * Receives polling failures and errors thrown by `where` or the callback.
-   * It must not throw: a throw is ignored so that polling carries on.
+   * A throw from it does not stop polling: it is rethrown on a microtask and
+   * surfaces as an uncaught error.
    */
   onError?: (error: Error) => void;
 }

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import {
   advanceTimersByTimeAsync,
   advanceTimersToNextTimerAsync,
+  captureMicrotaskThrows,
   mocked,
 } from "./timers.js";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
@@ -372,6 +373,7 @@ describe("StreamdClient", () => {
       fetchEvents: vi.fn(async () => ({ events: [event], nextCursor: "2", hasMore: false })),
     };
 
+    const surfaced = captureMicrotaskThrows();
     const client = new StreamdClient({ aptos: makeAptos(), adapter });
     const promise = client.once(
       { kind: "module", eventType: "0x1::test::Event" },
@@ -409,6 +411,7 @@ describe("StreamdClient", () => {
       fetchEvents: vi.fn(async () => ({ events: [event], nextCursor: "2", hasMore: false })),
     };
 
+    const surfaced = captureMicrotaskThrows();
     const client = new StreamdClient({ aptos: makeAptos(), adapter });
     const promise = client.once(
       { kind: "module", eventType: "0x1::test::Event" },
@@ -429,7 +432,9 @@ describe("StreamdClient", () => {
     );
 
     await advanceTimersByTimeAsync(0);
+    surfaced.restore();
     expect(outcome).toBeInstanceOf(StreamdError);
+    expect(surfaced.thrown.map((e) => (e as Error).message)).toEqual(["handler bug"]);
 
     client.destroy();
   });

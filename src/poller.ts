@@ -72,14 +72,17 @@ export class EventPoller {
   }
 
   /**
-   * The caller's handler is outside the poller's control: a throw from it is
-   * dropped, so scheduling and the error budget never depend on it.
+   * The caller's handler is outside the poller's control. A throw from it is
+   * rethrown on a microtask: still surfaced as uncaught, but off this stack,
+   * so scheduling and the error budget never depend on it.
    */
   private report(error: Error): void {
     try {
       this.onError?.(error);
-    } catch {
-      // Nowhere left to report it; see ListenerOptions.onError.
+    } catch (handlerError) {
+      queueMicrotask(() => {
+        throw handlerError;
+      });
     }
   }
 
