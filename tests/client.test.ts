@@ -250,6 +250,28 @@ describe("StreamdClient", () => {
     client.destroy();
   });
 
+  it("resumes a new client from a cursor saved after destroy()", async () => {
+    const first = adapterOf([
+      { events: [makeEvent(1)], nextCursor: "2", hasMore: false },
+    ]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter: first });
+    const sub = client.on({ kind: "module", eventType: "0x1::test::Event" }, () => {});
+    await advanceTimersByTimeAsync(0);
+    client.destroy();
+    const saved = sub.cursor;
+    expect(saved).toBe("2");
+
+    const second = adapterOf([]);
+    const restarted = new StreamdClient({ aptos: makeAptos(), adapter: second });
+    restarted.on({ kind: "module", eventType: "0x1::test::Event" }, () => {}, {
+      cursor: saved,
+    });
+    await advanceTimersByTimeAsync(0);
+    expect(mocked(second.fetchEvents).mock.calls[0]![1].cursor).toBe("2");
+
+    restarted.destroy();
+  });
+
   it("accepts an account descriptor", async () => {
     const adapter = adapterOf([
       { events: [makeEvent(10)], nextCursor: "5", hasMore: false },

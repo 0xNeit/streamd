@@ -189,6 +189,11 @@ export interface Subscription {
   unsubscribe(): void;
   /** Whether the subscription is active */
   readonly active: boolean;
+  /**
+   * Where to resume: pass it back as `ListenerOptions.cursor` after a restart.
+   * Undefined before the first page; still readable after unsubscribing.
+   */
+  readonly cursor: string | undefined;
 }
 
 // ---- Callback ----
