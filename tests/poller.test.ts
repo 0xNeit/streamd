@@ -355,6 +355,31 @@ describe("EventPoller", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  it("isolates a throwing where predicate from the rest of the page", async () => {
+    const events = [makeEvent(1), makeEvent(2), makeEvent(3)];
+    const adapter = createMockAdapter([page(events, 4)]);
+    const callback = vi.fn();
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, callback, {
+      pollInterval: 100,
+      maxErrors: 1,
+      onError,
+      where: (e) => {
+        if (e.version === 2n) throw new Error("predicate bug");
+        return true;
+      },
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(250);
+
+    expect(mocked(callback).mock.calls.map(([e]) => e.version)).toEqual([1n, 3n]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(mocked(onError).mock.calls[0]![0]).not.toBeInstanceOf(StreamdPollingError);
+    expect(poller.active).toBe(true);
+
+    poller.stop();
+  });
+
   it("stops delivering the page when stopped from the callback", async () => {
     const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
     let poller!: EventPoller;

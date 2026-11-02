@@ -123,16 +123,16 @@ export class EventPoller {
       // Mark before filtering: a rejected event has still been processed, and
       // marking it keeps overlapping pages from re-testing it.
       this.cursor.mark(event);
-      if (this.where !== undefined && !this.where(event)) continue;
-      // A handler bug is the caller's, not the source's: report it without
-      // counting toward maxErrors or abandoning the rest of the page.
+      // A predicate or handler bug is the caller's, not the source's: report
+      // it without counting toward maxErrors or abandoning the rest of the page.
       try {
+        if (this.where !== undefined && !this.where(event)) continue;
         this.callback(event);
       } catch (err) {
         if (!this._active) return;
         this.onError?.(
           new StreamdError(
-            `Event callback threw for ${event.version}:${event.eventIndex}`,
+            `Event filter or callback threw for ${event.version}:${event.eventIndex}`,
             err,
           ),
         );
