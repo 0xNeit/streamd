@@ -55,6 +55,25 @@ function toStreamdEvents(
   return out;
 }
 
+/**
+ * Caller input is refused as a plain `StreamdError` before any request, so it
+ * is never mistaken for a network failure worth retrying.
+ */
+function requireAddress(value: string): string {
+  const address = normalizeAddress(value);
+  if (address === undefined) {
+    throw new StreamdError(`Not a valid Aptos address: ${value}`);
+  }
+  return address;
+}
+
+function parseCursor(cursor: string): bigint {
+  if (!/^\d+$/.test(cursor)) {
+    throw new StreamdError(`Not a cursor this adapter issued: ${cursor}`);
+  }
+  return BigInt(cursor);
+}
+
 export interface FullnodeScanAdapterOptions {
   /** Transactions per underlying REST call (default: 100). */
   scanBatch?: number;
@@ -106,6 +125,7 @@ export class FullnodeScanAdapter implements EventAdapter {
     options: FetchOptions,
   ): Promise<EventPage> {
     try {
+      if (options.cursor !== undefined) parseCursor(options.cursor);
       return await this.dispatch(descriptor, options);
     } catch (err) {
       if (err instanceof StreamdError) throw err;
@@ -215,6 +235,7 @@ export class FullnodeScanAdapter implements EventAdapter {
     descriptor: AccountEventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage> {
+    requireAddress(descriptor.accountAddress);
     const wanted = options.limit ?? DEFAULT_LIMIT;
     if (wanted <= 0) return { events: [], hasMore: false };
 
@@ -297,17 +318,11 @@ export class FullnodeScanAdapter implements EventAdapter {
 
     const start =
       options.cursor !== undefined
-        ? BigInt(options.cursor)
+        ? parseCursor(options.cursor)
         : BigInt(options.offset ?? 0);
 
-    // The address lands in the URL path, so anything that is not an address is
-    // refused before a request is built from it.
-    const address = normalizeAddress(descriptor.accountAddress);
-    if (address === undefined) {
-      throw new StreamdError(
-        `Not a valid Aptos address: ${descriptor.accountAddress}`,
-      );
-    }
+    // The address lands in the URL path, so it is validated before use.
+    const address = requireAddress(descriptor.accountAddress);
 
     // Through the SDK, not bare fetch, so the config's headers and API key apply.
     const { data: raw } = await getAptosFullNode<
@@ -350,7 +365,7 @@ export class FullnodeScanAdapter implements EventAdapter {
 
   /** Cursor wins over fromVersion; neither means "start at the head". */
   private resolveStart(options: FetchOptions, head: bigint): bigint {
-    if (options.cursor !== undefined) return BigInt(options.cursor);
+    if (options.cursor !== undefined) return parseCursor(options.cursor);
     if (options.fromVersion !== undefined) return options.fromVersion;
     return head;
   }
@@ -364,7 +379,7 @@ export class FullnodeScanAdapter implements EventAdapter {
     descriptor: AccountEventDescriptor,
     options: FetchOptions,
   ): Promise<bigint> {
-    if (options.cursor !== undefined) return BigInt(options.cursor);
+    if (options.cursor !== undefined) return parseCursor(options.cursor);
     if (options.offset !== undefined) return BigInt(options.offset);
     if (options.fromVersion !== undefined || options.toVersion !== undefined) {
       return 0n;

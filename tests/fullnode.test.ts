@@ -270,13 +270,24 @@ describe("FullnodeScanAdapter errors", () => {
     });
   }
 
-  it("passes its own errors through unwrapped", async () => {
-    const { aptos } = fakeNode(handle([]));
-    const err = await new FullnodeScanAdapter(aptos)
-      .fetchEvents({ ...handleDesc, accountAddress: "nope" }, {})
-      .catch((e: unknown) => e);
+  const badInput: [string, EventDescriptor, Record<string, unknown>][] = [
+    ["handle address", { ...handleDesc, accountAddress: "nope" }, {}],
+    ["account address", { ...accountDesc, accountAddress: "nope" }, {}],
+    ["module cursor", moduleDesc, { cursor: "abc" }],
+    ["account cursor", accountDesc, { cursor: "abc" }],
+    ["handle cursor", handleDesc, { cursor: "abc" }],
+  ];
 
-    expect(err).toBeInstanceOf(StreamdError);
-    expect(err).not.toBeInstanceOf(StreamdNetworkError);
-  });
+  for (const [name, descriptor, options] of badInput) {
+    it(`refuses a bad ${name} as input, not as a network failure`, async () => {
+      const { aptos, calls } = fakeNode(handle([]));
+      const err = await new FullnodeScanAdapter(aptos)
+        .fetchEvents(descriptor, options)
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+      expect(calls).toHaveLength(0);
+    });
+  }
 });
