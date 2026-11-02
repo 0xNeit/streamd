@@ -1,4 +1,4 @@
-import { AptosApiType, type Aptos } from "@aptos-labs/ts-sdk";
+import { getAptosFullNode, type Aptos } from "@aptos-labs/ts-sdk";
 import type {
   AccountEventDescriptor,
   EventAdapter,
@@ -9,7 +9,8 @@ import type {
   ModuleEventDescriptor,
   StreamdEvent,
 } from "../types.js";
-import { StreamdNetworkError } from "../errors.js";
+import { StreamdError } from "../errors.js";
+import { normalizeAddress } from "../filter.js";
 
 interface RawEvent {
   guid?: { creation_number: string; account_address: string };
@@ -279,22 +280,28 @@ export class FullnodeScanAdapter implements EventAdapter {
         ? BigInt(options.cursor)
         : BigInt(options.offset ?? 0);
 
-    const baseUrl = this.aptos.config.getRequestUrl(AptosApiType.FULLNODE);
-    const url =
-      `${baseUrl}/accounts/${descriptor.accountAddress}/events/` +
-      `${encodeURIComponent(descriptor.eventHandleStruct)}/` +
-      `${encodeURIComponent(descriptor.fieldName)}` +
-      `?start=${start}&limit=${limit}`;
-
-    const response = await fetch(url);
-    if (!response.ok) {
-      throw new StreamdNetworkError(
-        `Failed to fetch handle events: ${response.status} ${response.statusText}`,
-        response.status,
+    // The address lands in the URL path, so anything that is not an address is
+    // refused before a request is built from it.
+    const address = normalizeAddress(descriptor.accountAddress);
+    if (address === undefined) {
+      throw new StreamdError(
+        `Not a valid Aptos address: ${descriptor.accountAddress}`,
       );
     }
 
-    const raw = (await response.json()) as Array<RawEvent & { version: string }>;
+    // Through the SDK, not bare fetch, so the config's headers and API key apply.
+    const { data: raw } = await getAptosFullNode<
+      {},
+      Array<RawEvent & { version: string }>
+    >({
+      aptosConfig: this.aptos.config,
+      originMethod: "fetchHandleEvents",
+      path:
+        `accounts/${address}/events/` +
+        `${encodeURIComponent(descriptor.eventHandleStruct)}/` +
+        `${encodeURIComponent(descriptor.fieldName)}`,
+      params: { start: start.toString(), limit },
+    });
 
     let events: StreamdEvent[] = raw.map((e, eventIndex) => ({
       type: e.type,

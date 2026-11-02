@@ -14,19 +14,27 @@ interface Reply {
 interface Call {
   path: string;
   params: Record<string, unknown>;
+  headers: Record<string, unknown>;
 }
 
 /**
  * A real `Aptos` instance whose transport is a function, so every adapter path
  * runs through the SDK exactly as in production, with no network.
  */
-function fakeNode(route: (path: string, params: Record<string, unknown>) => Reply) {
+function fakeNode(
+  route: (path: string, params: Record<string, unknown>) => Reply,
+  clientConfig: Record<string, unknown> = {},
+) {
   const calls: Call[] = [];
   const client = {
-    async provider(req: { url: string; params?: Record<string, unknown> }) {
+    async provider(req: {
+      url: string;
+      params?: Record<string, unknown>;
+      headers?: Record<string, unknown>;
+    }) {
       const path = req.url.replace(/^http:\/\/fake\/v1\/?/, "");
       const params = { ...(req.params ?? {}) };
-      calls.push({ path, params });
+      calls.push({ path, params, headers: { ...(req.headers ?? {}) } });
       const reply = route(path, params);
       const status = reply.status ?? 200;
       return { status, statusText: status === 200 ? "OK" : "Error", data: reply.data, headers: {} };
@@ -37,7 +45,7 @@ function fakeNode(route: (path: string, params: Record<string, unknown>) => Repl
       network: Network.LOCAL,
       fullnode: "http://fake/v1",
       client: client as never,
-      clientConfig: { http2: false },
+      clientConfig: { http2: false, ...clientConfig },
     }),
   );
   return { aptos, calls };
@@ -160,5 +168,74 @@ describe("FullnodeScanAdapter account walk", () => {
     expect(await start({ offset: 1, fromVersion: 9n })).toBe(1);
     expect(await start({ fromVersion: 9n })).toBe(0);
     expect(await start({})).toBe(3);
+  });
+});
+
+const HANDLE_PATH = `accounts/0x${"0".repeat(63)}1/events/0x1%3A%3Atest%3A%3AStore/pings`;
+const handleDesc: EventDescriptor = {
+  kind: "handle",
+  accountAddress: "0x1",
+  eventHandleStruct: "0x1::test::Store",
+  fieldName: "pings",
+};
+
+function handleEvent(seq: number, version: number) {
+  return { type: TYPE, data: {}, sequence_number: String(seq), version: String(version) };
+}
+
+/** Serves a handle's events by sequence number. */
+function handle(events: ReturnType<typeof handleEvent>[]) {
+  return (path: string, params: Record<string, unknown>): Reply => {
+    if (path !== HANDLE_PATH) throw new Error(`unexpected path ${path}`);
+    const start = Number(params.start ?? 0);
+    const limit = Number(params.limit ?? 25);
+    return { data: events.slice(start, start + limit) };
+  };
+}
+
+describe("FullnodeScanAdapter handle events", () => {
+  it("advances the cursor by what the node returned, not by what survived filtering", async () => {
+    const events = [handleEvent(0, 3), handleEvent(1, 7), handleEvent(2, 9)];
+    const { aptos } = fakeNode(handle(events));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {
+      limit: 2,
+      fromVersion: 5n,
+    });
+
+    expect(page.events.map((e) => e.version)).toEqual([7n]);
+    expect(page.nextCursor).toBe("2");
+    expect(page.hasMore).toBe(true);
+  });
+
+  it("throws on a non-ok response", async () => {
+    const { aptos } = fakeNode(() => ({ status: 503, data: { message: "down" } }));
+    await expect(
+      new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {}),
+    ).rejects.toThrow();
+  });
+
+  it("requests a short address in its long form", async () => {
+    const { aptos, calls } = fakeNode(handle([]));
+    await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {});
+    expect(calls.map((c) => c.path)).toEqual([HANDLE_PATH]);
+  });
+
+  it("refuses an address that is not one, before any request", async () => {
+    const { aptos, calls } = fakeNode(handle([]));
+    const adapter = new FullnodeScanAdapter(aptos);
+    await expect(
+      adapter.fetchEvents({ ...handleDesc, accountAddress: "0x1/../../transactions?" }, {}),
+    ).rejects.toThrow("Not a valid Aptos address");
+    expect(calls).toHaveLength(0);
+  });
+
+  it("sends the configured headers and API key", async () => {
+    const { aptos, calls } = fakeNode(handle([]), {
+      API_KEY: "secret",
+      HEADERS: { "x-team": "streamd" },
+    });
+    await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {});
+    expect(calls[0]?.headers["x-team"]).toBe("streamd");
+    expect(calls[0]?.headers.Authorization).toBe("Bearer secret");
   });
 });
