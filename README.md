@@ -56,7 +56,8 @@ sub.unsubscribe();
 Listening polls under the hood. When the source reports more data is waiting,
 the poller fetches again immediately instead of waiting for the next interval.
 On errors it backs off exponentially, and stops after `maxErrors` failures in
-a row.
+a row. Invalid input, such as a malformed address or cursor, stops it at once,
+since retrying cannot fix it.
 
 ### Wait for one event
 
@@ -67,7 +68,8 @@ const event = await streamd.once({
 });
 ```
 
-The promise rejects if polling gives up after `maxErrors`.
+The promise rejects if polling gives up after `maxErrors`, or straight away on
+invalid input.
 
 ### Query history
 
