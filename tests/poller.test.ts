@@ -6,7 +6,11 @@ import {
   mocked,
 } from "./timers.js";
 import { EventPoller } from "../src/poller.js";
-import { StreamdError, StreamdPollingError } from "../src/errors.js";
+import {
+  StreamdError,
+  StreamdNetworkError,
+  StreamdPollingError,
+} from "../src/errors.js";
 import type {
   EventAdapter,
   EventDescriptor,
@@ -267,6 +271,49 @@ describe("EventPoller", () => {
     });
   });
 
+  describe("invalid input", () => {
+    const run = async (error: Error) => {
+      const fetchEvents = vi.fn(async (): Promise<EventPage> => {
+        throw error;
+      });
+      const onError = vi.fn();
+      const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+        pollInterval: 100,
+        maxErrors: 5,
+        onError,
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(1000);
+      poller.stop();
+      return { fetchEvents, onError, poller };
+    };
+
+    it("stops on the first plain StreamdError from the adapter", async () => {
+      const bad = new StreamdError("Not a valid Aptos address: nope");
+      const { fetchEvents, onError, poller } = await run(bad);
+
+      expect(fetchEvents).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledTimes(1);
+      const reported = onError.mock.calls[0]![0];
+      expect(reported).toBeInstanceOf(StreamdPollingError);
+      expect(reported.cause).toBe(bad);
+      expect(reported.message).toBe(
+        "Polling stopped on invalid input: Not a valid Aptos address: nope",
+      );
+      expect(poller.active).toBe(false);
+    });
+
+    it("still retries a StreamdNetworkError", async () => {
+      const { fetchEvents } = await run(new StreamdNetworkError("503", 503));
+      expect(fetchEvents.mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it("still retries an error that is not a StreamdError", async () => {
+      const { fetchEvents } = await run(new Error("socket hang up"));
+      expect(fetchEvents.mock.calls.length).toBeGreaterThan(1);
+    });
+  });
+
   it("is already inactive when the final error is reported", async () => {
     // once() rejects by checking `active` inside onError, so the poller must
     // stop before it notifies on the fatal error.
@@ -336,6 +383,30 @@ describe("EventPoller", () => {
     expect(surfaced.thrown.map((e) => (e as Error).message)).toEqual(["handler bug"]);
     expect(onError.mock.calls[0]![0]).not.toBeInstanceOf(StreamdPollingError);
     expect(mocked(adapter.fetchEvents).mock.calls.length).toBeGreaterThanOrEqual(3);
+
+    poller.stop();
+  });
+
+  it("counts only consecutive failures toward maxErrors", async () => {
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockRejectedValueOnce(new Error("down"))
+      .mockRejectedValueOnce(new Error("down"))
+      .mockResolvedValueOnce(page([], 1))
+      .mockRejectedValue(new Error("down"));
+    const counts: number[] = [];
+    const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+      pollInterval: 100,
+      maxErrors: 3,
+      onError: (e) => counts.push((e as StreamdPollingError).consecutiveFailures),
+    });
+    poller.start();
+    // Fail, fail, succeed, fail, fail: five polls inside the first second.
+    await advanceTimersByTimeAsync(1000);
+
+    expect(fetchEvents).toHaveBeenCalledTimes(5);
+    expect(counts).toEqual([1, 2, 1, 2]);
+    expect(poller.active).toBe(true);
 
     poller.stop();
   });
@@ -513,6 +584,29 @@ describe("EventPoller", () => {
     // The restarted run's immediate poll, then one per interval.
     expect(fetchEvents.mock.calls.length - afterRestart).toBe(4);
 
+    poller.stop();
+  });
+
+  it("runs one poll chain when onError restarts the poller", async () => {
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockRejectedValueOnce(new Error("down"))
+      .mockImplementation(async () => page([], 1));
+    let restarted = false;
+    const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+      pollInterval: 100,
+      onError: () => {
+        if (restarted) return;
+        restarted = true;
+        poller.stop();
+        poller.start();
+      },
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(1000);
+
+    // The failed poll, the restart's immediate poll, then one per interval.
+    expect(fetchEvents).toHaveBeenCalledTimes(11);
     poller.stop();
   });
 
