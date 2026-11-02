@@ -5,6 +5,7 @@ import {
   mocked,
 } from "./timers.js";
 import { EventPoller } from "../src/poller.js";
+import { StreamdError, StreamdPollingError } from "../src/errors.js";
 import type {
   EventAdapter,
   EventDescriptor,
@@ -308,6 +309,34 @@ describe("EventPoller", () => {
     await advanceTimersByTimeAsync(0);
 
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("isolates a throwing callback from the rest of the page", async () => {
+    const events = [makeEvent(1), makeEvent(2), makeEvent(3)];
+    const adapter = createMockAdapter([page(events, 4)]);
+    const delivered: bigint[] = [];
+    const callback = vi.fn((e: StreamdEvent) => {
+      delivered.push(e.version);
+      if (e.version === 2n) throw new Error("handler bug");
+    });
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, callback, {
+      pollInterval: 100,
+      maxErrors: 1,
+      onError,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(250);
+
+    expect(delivered).toEqual([1n, 2n, 3n]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    const err = mocked(onError).mock.calls[0]![0];
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdPollingError);
+    expect((err as StreamdError).cause).toBeInstanceOf(Error);
+    expect(poller.active).toBe(true);
+
+    poller.stop();
   });
 
   it("stops delivering the page when stopped from the callback", async () => {

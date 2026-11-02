@@ -6,7 +6,7 @@ import type {
   EventPredicate,
   ListenerOptions,
 } from "./types.js";
-import { StreamdPollingError } from "./errors.js";
+import { StreamdError, StreamdPollingError } from "./errors.js";
 import { CursorManager } from "./cursor.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
@@ -124,7 +124,18 @@ export class EventPoller {
       // marking it keeps overlapping pages from re-testing it.
       this.cursor.mark(event);
       if (this.where !== undefined && !this.where(event)) continue;
-      this.callback(event);
+      // A handler bug is the caller's, not the source's: report it without
+      // counting toward maxErrors or abandoning the rest of the page.
+      try {
+        this.callback(event);
+      } catch (err) {
+        this.onError?.(
+          new StreamdError(
+            `Event callback threw for ${event.version}:${event.eventIndex}`,
+            err,
+          ),
+        );
+      }
     }
 
     // Advance even on an empty page — the adapter reports how far it scanned,
