@@ -375,6 +375,7 @@ describe("StreamdClient", () => {
     await advanceTimersByTimeAsync(0);
     expect(outcome).toBeInstanceOf(StreamdError);
     expect(((outcome as Error).cause as Error).message).toMatch(/Not a valid Aptos address/);
+    expect(subscriptionCount(client)).toBe(0);
 
     client.destroy();
   });
