@@ -340,6 +340,30 @@ describe("EventPoller", () => {
     poller.stop();
   });
 
+  it("counts only consecutive failures toward maxErrors", async () => {
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockRejectedValueOnce(new Error("down"))
+      .mockRejectedValueOnce(new Error("down"))
+      .mockResolvedValueOnce(page([], 1))
+      .mockRejectedValue(new Error("down"));
+    const counts: number[] = [];
+    const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+      pollInterval: 100,
+      maxErrors: 3,
+      onError: (e) => counts.push((e as StreamdPollingError).consecutiveFailures),
+    });
+    poller.start();
+    // Fail, fail, succeed, fail, fail: five polls inside the first second.
+    await advanceTimersByTimeAsync(1000);
+
+    expect(fetchEvents).toHaveBeenCalledTimes(5);
+    expect(counts).toEqual([1, 2, 1, 2]);
+    expect(poller.active).toBe(true);
+
+    poller.stop();
+  });
+
   it("resets error count on successful poll", async () => {
     let callCount = 0;
     const adapter: EventAdapter = {
@@ -513,6 +537,29 @@ describe("EventPoller", () => {
     // The restarted run's immediate poll, then one per interval.
     expect(fetchEvents.mock.calls.length - afterRestart).toBe(4);
 
+    poller.stop();
+  });
+
+  it("runs one poll chain when onError restarts the poller", async () => {
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockRejectedValueOnce(new Error("down"))
+      .mockImplementation(async () => page([], 1));
+    let restarted = false;
+    const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+      pollInterval: 100,
+      onError: () => {
+        if (restarted) return;
+        restarted = true;
+        poller.stop();
+        poller.start();
+      },
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(1000);
+
+    // The failed poll, the restart's immediate poll, then one per interval.
+    expect(fetchEvents).toHaveBeenCalledTimes(11);
     poller.stop();
   });
 

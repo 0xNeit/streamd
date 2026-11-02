@@ -134,6 +134,8 @@ export class EventPoller {
       }
 
       this.report(pollingError);
+      // The handler may have stopped or restarted the poller.
+      if (!this.isCurrent(gen)) return;
 
       // Exponential backoff capped at MAX_BACKOFF
       this.currentInterval = Math.min(this.currentInterval * 2, MAX_BACKOFF);
