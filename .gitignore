@@ -2,3 +2,10 @@ node_modules/
 dist/
 .claude/settings.local.json
 .DS_Store
+
+# Religion workflow files (kept local)
+religion/
+.claude/
+.agents/
+CLAUDE.md
+AGENTS.md
