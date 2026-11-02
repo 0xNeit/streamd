@@ -297,6 +297,9 @@ describe("EventPoller", () => {
       const reported = onError.mock.calls[0]![0];
       expect(reported).toBeInstanceOf(StreamdPollingError);
       expect(reported.cause).toBe(bad);
+      expect(reported.message).toBe(
+        "Polling stopped on invalid input: Not a valid Aptos address: nope",
+      );
       expect(poller.active).toBe(false);
     });
 
