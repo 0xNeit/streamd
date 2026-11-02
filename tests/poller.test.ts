@@ -702,6 +702,60 @@ describe("EventPoller", () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  describe("async handlers", () => {
+    function deferred() {
+      let resolve!: () => void;
+      let reject!: (e: Error) => void;
+      const promise = new Promise<void>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    it("waits for a handler before the next event and the next poll", async () => {
+      const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
+      const first = deferred();
+      const callback = vi
+        .fn<(e: StreamdEvent) => Promise<void> | void>()
+        .mockReturnValueOnce(first.promise);
+      const poller = new EventPoller(adapter, descriptor, callback, { pollInterval: 100 });
+      poller.start();
+      await advanceTimersByTimeAsync(300);
+
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+
+      first.resolve();
+      await advanceTimersByTimeAsync(0);
+      expect(callback).toHaveBeenCalledTimes(2);
+      await advanceTimersByTimeAsync(100);
+      expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+
+      poller.stop();
+    });
+
+    it("reports a rejected handler and carries on with the page", async () => {
+      const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
+      const first = deferred();
+      const callback = vi
+        .fn<(e: StreamdEvent) => Promise<void> | void>()
+        .mockReturnValueOnce(first.promise);
+      const onError = vi.fn();
+      const poller = new EventPoller(adapter, descriptor, callback, { onError });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+
+      first.reject(new Error("handler failed"));
+      await advanceTimersByTimeAsync(0);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0]![0]).not.toBeInstanceOf(StreamdPollingError);
+      expect(callback).toHaveBeenCalledTimes(2);
+
+      poller.stop();
+    });
+  });
+
   it("reports a rejecting async callback through onError", async () => {
     const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
     const boom = new Error("async handler bug");

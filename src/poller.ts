@@ -116,7 +116,7 @@ export class EventPoller {
       // not touch the cursor or the error budget the live run resumes with.
       if (!this.isCurrent(gen)) return;
 
-      this.processPage(page, gen);
+      await this.processPage(page, gen);
       // The callback may have stopped or restarted the poller.
       if (!this.isCurrent(gen)) return;
       this.consecutiveErrors = 0;
@@ -158,7 +158,7 @@ export class EventPoller {
     }
   }
 
-  private processPage(page: EventPage, gen: number): void {
+  private async processPage(page: EventPage, gen: number): Promise<void> {
     for (const event of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
@@ -171,16 +171,12 @@ export class EventPoller {
       try {
         if (this.where !== undefined && !this.where(event)) continue;
         const result: unknown = this.callback(event);
-        // An async callback's rejection never reaches this catch, so it gets
-        // its own handler. Delivery does not wait for it.
-        if (isThenable(result)) {
-          // Reported while any run is live: the handler is the same one, and
-          // this path touches neither the cursor nor the error budget.
-          result.then(undefined, (err: unknown) => {
-            if (this._active) this.report(callbackError(event, err));
-          });
-        }
+        // Awaited one event at a time, so a slow handler holds back the rest
+        // of the page and the next poll rather than piling up work.
+        if (isThenable(result)) await result;
       } catch (err) {
+        // Reported while any run is live: the handler is the same one, and
+        // this path touches neither the cursor nor the error budget.
         if (this._active) this.report(callbackError(event, err));
         if (!this.isCurrent(gen)) return;
       }
