@@ -1,0 +1,126 @@
+import { Aptos } from "@aptos-labs/ts-sdk";
+import type {
+  EventAdapter,
+  EventCallback,
+  EventDescriptor,
+  EventFilter,
+  ListenerOptions,
+  StreamdConfig,
+  StreamdEvent,
+  Subscription,
+} from "./types.js";
+import { FullnodeScanAdapter } from "./adapters/fullnode.js";
+import { EventPoller } from "./poller.js";
+import { EventQuery } from "./query.js";
+import { generateId } from "./utils.js";
+
+export class StreamdClient {
+  private readonly aptos: Aptos;
+  private readonly defaultPollInterval: number;
+  private readonly adapter: EventAdapter;
+  private readonly query: EventQuery;
+  private readonly subscriptions = new Map<string, EventPoller>();
+
+  constructor(config: StreamdConfig) {
+    this.aptos =
+      config.aptos instanceof Aptos
+        ? config.aptos
+        : new Aptos(config.aptos);
+    this.defaultPollInterval = config.defaultPollInterval ?? 1000;
+    this.adapter = config.adapter ?? new FullnodeScanAdapter(this.aptos);
+    this.query = new EventQuery(this.adapter);
+  }
+
+  /**
+   * Subscribe to real-time events. Polls under the hood.
+   */
+  on<TData = unknown>(
+    descriptor: EventDescriptor,
+    callback: EventCallback<TData>,
+    options?: ListenerOptions,
+  ): Subscription {
+    const id = generateId();
+    const poller = new EventPoller(
+      this.adapter,
+      descriptor,
+      callback as EventCallback,
+      {
+        pollInterval: this.defaultPollInterval,
+        ...options,
+      },
+    );
+
+    this.subscriptions.set(id, poller);
+    poller.start();
+
+    return {
+      id,
+      get active() {
+        return poller.active;
+      },
+      unsubscribe: () => {
+        poller.stop();
+        this.subscriptions.delete(id);
+      },
+    };
+  }
+
+  /**
+   * Wait for the next event matching the descriptor. Resolves with the first event received.
+   */
+  once<TData = unknown>(
+    descriptor: EventDescriptor,
+    options?: ListenerOptions,
+  ): Promise<StreamdEvent<TData>> {
+    return new Promise<StreamdEvent<TData>>((resolve, reject) => {
+      const sub = this.on<TData>(
+        descriptor,
+        (event) => {
+          sub.unsubscribe();
+          resolve(event);
+        },
+        {
+          ...options,
+          onError: (err) => {
+            options?.onError?.(err);
+            // If polling auto-stopped due to max errors, reject
+            if (!sub.active) {
+              reject(err);
+            }
+          },
+        },
+      );
+    });
+  }
+
+  /**
+   * Query historical events (like eth_getLogs).
+   */
+  async getLogs<TData = unknown>(
+    descriptor: EventDescriptor,
+    filter?: EventFilter,
+  ): Promise<StreamdEvent<TData>[]> {
+    return this.query.getLogs<TData>(descriptor, filter);
+  }
+
+  /**
+   * Async iterator for paginating through large historical result sets.
+   */
+  getLogsIterator<TData = unknown>(
+    descriptor: EventDescriptor,
+    filter?: EventFilter,
+    pageSize?: number,
+  ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
+    return this.query.getLogsIterator<TData>(descriptor, filter, pageSize);
+  }
+
+  /**
+   * Stop all active subscriptions and clean up.
+   */
+  destroy(): void {
+    for (const [id, poller] of this.subscriptions) {
+      poller.stop();
+      this.subscriptions.delete(id);
+    }
+  }
+}
