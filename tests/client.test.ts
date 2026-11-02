@@ -321,6 +321,8 @@ describe("StreamdClient", () => {
     }),
   });
 
+  // Reads the private `subscriptions` map: nothing public reports how many
+  // pollers the client still holds, which is what these tests are about.
   function subscriptionCount(client: StreamdClient): number {
     return (client as unknown as { subscriptions: Map<string, unknown> })
       .subscriptions.size;
