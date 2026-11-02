@@ -182,6 +182,10 @@ export class EventPoller {
       }
     }
 
+    // A run stopped while a handler was pending must not move the cursor past
+    // a page it did not finish: resuming from it delivers the page again.
+    if (!this.isCurrent(gen)) return;
+
     // Advance even on an empty page — the adapter reports how far it scanned,
     // not where the last match was. Without this, an event type sparser than
     // the scan window would re-read the same transactions forever.

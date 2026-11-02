@@ -735,6 +735,43 @@ describe("EventPoller", () => {
       poller.stop();
     });
 
+    it("holds the cursor until the page's handlers settle", async () => {
+      const adapter = createMockAdapter([page([makeEvent(1)], 2)]);
+      const pending = deferred();
+      const callback = vi
+        .fn<(e: StreamdEvent) => Promise<void> | void>()
+        .mockReturnValueOnce(pending.promise);
+      const poller = new EventPoller(adapter, descriptor, callback, {
+        pollInterval: 100,
+        cursor: "1",
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+      expect(poller.cursor).toBe("1");
+
+      pending.resolve();
+      await advanceTimersByTimeAsync(0);
+      expect(poller.cursor).toBe("2");
+
+      poller.stop();
+    });
+
+    it("leaves the cursor alone when stopped during a handler", async () => {
+      const adapter = createMockAdapter([page([makeEvent(1)], 2)]);
+      const pending = deferred();
+      const callback = vi
+        .fn<(e: StreamdEvent) => Promise<void> | void>()
+        .mockReturnValueOnce(pending.promise);
+      const poller = new EventPoller(adapter, descriptor, callback, { cursor: "1" });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+
+      poller.stop();
+      pending.resolve();
+      await advanceTimersByTimeAsync(0);
+      expect(poller.cursor).toBe("1");
+    });
+
     it("reports a rejected handler and carries on with the page", async () => {
       const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
       const first = deferred();
