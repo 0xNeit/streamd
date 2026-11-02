@@ -14,6 +14,7 @@ import { EventPoller } from "./poller.js";
 import { EventQuery } from "./query.js";
 import { StreamdPollingError } from "./errors.js";
 import { generateId } from "./utils.js";
+import { eventStream } from "./stream.js";
 
 export class StreamdClient {
   private readonly aptos: Aptos;
@@ -21,6 +22,8 @@ export class StreamdClient {
   private readonly adapter: EventAdapter;
   private readonly query: EventQuery;
   private readonly subscriptions = new Map<string, EventPoller>();
+  /** Open streams, so destroy() can end their loops rather than strand them. */
+  private readonly streams = new Set<() => void>();
 
   constructor(config: StreamdConfig) {
     this.aptos =
@@ -120,6 +123,35 @@ export class StreamdClient {
   }
 
   /**
+   * Live events as an async iterable: `for await (const e of client.stream(d))`.
+   * Leaving the loop unsubscribes. Each event holds back the next poll until
+   * the loop asks for the following one, and the loop throws if polling gives
+   * up (after `maxErrors`, or at once on invalid input). Other errors go to
+   * `options.onError`.
+   */
+  stream<TData = unknown>(
+    descriptor: EventDescriptor,
+    options?: ListenerOptions,
+  ): AsyncIterableIterator<StreamdEvent<TData>> {
+    // Registered only once the stream subscribes, so an unused stream costs nothing.
+    const close = () => void stream.return?.();
+    const stream = eventStream<TData>(
+      (callback, onError) => {
+        this.streams.add(close);
+        return this.on<TData>(descriptor, callback, {
+          ...options,
+          onError: (err) => {
+            onError(err);
+            options?.onError?.(err);
+          },
+        });
+      },
+      () => this.streams.delete(close),
+    );
+    return stream;
+  }
+
+  /**
    * Query historical events (like eth_getLogs).
    */
   async getLogs<TData = unknown>(
@@ -141,9 +173,12 @@ export class StreamdClient {
   }
 
   /**
-   * Stop all active subscriptions and clean up.
+   * Stop all active subscriptions and end open streams. It ends what is
+   * running rather than retiring the client: `on()` or a stream first iterated
+   * afterwards still starts polling.
    */
   destroy(): void {
+    for (const close of [...this.streams]) close();
     for (const [id, poller] of this.subscriptions) {
       poller.stop();
       this.subscriptions.delete(id);
