@@ -202,7 +202,9 @@ export interface Subscription {
  * Called once per delivered event, in order. A returned promise is awaited
  * before the next event and before the cursor moves past the page, so a slow
  * handler slows polling down. A rejection is reported through `onError` and
- * delivery carries on, as for a synchronous throw.
+ * delivery carries on, as for a synchronous throw. A handler that never
+ * settles stops delivery for good, with nothing reported; `unsubscribe()`
+ * still works.
  *
  * Typed `void` rather than `void | Promise<void>` on purpose: `void` accepts
  * async functions and also expression bodies such as `(e) => list.push(e)`,

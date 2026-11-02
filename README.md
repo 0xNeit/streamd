@@ -56,7 +56,8 @@ sub.unsubscribe();
 Handlers may be `async`: each one is awaited before the next event, and polling waits
 for the page to finish, so a slow handler slows the subscription down instead of piling
 up work. A rejected handler is reported through `onError` and the next event is still
-delivered.
+delivered. A handler that never settles stops delivery with nothing reported, so give
+long-running work its own timeout; `unsubscribe()` still works.
 
 Listening polls under the hood. When the source reports more data is waiting,
 the poller fetches again immediately instead of waiting for the next interval.
