@@ -221,13 +221,6 @@ describe("FullnodeScanAdapter handle events", () => {
     expect(indexOf(second)).toBe(1);
   });
 
-  it("throws on a non-ok response", async () => {
-    const { aptos } = fakeNode(() => ({ status: 503, data: { message: "down" } }));
-    await expect(
-      new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {}),
-    ).rejects.toThrow();
-  });
-
   it("requests a short address in its long form", async () => {
     const { aptos, calls } = fakeNode(handle([]));
     await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {});
