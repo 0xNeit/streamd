@@ -26,6 +26,11 @@ export class EventPoller {
   private _active = false;
   /** Bumped by start(), so a poll left over from an earlier run can tell. */
   private generation = 0;
+  /**
+   * The page still being delivered, if any. A restart's first poll waits for
+   * it, so a new run never delivers alongside a handler from the old one.
+   */
+  private delivering: Promise<void> = Promise.resolve();
   private readonly position: CursorManager;
 
   private readonly pollInterval: number;
@@ -103,6 +108,8 @@ export class EventPoller {
   private async poll(): Promise<void> {
     const gen = this.generation;
     try {
+      await this.delivering;
+      if (!this.isCurrent(gen)) return;
       const page = await this.adapter.fetchEvents(this.descriptor, {
         // Once we have a cursor it supersedes fromVersion, which only seeds
         // the very first poll.
@@ -116,7 +123,10 @@ export class EventPoller {
       // not touch the cursor or the error budget the live run resumes with.
       if (!this.isCurrent(gen)) return;
 
-      this.processPage(page, gen);
+      const delivery = this.processPage(page, gen);
+      // A failed page is this poll's error alone; later polls must not inherit it.
+      this.delivering = delivery.catch(() => {});
+      await delivery;
       // The callback may have stopped or restarted the poller.
       if (!this.isCurrent(gen)) return;
       this.consecutiveErrors = 0;
@@ -158,7 +168,7 @@ export class EventPoller {
     }
   }
 
-  private processPage(page: EventPage, gen: number): void {
+  private async processPage(page: EventPage, gen: number): Promise<void> {
     for (const event of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
@@ -171,20 +181,20 @@ export class EventPoller {
       try {
         if (this.where !== undefined && !this.where(event)) continue;
         const result: unknown = this.callback(event);
-        // An async callback's rejection never reaches this catch, so it gets
-        // its own handler. Delivery does not wait for it.
-        if (isThenable(result)) {
-          // Reported while any run is live: the handler is the same one, and
-          // this path touches neither the cursor nor the error budget.
-          result.then(undefined, (err: unknown) => {
-            if (this._active) this.report(callbackError(event, err));
-          });
-        }
+        // Awaited one event at a time, so a slow handler holds back the rest
+        // of the page and the next poll rather than piling up work.
+        if (isThenable(result)) await result;
       } catch (err) {
+        // Reported while any run is live: the handler is the same one, and
+        // this path touches neither the cursor nor the error budget.
         if (this._active) this.report(callbackError(event, err));
         if (!this.isCurrent(gen)) return;
       }
     }
+
+    // A run stopped while a handler was pending must not move the cursor past
+    // a page it did not finish: resuming from it delivers the page again.
+    if (!this.isCurrent(gen)) return;
 
     // Advance even on an empty page — the adapter reports how far it scanned,
     // not where the last match was. Without this, an event type sparser than
