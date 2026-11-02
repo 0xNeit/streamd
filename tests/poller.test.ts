@@ -398,6 +398,34 @@ describe("EventPoller", () => {
     poller.stop();
   });
 
+  it("ignores a fetch that fails after stop() and start()", async () => {
+    let fail!: (e: Error) => void;
+    const fetchEvents = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<EventPage>((_, r) => (fail = r)))
+      .mockImplementation(async () => page([], 1));
+    const onError = vi.fn();
+    const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+      pollInterval: 100,
+      onError,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    poller.stop();
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    fail(new Error("stale failure"));
+    await advanceTimersByTimeAsync(0);
+    const afterRestart = fetchEvents.mock.calls.length;
+
+    await advanceTimersByTimeAsync(300);
+    expect(onError).not.toHaveBeenCalled();
+    expect(fetchEvents.mock.calls.length - afterRestart).toBe(3);
+
+    poller.stop();
+  });
+
   it("runs one poll chain when the callback restarts the poller", async () => {
     const fetchEvents = vi
       .fn()
