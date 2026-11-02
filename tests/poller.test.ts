@@ -262,7 +262,7 @@ describe("EventPoller", () => {
 
       // Fail, fail, succeed, fail: 200 then 400, 100 after the success, and the
       // next failure backs off 200 again rather than doubling from 400.
-      expect(gaps().slice(0, 4)).toEqual([200, 400, 100, 200]);
+      expect(gaps()).toEqual([200, 400, 100, 200]);
       poller.stop();
     });
   });
