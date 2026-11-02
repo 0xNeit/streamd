@@ -80,8 +80,6 @@ export class EventPoller {
         limit: this.batchSize,
         orderBy: "asc",
       });
-      // stop() may have run while the fetch was in flight.
-      if (!this._active) return;
 
       this.processPage(page);
       this.consecutiveErrors = 0;
