@@ -59,6 +59,27 @@ On errors it backs off exponentially, and stops after `maxErrors` failures in
 a row. Invalid input, such as a malformed address or cursor, stops it at once,
 since retrying cannot fix it.
 
+### Resume after a restart
+
+Save a subscription's `cursor` when you stop, and pass it back to `on()` to pick up
+where you left off instead of at the chain head:
+
+```ts
+process.on("SIGTERM", async () => {
+  streamd.destroy();
+  await saveCursor(sub.cursor); // undefined if no page was fetched yet
+});
+
+const saved = await loadCursor();
+const sub = streamd.on(descriptor, handle, { cursor: saved });
+```
+
+The cursor is the adapter's own token, so it only works with the same descriptor and
+adapter that produced it, and it wins over `fromVersion`. It moves once a page has been
+handed to your callback, and the dedup window is not saved, so events from the page in
+flight when the process stopped can arrive again after a restart: make your handler
+idempotent on `(version, eventIndex)`.
+
 ### Wait for one event
 
 ```ts

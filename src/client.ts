@@ -70,6 +70,9 @@ export class StreamdClient {
       get active() {
         return poller.active;
       },
+      get cursor() {
+        return poller.cursor;
+      },
       unsubscribe: () => {
         poller.stop();
         this.subscriptions.delete(id);

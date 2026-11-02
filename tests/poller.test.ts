@@ -164,6 +164,37 @@ describe("EventPoller", () => {
     expect(calls[1][1].cursor).toBe("500");
   });
 
+  it("resumes from a given cursor instead of fromVersion", async () => {
+    const adapter = createMockAdapter([page([], 51)]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      cursor: "50",
+      fromVersion: 7n,
+    });
+    expect(poller.cursor).toBe("50");
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    const first = mocked(adapter.fetchEvents).mock.calls[0]![1];
+    expect(first.cursor).toBe("50");
+    expect(first.fromVersion).toBeUndefined();
+
+    poller.stop();
+  });
+
+  it("reports the cursor of the last page it finished", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1)], 2), page([], 5)]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { pollInterval: 100 });
+    expect(poller.cursor).toBeUndefined();
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.cursor).toBe("2");
+    await advanceTimersByTimeAsync(100);
+    expect(poller.cursor).toBe("5");
+
+    poller.stop();
+    expect(poller.cursor).toBe("5");
+  });
+
   it("enters catch-up mode when the adapter reports more data", async () => {
     const adapter = createMockAdapter([
       page([makeEvent(1)], 2, true),
