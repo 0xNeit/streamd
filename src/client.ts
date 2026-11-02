@@ -80,7 +80,8 @@ export class StreamdClient {
   /**
    * Wait for the next event matching the descriptor. Resolves with the first event received.
    *
-   * Rejects when polling gives up after `maxErrors`, or on the first error
+   * Rejects when polling gives up after `maxErrors`, at once when the adapter
+   * refuses the descriptor or options as invalid input, or on the first error
    * thrown by `where`, even if a later event would have matched.
    */
   once<TData = unknown>(
@@ -100,7 +101,7 @@ export class StreamdClient {
             // Settle before the caller's handler runs, so a throw from it
             // cannot leave the promise pending.
             if (!sub.active) {
-              // Polling auto-stopped after maxErrors.
+              // Polling stopped itself: maxErrors, or invalid input.
               reject(err);
             } else if (!(err instanceof StreamdPollingError)) {
               // Filter and callback errors never stop the poller, so a

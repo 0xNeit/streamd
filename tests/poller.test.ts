@@ -6,7 +6,11 @@ import {
   mocked,
 } from "./timers.js";
 import { EventPoller } from "../src/poller.js";
-import { StreamdError, StreamdPollingError } from "../src/errors.js";
+import {
+  StreamdError,
+  StreamdNetworkError,
+  StreamdPollingError,
+} from "../src/errors.js";
 import type {
   EventAdapter,
   EventDescriptor,
@@ -264,6 +268,49 @@ describe("EventPoller", () => {
       // next failure backs off 200 again rather than doubling from 400.
       expect(gaps()).toEqual([200, 400, 100, 200]);
       poller.stop();
+    });
+  });
+
+  describe("invalid input", () => {
+    const run = async (error: Error) => {
+      const fetchEvents = vi.fn(async (): Promise<EventPage> => {
+        throw error;
+      });
+      const onError = vi.fn();
+      const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+        pollInterval: 100,
+        maxErrors: 5,
+        onError,
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(1000);
+      poller.stop();
+      return { fetchEvents, onError, poller };
+    };
+
+    it("stops on the first plain StreamdError from the adapter", async () => {
+      const bad = new StreamdError("Not a valid Aptos address: nope");
+      const { fetchEvents, onError, poller } = await run(bad);
+
+      expect(fetchEvents).toHaveBeenCalledTimes(1);
+      expect(onError).toHaveBeenCalledTimes(1);
+      const reported = onError.mock.calls[0]![0];
+      expect(reported).toBeInstanceOf(StreamdPollingError);
+      expect(reported.cause).toBe(bad);
+      expect(reported.message).toBe(
+        "Polling stopped on invalid input: Not a valid Aptos address: nope",
+      );
+      expect(poller.active).toBe(false);
+    });
+
+    it("still retries a StreamdNetworkError", async () => {
+      const { fetchEvents } = await run(new StreamdNetworkError("503", 503));
+      expect(fetchEvents.mock.calls.length).toBeGreaterThan(1);
+    });
+
+    it("still retries an error that is not a StreamdError", async () => {
+      const { fetchEvents } = await run(new Error("socket hang up"));
+      expect(fetchEvents.mock.calls.length).toBeGreaterThan(1);
     });
   });
 

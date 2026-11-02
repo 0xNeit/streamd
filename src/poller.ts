@@ -7,7 +7,11 @@ import type {
   ListenerOptions,
   StreamdEvent,
 } from "./types.js";
-import { StreamdError, StreamdPollingError } from "./errors.js";
+import {
+  StreamdError,
+  StreamdNetworkError,
+  StreamdPollingError,
+} from "./errors.js";
 import { CursorManager } from "./cursor.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
@@ -119,13 +123,19 @@ export class EventPoller {
       if (!this.isCurrent(gen)) return;
       this.consecutiveErrors++;
 
+      // A StreamdError that is not a network failure is the caller's input,
+      // which fails the same way on every retry.
+      const invalidInput =
+        err instanceof StreamdError && !(err instanceof StreamdNetworkError);
       const pollingError = new StreamdPollingError(
-        `Polling failed (${this.consecutiveErrors}/${this.maxErrors})`,
+        invalidInput
+          ? `Polling stopped on invalid input: ${err.message}`
+          : `Polling failed (${this.consecutiveErrors}/${this.maxErrors})`,
         this.consecutiveErrors,
         err,
       );
 
-      if (this.consecutiveErrors >= this.maxErrors) {
+      if (invalidInput || this.consecutiveErrors >= this.maxErrors) {
         // Stop before notifying, so a handler inspecting `active` sees the
         // subscription already dead rather than briefly alive.
         this.stop();
