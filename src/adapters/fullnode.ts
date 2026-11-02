@@ -9,7 +9,7 @@ import type {
   ModuleEventDescriptor,
   StreamdEvent,
 } from "../types.js";
-import { StreamdError } from "../errors.js";
+import { StreamdError, StreamdNetworkError } from "../errors.js";
 import { normalizeAddress } from "../filter.js";
 
 interface RawEvent {
@@ -100,7 +100,27 @@ export class FullnodeScanAdapter implements EventAdapter {
     this.maxScan = options.maxScan ?? DEFAULT_MAX_SCAN;
   }
 
+  /** Only ever rejects with a `StreamdError`, whichever path failed. */
   async fetchEvents(
+    descriptor: EventDescriptor,
+    options: FetchOptions,
+  ): Promise<EventPage> {
+    try {
+      return await this.dispatch(descriptor, options);
+    } catch (err) {
+      if (err instanceof StreamdError) throw err;
+      const status = (err as { status?: unknown } | null)?.status;
+      throw new StreamdNetworkError(
+        `Fullnode request for ${descriptor.kind} events failed: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        typeof status === "number" ? status : undefined,
+        err,
+      );
+    }
+  }
+
+  private dispatch(
     descriptor: EventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage> {

@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
+import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import type { EventDescriptor } from "../src/types.js";
 
 const TYPE = "0x1::test::Ping";
@@ -237,5 +238,32 @@ describe("FullnodeScanAdapter handle events", () => {
     await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {});
     expect(calls[0]?.headers["x-team"]).toBe("streamd");
     expect(calls[0]?.headers.Authorization).toBe("Bearer secret");
+  });
+});
+
+describe("FullnodeScanAdapter errors", () => {
+  const failing = () => ({ status: 429, data: { message: "slow down" } });
+
+  for (const descriptor of [moduleDesc, accountDesc, handleDesc]) {
+    it(`surfaces a failed ${descriptor.kind} request as StreamdNetworkError with its status`, async () => {
+      const { aptos } = fakeNode(failing);
+      const err = await new FullnodeScanAdapter(aptos)
+        .fetchEvents(descriptor, { offset: 0, fromVersion: 0n })
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(StreamdNetworkError);
+      expect((err as StreamdNetworkError).statusCode).toBe(429);
+      expect((err as StreamdNetworkError).cause).toBeDefined();
+    });
+  }
+
+  it("passes its own errors through unwrapped", async () => {
+    const { aptos } = fakeNode(handle([]));
+    const err = await new FullnodeScanAdapter(aptos)
+      .fetchEvents({ ...handleDesc, accountAddress: "nope" }, {})
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
   });
 });
