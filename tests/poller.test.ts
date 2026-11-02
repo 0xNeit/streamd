@@ -329,6 +329,57 @@ describe("EventPoller", () => {
     poller.stop();
   });
 
+  it("runs one poll chain after stop() and start() during an in-flight fetch", async () => {
+    let release!: (p: EventPage) => void;
+    const fetchEvents = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<EventPage>((r) => (release = r)))
+      .mockImplementation(async () => page([], 1));
+    const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+      pollInterval: 100,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    poller.stop();
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    release(page([], 2));
+    await advanceTimersByTimeAsync(0);
+    const afterRestart = fetchEvents.mock.calls.length;
+
+    await advanceTimersByTimeAsync(300);
+    expect(fetchEvents.mock.calls.length - afterRestart).toBe(3);
+
+    poller.stop();
+  });
+
+  it("runs one poll chain when the callback restarts the poller", async () => {
+    const fetchEvents = vi
+      .fn()
+      .mockImplementationOnce(async () => page([makeEvent(1), makeEvent(2)], 3))
+      .mockImplementation(async () => page([], 3));
+    const callback = vi.fn(() => {
+      if (callback.mock.calls.length === 1) {
+        poller.stop();
+        poller.start();
+      }
+    });
+    const poller = new EventPoller({ fetchEvents }, descriptor, callback, {
+      pollInterval: 100,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    const afterRestart = fetchEvents.mock.calls.length;
+
+    await advanceTimersByTimeAsync(300);
+    expect(callback).toHaveBeenCalledTimes(1);
+    // The restarted run's immediate poll, then one per interval.
+    expect(fetchEvents.mock.calls.length - afterRestart).toBe(4);
+
+    poller.stop();
+  });
+
   it("reports nothing from a fetch that fails after stop", async () => {
     let fail!: (e: Error) => void;
     const adapter: EventAdapter = {

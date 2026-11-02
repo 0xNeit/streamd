@@ -19,6 +19,8 @@ export class EventPoller {
   private consecutiveErrors = 0;
   private currentInterval: number;
   private _active = false;
+  /** Bumped by start(), so a poll left over from an earlier run can tell. */
+  private generation = 0;
   private cursor: CursorManager;
 
   private readonly pollInterval: number;
@@ -51,6 +53,7 @@ export class EventPoller {
   start(): void {
     if (this._active) return;
     this._active = true;
+    this.generation++;
     this.schedulePoll(0);
   }
 
@@ -67,7 +70,13 @@ export class EventPoller {
     this.timer = setTimeout(() => void this.poll(), delay);
   }
 
+  /** True while the run that started poll `gen` is still the live one. */
+  private isCurrent(gen: number): boolean {
+    return this._active && gen === this.generation;
+  }
+
   private async poll(): Promise<void> {
+    const gen = this.generation;
     try {
       const page = await this.adapter.fetchEvents(this.descriptor, {
         // Once we have a cursor it supersedes fromVersion, which only seeds
@@ -78,18 +87,20 @@ export class EventPoller {
         limit: this.batchSize,
         orderBy: "asc",
       });
-      // A fetch that resolves after stop() must not touch the cursor or the
-      // error budget a later start() resumes with.
-      if (!this._active) return;
+      // A fetch that resolves after stop(), or after stop() and start(), must
+      // not touch the cursor or the error budget the live run resumes with.
+      if (!this.isCurrent(gen)) return;
 
-      this.processPage(page);
+      this.processPage(page, gen);
+      // The callback may have stopped or restarted the poller.
+      if (!this.isCurrent(gen)) return;
       this.consecutiveErrors = 0;
       this.currentInterval = this.pollInterval;
 
       // Catch-up mode: the adapter says more is waiting, so don't idle.
       this.schedulePoll(page.hasMore ? 0 : this.pollInterval);
     } catch (err) {
-      if (!this._active) return;
+      if (!this.isCurrent(gen)) return;
       this.consecutiveErrors++;
 
       const pollingError = new StreamdPollingError(
@@ -114,10 +125,10 @@ export class EventPoller {
     }
   }
 
-  private processPage(page: EventPage): void {
+  private processPage(page: EventPage, gen: number): void {
     for (const event of page.events) {
       // The callback itself may have unsubscribed.
-      if (!this._active) return;
+      if (!this.isCurrent(gen)) return;
       if (this.cursor.hasSeen(event)) continue;
       // Mark before filtering: a rejected event has still been processed, and
       // marking it keeps overlapping pages from re-testing it.
@@ -128,7 +139,7 @@ export class EventPoller {
         if (this.where !== undefined && !this.where(event)) continue;
         this.callback(event);
       } catch (err) {
-        if (!this._active) return;
+        if (!this.isCurrent(gen)) return;
         this.onError?.(
           new StreamdError(
             `Event filter or callback threw for ${event.version}:${event.eventIndex}`,
