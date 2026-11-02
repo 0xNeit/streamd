@@ -68,6 +68,9 @@ export class StreamdClient {
 
   /**
    * Wait for the next event matching the descriptor. Resolves with the first event received.
+   *
+   * Rejects when polling gives up after `maxErrors`, or on the first error
+   * thrown by `where`, even if a later event would have matched.
    */
   once<TData = unknown>(
     descriptor: EventDescriptor,
