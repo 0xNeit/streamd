@@ -53,11 +53,53 @@ const sub = streamd.on(
 sub.unsubscribe();
 ```
 
+Handlers may be `async`: each one is awaited before the next event, and polling waits
+for the page to finish, so a slow handler slows the subscription down instead of piling
+up work. A rejected handler is reported through `onError` and the next event is still
+delivered. A handler that never settles stops delivery with nothing reported, so give
+long-running work its own timeout; `unsubscribe()` still works.
+
 Listening polls under the hood. When the source reports more data is waiting,
 the poller fetches again immediately instead of waiting for the next interval.
 On errors it backs off exponentially, and stops after `maxErrors` failures in
 a row. Invalid input, such as a malformed address or cursor, stops it at once,
 since retrying cannot fix it.
+
+### Iterate live events
+
+```ts
+for await (const event of streamd.stream(descriptor, { where: involvesAddress(wallet) })) {
+  await handle(event);
+  if (done) break; // leaving the loop unsubscribes
+}
+```
+
+`stream()` takes the same options as `on()`. Nothing is fetched ahead of your loop: the
+next poll waits until the body asks for the following event, so a slow body slows the
+subscription down. The loop throws if polling gives up (after `maxErrors`, or at once on
+invalid input); other errors go to `onError`. `destroy()` ends any open loop. One loop
+per stream: the stream subscribes when the loop first asks for an event.
+
+### Resume after a restart
+
+Save a subscription's `cursor` when you stop, and pass it back to `on()` to pick up
+where you left off instead of at the chain head:
+
+```ts
+process.on("SIGTERM", async () => {
+  streamd.destroy();
+  await saveCursor(sub.cursor); // undefined if no page was fetched yet
+});
+
+const saved = await loadCursor();
+const sub = streamd.on(descriptor, handle, { cursor: saved });
+```
+
+The cursor is the adapter's own token, so it only works with the same descriptor and
+adapter that produced it, and it wins over `fromVersion`. It moves only once every handler
+on a page has settled, and the dedup window is not saved, so events from the page in
+flight when the process stopped arrive again after a restart: make your handler
+idempotent on `(version, eventIndex)`.
 
 ### Wait for one event
 

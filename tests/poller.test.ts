@@ -164,6 +164,37 @@ describe("EventPoller", () => {
     expect(calls[1][1].cursor).toBe("500");
   });
 
+  it("resumes from a given cursor instead of fromVersion", async () => {
+    const adapter = createMockAdapter([page([], 51)]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      cursor: "50",
+      fromVersion: 7n,
+    });
+    expect(poller.cursor).toBe("50");
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    const first = mocked(adapter.fetchEvents).mock.calls[0]![1];
+    expect(first.cursor).toBe("50");
+    expect(first.fromVersion).toBeUndefined();
+
+    poller.stop();
+  });
+
+  it("reports the cursor of the last page it finished", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1)], 2), page([], 5)]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { pollInterval: 100 });
+    expect(poller.cursor).toBeUndefined();
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.cursor).toBe("2");
+    await advanceTimersByTimeAsync(100);
+    expect(poller.cursor).toBe("5");
+
+    poller.stop();
+    expect(poller.cursor).toBe("5");
+  });
+
   it("enters catch-up mode when the adapter reports more data", async () => {
     const adapter = createMockAdapter([
       page([makeEvent(1)], 2, true),
@@ -669,6 +700,178 @@ describe("EventPoller", () => {
 
     expect(callback).toHaveBeenCalledTimes(1);
     expect(onError).not.toHaveBeenCalled();
+  });
+
+  describe("async handlers", () => {
+    function deferred() {
+      let resolve!: () => void;
+      let reject!: (e: Error) => void;
+      const promise = new Promise<void>((res, rej) => {
+        resolve = res;
+        reject = rej;
+      });
+      return { promise, resolve, reject };
+    }
+
+    it("waits for a handler before the next event and the next poll", async () => {
+      const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
+      const first = deferred();
+      const callback = vi
+        .fn<(e: StreamdEvent) => Promise<void> | void>()
+        .mockReturnValueOnce(first.promise);
+      const poller = new EventPoller(adapter, descriptor, callback, { pollInterval: 100 });
+      poller.start();
+      await advanceTimersByTimeAsync(300);
+
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+
+      first.resolve();
+      await advanceTimersByTimeAsync(0);
+      expect(callback).toHaveBeenCalledTimes(2);
+      await advanceTimersByTimeAsync(100);
+      expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+
+      poller.stop();
+    });
+
+    it("holds the cursor until the page's handlers settle", async () => {
+      const adapter = createMockAdapter([page([makeEvent(1)], 2)]);
+      const pending = deferred();
+      const callback = vi
+        .fn<(e: StreamdEvent) => Promise<void> | void>()
+        .mockReturnValueOnce(pending.promise);
+      const poller = new EventPoller(adapter, descriptor, callback, {
+        pollInterval: 100,
+        cursor: "1",
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+      expect(poller.cursor).toBe("1");
+
+      pending.resolve();
+      await advanceTimersByTimeAsync(0);
+      expect(poller.cursor).toBe("2");
+
+      poller.stop();
+    });
+
+    it("leaves the cursor alone when stopped during a handler", async () => {
+      const adapter = createMockAdapter([page([makeEvent(1)], 2)]);
+      const pending = deferred();
+      const callback = vi
+        .fn<(e: StreamdEvent) => Promise<void> | void>()
+        .mockReturnValueOnce(pending.promise);
+      const poller = new EventPoller(adapter, descriptor, callback, { cursor: "1" });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+
+      poller.stop();
+      pending.resolve();
+      await advanceTimersByTimeAsync(0);
+      expect(poller.cursor).toBe("1");
+    });
+
+    it("does not deliver alongside a pending handler after stop() and start()", async () => {
+      const adapter = createMockAdapter([
+        page([makeEvent(1), makeEvent(2)], 3),
+        page([makeEvent(1), makeEvent(2)], 3),
+      ]);
+      const pending = deferred();
+      const order: string[] = [];
+      const callback = vi.fn((e: StreamdEvent) => {
+        order.push(`start ${e.version}`);
+        if (e.version === 1n) return pending.promise.then(() => void order.push("end 1"));
+      });
+      const poller = new EventPoller(adapter, descriptor, callback, {
+        pollInterval: 100,
+        cursor: "1",
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+
+      // Restart twice while the handler is pending: the middle run is left
+      // waiting on the handler and must not fetch once it settles.
+      poller.stop();
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+      poller.stop();
+      poller.start();
+      await advanceTimersByTimeAsync(300);
+      expect(order).toEqual(["start 1"]);
+      expect(poller.cursor).toBe("1");
+
+      pending.resolve();
+      await advanceTimersByTimeAsync(0);
+      expect(order).toEqual(["start 1", "end 1", "start 2"]);
+      // The live run refetches the page the first never finished; the run
+      // stopped while waiting makes no fetch of its own.
+      expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+      expect(mocked(adapter.fetchEvents).mock.calls[1]![1].cursor).toBe("1");
+      expect(poller.cursor).toBe("3");
+
+      poller.stop();
+    });
+
+    it("keeps the held cursor when a restarted page's last handler settles late", async () => {
+      const adapter = createMockAdapter([page([makeEvent(1)], 2), page([], 2)]);
+      const pending = deferred();
+      const callback = vi
+        .fn<(e: StreamdEvent) => Promise<void> | void>()
+        .mockReturnValueOnce(pending.promise);
+      const poller = new EventPoller(adapter, descriptor, callback, { cursor: "1" });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+
+      poller.stop();
+      poller.start();
+      pending.resolve();
+      await advanceTimersByTimeAsync(0);
+
+      // The stale run must not write its page's cursor over the live run's.
+      expect(mocked(adapter.fetchEvents).mock.calls[1]![1].cursor).toBe("1");
+
+      poller.stop();
+    });
+
+    it("recovers on the next poll after a malformed page", async () => {
+      const bad = { events: null, nextCursor: "1", hasMore: false } as unknown as EventPage;
+      const adapter = createMockAdapter([bad, page([makeEvent(2)], 3)]);
+      const callback = vi.fn();
+      const onError = vi.fn();
+      const poller = new EventPoller(adapter, descriptor, callback, {
+        pollInterval: 100,
+        onError,
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(300);
+
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(poller.active).toBe(true);
+
+      poller.stop();
+    });
+
+    it("reports a rejected handler and carries on with the page", async () => {
+      const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 3)]);
+      const first = deferred();
+      const callback = vi
+        .fn<(e: StreamdEvent) => Promise<void> | void>()
+        .mockReturnValueOnce(first.promise);
+      const onError = vi.fn();
+      const poller = new EventPoller(adapter, descriptor, callback, { onError });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+
+      first.reject(new Error("handler failed"));
+      await advanceTimersByTimeAsync(0);
+      expect(onError).toHaveBeenCalledTimes(1);
+      expect(onError.mock.calls[0]![0]).not.toBeInstanceOf(StreamdPollingError);
+      expect(callback).toHaveBeenCalledTimes(2);
+
+      poller.stop();
+    });
   });
 
   it("reports a rejecting async callback through onError", async () => {

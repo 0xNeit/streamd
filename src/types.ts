@@ -140,6 +140,12 @@ export interface ListenerOptions {
   /** Start from this version; undefined = chain head */
   fromVersion?: bigint;
   /**
+   * Resume from a token a previous subscription reported as `cursor`. It wins
+   * over `fromVersion`, and is only meaningful with the same descriptor and
+   * adapter that produced it.
+   */
+  cursor?: string;
+  /**
    * Max consecutive errors before auto-stopping (default: 10). An adapter
    * error that is a `StreamdError` but not a `StreamdNetworkError` is invalid
    * input and stops the subscription on the first occurrence.
@@ -183,13 +189,26 @@ export interface Subscription {
   unsubscribe(): void;
   /** Whether the subscription is active */
   readonly active: boolean;
+  /**
+   * Where to resume: pass it back as `ListenerOptions.cursor` after a restart.
+   * Undefined before the first page; still readable after unsubscribing.
+   */
+  readonly cursor: string | undefined;
 }
 
 // ---- Callback ----
 
 /**
- * Called once per delivered event. It is not awaited: an async callback's
- * rejection is reported through `onError`, but the next event does not wait.
+ * Called once per delivered event, in order. A returned promise is awaited
+ * before the next event and before the cursor moves past the page, so a slow
+ * handler slows polling down. A rejection is reported through `onError` and
+ * delivery carries on, as for a synchronous throw. A handler that never
+ * settles stops delivery for good, with nothing reported; `unsubscribe()`
+ * still works.
+ *
+ * Typed `void` rather than `void | Promise<void>` on purpose: `void` accepts
+ * async functions and also expression bodies such as `(e) => list.push(e)`,
+ * which the union would reject.
  */
 export type EventCallback<TData = unknown> = (
   event: StreamdEvent<TData>,
