@@ -38,6 +38,7 @@ export type {
   HandleEventDescriptor,
   ListenerOptions,
   ModuleEventDescriptor,
+  MoveEventType,
   OnceOptions,
   StreamdConfig,
   StreamdEvent,
