@@ -104,14 +104,14 @@ idempotent on `(version, eventIndex)`.
 ### Wait for one event
 
 ```ts
-const event = await streamd.once({
-  kind: "module",
-  eventType: "0x1::transaction_fee::FeeStatement",
-});
+const event = await streamd.once(
+  { kind: "module", eventType: "0x1::transaction_fee::FeeStatement" },
+  { timeout: 10_000 }, // optional, ms
+);
 ```
 
-The promise rejects if polling gives up after `maxErrors`, or straight away on
-invalid input.
+The promise rejects with `StreamdTimeoutError` if `timeout` elapses first, if
+polling gives up after `maxErrors`, or straight away on invalid input.
 
 ### Query history
 
@@ -129,6 +129,27 @@ for await (const page of streamd.getLogsIterator(descriptor, { limit: 1000 }, 10
   handle(page);
 }
 ```
+
+### Cancel with AbortSignal
+
+Every listener and query takes a standard `signal`:
+
+```ts
+const controller = new AbortController();
+
+streamd.on(descriptor, handle, { signal: controller.signal });
+const logs = await streamd.getLogs(descriptor, {
+  fromVersion: 1_000_000n,
+  signal: AbortSignal.timeout(5000),
+});
+
+controller.abort();
+```
+
+Aborting `on()` unsubscribes quietly without calling `onError`. Aborting
+`once()`, `stream()`, `getLogs()` or `getLogsIterator()` stops polling or
+paging and rejects with `signal.reason`. An already-aborted signal never
+fetches.
 
 ### Clean up
 

@@ -97,6 +97,11 @@ export interface EventFilter {
    * when omitted. Use it to put a ceiling on a filtered walk.
    */
   maxPages?: number;
+  /**
+   * Aborting rejects `getLogs()` or the pending/next `getLogsIterator()` page
+   * with the signal's `reason` and stops fetching further pages.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -105,7 +110,8 @@ export interface EventFilter {
  * `where` is deliberately absent: predicates are functions, so they cannot be
  * pushed down to a remote data source. Query and poller apply them to results.
  */
-export interface FetchOptions extends Omit<EventFilter, "where" | "maxPages"> {
+export interface FetchOptions
+  extends Omit<EventFilter, "where" | "maxPages" | "signal"> {
   orderBy?: "asc" | "desc";
   /**
    * Opaque resume token returned by this adapter's previous page. When
@@ -162,6 +168,20 @@ export interface ListenerOptions {
    * surfaces as an uncaught error.
    */
   onError?: (error: Error) => void;
+  /**
+   * Aborting stops the subscription as `unsubscribe()` does, without calling
+   * `onError`. Already aborted, it never polls. `once()` and `stream()` also
+   * reject with the signal's `reason`.
+   */
+  signal?: AbortSignal;
+}
+
+export interface OnceOptions extends ListenerOptions {
+  /**
+   * Milliseconds to wait before unsubscribing and rejecting with
+   * `StreamdTimeoutError` (0 to 2147483647).
+   */
+  timeout?: number;
 }
 
 // ---- Client config ----

@@ -195,4 +195,90 @@ describe("StreamdClient.stream", () => {
     expect(openStreams(c)).toBe(0);
     await it.return!();
   });
+
+  it("rejects a pending next() with the signal reason on abort", async () => {
+    const adapter = adapterOf([]);
+    const c = client(adapter);
+    const controller = new AbortController();
+    const onError = vi.fn();
+    const reason = new Error("stop stream");
+    const it = c.stream(descriptor, { signal: controller.signal, onError });
+
+    const pending = it.next().catch((e: unknown) => e);
+    await advanceTimersByTimeAsync(0);
+    expect(subscriptionCount(c)).toBe(1);
+    expect(openStreams(c)).toBe(1);
+
+    controller.abort(reason);
+    expect(await pending).toBe(reason);
+    expect(await it.next()).toEqual({ value: undefined, done: true });
+    expect(subscriptionCount(c)).toBe(0);
+    expect(openStreams(c)).toBe(0);
+    expect(onError).not.toHaveBeenCalled();
+
+    await advanceTimersByTimeAsync(500);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects the following next() once when aborted during the loop body, then is done", async () => {
+    const adapter = adapterOf([{ events: [ev(1), ev(2)], nextCursor: "3", hasMore: false }]);
+    const c = client(adapter);
+    const controller = new AbortController();
+    const reason = new Error("aborted in body");
+    const it = c.stream(descriptor, { signal: controller.signal });
+
+    const first = it.next();
+    await advanceTimersByTimeAsync(0);
+    expect((await first).value?.version).toBe(1n);
+
+    // Abort while the loop body is processing the first event (no pending next()).
+    controller.abort(reason);
+    expect(subscriptionCount(c)).toBe(0);
+    expect(openStreams(c)).toBe(0);
+
+    const second = await it.next().catch((e: unknown) => e);
+    expect(second).toBe(reason);
+    expect(await it.next()).toEqual({ value: undefined, done: true });
+  });
+
+  it("rejects the first next() without subscribing when the signal is already aborted", async () => {
+    const adapter = adapterOf([{ events: [ev(1)], nextCursor: "2", hasMore: false }]);
+    const c = client(adapter);
+    const reason = new Error("pre-aborted");
+    const it = c.stream(descriptor, { signal: AbortSignal.abort(reason) });
+
+    const first = await it.next().catch((e: unknown) => e);
+    expect(first).toBe(reason);
+    expect(await it.next()).toEqual({ value: undefined, done: true });
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+    expect(subscriptionCount(c)).toBe(0);
+    expect(openStreams(c)).toBe(0);
+  });
+
+  it("detaches its abort listener when the loop exits and clears a held abort on return()", async () => {
+    const adapter = adapterOf([
+      { events: [ev(1)], nextCursor: "2", hasMore: false },
+      { events: [ev(2)], nextCursor: "3", hasMore: false },
+    ]);
+    const c = client(adapter);
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const it = c.stream(descriptor, { signal: controller.signal });
+
+    const first = it.next();
+    await advanceTimersByTimeAsync(0);
+    await first;
+    await it.return!();
+    expect(remove).toHaveBeenCalledTimes(1);
+
+    // A second stream aborted mid-body and then explicitly returned reports done on next().
+    const c2 = new AbortController();
+    const it2 = c.stream(descriptor, { signal: c2.signal });
+    const ev1 = it2.next();
+    await advanceTimersByTimeAsync(0);
+    await ev1;
+    c2.abort(new Error("aborted before break"));
+    await it2.return!();
+    expect(await it2.next()).toEqual({ value: undefined, done: true });
+  });
 });

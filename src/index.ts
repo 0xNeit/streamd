@@ -3,7 +3,12 @@ export { FullnodeScanAdapter } from "./adapters/fullnode.js";
 export { EventPoller } from "./poller.js";
 export { EventQuery } from "./query.js";
 export { CursorManager } from "./cursor.js";
-export { StreamdError, StreamdNetworkError, StreamdPollingError } from "./errors.js";
+export {
+  StreamdError,
+  StreamdNetworkError,
+  StreamdPollingError,
+  StreamdTimeoutError,
+} from "./errors.js";
 
 export {
   every,
@@ -28,6 +33,7 @@ export type {
   HandleEventDescriptor,
   ListenerOptions,
   ModuleEventDescriptor,
+  OnceOptions,
   StreamdConfig,
   StreamdEvent,
   Subscription,

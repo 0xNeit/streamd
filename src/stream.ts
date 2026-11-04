@@ -1,4 +1,5 @@
 import type { EventCallback, StreamdEvent, Subscription } from "./types.js";
+import { onAbort } from "./utils.js";
 
 type Subscribe<TData> = (
   callback: EventCallback<TData>,
@@ -23,15 +24,19 @@ const DONE = { value: undefined, done: true } as const;
  * Every event and every fatal error finds a waiting `next()`: the poller only
  * runs again once `next()` has released the previous handler, `next()` sets
  * the waiter in that same synchronous call, and the poller resumes on a later
- * microtask.
+ * microtask. An `AbortSignal` is the one exception: it can fire while the loop
+ * body is running, so its reason is held for the next `next()`.
  */
 export function eventStream<TData>(
   subscribe: Subscribe<TData>,
   onClose: () => void = () => {},
+  signal?: AbortSignal,
 ): AsyncIterableIterator<StreamdEvent<TData>> {
   let sub: Subscription | undefined;
   let waiter: Waiter<TData> | undefined;
   let release: (() => void) | undefined;
+  let failure: { reason: unknown } | undefined;
+  let detach = () => {};
   let closed = false;
 
   const take = (): Waiter<TData> => {
@@ -40,22 +45,26 @@ export function eventStream<TData>(
     return w;
   };
 
-  const finish = (error?: unknown) => {
+  const finish = (err?: { reason: unknown }) => {
     if (closed) return;
     closed = true;
+    detach();
     sub?.unsubscribe();
     release?.();
     release = undefined;
     if (waiter !== undefined) {
       const w = take();
-      if (error !== undefined) w.reject(error);
+      if (err !== undefined) w.reject(err.reason);
       else w.resolve(DONE);
+    } else {
+      failure = err;
     }
     onClose();
   };
 
-  const start = () =>
-    subscribe(
+  const start = () => {
+    detach = onAbort(signal, () => finish({ reason: signal!.reason }));
+    return subscribe(
       (event) =>
         new Promise<void>((done) => {
           release = done;
@@ -63,14 +72,21 @@ export function eventStream<TData>(
         }),
       (error) => {
         // Only a subscription that stopped itself ends the stream.
-        if (sub !== undefined && !sub.active) finish(error);
+        if (sub !== undefined && !sub.active) finish({ reason: error });
       },
     );
+  };
 
   return {
     next() {
       if (waiter !== undefined) {
         return Promise.reject(new TypeError("stream() has one consumer: await each next()"));
+      }
+      if (!closed && signal?.aborted) finish({ reason: signal.reason });
+      if (failure !== undefined) {
+        const { reason } = failure;
+        failure = undefined;
+        return Promise.reject(reason);
       }
       if (closed) return Promise.resolve(DONE);
       return new Promise((resolve, reject) => {
@@ -83,6 +99,7 @@ export function eventStream<TData>(
       });
     },
     return() {
+      failure = undefined;
       finish();
       return Promise.resolve(DONE);
     },

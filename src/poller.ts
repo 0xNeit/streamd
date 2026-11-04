@@ -39,6 +39,8 @@ export class EventPoller {
   private readonly fromVersion?: bigint;
   private readonly where?: EventPredicate;
   private readonly onError?: (error: Error) => void;
+  private readonly signal?: AbortSignal;
+  private readonly abort = () => this.stop();
 
   constructor(
     private readonly adapter: EventAdapter,
@@ -52,6 +54,7 @@ export class EventPoller {
     this.fromVersion = options.fromVersion;
     this.where = options.where;
     this.onError = options.onError;
+    this.signal = options.signal;
     this.currentInterval = this.pollInterval;
     this.position = new CursorManager(options.cursor);
   }
@@ -66,14 +69,16 @@ export class EventPoller {
   }
 
   start(): void {
-    if (this._active) return;
+    if (this._active || this.signal?.aborted) return;
     this._active = true;
     this.generation++;
+    this.signal?.addEventListener("abort", this.abort, { once: true });
     this.schedulePoll(0);
   }
 
   stop(): void {
     this._active = false;
+    this.signal?.removeEventListener("abort", this.abort);
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;

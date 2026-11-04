@@ -5,6 +5,7 @@ import type {
   EventDescriptor,
   EventFilter,
   ListenerOptions,
+  OnceOptions,
   StreamdConfig,
   StreamdEvent,
   Subscription,
@@ -12,9 +13,22 @@ import type {
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
 import { EventPoller } from "./poller.js";
 import { EventQuery } from "./query.js";
-import { StreamdPollingError } from "./errors.js";
-import { generateId } from "./utils.js";
+import {
+  StreamdError,
+  StreamdPollingError,
+  StreamdTimeoutError,
+} from "./errors.js";
+import { generateId, onAbort } from "./utils.js";
 import { eventStream } from "./stream.js";
+
+const MAX_TIMEOUT = 2_147_483_647;
+
+function checkTimeout(ms: number | undefined): StreamdError | undefined {
+  if (ms === undefined || (typeof ms === "number" && ms >= 0 && ms <= MAX_TIMEOUT)) {
+    return undefined;
+  }
+  return new StreamdError(`Invalid timeout: ${String(ms)} (expected 0..${MAX_TIMEOUT}ms)`);
+}
 
 export class StreamdClient {
   private readonly aptos: Aptos;
@@ -49,6 +63,11 @@ export class StreamdClient {
     options?: ListenerOptions,
   ): Subscription {
     const id = generateId();
+    let detach = () => {};
+    const forget = () => {
+      this.subscriptions.delete(id);
+      detach();
+    };
     const poller = new EventPoller(
       this.adapter,
       descriptor,
@@ -59,14 +78,19 @@ export class StreamdClient {
         onError: (err) => {
           // The poller stops itself before reporting its last failure, so an
           // inactive poller here has given up and must not stay in the map.
-          if (!poller.active) this.subscriptions.delete(id);
+          if (!poller.active) forget();
           options?.onError?.(err);
         },
       },
     );
 
-    this.subscriptions.set(id, poller);
     poller.start();
+    // An already-aborted signal leaves the poller stopped: nothing to track.
+    if (poller.active) {
+      this.subscriptions.set(id, poller);
+      // The poller stops itself on abort; the client only has to forget it.
+      detach = onAbort(options?.signal, forget);
+    }
 
     return {
       id,
@@ -78,7 +102,7 @@ export class StreamdClient {
       },
       unsubscribe: () => {
         poller.stop();
-        this.subscriptions.delete(id);
+        forget();
       },
     };
   }
@@ -86,39 +110,50 @@ export class StreamdClient {
   /**
    * Wait for the next event matching the descriptor. Resolves with the first event received.
    *
-   * Rejects when polling gives up after `maxErrors`, at once when the adapter
-   * refuses the descriptor or options as invalid input, or on the first error
-   * thrown by `where`, even if a later event would have matched.
+   * Rejects with `signal.reason` on abort, with `StreamdTimeoutError` if
+   * `timeout` elapses first, when polling gives up after `maxErrors`, at once
+   * when the adapter refuses the descriptor or options as invalid input, or on
+   * the first error thrown by `where`, even if a later event would have matched.
    */
   once<TData = unknown>(
     descriptor: EventDescriptor,
-    options?: ListenerOptions,
+    options?: OnceOptions,
   ): Promise<StreamdEvent<TData>> {
+    const badTimeout = checkTimeout(options?.timeout);
+    if (badTimeout !== undefined) return Promise.reject(badTimeout);
+    if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
+
     return new Promise<StreamdEvent<TData>>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let detach = () => {};
+      const close = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        detach();
+        sub.unsubscribe();
+      };
+      const fail = (reason: unknown) => (close(), reject(reason));
       const sub = this.on<TData>(
         descriptor,
-        (event) => {
-          sub.unsubscribe();
-          resolve(event);
-        },
+        (event) => (close(), resolve(event)),
         {
           ...options,
+          signal: undefined,
           onError: (err) => {
             // Settle before the caller's handler runs, so a throw from it
             // cannot leave the promise pending.
-            if (!sub.active) {
-              // Polling stopped itself: maxErrors, or invalid input.
-              reject(err);
-            } else if (!(err instanceof StreamdPollingError)) {
-              // Filter and callback errors never stop the poller, so a
-              // predicate that always throws would otherwise wait forever.
-              sub.unsubscribe();
-              reject(err);
-            }
+            if (!sub.active || !(err instanceof StreamdPollingError)) fail(err);
             options?.onError?.(err);
           },
         },
       );
+      detach = onAbort(options?.signal, () => fail(options!.signal!.reason));
+      if (options?.timeout !== undefined) {
+        const ms = options.timeout;
+        timer = setTimeout(
+          () => fail(new StreamdTimeoutError(`Timed out after ${ms}ms waiting for event`, ms)),
+          ms,
+        );
+      }
     });
   }
 
@@ -126,8 +161,8 @@ export class StreamdClient {
    * Live events as an async iterable: `for await (const e of client.stream(d))`.
    * Leaving the loop unsubscribes. Each event holds back the next poll until
    * the loop asks for the following one, and the loop throws if polling gives
-   * up (after `maxErrors`, or at once on invalid input). Other errors go to
-   * `options.onError`.
+   * up (after `maxErrors`, or at once on invalid input) or `options.signal`
+   * aborts. Other errors go to `options.onError`.
    */
   stream<TData = unknown>(
     descriptor: EventDescriptor,
@@ -140,6 +175,7 @@ export class StreamdClient {
         this.streams.add(close);
         return this.on<TData>(descriptor, callback, {
           ...options,
+          signal: undefined,
           onError: (err) => {
             onError(err);
             options?.onError?.(err);
@@ -147,6 +183,7 @@ export class StreamdClient {
         });
       },
       () => this.streams.delete(close),
+      options?.signal,
     );
     return stream;
   }

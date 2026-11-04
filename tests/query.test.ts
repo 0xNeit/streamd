@@ -38,4 +38,64 @@ describe("EventQuery paging", () => {
     expect(second?.fromVersion).toBeUndefined();
     expect(second?.offset).toBeUndefined();
   });
+
+  it("rejects a pre-aborted getLogs with the signal reason without fetching", async () => {
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>();
+    const reason = new Error("already aborted");
+    const promise = new EventQuery({ fetchEvents }).getLogs(descriptor, {
+      signal: AbortSignal.abort(reason),
+    });
+
+    await expect(promise).rejects.toBe(reason);
+    expect(fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("rejects during a pending fetch before that fetch resolves, and never passes signal to the adapter", async () => {
+    const controller = new AbortController();
+    const reason = new Error("abort in flight");
+    let resolvePage!: () => void;
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>(
+      () =>
+        new Promise((resolve) => {
+          resolvePage = () => resolve({ events: [event(1)], nextCursor: "2", hasMore: false });
+        }),
+    );
+
+    const promise = new EventQuery({ fetchEvents }).getLogs(descriptor, {
+      fromVersion: 1n,
+      signal: controller.signal,
+    });
+    expect(fetchEvents).toHaveBeenCalledTimes(1);
+    const passedOptions = fetchEvents.mock.calls[0]![1] as Record<string, unknown>;
+    expect("signal" in passedOptions).toBe(false);
+
+    controller.abort(reason);
+    await expect(promise).rejects.toBe(reason);
+
+    // Resolving the abandoned fetch afterwards is a no-op.
+    resolvePage();
+  });
+
+  it("stops fetching further pages when aborted between getLogsIterator pages, and detaches per page", async () => {
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const reason = new Error("stop paging");
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockResolvedValueOnce({ events: [event(1)], nextCursor: "2", hasMore: true })
+      .mockResolvedValueOnce({ events: [event(2)], nextCursor: "3", hasMore: false });
+
+    const it = new EventQuery({ fetchEvents }).getLogsIterator(descriptor, {
+      signal: controller.signal,
+    });
+
+    const first = await it.next();
+    expect(first.value?.map((e) => e.version)).toEqual([1n]);
+    expect(remove).toHaveBeenCalledTimes(1);
+
+    controller.abort(reason);
+    await expect(it.next()).rejects.toBe(reason);
+    expect(await it.next()).toEqual({ value: undefined, done: true });
+    expect(fetchEvents).toHaveBeenCalledTimes(1);
+  });
 });
