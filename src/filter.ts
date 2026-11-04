@@ -1,8 +1,14 @@
 import { AccountAddress } from "@aptos-labs/ts-sdk";
+import { StreamdError } from "./errors.js";
 import type { EventPredicate, StreamdEvent } from "./types.js";
 
 const HEX_ADDRESS = /^0x[0-9a-fA-F]{1,64}$/;
+const ARRAY_INDEX = /^(0|[1-9]\d*)$/;
 const DEFAULT_MAX_DEPTH = 8;
+const MISSING: unique symbol = Symbol("missing");
+
+export type FieldPath = string | readonly (string | number)[];
+export type FieldValue = string | number | bigint | boolean | null;
 
 /**
  * Canonical long form of an address, or undefined if the value isn't one.
@@ -71,6 +77,38 @@ export function ofType(...types: string[]): EventPredicate {
   return (event) => set.has(event.type);
 }
 
+/**
+ * Matches events whose payload has `value` at `path` inside `event.data`.
+ *
+ * `path` is either a dot-separated string (`"store"`, `"inner.owner"`,
+ * `"holders.0.owner"`) or an array of keys and indices (`["inner", "owner"]`,
+ * `["holders", 0, "owner"]`, or `["key.with.dots"]`). When `value` is a valid
+ * Aptos address, both sides are compared in canonical long form.
+ */
+export function whereField(
+  path: FieldPath,
+  value: FieldValue,
+): EventPredicate {
+  const segments = parseFieldPath(path);
+  validateFieldValue(value);
+  const normalizedTarget =
+    typeof value === "string" ? normalizeAddress(value) : undefined;
+
+  return (event: StreamdEvent): boolean => {
+    const actual = readField(event.data, segments);
+    if (actual === MISSING) return false;
+    if (typeof value === "string") {
+      if (typeof actual !== "string") return false;
+      if (actual === value) return true;
+      return (
+        normalizedTarget !== undefined &&
+        normalizeAddress(actual) === normalizedTarget
+      );
+    }
+    return actual === value;
+  };
+}
+
 /** Combines predicates; an event must satisfy all of them. */
 export function every(...predicates: EventPredicate[]): EventPredicate {
   return (event) => predicates.every((p) => p(event));
@@ -83,6 +121,84 @@ export function some(...predicates: EventPredicate[]): EventPredicate {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseFieldPath(path: FieldPath): (string | number)[] {
+  if (typeof path === "string") {
+    if (path.length === 0) {
+      throw new StreamdError("Field path must not be empty");
+    }
+    const segments = path.split(".");
+    if (segments.some((s) => s.length === 0)) {
+      throw new StreamdError(`Invalid field path: ${JSON.stringify(path)}`);
+    }
+    return segments;
+  }
+  if (Array.isArray(path)) {
+    if (path.length === 0) {
+      throw new StreamdError("Field path must not be empty");
+    }
+    for (const seg of path) {
+      if (typeof seg === "string") {
+        if (seg.length === 0) {
+          throw new StreamdError("Field path segment must not be empty");
+        }
+      } else if (typeof seg === "number") {
+        if (!Number.isSafeInteger(seg) || seg < 0) {
+          throw new StreamdError(`Invalid array index in field path: ${seg}`);
+        }
+      } else {
+        throw new StreamdError(`Invalid field path segment: ${String(seg)}`);
+      }
+    }
+    return [...path];
+  }
+  throw new StreamdError(
+    "Field path must be a dot-separated string or an array of keys",
+  );
+}
+
+function validateFieldValue(value: FieldValue): void {
+  if (value === undefined) {
+    throw new StreamdError("Field filter value must not be undefined");
+  }
+  if (typeof value === "number" && !Number.isFinite(value)) {
+    throw new StreamdError(
+      `Field filter value must be a finite number: ${value}`,
+    );
+  }
+}
+
+function readField(
+  data: unknown,
+  segments: readonly (string | number)[],
+): unknown {
+  let current: unknown = data;
+  for (const seg of segments) {
+    if (Array.isArray(current)) {
+      const index =
+        typeof seg === "number"
+          ? seg
+          : ARRAY_INDEX.test(seg)
+            ? Number(seg)
+            : -1;
+      if (
+        !Number.isSafeInteger(index) ||
+        index < 0 ||
+        index >= current.length
+      ) {
+        return MISSING;
+      }
+      current = current[index];
+    } else if (isRecord(current)) {
+      const key = String(seg);
+      if (!Object.hasOwn(current, key)) return MISSING;
+      current = current[key];
+    } else {
+      return MISSING;
+    }
+  }
+  return current;
 }
 
 function contains(value: unknown, target: string, depth: number): boolean {
