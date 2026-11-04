@@ -181,6 +181,17 @@ export interface ListenerOptions {
    */
   maxErrors?: number;
   /**
+   * Maximum exponential backoff delay in ms between failed polls (default:
+   * 60000, valid range 0..2147483647).
+   */
+  maxBackoff?: number;
+  /**
+   * Sliding-window capacity for deduplicating seen events by
+   * `(version, eventIndex)` (default: 1000). Set to `0` to disable client-side
+   * deduplication.
+   */
+  dedupWindow?: number;
+  /**
    * Deliver only events satisfying this predicate. Applied client-side after
    * fetching. See `whereField` and `involvesAddress`.
    */

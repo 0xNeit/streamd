@@ -18,7 +18,23 @@ import { CursorManager } from "./cursor.js";
 const DEFAULT_POLL_INTERVAL = 1000;
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_MAX_ERRORS = 10;
-const MAX_BACKOFF = 60_000;
+const DEFAULT_MAX_BACKOFF = 60_000;
+const MAX_DELAY = 2_147_483_647;
+
+function resolveMaxBackoff(maxBackoff: number | undefined): number {
+  if (maxBackoff === undefined) return DEFAULT_MAX_BACKOFF;
+  if (
+    typeof maxBackoff !== "number" ||
+    !Number.isFinite(maxBackoff) ||
+    maxBackoff < 0 ||
+    maxBackoff > MAX_DELAY
+  ) {
+    throw new StreamdError(
+      `Invalid maxBackoff: ${String(maxBackoff)} (expected 0..${MAX_DELAY}ms)`,
+    );
+  }
+  return maxBackoff;
+}
 
 export class EventPoller {
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -39,6 +55,7 @@ export class EventPoller {
   private readonly pollInterval: number;
   private readonly batchSize: number;
   private readonly maxErrors: number;
+  private readonly maxBackoff: number;
   private readonly fromVersion?: bigint;
   private readonly where?: EventPredicate;
   private readonly onError?: (error: Error) => void;
@@ -54,12 +71,13 @@ export class EventPoller {
     this.pollInterval = options.pollInterval ?? DEFAULT_POLL_INTERVAL;
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.maxErrors = options.maxErrors ?? DEFAULT_MAX_ERRORS;
+    this.maxBackoff = resolveMaxBackoff(options.maxBackoff);
     this.fromVersion = options.fromVersion;
     this.where = options.where;
     this.onError = options.onError;
     this.signal = options.signal;
     this.currentInterval = this.pollInterval;
-    this.position = new CursorManager(options.cursor);
+    this.position = new CursorManager(options.cursor, options.dedupWindow);
   }
 
   get active(): boolean {
@@ -187,8 +205,8 @@ export class EventPoller {
     // The handler may have stopped or restarted the poller.
     if (!this.isCurrent(gen)) return;
 
-    // Exponential backoff capped at MAX_BACKOFF
-    this.currentInterval = Math.min(this.currentInterval * 2, MAX_BACKOFF);
+    // Exponential backoff capped at maxBackoff
+    this.currentInterval = Math.min(this.currentInterval * 2, this.maxBackoff);
     this.schedulePoll(this.currentInterval);
   }
 
