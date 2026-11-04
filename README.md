@@ -237,6 +237,25 @@ An adapter has one method, `fetchEvents(descriptor, options)`, returning
 `{ events, nextCursor, hasMore }`. See the `EventAdapter` type for the full
 contract.
 
+For offline unit tests, pass `MemoryAdapter` with a list of events (`aptos` is
+optional when a custom `adapter` is supplied):
+
+```ts
+import { MemoryAdapter, StreamdClient } from "streamd";
+
+const streamd = new StreamdClient({
+  adapter: new MemoryAdapter([
+    {
+      type: "0x1::fungible_asset::Deposit",
+      data: { store: "0x1", amount: "100" },
+      version: 1n,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+    },
+  ]),
+});
+```
+
 ## Development
 
 ```sh

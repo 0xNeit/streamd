@@ -228,9 +228,10 @@ export interface StreamdConfig {
   onError?: (error: Error) => void;
   /**
    * Event source. Defaults to `FullnodeScanAdapter`, which reads from a
-   * fullnode and therefore only sees unpruned recent history. Supply your
-   * own adapter to query a self-hosted processor or third-party indexer —
-   * see the `EventAdapter` docs for the contract.
+   * fullnode and therefore only sees unpruned recent history. Supply
+   * `MemoryAdapter` to test handlers offline, or implement `EventAdapter` to
+   * query a self-hosted processor or third-party indexer (see `EventAdapter`
+   * docs for the contract).
    */
   adapter?: EventAdapter;
 }
