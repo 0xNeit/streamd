@@ -17,6 +17,7 @@ export {
   every,
   involvesAddress,
   normalizeAddress,
+  not,
   ofType,
   some,
   whereField,
