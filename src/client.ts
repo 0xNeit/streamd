@@ -30,8 +30,19 @@ function checkTimeout(ms: number | undefined): StreamdError | undefined {
   return new StreamdError(`Invalid timeout: ${String(ms)} (expected 0..${MAX_TIMEOUT}ms)`);
 }
 
+function resolveAdapter(config: StreamdConfig): EventAdapter {
+  if (config.adapter !== undefined) return config.adapter;
+  if (config.aptos === undefined) {
+    throw new StreamdError(
+      "StreamdClient requires either `aptos` or `adapter` in config",
+    );
+  }
+  const aptos =
+    config.aptos instanceof Aptos ? config.aptos : new Aptos(config.aptos);
+  return new FullnodeScanAdapter(aptos);
+}
+
 export class StreamdClient {
-  private readonly aptos: Aptos;
   private readonly defaultPollInterval: number;
   private readonly onError?: (error: Error) => void;
   private readonly adapter: EventAdapter;
@@ -41,13 +52,9 @@ export class StreamdClient {
   private readonly streams = new Set<() => void>();
 
   constructor(config: StreamdConfig) {
-    this.aptos =
-      config.aptos instanceof Aptos
-        ? config.aptos
-        : new Aptos(config.aptos);
     this.defaultPollInterval = config.defaultPollInterval ?? 1000;
     this.onError = config.onError;
-    this.adapter = config.adapter ?? new FullnodeScanAdapter(this.aptos);
+    this.adapter = resolveAdapter(config);
     this.query = new EventQuery(this.adapter);
   }
 
