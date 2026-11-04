@@ -10,7 +10,7 @@ import { FallbackAdapter } from "../src/adapters/fallback.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { RoutingAdapter } from "../src/adapters/routing.js";
 import { StreamdClient } from "../src/client.js";
-import { involvesAddress, whereField } from "../src/filter.js";
+import { every, involvesAddress, not, whereField } from "../src/filter.js";
 import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
 import {
   StreamdError,
@@ -315,6 +315,50 @@ describe("StreamdClient", () => {
     await advanceTimersByTimeAsync(0);
     sub.unsubscribe();
     expect(live).toEqual([2n]);
+
+    client.destroy();
+  });
+
+  it("filters getLogs, getLogsIterator, on(), once(), and stream() with not()", async () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+    const e1 = { ...makeEvent(10, 0), data: { from: "0x1", to: "0x1" } };
+    const e2 = { ...makeEvent(20, 0), data: { from: "0x2", to: "0x1" } };
+    const e3 = { ...makeEvent(30, 0), data: { from: "0x1", to: "0x2" } };
+    const e4 = { ...makeEvent(40, 0), data: { from: "0x3", to: "0x1" } };
+    const where = every(involvesAddress("0x1"), not(whereField("from", "0x1")));
+
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([e1, e2, e3, e4]),
+    });
+
+    // `limit` counts events after `where: not(...)` filtering across pages.
+    const logs = await client.getLogs(descriptor, { where, limit: 2 });
+    expect(logs.map((l) => l.version)).toEqual([20n, 40n]);
+
+    const iterVersions: bigint[][] = [];
+    for await (const page of client.getLogsIterator(descriptor, { where }, 2)) {
+      iterVersions.push(page.map((e) => e.version));
+    }
+    expect(iterVersions).toEqual([[20n], [40n]]);
+
+    const onceMatch = client.once(descriptor, { where });
+    const seenOn: bigint[] = [];
+    const sub = client.on(descriptor, (e) => seenOn.push(e.version), { where });
+    await advanceTimersByTimeAsync(0);
+    expect((await onceMatch).version).toBe(20n);
+    expect(seenOn).toEqual([20n, 40n]);
+    sub.unsubscribe();
+
+    const seenStream: bigint[] = [];
+    const streamLoop = (async () => {
+      for await (const e of client.stream(descriptor, { where })) {
+        seenStream.push(e.version);
+        if (seenStream.length === 2) break;
+      }
+    })();
+    await advanceTimersByTimeAsync(0);
+    await streamLoop;
+    expect(seenStream).toEqual([20n, 40n]);
 
     client.destroy();
   });

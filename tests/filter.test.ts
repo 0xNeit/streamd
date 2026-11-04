@@ -4,6 +4,7 @@ import {
   every,
   involvesAddress,
   normalizeAddress,
+  not,
   ofType,
   some,
   whereField,
@@ -223,5 +224,63 @@ describe("predicate combinators", () => {
     expect(predicate(ev({ owner: "0x2" }, "0x1::a::A"))).toBe(true);
     expect(predicate(ev({ owner: "0x1" }, "0x1::z::Z"))).toBe(true);
     expect(predicate(ev({ owner: "0x2" }, "0x1::z::Z"))).toBe(false);
+  });
+
+  it("not negates a predicate and composes with every, some, ofType, involvesAddress, whereField, and nested not", () => {
+    const notA = not(ofType("0x1::a::A"));
+    expect(notA(ev({}, "0x1::a::A"))).toBe(false);
+    expect(notA(ev({}, "0x1::b::B"))).toBe(true);
+
+    // Double negation restores the original result.
+    const doubleNot = not(notA);
+    expect(doubleNot(ev({}, "0x1::a::A"))).toBe(true);
+    expect(doubleNot(ev({}, "0x1::b::B"))).toBe(false);
+
+    // Exclude self-transfers: involves 0x1, but `from` is not 0x1 (with address normalisation).
+    const incomingToOne = every(
+      involvesAddress("0x1"),
+      not(whereField("from", "0x1")),
+    );
+    expect(incomingToOne(ev({ from: "0x2", to: LONG_ONE }))).toBe(true);
+    expect(incomingToOne(ev({ from: LONG_ONE, to: "0x1" }))).toBe(false);
+    expect(incomingToOne(ev({ from: "0x2", to: "0x3" }))).toBe(false);
+
+    // Negate a `some(...)` union (neither type A nor involving 0x1).
+    const neither = not(some(ofType("0x1::a::A"), involvesAddress("0x1")));
+    expect(neither(ev({ owner: "0x2" }, "0x1::b::B"))).toBe(true);
+    expect(neither(ev({ owner: "0x2" }, "0x1::a::A"))).toBe(false);
+    expect(neither(ev({ owner: LONG_ONE }, "0x1::b::B"))).toBe(false);
+  });
+
+  it("not passes the exact event to the inner predicate and propagates throws", () => {
+    const seen: StreamdEvent[] = [];
+    const target = ev({ ok: true }, "0x1::a::A");
+    const recording = not((e) => {
+      seen.push(e);
+      return Boolean((e.data as { ok?: boolean }).ok);
+    });
+    expect(recording(target)).toBe(false);
+    expect(seen).toEqual([target]);
+
+    const boom = new Error("inner predicate failed");
+    const throwing = not(() => {
+      throw boom;
+    });
+    expect(() => throwing(target)).toThrow(boom);
+  });
+
+  it("not throws StreamdError up front when given a non-function", () => {
+    for (const bad of [
+      undefined,
+      null,
+      true,
+      42,
+      "not-a-fn",
+      {},
+      [],
+    ] as unknown[]) {
+      expect(() => not(bad as never)).toThrow(StreamdError);
+      expect(() => not(bad as never)).toThrow(/Predicate must be a function/);
+    }
   });
 });
