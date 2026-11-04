@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
-import { advanceTimersByTimeAsync } from "./timers.js";
+import { advanceTimersByTimeAsync, captureMicrotaskThrows } from "./timers.js";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { StreamdClient } from "../src/client.js";
 import { StreamdError, StreamdPollingError } from "../src/errors.js";
@@ -18,9 +18,9 @@ function adapterOf(pages: EventPage[]): EventAdapter {
   };
 }
 
-function client(adapter?: EventAdapter) {
+function client(adapter?: EventAdapter, onError?: (error: Error) => void) {
   const aptos = new Aptos(new AptosConfig({ network: Network.DEVNET, clientConfig: { http2: false } }));
-  return new StreamdClient({ aptos, adapter, defaultPollInterval: 100 });
+  return new StreamdClient({ aptos, adapter, defaultPollInterval: 100, onError });
 }
 
 function subscriptionCount(c: StreamdClient): number {
@@ -280,5 +280,56 @@ describe("StreamdClient.stream", () => {
     c2.abort(new Error("aborted before break"));
     await it2.return!();
     expect(await it2.next()).toEqual({ value: undefined, done: true });
+  });
+
+  it("falls back to config.onError when stream() omits options.onError, and prefers options.onError when set", async () => {
+    let calls = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async () => {
+        if (calls++ === 0) throw new Error("blip");
+        return { events: [ev(7)], nextCursor: "8", hasMore: false };
+      }),
+    };
+    const clientOnError = vi.fn();
+    const streamOnError = vi.fn();
+    const c = client(adapter, clientOnError);
+
+    const it1 = c.stream(descriptor);
+    const first = it1.next();
+    await advanceTimersByTimeAsync(300);
+    expect((await first).value?.version).toBe(7n);
+    expect(clientOnError).toHaveBeenCalledTimes(1);
+    expect(clientOnError.mock.calls[0]![0]).toBeInstanceOf(StreamdPollingError);
+    await it1.return!();
+
+    calls = 0;
+    const it2 = c.stream(descriptor, { onError: streamOnError });
+    const second = it2.next();
+    await advanceTimersByTimeAsync(300);
+    expect((await second).value?.version).toBe(7n);
+    expect(streamOnError).toHaveBeenCalledTimes(1);
+    expect(clientOnError).toHaveBeenCalledTimes(1);
+    await it2.return!();
+  });
+
+  it("still rejects the stream when a throwing config.onError runs on a fatal error", async () => {
+    const c = client(undefined, () => {
+      throw new Error("client stream handler bug");
+    });
+    const surfaced = captureMicrotaskThrows();
+    try {
+      const it = c.stream({ kind: "account", accountAddress: "nope" });
+      const first = it.next().catch((e: unknown) => e);
+      await advanceTimersByTimeAsync(0);
+
+      expect(await first).toBeInstanceOf(StreamdPollingError);
+      expect(await it.next()).toEqual({ value: undefined, done: true });
+      expect(surfaced.thrown.map((e) => (e as Error).message)).toEqual([
+        "client stream handler bug",
+      ]);
+    } finally {
+      surfaced.restore();
+      c.destroy();
+    }
   });
 });

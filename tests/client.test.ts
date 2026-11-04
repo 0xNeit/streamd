@@ -9,7 +9,11 @@ import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { StreamdClient } from "../src/client.js";
 import { involvesAddress, whereField } from "../src/filter.js";
 import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
-import { StreamdError, StreamdTimeoutError } from "../src/errors.js";
+import {
+  StreamdError,
+  StreamdPollingError,
+  StreamdTimeoutError,
+} from "../src/errors.js";
 
 function makeAptos() {
   // Constructing the SDK performs no network I/O; the injected adapter below
@@ -772,5 +776,168 @@ describe("StreamdClient", () => {
     expect(mocked(adapter.fetchEvents).mock.calls[0]![0]).toEqual(descriptor);
 
     client.destroy();
+  });
+
+  describe("client-wide onError", () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    it("routes on() polling and callback errors to config.onError when options.onError is omitted", async () => {
+      let calls = 0;
+      const adapter: EventAdapter = {
+        fetchEvents: vi.fn(async () => {
+          if (calls++ === 0) throw new Error("blip");
+          return { events: [makeEvent(1), makeEvent(2)], nextCursor: "3", hasMore: false };
+        }),
+      };
+      const clientErrors: Error[] = [];
+      const client = new StreamdClient({
+        aptos: makeAptos(),
+        adapter,
+        onError: (err) => clientErrors.push(err),
+      });
+      const seen: bigint[] = [];
+      const sub = client.on(
+        descriptor,
+        (e) => {
+          seen.push(e.version);
+          if (e.version === 1n) throw new Error("callback bug");
+        },
+        { pollInterval: 100 },
+      );
+
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(200);
+      sub.unsubscribe();
+
+      expect(seen).toEqual([1n, 2n]);
+      expect(clientErrors).toHaveLength(2);
+      expect(clientErrors[0]).toBeInstanceOf(StreamdPollingError);
+      expect(clientErrors[1]).toBeInstanceOf(StreamdError);
+      expect(clientErrors[1]).not.toBeInstanceOf(StreamdPollingError);
+      client.destroy();
+    });
+
+    it("prefers per-subscription options.onError over config.onError in on() and once()", async () => {
+      const clientOnError = vi.fn();
+      const subOnError = vi.fn();
+      const onceOnError = vi.fn();
+      const client = new StreamdClient({
+        aptos: makeAptos(),
+        adapter: failing(),
+        onError: clientOnError,
+      });
+
+      const sub = client.on(descriptor, () => {}, {
+        pollInterval: 100,
+        maxErrors: 2,
+        onError: subOnError,
+      });
+      const oncePromise = client.once(descriptor, {
+        pollInterval: 100,
+        maxErrors: 2,
+        onError: onceOnError,
+      });
+      oncePromise.catch(() => {});
+
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(200);
+      await expect(oncePromise).rejects.toThrow(/Polling failed/);
+
+      expect(sub.active).toBe(false);
+      expect(subOnError).toHaveBeenCalledTimes(2);
+      expect(onceOnError).toHaveBeenCalledTimes(2);
+      expect(clientOnError).not.toHaveBeenCalled();
+      client.destroy();
+    });
+
+    it("routes once() transient and fatal errors to config.onError once per error", async () => {
+      let calls = 0;
+      const adapter: EventAdapter = {
+        fetchEvents: vi.fn(async () => {
+          calls++;
+          if (calls === 1) throw new Error("transient");
+          if (calls === 2) return { events: [makeEvent(9)], nextCursor: "10", hasMore: false };
+          throw new Error("down");
+        }),
+      };
+      const clientOnError = vi.fn();
+      const client = new StreamdClient({
+        aptos: makeAptos(),
+        adapter,
+        onError: clientOnError,
+      });
+
+      const first = client.once(descriptor, { pollInterval: 100, maxErrors: 3 });
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(200);
+      expect((await first).version).toBe(9n);
+      expect(clientOnError).toHaveBeenCalledTimes(1);
+
+      const second = client.once(descriptor, { pollInterval: 100, maxErrors: 2 });
+      second.catch(() => {});
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(200);
+      await expect(second).rejects.toThrow(/Polling failed/);
+      expect(clientOnError).toHaveBeenCalledTimes(3);
+      client.destroy();
+    });
+
+    it("does not call config.onError on abort or once() timeout", async () => {
+      const clientOnError = vi.fn();
+      const client = new StreamdClient({
+        aptos: makeAptos(),
+        adapter: adapterOf([]),
+        onError: clientOnError,
+      });
+      const c1 = new AbortController();
+      const c2 = new AbortController();
+      client.on(descriptor, () => {}, { pollInterval: 100, signal: c1.signal });
+      const abortedOnce = client.once(descriptor, { pollInterval: 100, signal: c2.signal });
+      const timedOnce = client.once(descriptor, { pollInterval: 100, timeout: 150 });
+      abortedOnce.catch(() => {});
+      timedOnce.catch(() => {});
+
+      await advanceTimersByTimeAsync(0);
+      c1.abort(new Error("stop on"));
+      c2.abort(new Error("stop once"));
+      await advanceTimersByTimeAsync(200);
+
+      await expect(abortedOnce).rejects.toThrow("stop once");
+      await expect(timedOnce).rejects.toBeInstanceOf(StreamdTimeoutError);
+      expect(clientOnError).not.toHaveBeenCalled();
+      client.destroy();
+    });
+
+    it("rethrows a throwing config.onError on a microtask without stalling on() or once()", async () => {
+      const client = new StreamdClient({
+        aptos: makeAptos(),
+        adapter: failing(),
+        onError: () => {
+          throw new Error("client handler bug");
+        },
+      });
+      const surfaced = captureMicrotaskThrows();
+      try {
+        const sub = client.on(descriptor, () => {}, { pollInterval: 100, maxErrors: 2 });
+        const oncePromise = client.once(descriptor, { pollInterval: 100, maxErrors: 2 });
+        oncePromise.catch(() => {});
+
+        await advanceTimersByTimeAsync(0);
+        await advanceTimersByTimeAsync(200);
+        await expect(oncePromise).rejects.toThrow(/Polling failed/);
+
+        expect(sub.active).toBe(false);
+        expect(subscriptionCount(client)).toBe(0);
+        expect(surfaced.thrown.map((e) => (e as Error).message)).toEqual([
+          "client handler bug",
+          "client handler bug",
+          "client handler bug",
+          "client handler bug",
+        ]);
+      } finally {
+        surfaced.restore();
+        client.destroy();
+      }
+    });
   });
 });

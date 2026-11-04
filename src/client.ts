@@ -33,6 +33,7 @@ function checkTimeout(ms: number | undefined): StreamdError | undefined {
 export class StreamdClient {
   private readonly aptos: Aptos;
   private readonly defaultPollInterval: number;
+  private readonly onError?: (error: Error) => void;
   private readonly adapter: EventAdapter;
   private readonly query: EventQuery;
   private readonly subscriptions = new Map<string, EventPoller>();
@@ -45,6 +46,7 @@ export class StreamdClient {
         ? config.aptos
         : new Aptos(config.aptos);
     this.defaultPollInterval = config.defaultPollInterval ?? 1000;
+    this.onError = config.onError;
     this.adapter = config.adapter ?? new FullnodeScanAdapter(this.aptos);
     this.query = new EventQuery(this.adapter);
   }
@@ -80,7 +82,7 @@ export class StreamdClient {
           // The poller stops itself before reporting its last failure, so an
           // inactive poller here has given up and must not stay in the map.
           if (!poller.active) forget();
-          options?.onError?.(err);
+          (options?.onError ?? this.onError)?.(err);
         },
       },
     );
@@ -143,7 +145,7 @@ export class StreamdClient {
             // Settle before the caller's handler runs, so a throw from it
             // cannot leave the promise pending.
             if (!sub.active || !(err instanceof StreamdPollingError)) fail(err);
-            options?.onError?.(err);
+            (options?.onError ?? this.onError)?.(err);
           },
         },
       );
@@ -179,7 +181,7 @@ export class StreamdClient {
           signal: undefined,
           onError: (err) => {
             onError(err);
-            options?.onError?.(err);
+            (options?.onError ?? this.onError)?.(err);
           },
         });
       },
