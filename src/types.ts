@@ -97,6 +97,11 @@ export interface EventFilter {
    * when omitted. Use it to put a ceiling on a filtered walk.
    */
   maxPages?: number;
+  /**
+   * Aborting rejects `getLogs()` or the pending/next `getLogsIterator()` page
+   * with the signal's `reason` and stops fetching further pages.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -105,7 +110,8 @@ export interface EventFilter {
  * `where` is deliberately absent: predicates are functions, so they cannot be
  * pushed down to a remote data source. Query and poller apply them to results.
  */
-export interface FetchOptions extends Omit<EventFilter, "where" | "maxPages"> {
+export interface FetchOptions
+  extends Omit<EventFilter, "where" | "maxPages" | "signal"> {
   orderBy?: "asc" | "desc";
   /**
    * Opaque resume token returned by this adapter's previous page. When
