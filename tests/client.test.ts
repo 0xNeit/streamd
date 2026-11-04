@@ -1270,17 +1270,29 @@ describe("StreamdClient", () => {
         { dedupWindow: 1.5 },
         { dedupWindow: Number.NaN },
       ]) {
-        expect(() => client.on(descriptor, () => {}, badOpts)).toThrow(
+        const controller = new AbortController();
+        const remove = vi.spyOn(controller.signal, "removeEventListener");
+        const opts = { ...badOpts, signal: controller.signal };
+
+        expect(() => client.on(descriptor, () => {}, opts)).toThrow(
           StreamdError,
         );
-        await expect(client.once(descriptor, badOpts)).rejects.toThrow(
+        await expect(client.once(descriptor, opts)).rejects.toThrow(
           StreamdError,
         );
-        const iter = client.stream(descriptor, badOpts);
+        const iter = client.stream(descriptor, opts);
         await expect(iter.next()).rejects.toThrow(StreamdError);
+        await expect(iter.next()).resolves.toEqual({
+          value: undefined,
+          done: true,
+        });
+        expect(remove).toHaveBeenCalledTimes(1);
       }
 
       expect(subscriptionCount(client)).toBe(0);
+      expect(
+        (client as unknown as { streams: Set<unknown> }).streams.size,
+      ).toBe(0);
       expect(adapter.fetchEvents).not.toHaveBeenCalled();
       client.destroy();
     });
