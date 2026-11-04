@@ -69,8 +69,9 @@ export interface StreamdEvent<TData = unknown> {
 /**
  * Client-side test applied to each event after it is fetched.
  *
- * Used for anything the chain APIs can't filter on — most importantly the
- * account inside a module event's `data`. See `involvesAddress`.
+ * Used for anything the chain APIs can't filter on, most importantly fields
+ * or addresses inside a module event's `data`. See `whereField` and
+ * `involvesAddress`.
  */
 export type EventPredicate = (event: StreamdEvent) => boolean;
 
@@ -159,7 +160,7 @@ export interface ListenerOptions {
   maxErrors?: number;
   /**
    * Deliver only events satisfying this predicate. Applied client-side after
-   * fetching. See `involvesAddress`.
+   * fetching. See `whereField` and `involvesAddress`.
    */
   where?: EventPredicate;
   /**

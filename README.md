@@ -177,15 +177,19 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, ofType, every, some } from "streamd";
+import { involvesAddress, whereField, ofType, every, some } from "streamd";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
   (event) => console.log(event),
-  { where: involvesAddress(myWallet) },
+  { where: whereField("store", myStore) },
 );
 ```
 
+- `whereField(path, value)` matches events whose `data` has `value` at `path`
+  (a dot-separated string such as `"store.owner"` or `"holders.0.owner"`, or an
+  array of keys and indices such as `["store", "owner"]` or `["key.with.dots"]`).
+  When `value` is an address, `0x1` and `0x000...01` count as the same address.
 - `involvesAddress(address, { fields?, maxDepth? })` matches events whose
   payload mentions the address anywhere. `0x1` and `0x000…01` count as the
   same address.
