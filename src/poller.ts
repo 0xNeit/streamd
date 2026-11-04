@@ -6,6 +6,7 @@ import type {
   EventPredicate,
   ListenerOptions,
   StreamdEvent,
+  SubscriptionStatus,
 } from "./types.js";
 import {
   StreamdError,
@@ -22,6 +23,8 @@ const MAX_BACKOFF = 60_000;
 export class EventPoller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private consecutiveErrors = 0;
+  private lastVersion: bigint | undefined = undefined;
+  private lastSuccessAt: number | undefined = undefined;
   private currentInterval: number;
   private _active = false;
   /** Bumped by start(), so a poll left over from an earlier run can tell. */
@@ -66,6 +69,17 @@ export class EventPoller {
   /** The adapter's resume token after the last finished page; see `ListenerOptions.cursor`. */
   get cursor(): string | undefined {
     return this.position.token;
+  }
+
+  /** Snapshot of the poller's current state; see `SubscriptionStatus`. */
+  get status(): SubscriptionStatus {
+    return {
+      active: this._active,
+      cursor: this.position.token,
+      lastVersion: this.lastVersion,
+      consecutiveErrors: this.consecutiveErrors,
+      lastSuccessAt: this.lastSuccessAt,
+    };
   }
 
   start(): void {
@@ -136,41 +150,46 @@ export class EventPoller {
       if (!this.isCurrent(gen)) return;
       this.consecutiveErrors = 0;
       this.currentInterval = this.pollInterval;
+      this.lastSuccessAt = Date.now();
 
       // Catch-up mode: the adapter says more is waiting, so don't idle.
       this.schedulePoll(page.hasMore ? 0 : this.pollInterval);
     } catch (err) {
-      if (!this.isCurrent(gen)) return;
-      this.consecutiveErrors++;
-
-      // A StreamdError that is not a network failure is the caller's input,
-      // which fails the same way on every retry.
-      const invalidInput =
-        err instanceof StreamdError && !(err instanceof StreamdNetworkError);
-      const pollingError = new StreamdPollingError(
-        invalidInput
-          ? `Polling stopped on invalid input: ${err.message}`
-          : `Polling failed (${this.consecutiveErrors}/${this.maxErrors})`,
-        this.consecutiveErrors,
-        err,
-      );
-
-      if (invalidInput || this.consecutiveErrors >= this.maxErrors) {
-        // Stop before notifying, so a handler inspecting `active` sees the
-        // subscription already dead rather than briefly alive.
-        this.stop();
-        this.report(pollingError);
-        return;
-      }
-
-      this.report(pollingError);
-      // The handler may have stopped or restarted the poller.
-      if (!this.isCurrent(gen)) return;
-
-      // Exponential backoff capped at MAX_BACKOFF
-      this.currentInterval = Math.min(this.currentInterval * 2, MAX_BACKOFF);
-      this.schedulePoll(this.currentInterval);
+      this.handlePollError(err, gen);
     }
+  }
+
+  private handlePollError(err: unknown, gen: number): void {
+    if (!this.isCurrent(gen)) return;
+    this.consecutiveErrors++;
+
+    // A StreamdError that is not a network failure is the caller's input,
+    // which fails the same way on every retry.
+    const invalidInput =
+      err instanceof StreamdError && !(err instanceof StreamdNetworkError);
+    const pollingError = new StreamdPollingError(
+      invalidInput
+        ? `Polling stopped on invalid input: ${err.message}`
+        : `Polling failed (${this.consecutiveErrors}/${this.maxErrors})`,
+      this.consecutiveErrors,
+      err,
+    );
+
+    if (invalidInput || this.consecutiveErrors >= this.maxErrors) {
+      // Stop before notifying, so a handler inspecting `active` sees the
+      // subscription already dead rather than briefly alive.
+      this.stop();
+      this.report(pollingError);
+      return;
+    }
+
+    this.report(pollingError);
+    // The handler may have stopped or restarted the poller.
+    if (!this.isCurrent(gen)) return;
+
+    // Exponential backoff capped at MAX_BACKOFF
+    this.currentInterval = Math.min(this.currentInterval * 2, MAX_BACKOFF);
+    this.schedulePoll(this.currentInterval);
   }
 
   private async processPage(page: EventPage, gen: number): Promise<void> {
@@ -181,6 +200,9 @@ export class EventPoller {
       // Mark before filtering: a rejected event has still been processed, and
       // marking it keeps overlapping pages from re-testing it.
       this.position.mark(event);
+      if (this.lastVersion === undefined || event.version > this.lastVersion) {
+        this.lastVersion = event.version;
+      }
       // A predicate or handler bug is the caller's, not the source's: report
       // it without counting toward maxErrors or abandoning the rest of the page.
       try {

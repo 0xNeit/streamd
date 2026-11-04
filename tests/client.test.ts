@@ -1088,4 +1088,105 @@ describe("StreamdClient", () => {
       client.destroy();
     });
   });
+
+  describe("sub.status", () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    it("exposes status across polling, transient and fatal errors, unsubscribe, destroy, and abort", async () => {
+      let now = 100_000;
+      const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+      try {
+        let call = 0;
+        const adapter: EventAdapter = {
+          fetchEvents: vi.fn(async () => {
+            call++;
+            if (call === 1) {
+              return {
+                events: [makeEvent(15), makeEvent(22)],
+                nextCursor: "23",
+                hasMore: false,
+              };
+            }
+            throw new StreamdNetworkError("node 503", 503);
+          }),
+        };
+        const seenErrors: number[] = [];
+        const client = new StreamdClient({ adapter });
+        const sub = client.on(descriptor, () => {}, {
+          pollInterval: 100,
+          maxErrors: 2,
+          cursor: "10",
+          onError: () => seenErrors.push(sub.status.consecutiveErrors),
+        });
+
+        expect(sub.status).toEqual({
+          active: true,
+          cursor: "10",
+          lastVersion: undefined,
+          consecutiveErrors: 0,
+          lastSuccessAt: undefined,
+        });
+
+        // Poll 1 at 100_000 succeeds.
+        await advanceTimersByTimeAsync(0);
+        expect(sub.status).toEqual({
+          active: true,
+          cursor: "23",
+          lastVersion: 22n,
+          consecutiveErrors: 0,
+          lastSuccessAt: 100_000,
+        });
+
+        // Poll 2 at 100_100 fails (1/2); poll 3 at 100_300 fails (2/2) and stops.
+        now = 100_100;
+        await advanceTimersByTimeAsync(100);
+        expect(sub.status.consecutiveErrors).toBe(1);
+        expect(sub.status.active).toBe(true);
+
+        now = 100_300;
+        await advanceTimersByTimeAsync(200);
+        expect(seenErrors).toEqual([1, 2]);
+        expect(sub.status).toEqual({
+          active: false,
+          cursor: "23",
+          lastVersion: 22n,
+          consecutiveErrors: 2,
+          lastSuccessAt: 100_000,
+        });
+
+        // Status stays readable after unsubscribe(), destroy(), and signal abort.
+        const unsubbed = client.on(descriptor, () => {}, { cursor: "66" });
+        unsubbed.unsubscribe();
+        expect(unsubbed.status).toEqual({
+          active: false,
+          cursor: "66",
+          lastVersion: undefined,
+          consecutiveErrors: 0,
+          lastSuccessAt: undefined,
+        });
+
+        const c = new AbortController();
+        const sub2 = client.on(
+          descriptor,
+          () => {},
+          { signal: c.signal, cursor: "77" },
+        );
+        c.abort();
+        expect(sub2.status).toEqual({
+          active: false,
+          cursor: "77",
+          lastVersion: undefined,
+          consecutiveErrors: 0,
+          lastSuccessAt: undefined,
+        });
+
+        const sub3 = client.on(descriptor, () => {}, { cursor: "88" });
+        client.destroy();
+        expect(sub3.status.active).toBe(false);
+        expect(sub3.status.cursor).toBe("88");
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+  });
 });
