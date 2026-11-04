@@ -162,6 +162,12 @@ export interface ListenerOptions {
    * surfaces as an uncaught error.
    */
   onError?: (error: Error) => void;
+  /**
+   * Aborting stops the subscription as `unsubscribe()` does, without calling
+   * `onError`. Already aborted, it never polls. `once()` and `stream()` also
+   * reject with the signal's `reason`.
+   */
+  signal?: AbortSignal;
 }
 
 // ---- Client config ----

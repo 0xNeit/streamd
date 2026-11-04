@@ -87,6 +87,53 @@ describe("StreamdClient", () => {
     expect(sub2.active).toBe(false);
   });
 
+  it("on() forgets a subscription whose signal aborts", async () => {
+    const adapter = adapterOf([]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const controller = new AbortController();
+    const onError = vi.fn();
+    const sub = client.on({ kind: "module", eventType: "0x1::test::Event" }, () => {}, {
+      pollInterval: 100,
+      onError,
+      signal: controller.signal,
+    });
+    await advanceTimersByTimeAsync(0);
+    expect(subscriptionCount(client)).toBe(1);
+
+    controller.abort();
+    expect(sub.active).toBe(false);
+    expect(subscriptionCount(client)).toBe(0);
+    await advanceTimersByTimeAsync(500);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("on() with an already-aborted signal never polls", async () => {
+    const adapter = adapterOf([]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const sub = client.on({ kind: "module", eventType: "0x1::test::Event" }, () => {}, {
+      signal: AbortSignal.abort(),
+    });
+    await advanceTimersByTimeAsync(100);
+
+    expect(sub.active).toBe(false);
+    expect(subscriptionCount(client)).toBe(0);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("on() detaches from the signal on unsubscribe", () => {
+    const client = new StreamdClient({ aptos: makeAptos(), adapter: adapterOf([]) });
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const sub = client.on({ kind: "module", eventType: "0x1::test::Event" }, () => {}, {
+      signal: controller.signal,
+    });
+    sub.unsubscribe();
+
+    // One listener is the poller's, the other the client's.
+    expect(remove).toHaveBeenCalledTimes(2);
+  });
+
   it("uses the injected adapter instead of the fullnode default", async () => {
     const mockEvents = [makeEvent(100)];
     const adapter = adapterOf([

@@ -13,7 +13,7 @@ import { FullnodeScanAdapter } from "./adapters/fullnode.js";
 import { EventPoller } from "./poller.js";
 import { EventQuery } from "./query.js";
 import { StreamdPollingError } from "./errors.js";
-import { generateId } from "./utils.js";
+import { generateId, onAbort } from "./utils.js";
 import { eventStream } from "./stream.js";
 
 export class StreamdClient {
@@ -49,6 +49,11 @@ export class StreamdClient {
     options?: ListenerOptions,
   ): Subscription {
     const id = generateId();
+    let detach = () => {};
+    const forget = () => {
+      this.subscriptions.delete(id);
+      detach();
+    };
     const poller = new EventPoller(
       this.adapter,
       descriptor,
@@ -59,14 +64,19 @@ export class StreamdClient {
         onError: (err) => {
           // The poller stops itself before reporting its last failure, so an
           // inactive poller here has given up and must not stay in the map.
-          if (!poller.active) this.subscriptions.delete(id);
+          if (!poller.active) forget();
           options?.onError?.(err);
         },
       },
     );
 
-    this.subscriptions.set(id, poller);
     poller.start();
+    // An already-aborted signal leaves the poller stopped: nothing to track.
+    if (poller.active) {
+      this.subscriptions.set(id, poller);
+      // The poller stops itself on abort; the client only has to forget it.
+      detach = onAbort(options?.signal, forget);
+    }
 
     return {
       id,
@@ -78,7 +88,7 @@ export class StreamdClient {
       },
       unsubscribe: () => {
         poller.stop();
-        this.subscriptions.delete(id);
+        forget();
       },
     };
   }
