@@ -43,9 +43,11 @@ const sub = streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
   (event) => console.log(event),
   {
-    pollInterval: 3000, // ms between polls (default 1000)
-    batchSize: 25,      // events fetched per poll (default 25)
-    maxErrors: 10,      // consecutive failures before stopping (default 10)
+    pollInterval: 3000,  // ms between polls (default 1000)
+    batchSize: 25,       // events fetched per poll (default 25)
+    maxErrors: 10,       // consecutive failures before stopping (default 10)
+    maxBackoff: 60_000,  // max backoff delay in ms on failures (default 60000)
+    dedupWindow: 1000,   // seen-event dedup window size, 0 to disable (default 1000)
     onError: (err) => console.error(err),
   },
 );
@@ -71,12 +73,15 @@ delivered. A handler that never settles stops delivery with nothing reported, so
 long-running work its own timeout; `unsubscribe()` still works.
 
 Listening polls under the hood. When the source reports more data is waiting,
-the poller fetches again immediately instead of waiting for the next interval.
-On errors it backs off exponentially, and stops after `maxErrors` failures in
-a row. Invalid input, such as a malformed address or cursor, stops it at once,
-since retrying cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })`
-to set a client-wide fallback for any `on()`, `once()`, or `stream()` call that
-omits its own `onError`.
+the poller fetches again immediately instead of waiting for the next interval,
+deduplicating seen `(version, eventIndex)` pairs across a sliding window of
+`dedupWindow` events (default `1000`, or `0` to disable client-side
+deduplication). On errors it backs off exponentially up to `maxBackoff` ms
+(default `60000`), and stops after `maxErrors` failures in a row. Invalid
+input, such as a malformed address or cursor, stops it at once, since retrying
+cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
+a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
+its own `onError`.
 
 ### Iterate live events
 

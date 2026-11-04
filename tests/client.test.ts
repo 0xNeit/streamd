@@ -1189,4 +1189,112 @@ describe("StreamdClient", () => {
       }
     });
   });
+
+  describe("maxBackoff and dedupWindow options", () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    it("forwards maxBackoff and dedupWindow through on(), once(), and stream()", async () => {
+      const e1 = makeEvent(1);
+      const dupAdapter = adapterOf([
+        { events: [e1], nextCursor: "2", hasMore: false },
+        { events: [e1], nextCursor: "3", hasMore: false },
+      ]);
+      const client = new StreamdClient({ adapter: dupAdapter });
+      const seenOn: bigint[] = [];
+      const sub = client.on(descriptor, (e) => seenOn.push(e.version), {
+        pollInterval: 100,
+        dedupWindow: 0,
+      });
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(100);
+      sub.unsubscribe();
+      expect(seenOn).toEqual([1n, 1n]);
+
+      // once() with maxBackoff: 50 caps retry waits at 50ms despite pollInterval: 200.
+      const at: number[] = [];
+      const flakyOnceAdapter: EventAdapter = {
+        fetchEvents: vi.fn(async () => {
+          at.push(Date.now());
+          if (at.length < 3) throw new StreamdNetworkError("node 503", 503);
+          return { events: [makeEvent(7)], nextCursor: "8", hasMore: false };
+        }),
+      };
+      const flakyClient = new StreamdClient({ adapter: flakyOnceAdapter });
+      const oncePromise = flakyClient.once(descriptor, {
+        pollInterval: 200,
+        maxBackoff: 50,
+        maxErrors: 5,
+      });
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(50);
+      await advanceTimersByTimeAsync(50);
+      expect((await oncePromise).version).toBe(7n);
+      expect(at.slice(1).map((t, i) => t - at[i]!)).toEqual([50, 50]);
+
+      // stream() with dedupWindow: 0 delivers repeated events across pages.
+      const streamDupAdapter = adapterOf([
+        { events: [e1], nextCursor: "2", hasMore: false },
+        { events: [e1], nextCursor: "3", hasMore: false },
+      ]);
+      const streamClient = new StreamdClient({ adapter: streamDupAdapter });
+      const seenStream: bigint[] = [];
+      const streamLoop = (async () => {
+        for await (const e of streamClient.stream(descriptor, {
+          pollInterval: 100,
+          dedupWindow: 0,
+        })) {
+          seenStream.push(e.version);
+          if (seenStream.length === 2) break;
+        }
+      })();
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(100);
+      await streamLoop;
+      expect(seenStream).toEqual([1n, 1n]);
+
+      client.destroy();
+      flakyClient.destroy();
+      streamClient.destroy();
+    });
+
+    it("rejects or throws StreamdError on invalid maxBackoff or dedupWindow across on(), once(), and stream()", async () => {
+      const adapter = adapterOf([]);
+      const client = new StreamdClient({ adapter });
+
+      for (const badOpts of [
+        { maxBackoff: -1 },
+        { maxBackoff: Number.NaN },
+        { maxBackoff: Number.POSITIVE_INFINITY },
+        { maxBackoff: 2_147_483_648 },
+        { dedupWindow: -1 },
+        { dedupWindow: 1.5 },
+        { dedupWindow: Number.NaN },
+      ]) {
+        const controller = new AbortController();
+        const remove = vi.spyOn(controller.signal, "removeEventListener");
+        const opts = { ...badOpts, signal: controller.signal };
+
+        expect(() => client.on(descriptor, () => {}, opts)).toThrow(
+          StreamdError,
+        );
+        await expect(client.once(descriptor, opts)).rejects.toThrow(
+          StreamdError,
+        );
+        const iter = client.stream(descriptor, opts);
+        await expect(iter.next()).rejects.toThrow(StreamdError);
+        await expect(iter.next()).resolves.toEqual({
+          value: undefined,
+          done: true,
+        });
+        expect(remove).toHaveBeenCalledTimes(1);
+      }
+
+      expect(subscriptionCount(client)).toBe(0);
+      expect(
+        (client as unknown as { streams: Set<unknown> }).streams.size,
+      ).toBe(0);
+      expect(adapter.fetchEvents).not.toHaveBeenCalled();
+      client.destroy();
+    });
+  });
 });

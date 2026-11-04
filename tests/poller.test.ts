@@ -96,6 +96,58 @@ describe("EventPoller", () => {
     poller.stop();
   });
 
+  it("evicts older events once dedupWindow is exceeded and disables dedup when dedupWindow is 0", async () => {
+    const e1 = makeEvent(1);
+    const e2 = makeEvent(2);
+    const e3 = makeEvent(3);
+    const windowedAdapter = createMockAdapter([
+      page([e1, e2, e3], 4),
+      page([e2, e3, e1], 5),
+    ]);
+    const seenWindowed: bigint[] = [];
+    const windowedPoller = new EventPoller(
+      windowedAdapter,
+      descriptor,
+      (e) => seenWindowed.push(e.version),
+      { pollInterval: 100, dedupWindow: 2 },
+    );
+    windowedPoller.start();
+
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(100);
+    windowedPoller.stop();
+
+    // e1 was evicted when e3 was marked (window=2 held {e2, e3}), so on the
+    // second page e2 and e3 are skipped and e1 is delivered again.
+    expect(seenWindowed).toEqual([1n, 2n, 3n, 1n]);
+
+    const disabledAdapter = createMockAdapter([page([e1], 2), page([e1], 3)]);
+    const seenDisabled: bigint[] = [];
+    const disabledPoller = new EventPoller(
+      disabledAdapter,
+      descriptor,
+      (e) => seenDisabled.push(e.version),
+      { pollInterval: 100, dedupWindow: 0 },
+    );
+    disabledPoller.start();
+
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(100);
+    disabledPoller.stop();
+
+    expect(seenDisabled).toEqual([1n, 1n]);
+    expect(disabledPoller.status.lastVersion).toBe(1n);
+  });
+
+  it("throws StreamdError when constructed with an invalid dedupWindow", () => {
+    const adapter = createMockAdapter([]);
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        () => new EventPoller(adapter, descriptor, vi.fn(), { dedupWindow: bad }),
+      ).toThrow(StreamdError);
+    }
+  });
+
   it("distinguishes events sharing a version by eventIndex", async () => {
     // Module events routinely report sequenceNumber 0, so several events in
     // one transaction are only distinguishable by their index.
@@ -299,6 +351,71 @@ describe("EventPoller", () => {
       // next failure backs off 200 again rather than doubling from 400.
       expect(gaps()).toEqual([200, 400, 100, 200]);
       poller.stop();
+    });
+
+    it("caps backoff at a custom maxBackoff smaller or larger than the 60s default", async () => {
+      const small = timedAdapter();
+      const smallPoller = new EventPoller(
+        { fetchEvents: small.fetchEvents },
+        descriptor,
+        vi.fn(),
+        { pollInterval: 100, maxBackoff: 300, maxErrors: 10 },
+      );
+      smallPoller.start();
+      await advanceTimersByTimeAsync(850);
+      smallPoller.stop();
+      expect(small.gaps()).toEqual([200, 300, 300]);
+
+      const large = timedAdapter();
+      const largePoller = new EventPoller(
+        { fetchEvents: large.fetchEvents },
+        descriptor,
+        vi.fn(),
+        { pollInterval: 40_000, maxBackoff: 100_000, maxErrors: 10 },
+      );
+      largePoller.start();
+      for (let i = 0; i < 3; i++) await advanceTimersToNextTimerAsync();
+      largePoller.stop();
+      expect(large.gaps()).toEqual([80_000, 100_000]);
+    });
+
+    it("honours maxBackoff below pollInterval (including 0) and still resets to pollInterval on success", async () => {
+      const low = timedAdapter((n) => n === 3);
+      const lowPoller = new EventPoller(
+        { fetchEvents: low.fetchEvents },
+        descriptor,
+        vi.fn(),
+        { pollInterval: 200, maxBackoff: 50, maxErrors: 10 },
+      );
+      lowPoller.start();
+      await advanceTimersByTimeAsync(360);
+      lowPoller.stop();
+      // Fail (50), fail (50), succeed (200), fail (50).
+      expect(low.gaps()).toEqual([50, 50, 200, 50]);
+
+      const zero = timedAdapter();
+      const zeroPoller = new EventPoller(
+        { fetchEvents: zero.fetchEvents },
+        descriptor,
+        vi.fn(),
+        { pollInterval: 100, maxBackoff: 0, maxErrors: 3 },
+      );
+      zeroPoller.start();
+      for (let i = 0; i < 3; i++) await advanceTimersByTimeAsync(0);
+      expect(zero.fetchEvents).toHaveBeenCalledTimes(3);
+      expect(zeroPoller.active).toBe(false);
+    });
+
+    it("throws StreamdError when constructed with an invalid maxBackoff", () => {
+      const adapter = createMockAdapter([]);
+      for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+        expect(
+          () => new EventPoller(adapter, descriptor, vi.fn(), { maxBackoff: bad }),
+        ).toThrow(StreamdError);
+        expect(
+          () => new EventPoller(adapter, descriptor, vi.fn(), { maxBackoff: bad }),
+        ).toThrow(/Invalid maxBackoff/);
+      }
     });
   });
 

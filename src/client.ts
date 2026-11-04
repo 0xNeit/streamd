@@ -183,8 +183,7 @@ export class StreamdClient {
     const close = () => void stream.return?.();
     const stream = eventStream<TData>(
       (callback, onError) => {
-        this.streams.add(close);
-        return this.on<TData>(descriptor, callback, {
+        const sub = this.on<TData>(descriptor, callback, {
           ...options,
           signal: undefined,
           onError: (err) => {
@@ -192,6 +191,8 @@ export class StreamdClient {
             (options?.onError ?? this.onError)?.(err);
           },
         });
+        this.streams.add(close);
+        return sub;
       },
       () => this.streams.delete(close),
       options?.signal,

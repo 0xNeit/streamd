@@ -94,7 +94,11 @@ export function eventStream<TData>(
         // Asking for the next event means the loop body finished the last one.
         const finished = release;
         release = undefined;
-        sub ??= start();
+        try {
+          sub ??= start();
+        } catch (err) {
+          return finish({ reason: err });
+        }
         finished?.();
       });
     },
