@@ -1,5 +1,6 @@
 export { StreamdClient } from "./client.js";
 export { FullnodeScanAdapter } from "./adapters/fullnode.js";
+export { MemoryAdapter } from "./adapters/memory.js";
 export { EventPoller } from "./poller.js";
 export { EventQuery } from "./query.js";
 export { CursorManager } from "./cursor.js";

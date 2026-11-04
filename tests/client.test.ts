@@ -6,6 +6,7 @@ import {
   mocked,
 } from "./timers.js";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdClient } from "../src/client.js";
 import { involvesAddress, whereField } from "../src/filter.js";
 import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
@@ -938,6 +939,82 @@ describe("StreamdClient", () => {
         surfaced.restore();
         client.destroy();
       }
+    });
+  });
+
+  describe("MemoryAdapter offline usage", () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    it("throws StreamdError when constructed with neither aptos nor adapter", () => {
+      expect(() => new StreamdClient({})).toThrow(StreamdError);
+      expect(() => new StreamdClient({})).toThrow(
+        /StreamdClient requires either `aptos` or `adapter` in config/,
+      );
+    });
+
+    it("drives getLogs, getLogsIterator, on, once, stream, and cursor resume offline without an Aptos instance", async () => {
+      const e1 = { ...makeEvent(10, 0), data: { owner: "0x1", v: 1 } };
+      const e2 = { ...makeEvent(10, 1), data: { owner: "0x2", v: 2 } };
+      const e3 = { ...makeEvent(20, 0), data: { owner: "0x1", v: 3 } };
+      const client = new StreamdClient({
+        adapter: new MemoryAdapter([e3, e1, e2]),
+      });
+
+      const logs = await client.getLogs(descriptor, {
+        where: whereField("owner", "0x1"),
+      });
+      expect(logs.map((e) => [e.version, e.eventIndex])).toEqual([
+        [10n, 0],
+        [20n, 0],
+      ]);
+
+      const pages: bigint[][] = [];
+      for await (const page of client.getLogsIterator(descriptor, {}, 2)) {
+        pages.push(page.map((e) => e.version));
+      }
+      expect(pages).toEqual([[10n, 10n], [20n]]);
+
+      const firstMatch = client.once(descriptor, {
+        where: whereField("v", 3),
+      });
+      await advanceTimersByTimeAsync(0);
+      expect((await firstMatch).version).toBe(20n);
+
+      const seenOn: number[] = [];
+      const sub = client.on<{ owner: string; v: number }>(
+        descriptor,
+        (e) => seenOn.push(e.data.v),
+        { batchSize: 2, pollInterval: 100 },
+      );
+      // First poll delivers 2 events and schedules an immediate catch-up poll (0ms) for the 3rd.
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(0);
+      expect(seenOn).toEqual([1, 2, 3]);
+      const savedCursor = sub.cursor;
+      expect(savedCursor).toBe("3");
+      sub.unsubscribe();
+
+      // Resume against a MemoryAdapter seeded with an additional later event.
+      const e4 = { ...makeEvent(30, 0), data: { owner: "0x1", v: 4 } };
+      const resumedClient = new StreamdClient({
+        adapter: new MemoryAdapter([e1, e2, e3, e4]),
+      });
+      const resumedSeen: number[] = [];
+      const streamLoop = (async () => {
+        for await (const e of resumedClient.stream<{ owner: string; v: number }>(
+          descriptor,
+          { cursor: savedCursor },
+        )) {
+          resumedSeen.push(e.data.v);
+          if (resumedSeen.length === 1) break;
+        }
+      })();
+      await advanceTimersByTimeAsync(0);
+      await streamLoop;
+      expect(resumedSeen).toEqual([4]);
+
+      client.destroy();
+      resumedClient.destroy();
     });
   });
 });
