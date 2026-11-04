@@ -50,8 +50,19 @@ const sub = streamd.on(
   },
 );
 
+console.log(sub.status);
+// { active, cursor, lastVersion, consecutiveErrors, lastSuccessAt }
+
 sub.unsubscribe();
 ```
+
+`sub.status` returns a snapshot of the subscription's polling state: `active`
+(`boolean`), `cursor` (`string | undefined`, after the last finished page),
+`lastVersion` (`bigint | undefined`, highest `event.version` seen so far),
+`consecutiveErrors` (`number`, reset to `0` after each successful poll), and
+`lastSuccessAt` (`number | undefined`, `Date.now()` in ms when the last poll
+finished). Like `sub.cursor`, `sub.status` stays readable after
+`unsubscribe()`, `destroy()`, abort, or auto-stop.
 
 Handlers may be `async`: each one is awaited before the next event, and polling waits
 for the page to finish, so a slow handler slows the subscription down instead of piling

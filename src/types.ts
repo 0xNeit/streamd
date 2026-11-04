@@ -239,6 +239,33 @@ export interface StreamdConfig {
 
 // ---- Subscription handle ----
 
+export interface SubscriptionStatus {
+  /** Whether the subscription is currently active. */
+  readonly active: boolean;
+  /**
+   * The adapter's opaque resume token after the last finished page, or
+   * `undefined` before the first page finishes (unless seeded via
+   * `ListenerOptions.cursor`).
+   */
+  readonly cursor: string | undefined;
+  /**
+   * Highest `event.version` seen across events processed by this subscription,
+   * or `undefined` before any event has been seen.
+   */
+  readonly lastVersion: bigint | undefined;
+  /**
+   * Consecutive polling failures since the subscription started or last
+   * finished a poll. Resets to `0` after a poll finishes its page.
+   */
+  readonly consecutiveErrors: number;
+  /**
+   * Epoch timestamp in milliseconds (`Date.now()`) when the subscription last
+   * finished a poll without a polling error, or `undefined` before the first
+   * successful poll.
+   */
+  readonly lastSuccessAt: number | undefined;
+}
+
 export interface Subscription {
   /** Unique ID for this subscription */
   id: string;
@@ -251,6 +278,12 @@ export interface Subscription {
    * Undefined before the first page; still readable after unsubscribing.
    */
   readonly cursor: string | undefined;
+  /**
+   * Snapshot of the subscription's polling state (`active`, `cursor`,
+   * `lastVersion`, `consecutiveErrors`, `lastSuccessAt`). Still readable after
+   * unsubscribing or stopping.
+   */
+  readonly status: SubscriptionStatus;
 }
 
 // ---- Callback ----

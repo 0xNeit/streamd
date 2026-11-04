@@ -86,8 +86,7 @@ export class StreamdClient {
         pollInterval: this.defaultPollInterval,
         ...options,
         onError: (err) => {
-          // The poller stops itself before reporting its last failure, so an
-          // inactive poller here has given up and must not stay in the map.
+          // Drop the subscription once the poller has given up and stopped itself.
           if (!poller.active) forget();
           (options?.onError ?? this.onError)?.(err);
         },
@@ -98,7 +97,6 @@ export class StreamdClient {
     // An already-aborted signal leaves the poller stopped: nothing to track.
     if (poller.active) {
       this.subscriptions.set(id, poller);
-      // The poller stops itself on abort; the client only has to forget it.
       detach = onAbort(options?.signal, forget);
     }
 
@@ -109,6 +107,9 @@ export class StreamdClient {
       },
       get cursor() {
         return poller.cursor;
+      },
+      get status() {
+        return poller.status;
       },
       unsubscribe: () => {
         poller.stop();
