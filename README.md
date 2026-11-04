@@ -16,7 +16,7 @@ const streamd = new StreamdClient({
 
 streamd.on(
   { kind: "module", eventType: "0x1::transaction_fee::FeeStatement" },
-  (event) => console.log(event.version, event.data),
+  (event) => console.log(event.version, event.transactionHash, event.data),
 );
 ```
 
@@ -170,6 +170,14 @@ Every call takes an event descriptor:
 `account` only sees transactions the account signed. If someone else's
 transaction deposits into the account, that event belongs to the sender's
 transaction and won't appear.
+
+Each delivered `StreamdEvent` carries `type`, `data`, `version` (`bigint`),
+`sequenceNumber` (`bigint`), and `eventIndex` (`number`). Where the source
+transaction is in hand (`module` and `account` descriptors on
+`FullnodeScanAdapter`), events also carry `transactionHash` (`string`) and
+`timestamp` (`bigint`, microseconds since the Unix epoch). `handle` events
+come from an endpoint that omits the surrounding transaction, so both fields
+are `undefined` there (and `timestamp` is `undefined` on genesis transactions).
 
 ## Filtering
 
