@@ -6,10 +6,18 @@ import {
   mocked,
 } from "./timers.js";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { FallbackAdapter } from "../src/adapters/fallback.js";
+import { MemoryAdapter } from "../src/adapters/memory.js";
+import { RoutingAdapter } from "../src/adapters/routing.js";
 import { StreamdClient } from "../src/client.js";
-import { involvesAddress, whereField } from "../src/filter.js";
+import { every, involvesAddress, not, whereField } from "../src/filter.js";
 import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
-import { StreamdError, StreamdTimeoutError } from "../src/errors.js";
+import {
+  StreamdError,
+  StreamdNetworkError,
+  StreamdPollingError,
+  StreamdTimeoutError,
+} from "../src/errors.js";
 
 function makeAptos() {
   // Constructing the SDK performs no network I/O; the injected adapter below
@@ -307,6 +315,50 @@ describe("StreamdClient", () => {
     await advanceTimersByTimeAsync(0);
     sub.unsubscribe();
     expect(live).toEqual([2n]);
+
+    client.destroy();
+  });
+
+  it("filters getLogs, getLogsIterator, on(), once(), and stream() with not()", async () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+    const e1 = { ...makeEvent(10, 0), data: { from: "0x1", to: "0x1" } };
+    const e2 = { ...makeEvent(20, 0), data: { from: "0x2", to: "0x1" } };
+    const e3 = { ...makeEvent(30, 0), data: { from: "0x1", to: "0x2" } };
+    const e4 = { ...makeEvent(40, 0), data: { from: "0x3", to: "0x1" } };
+    const where = every(involvesAddress("0x1"), not(whereField("from", "0x1")));
+
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([e1, e2, e3, e4]),
+    });
+
+    // `limit` counts events after `where: not(...)` filtering across pages.
+    const logs = await client.getLogs(descriptor, { where, limit: 2 });
+    expect(logs.map((l) => l.version)).toEqual([20n, 40n]);
+
+    const iterVersions: bigint[][] = [];
+    for await (const page of client.getLogsIterator(descriptor, { where }, 2)) {
+      iterVersions.push(page.map((e) => e.version));
+    }
+    expect(iterVersions).toEqual([[20n], [40n]]);
+
+    const onceMatch = client.once(descriptor, { where });
+    const seenOn: bigint[] = [];
+    const sub = client.on(descriptor, (e) => seenOn.push(e.version), { where });
+    await advanceTimersByTimeAsync(0);
+    expect((await onceMatch).version).toBe(20n);
+    expect(seenOn).toEqual([20n, 40n]);
+    sub.unsubscribe();
+
+    const seenStream: bigint[] = [];
+    const streamLoop = (async () => {
+      for await (const e of client.stream(descriptor, { where })) {
+        seenStream.push(e.version);
+        if (seenStream.length === 2) break;
+      }
+    })();
+    await advanceTimersByTimeAsync(0);
+    await streamLoop;
+    expect(seenStream).toEqual([20n, 40n]);
 
     client.destroy();
   });
@@ -718,5 +770,575 @@ describe("StreamdClient", () => {
 
     expect(live).toEqual([{ hash: "0xabc123", ts: 1700000010000000n }]);
     client.destroy();
+  });
+
+  it("supports multi-type module descriptors across getLogs, on, once, and stream", async () => {
+    const ping: StreamdEvent = {
+      ...makeEvent(10, 0),
+      type: "0x1::test::Ping",
+    };
+    const pong: StreamdEvent = {
+      ...makeEvent(10, 1),
+      type: "0x1::test::Pong",
+    };
+    const page: EventPage = {
+      events: [ping, pong],
+      nextCursor: "11",
+      hasMore: false,
+    };
+    const adapter = adapterOf([page, page, page, page]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const descriptor = {
+      kind: "module",
+      eventType: ["0x1::test::Ping", "0x1::test::Pong"],
+    } as const;
+
+    const logs = await client.getLogs(descriptor);
+    expect(logs.map((e) => e.type)).toEqual([
+      "0x1::test::Ping",
+      "0x1::test::Pong",
+    ]);
+
+    const seenOn: string[] = [];
+    const sub = client.on(descriptor, (e) => seenOn.push(e.type));
+    await advanceTimersByTimeAsync(0);
+    sub.unsubscribe();
+    expect(seenOn).toEqual(["0x1::test::Ping", "0x1::test::Pong"]);
+
+    const oncePromise = client.once(descriptor);
+    await advanceTimersByTimeAsync(0);
+    expect((await oncePromise).type).toBe("0x1::test::Ping");
+
+    const seenStream: string[] = [];
+    const streamLoop = (async () => {
+      for await (const e of client.stream(descriptor)) {
+        seenStream.push(e.type);
+        if (seenStream.length === 2) break;
+      }
+    })();
+    await advanceTimersByTimeAsync(0);
+    await streamLoop;
+    expect(seenStream).toEqual(["0x1::test::Ping", "0x1::test::Pong"]);
+
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(4);
+    expect(mocked(adapter.fetchEvents).mock.calls[0]![0]).toEqual(descriptor);
+
+    client.destroy();
+  });
+
+  describe("client-wide onError", () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    it("routes on() polling and callback errors to config.onError when options.onError is omitted", async () => {
+      let calls = 0;
+      const adapter: EventAdapter = {
+        fetchEvents: vi.fn(async () => {
+          if (calls++ === 0) throw new Error("blip");
+          return { events: [makeEvent(1), makeEvent(2)], nextCursor: "3", hasMore: false };
+        }),
+      };
+      const clientErrors: Error[] = [];
+      const client = new StreamdClient({
+        aptos: makeAptos(),
+        adapter,
+        onError: (err) => clientErrors.push(err),
+      });
+      const seen: bigint[] = [];
+      const sub = client.on(
+        descriptor,
+        (e) => {
+          seen.push(e.version);
+          if (e.version === 1n) throw new Error("callback bug");
+        },
+        { pollInterval: 100 },
+      );
+
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(200);
+      sub.unsubscribe();
+
+      expect(seen).toEqual([1n, 2n]);
+      expect(clientErrors).toHaveLength(2);
+      expect(clientErrors[0]).toBeInstanceOf(StreamdPollingError);
+      expect(clientErrors[1]).toBeInstanceOf(StreamdError);
+      expect(clientErrors[1]).not.toBeInstanceOf(StreamdPollingError);
+      client.destroy();
+    });
+
+    it("prefers per-subscription options.onError over config.onError in on() and once()", async () => {
+      const clientOnError = vi.fn();
+      const subOnError = vi.fn();
+      const onceOnError = vi.fn();
+      const client = new StreamdClient({
+        aptos: makeAptos(),
+        adapter: failing(),
+        onError: clientOnError,
+      });
+
+      const sub = client.on(descriptor, () => {}, {
+        pollInterval: 100,
+        maxErrors: 2,
+        onError: subOnError,
+      });
+      const oncePromise = client.once(descriptor, {
+        pollInterval: 100,
+        maxErrors: 2,
+        onError: onceOnError,
+      });
+      oncePromise.catch(() => {});
+
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(200);
+      await expect(oncePromise).rejects.toThrow(/Polling failed/);
+
+      expect(sub.active).toBe(false);
+      expect(subOnError).toHaveBeenCalledTimes(2);
+      expect(onceOnError).toHaveBeenCalledTimes(2);
+      expect(clientOnError).not.toHaveBeenCalled();
+      client.destroy();
+    });
+
+    it("routes once() transient and fatal errors to config.onError once per error", async () => {
+      let calls = 0;
+      const adapter: EventAdapter = {
+        fetchEvents: vi.fn(async () => {
+          calls++;
+          if (calls === 1) throw new Error("transient");
+          if (calls === 2) return { events: [makeEvent(9)], nextCursor: "10", hasMore: false };
+          throw new Error("down");
+        }),
+      };
+      const clientOnError = vi.fn();
+      const client = new StreamdClient({
+        aptos: makeAptos(),
+        adapter,
+        onError: clientOnError,
+      });
+
+      const first = client.once(descriptor, { pollInterval: 100, maxErrors: 3 });
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(200);
+      expect((await first).version).toBe(9n);
+      expect(clientOnError).toHaveBeenCalledTimes(1);
+
+      const second = client.once(descriptor, { pollInterval: 100, maxErrors: 2 });
+      second.catch(() => {});
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(200);
+      await expect(second).rejects.toThrow(/Polling failed/);
+      expect(clientOnError).toHaveBeenCalledTimes(3);
+      client.destroy();
+    });
+
+    it("does not call config.onError on abort or once() timeout", async () => {
+      const clientOnError = vi.fn();
+      const client = new StreamdClient({
+        aptos: makeAptos(),
+        adapter: adapterOf([]),
+        onError: clientOnError,
+      });
+      const c1 = new AbortController();
+      const c2 = new AbortController();
+      client.on(descriptor, () => {}, { pollInterval: 100, signal: c1.signal });
+      const abortedOnce = client.once(descriptor, { pollInterval: 100, signal: c2.signal });
+      const timedOnce = client.once(descriptor, { pollInterval: 100, timeout: 150 });
+      abortedOnce.catch(() => {});
+      timedOnce.catch(() => {});
+
+      await advanceTimersByTimeAsync(0);
+      c1.abort(new Error("stop on"));
+      c2.abort(new Error("stop once"));
+      await advanceTimersByTimeAsync(200);
+
+      await expect(abortedOnce).rejects.toThrow("stop once");
+      await expect(timedOnce).rejects.toBeInstanceOf(StreamdTimeoutError);
+      expect(clientOnError).not.toHaveBeenCalled();
+      client.destroy();
+    });
+
+    it("rethrows a throwing config.onError on a microtask without stalling on() or once()", async () => {
+      const client = new StreamdClient({
+        aptos: makeAptos(),
+        adapter: failing(),
+        onError: () => {
+          throw new Error("client handler bug");
+        },
+      });
+      const surfaced = captureMicrotaskThrows();
+      try {
+        const sub = client.on(descriptor, () => {}, { pollInterval: 100, maxErrors: 2 });
+        const oncePromise = client.once(descriptor, { pollInterval: 100, maxErrors: 2 });
+        oncePromise.catch(() => {});
+
+        await advanceTimersByTimeAsync(0);
+        await advanceTimersByTimeAsync(200);
+        await expect(oncePromise).rejects.toThrow(/Polling failed/);
+
+        expect(sub.active).toBe(false);
+        expect(subscriptionCount(client)).toBe(0);
+        expect(surfaced.thrown.map((e) => (e as Error).message)).toEqual([
+          "client handler bug",
+          "client handler bug",
+          "client handler bug",
+          "client handler bug",
+        ]);
+      } finally {
+        surfaced.restore();
+        client.destroy();
+      }
+    });
+  });
+
+  describe("MemoryAdapter offline usage", () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    it("throws StreamdError when constructed with neither aptos nor adapter", () => {
+      expect(() => new StreamdClient({})).toThrow(StreamdError);
+      expect(() => new StreamdClient({})).toThrow(
+        /StreamdClient requires either `aptos` or `adapter` in config/,
+      );
+    });
+
+    it("drives getLogs, getLogsIterator, on, once, stream, and cursor resume offline without an Aptos instance", async () => {
+      const e1 = { ...makeEvent(10, 0), data: { owner: "0x1", v: 1 } };
+      const e2 = { ...makeEvent(10, 1), data: { owner: "0x2", v: 2 } };
+      const e3 = { ...makeEvent(20, 0), data: { owner: "0x1", v: 3 } };
+      const client = new StreamdClient({
+        adapter: new MemoryAdapter([e3, e1, e2]),
+      });
+
+      const logs = await client.getLogs(descriptor, {
+        where: whereField("owner", "0x1"),
+      });
+      expect(logs.map((e) => [e.version, e.eventIndex])).toEqual([
+        [10n, 0],
+        [20n, 0],
+      ]);
+
+      const pages: bigint[][] = [];
+      for await (const page of client.getLogsIterator(descriptor, {}, 2)) {
+        pages.push(page.map((e) => e.version));
+      }
+      expect(pages).toEqual([[10n, 10n], [20n]]);
+
+      const firstMatch = client.once(descriptor, {
+        where: whereField("v", 3),
+      });
+      await advanceTimersByTimeAsync(0);
+      expect((await firstMatch).version).toBe(20n);
+
+      const seenOn: number[] = [];
+      const sub = client.on<{ owner: string; v: number }>(
+        descriptor,
+        (e) => seenOn.push(e.data.v),
+        { batchSize: 2, pollInterval: 100 },
+      );
+      // First poll delivers 2 events and schedules an immediate catch-up poll (0ms) for the 3rd.
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(0);
+      expect(seenOn).toEqual([1, 2, 3]);
+      const savedCursor = sub.cursor;
+      expect(savedCursor).toBe("3");
+      sub.unsubscribe();
+
+      // Resume against a MemoryAdapter seeded with an additional later event.
+      const e4 = { ...makeEvent(30, 0), data: { owner: "0x1", v: 4 } };
+      const resumedClient = new StreamdClient({
+        adapter: new MemoryAdapter([e1, e2, e3, e4]),
+      });
+      const resumedSeen: number[] = [];
+      const streamLoop = (async () => {
+        for await (const e of resumedClient.stream<{ owner: string; v: number }>(
+          descriptor,
+          { cursor: savedCursor },
+        )) {
+          resumedSeen.push(e.data.v);
+          if (resumedSeen.length === 1) break;
+        }
+      })();
+      await advanceTimersByTimeAsync(0);
+      await streamLoop;
+      expect(resumedSeen).toEqual([4]);
+
+      client.destroy();
+      resumedClient.destroy();
+    });
+  });
+
+  describe("RoutingAdapter and FallbackAdapter composition", () => {
+    const moduleDesc = { kind: "module", eventType: "0x1::test::Event" } as const;
+    const accountDesc = { kind: "account", accountAddress: "0x1" } as const;
+
+    it("composes RoutingAdapter and FallbackAdapter across getLogs, on, once, and stream", async () => {
+      let primaryCalls = 0;
+      const flakyModulePrimary: EventAdapter = {
+        fetchEvents: vi.fn(async () => {
+          if (primaryCalls++ === 0) {
+            throw new StreamdNetworkError("primary fullnode 503", 503);
+          }
+          return {
+            events: [makeEvent(11), makeEvent(12)],
+            nextCursor: "2",
+            hasMore: false,
+          };
+        }),
+      };
+      const moduleBackup = new MemoryAdapter([makeEvent(11), makeEvent(12)]);
+      const accountSource = new MemoryAdapter([makeEvent(99)]);
+
+      const adapter = new RoutingAdapter({
+        module: new FallbackAdapter([flakyModulePrimary, moduleBackup]),
+        default: accountSource,
+      });
+      const onError = vi.fn();
+      const client = new StreamdClient({ adapter, onError });
+
+      // First call on `module` falls back from flakyModulePrimary to moduleBackup seamlessly.
+      const moduleLogs = await client.getLogs(moduleDesc);
+      expect(moduleLogs.map((e) => e.version)).toEqual([11n, 12n]);
+      expect(flakyModulePrimary.fetchEvents).toHaveBeenCalledTimes(1);
+
+      const iterPages: bigint[][] = [];
+      for await (const page of client.getLogsIterator(moduleDesc, {}, 1)) {
+        iterPages.push(page.map((e) => e.version));
+      }
+      expect(iterPages).toEqual([[11n, 12n]]);
+
+      // `account` routes to default (accountSource).
+      const accountLogs = await client.getLogs(accountDesc);
+      expect(accountLogs.map((e) => e.version)).toEqual([99n]);
+
+      // Subsequent `on`, `once`, and `stream` calls on `module` succeed without firing onError.
+      const onceEvent = client.once(moduleDesc);
+      const seenOn: bigint[] = [];
+      const sub = client.on(moduleDesc, (e) => seenOn.push(e.version));
+      await advanceTimersByTimeAsync(0);
+      expect((await onceEvent).version).toBe(11n);
+      expect(seenOn).toEqual([11n, 12n]);
+      sub.unsubscribe();
+
+      const seenStream: bigint[] = [];
+      const streamLoop = (async () => {
+        for await (const e of client.stream(moduleDesc)) {
+          seenStream.push(e.version);
+          if (seenStream.length === 2) break;
+        }
+      })();
+      await advanceTimersByTimeAsync(0);
+      await streamLoop;
+      expect(seenStream).toEqual([11n, 12n]);
+      expect(onError).not.toHaveBeenCalled();
+
+      client.destroy();
+    });
+  });
+
+  describe("sub.status", () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    it("exposes status across polling, transient and fatal errors, unsubscribe, destroy, and abort", async () => {
+      let now = 100_000;
+      const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+      try {
+        let call = 0;
+        const adapter: EventAdapter = {
+          fetchEvents: vi.fn(async () => {
+            call++;
+            if (call === 1) {
+              return {
+                events: [makeEvent(15), makeEvent(22)],
+                nextCursor: "23",
+                hasMore: false,
+              };
+            }
+            throw new StreamdNetworkError("node 503", 503);
+          }),
+        };
+        const seenErrors: number[] = [];
+        const client = new StreamdClient({ adapter });
+        const sub = client.on(descriptor, () => {}, {
+          pollInterval: 100,
+          maxErrors: 2,
+          cursor: "10",
+          onError: () => seenErrors.push(sub.status.consecutiveErrors),
+        });
+
+        expect(sub.status).toEqual({
+          active: true,
+          cursor: "10",
+          lastVersion: undefined,
+          consecutiveErrors: 0,
+          lastSuccessAt: undefined,
+        });
+
+        // Poll 1 at 100_000 succeeds.
+        await advanceTimersByTimeAsync(0);
+        expect(sub.status).toEqual({
+          active: true,
+          cursor: "23",
+          lastVersion: 22n,
+          consecutiveErrors: 0,
+          lastSuccessAt: 100_000,
+        });
+
+        // Poll 2 at 100_100 fails (1/2); poll 3 at 100_300 fails (2/2) and stops.
+        now = 100_100;
+        await advanceTimersByTimeAsync(100);
+        expect(sub.status.consecutiveErrors).toBe(1);
+        expect(sub.status.active).toBe(true);
+
+        now = 100_300;
+        await advanceTimersByTimeAsync(200);
+        expect(seenErrors).toEqual([1, 2]);
+        expect(sub.status).toEqual({
+          active: false,
+          cursor: "23",
+          lastVersion: 22n,
+          consecutiveErrors: 2,
+          lastSuccessAt: 100_000,
+        });
+
+        // Status stays readable after unsubscribe(), destroy(), and signal abort.
+        const unsubbed = client.on(descriptor, () => {}, { cursor: "66" });
+        unsubbed.unsubscribe();
+        expect(unsubbed.status).toEqual({
+          active: false,
+          cursor: "66",
+          lastVersion: undefined,
+          consecutiveErrors: 0,
+          lastSuccessAt: undefined,
+        });
+
+        const c = new AbortController();
+        const sub2 = client.on(
+          descriptor,
+          () => {},
+          { signal: c.signal, cursor: "77" },
+        );
+        c.abort();
+        expect(sub2.status).toEqual({
+          active: false,
+          cursor: "77",
+          lastVersion: undefined,
+          consecutiveErrors: 0,
+          lastSuccessAt: undefined,
+        });
+
+        const sub3 = client.on(descriptor, () => {}, { cursor: "88" });
+        client.destroy();
+        expect(sub3.status.active).toBe(false);
+        expect(sub3.status.cursor).toBe("88");
+      } finally {
+        nowSpy.mockRestore();
+      }
+    });
+  });
+
+  describe("maxBackoff and dedupWindow options", () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    it("forwards maxBackoff and dedupWindow through on(), once(), and stream()", async () => {
+      const e1 = makeEvent(1);
+      const dupAdapter = adapterOf([
+        { events: [e1], nextCursor: "2", hasMore: false },
+        { events: [e1], nextCursor: "3", hasMore: false },
+      ]);
+      const client = new StreamdClient({ adapter: dupAdapter });
+      const seenOn: bigint[] = [];
+      const sub = client.on(descriptor, (e) => seenOn.push(e.version), {
+        pollInterval: 100,
+        dedupWindow: 0,
+      });
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(100);
+      sub.unsubscribe();
+      expect(seenOn).toEqual([1n, 1n]);
+
+      // once() with maxBackoff: 50 caps retry waits at 50ms despite pollInterval: 200.
+      const at: number[] = [];
+      const flakyOnceAdapter: EventAdapter = {
+        fetchEvents: vi.fn(async () => {
+          at.push(Date.now());
+          if (at.length < 3) throw new StreamdNetworkError("node 503", 503);
+          return { events: [makeEvent(7)], nextCursor: "8", hasMore: false };
+        }),
+      };
+      const flakyClient = new StreamdClient({ adapter: flakyOnceAdapter });
+      const oncePromise = flakyClient.once(descriptor, {
+        pollInterval: 200,
+        maxBackoff: 50,
+        maxErrors: 5,
+      });
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(50);
+      await advanceTimersByTimeAsync(50);
+      expect((await oncePromise).version).toBe(7n);
+      expect(at.slice(1).map((t, i) => t - at[i]!)).toEqual([50, 50]);
+
+      // stream() with dedupWindow: 0 delivers repeated events across pages.
+      const streamDupAdapter = adapterOf([
+        { events: [e1], nextCursor: "2", hasMore: false },
+        { events: [e1], nextCursor: "3", hasMore: false },
+      ]);
+      const streamClient = new StreamdClient({ adapter: streamDupAdapter });
+      const seenStream: bigint[] = [];
+      const streamLoop = (async () => {
+        for await (const e of streamClient.stream(descriptor, {
+          pollInterval: 100,
+          dedupWindow: 0,
+        })) {
+          seenStream.push(e.version);
+          if (seenStream.length === 2) break;
+        }
+      })();
+      await advanceTimersByTimeAsync(0);
+      await advanceTimersByTimeAsync(100);
+      await streamLoop;
+      expect(seenStream).toEqual([1n, 1n]);
+
+      client.destroy();
+      flakyClient.destroy();
+      streamClient.destroy();
+    });
+
+    it("rejects or throws StreamdError on invalid maxBackoff or dedupWindow across on(), once(), and stream()", async () => {
+      const adapter = adapterOf([]);
+      const client = new StreamdClient({ adapter });
+
+      for (const badOpts of [
+        { maxBackoff: -1 },
+        { maxBackoff: Number.NaN },
+        { maxBackoff: Number.POSITIVE_INFINITY },
+        { maxBackoff: 2_147_483_648 },
+        { dedupWindow: -1 },
+        { dedupWindow: 1.5 },
+        { dedupWindow: Number.NaN },
+      ]) {
+        const controller = new AbortController();
+        const remove = vi.spyOn(controller.signal, "removeEventListener");
+        const opts = { ...badOpts, signal: controller.signal };
+
+        expect(() => client.on(descriptor, () => {}, opts)).toThrow(
+          StreamdError,
+        );
+        await expect(client.once(descriptor, opts)).rejects.toThrow(
+          StreamdError,
+        );
+        const iter = client.stream(descriptor, opts);
+        await expect(iter.next()).rejects.toThrow(StreamdError);
+        await expect(iter.next()).resolves.toEqual({
+          value: undefined,
+          done: true,
+        });
+        expect(remove).toHaveBeenCalledTimes(1);
+      }
+
+      expect(subscriptionCount(client)).toBe(0);
+      expect(
+        (client as unknown as { streams: Set<unknown> }).streams.size,
+      ).toBe(0);
+      expect(adapter.fetchEvents).not.toHaveBeenCalled();
+      client.destroy();
+    });
   });
 });

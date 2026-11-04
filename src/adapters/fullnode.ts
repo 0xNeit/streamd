@@ -10,7 +10,13 @@ import type {
   StreamdEvent,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
-import { normalizeAddress } from "../filter.js";
+import {
+  DEFAULT_LIMIT,
+  moduleTypeFilter,
+  parseCursor,
+  requireAddress,
+  validateOffset,
+} from "./validate.js";
 
 interface RawEvent {
   guid?: { creation_number: string; account_address: string };
@@ -35,7 +41,6 @@ const DEFAULT_SCAN_BATCH = 100;
  * hasMore set) instead of blocking indefinitely.
  */
 const DEFAULT_MAX_SCAN = 1000;
-const DEFAULT_LIMIT = 25;
 
 /** Events of one transaction whose type passes `keep`, indexed by position in it. */
 function toStreamdEvents(
@@ -62,25 +67,6 @@ function toStreamdEvents(
     out.push(item);
   });
   return out;
-}
-
-/**
- * Caller input is refused as a plain `StreamdError` before any request, so it
- * is never mistaken for a network failure worth retrying.
- */
-function requireAddress(value: string): string {
-  const address = normalizeAddress(value);
-  if (address === undefined) {
-    throw new StreamdError(`Not a valid Aptos address: ${value}`);
-  }
-  return address;
-}
-
-function parseCursor(cursor: string): bigint {
-  if (!/^\d+$/.test(cursor)) {
-    throw new StreamdError(`Not a cursor this adapter issued: ${cursor}`);
-  }
-  return BigInt(cursor);
 }
 
 export interface FullnodeScanAdapterOptions {
@@ -135,12 +121,7 @@ export class FullnodeScanAdapter implements EventAdapter {
   ): Promise<EventPage> {
     try {
       if (options.cursor !== undefined) parseCursor(options.cursor);
-      if (
-        options.offset !== undefined &&
-        !(Number.isSafeInteger(options.offset) && options.offset >= 0)
-      ) {
-        throw new StreamdError(`Not a valid offset: ${options.offset}`);
-      }
+      validateOffset(options.offset);
       return await this.dispatch(descriptor, options);
     } catch (err) {
       if (err instanceof StreamdError) throw err;
@@ -180,46 +161,37 @@ export class FullnodeScanAdapter implements EventAdapter {
     descriptor: ModuleEventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage> {
+    const keep = moduleTypeFilter(descriptor.eventType);
     const wanted = options.limit ?? DEFAULT_LIMIT;
     if (wanted <= 0) return { events: [], hasMore: false };
 
     const head = await this.ledgerVersion();
     let next = this.resolveStart(options, head);
-
     const events: StreamdEvent[] = [];
     let scanned = 0;
     let hasMore = false;
 
-    while (events.length < wanted) {
+    while (events.length < wanted && next <= head) {
       if (options.toVersion !== undefined && next > options.toVersion) break;
-      if (next > head) break; // caught up to the chain head
-
       if (scanned >= this.maxScan) {
         hasMore = true; // stopped on budget, not on data
         break;
       }
 
-      const remainingScan = this.maxScan - scanned;
-      const limit = Math.min(this.scanBatch, remainingScan);
+      const limit = Math.min(this.scanBatch, this.maxScan - scanned);
       const txns = await this.getTransactions(next, limit);
       if (txns.length === 0) break;
 
       let stoppedAtToVersion = false;
-
       for (const txn of txns) {
         if (txn.version === undefined) continue;
         const version = BigInt(txn.version);
-
         if (options.toVersion !== undefined && version > options.toVersion) {
           stoppedAtToVersion = true;
           break;
         }
-
         next = version + 1n;
-
-        events.push(
-          ...toStreamdEvents(txn, version, (t) => t === descriptor.eventType),
-        );
+        events.push(...toStreamdEvents(txn, version, keep));
       }
 
       scanned += txns.length;

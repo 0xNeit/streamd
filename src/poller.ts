@@ -6,6 +6,7 @@ import type {
   EventPredicate,
   ListenerOptions,
   StreamdEvent,
+  SubscriptionStatus,
 } from "./types.js";
 import {
   StreamdError,
@@ -17,11 +18,29 @@ import { CursorManager } from "./cursor.js";
 const DEFAULT_POLL_INTERVAL = 1000;
 const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_MAX_ERRORS = 10;
-const MAX_BACKOFF = 60_000;
+const DEFAULT_MAX_BACKOFF = 60_000;
+const MAX_DELAY = 2_147_483_647;
+
+function resolveMaxBackoff(maxBackoff: number | undefined): number {
+  if (maxBackoff === undefined) return DEFAULT_MAX_BACKOFF;
+  if (
+    typeof maxBackoff !== "number" ||
+    !Number.isFinite(maxBackoff) ||
+    maxBackoff < 0 ||
+    maxBackoff > MAX_DELAY
+  ) {
+    throw new StreamdError(
+      `Invalid maxBackoff: ${String(maxBackoff)} (expected 0..${MAX_DELAY}ms)`,
+    );
+  }
+  return maxBackoff;
+}
 
 export class EventPoller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private consecutiveErrors = 0;
+  private lastVersion: bigint | undefined = undefined;
+  private lastSuccessAt: number | undefined = undefined;
   private currentInterval: number;
   private _active = false;
   /** Bumped by start(), so a poll left over from an earlier run can tell. */
@@ -36,6 +55,7 @@ export class EventPoller {
   private readonly pollInterval: number;
   private readonly batchSize: number;
   private readonly maxErrors: number;
+  private readonly maxBackoff: number;
   private readonly fromVersion?: bigint;
   private readonly where?: EventPredicate;
   private readonly onError?: (error: Error) => void;
@@ -51,12 +71,13 @@ export class EventPoller {
     this.pollInterval = options.pollInterval ?? DEFAULT_POLL_INTERVAL;
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.maxErrors = options.maxErrors ?? DEFAULT_MAX_ERRORS;
+    this.maxBackoff = resolveMaxBackoff(options.maxBackoff);
     this.fromVersion = options.fromVersion;
     this.where = options.where;
     this.onError = options.onError;
     this.signal = options.signal;
     this.currentInterval = this.pollInterval;
-    this.position = new CursorManager(options.cursor);
+    this.position = new CursorManager(options.cursor, options.dedupWindow);
   }
 
   get active(): boolean {
@@ -66,6 +87,17 @@ export class EventPoller {
   /** The adapter's resume token after the last finished page; see `ListenerOptions.cursor`. */
   get cursor(): string | undefined {
     return this.position.token;
+  }
+
+  /** Snapshot of the poller's current state; see `SubscriptionStatus`. */
+  get status(): SubscriptionStatus {
+    return {
+      active: this._active,
+      cursor: this.position.token,
+      lastVersion: this.lastVersion,
+      consecutiveErrors: this.consecutiveErrors,
+      lastSuccessAt: this.lastSuccessAt,
+    };
   }
 
   start(): void {
@@ -136,41 +168,46 @@ export class EventPoller {
       if (!this.isCurrent(gen)) return;
       this.consecutiveErrors = 0;
       this.currentInterval = this.pollInterval;
+      this.lastSuccessAt = Date.now();
 
       // Catch-up mode: the adapter says more is waiting, so don't idle.
       this.schedulePoll(page.hasMore ? 0 : this.pollInterval);
     } catch (err) {
-      if (!this.isCurrent(gen)) return;
-      this.consecutiveErrors++;
-
-      // A StreamdError that is not a network failure is the caller's input,
-      // which fails the same way on every retry.
-      const invalidInput =
-        err instanceof StreamdError && !(err instanceof StreamdNetworkError);
-      const pollingError = new StreamdPollingError(
-        invalidInput
-          ? `Polling stopped on invalid input: ${err.message}`
-          : `Polling failed (${this.consecutiveErrors}/${this.maxErrors})`,
-        this.consecutiveErrors,
-        err,
-      );
-
-      if (invalidInput || this.consecutiveErrors >= this.maxErrors) {
-        // Stop before notifying, so a handler inspecting `active` sees the
-        // subscription already dead rather than briefly alive.
-        this.stop();
-        this.report(pollingError);
-        return;
-      }
-
-      this.report(pollingError);
-      // The handler may have stopped or restarted the poller.
-      if (!this.isCurrent(gen)) return;
-
-      // Exponential backoff capped at MAX_BACKOFF
-      this.currentInterval = Math.min(this.currentInterval * 2, MAX_BACKOFF);
-      this.schedulePoll(this.currentInterval);
+      this.handlePollError(err, gen);
     }
+  }
+
+  private handlePollError(err: unknown, gen: number): void {
+    if (!this.isCurrent(gen)) return;
+    this.consecutiveErrors++;
+
+    // A StreamdError that is not a network failure is the caller's input,
+    // which fails the same way on every retry.
+    const invalidInput =
+      err instanceof StreamdError && !(err instanceof StreamdNetworkError);
+    const pollingError = new StreamdPollingError(
+      invalidInput
+        ? `Polling stopped on invalid input: ${err.message}`
+        : `Polling failed (${this.consecutiveErrors}/${this.maxErrors})`,
+      this.consecutiveErrors,
+      err,
+    );
+
+    if (invalidInput || this.consecutiveErrors >= this.maxErrors) {
+      // Stop before notifying, so a handler inspecting `active` sees the
+      // subscription already dead rather than briefly alive.
+      this.stop();
+      this.report(pollingError);
+      return;
+    }
+
+    this.report(pollingError);
+    // The handler may have stopped or restarted the poller.
+    if (!this.isCurrent(gen)) return;
+
+    // Exponential backoff capped at maxBackoff
+    this.currentInterval = Math.min(this.currentInterval * 2, this.maxBackoff);
+    this.schedulePoll(this.currentInterval);
   }
 
   private async processPage(page: EventPage, gen: number): Promise<void> {
@@ -181,6 +218,9 @@ export class EventPoller {
       // Mark before filtering: a rejected event has still been processed, and
       // marking it keeps overlapping pages from re-testing it.
       this.position.mark(event);
+      if (this.lastVersion === undefined || event.version > this.lastVersion) {
+        this.lastVersion = event.version;
+      }
       // A predicate or handler bug is the caller's, not the source's: report
       // it without counting toward maxErrors or abandoning the rest of the page.
       try {

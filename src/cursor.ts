@@ -1,6 +1,16 @@
+import { StreamdError } from "./errors.js";
 import type { StreamdEvent } from "./types.js";
 
-const MAX_SEEN_SIZE = 1000;
+const DEFAULT_DEDUP_WINDOW = 1000;
+
+function validateDedupWindow(dedupWindow: number): number {
+  if (!Number.isSafeInteger(dedupWindow) || dedupWindow < 0) {
+    throw new StreamdError(
+      `Invalid dedupWindow: ${String(dedupWindow)} (expected a non-negative integer)`,
+    );
+  }
+  return dedupWindow;
+}
 
 /**
  * Tracks polling position and deduplicates events using a sliding window.
@@ -12,11 +22,12 @@ export class CursorManager {
   /** Opaque adapter-defined resume position; undefined before the first page. */
   token: string | undefined;
 
-  private seen = new Set<string>();
-  private seenOrder: string[] = [];
+  private readonly dedupWindow: number;
+  private readonly seen = new Set<string>();
 
-  constructor(token?: string) {
+  constructor(token?: string, dedupWindow: number = DEFAULT_DEDUP_WINDOW) {
     this.token = token;
+    this.dedupWindow = validateDedupWindow(dedupWindow);
   }
 
   /**
@@ -29,19 +40,20 @@ export class CursorManager {
   }
 
   hasSeen(event: StreamdEvent): boolean {
+    if (this.dedupWindow === 0) return false;
     return this.seen.has(this.key(event));
   }
 
   mark(event: StreamdEvent): void {
+    if (this.dedupWindow === 0) return;
     const k = this.key(event);
     if (this.seen.has(k)) return;
 
     this.seen.add(k);
-    this.seenOrder.push(k);
 
-    // Evict oldest entries when the window exceeds the limit
-    while (this.seenOrder.length > MAX_SEEN_SIZE) {
-      const oldest = this.seenOrder.shift()!;
+    // Evict oldest entry when the window exceeds the limit (Set preserves insertion order).
+    if (this.seen.size > this.dedupWindow) {
+      const oldest = this.seen.values().next().value!;
       this.seen.delete(oldest);
     }
   }

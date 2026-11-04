@@ -110,6 +110,36 @@ describe("FullnodeScanAdapter module scan", () => {
     expect(page.events.map((e) => e.eventIndex)).toEqual([1, 2]);
   });
 
+  it("matches multiple eventTypes in one transaction scan and preserves order", async () => {
+    const GENERIC = "0x1::pool::Swap<0x1::a::CoinA, 0x1::b::CoinB>" as const;
+    const UNLISTED = "0x1::test::Ignored";
+    const txns = [
+      txn(0, [UNLISTED, OTHER, TYPE]),
+      txn(1, [UNLISTED]),
+      txn(2, [GENERIC, UNLISTED, TYPE]),
+    ];
+    const { aptos, calls } = fakeNode(chain(2, txns));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(
+      { kind: "module", eventType: [TYPE, OTHER, GENERIC, TYPE] },
+      { fromVersion: 0n, toVersion: 2n },
+    );
+
+    expect(
+      page.events.map((e) => ({
+        version: e.version,
+        index: e.eventIndex,
+        type: e.type,
+      })),
+    ).toEqual([
+      { version: 0n, index: 1, type: OTHER },
+      { version: 0n, index: 2, type: TYPE },
+      { version: 2n, index: 0, type: GENERIC },
+      { version: 2n, index: 2, type: TYPE },
+    ]);
+    expect(page.nextCursor).toBe("3");
+    expect(calls.filter((c) => c.path === "transactions")).toHaveLength(1);
+  });
+
   it("populates transactionHash and timestamp on module events when present on the transaction", async () => {
     const txns = [
       {
@@ -339,6 +369,30 @@ describe("FullnodeScanAdapter errors", () => {
   const badInput: [string, EventDescriptor, Record<string, unknown>][] = [
     ["handle address", { ...handleDesc, accountAddress: "nope" }, {}],
     ["account address", { ...accountDesc, accountAddress: "nope" }, {}],
+    ["empty module eventType array", { kind: "module", eventType: [] }, {}],
+    [
+      "empty module eventType string",
+      { kind: "module", eventType: "" as `${string}::${string}::${string}` },
+      {},
+    ],
+    [
+      "two-segment module eventType",
+      { kind: "module", eventType: "0x1::only_two" as `${string}::${string}::${string}` },
+      {},
+    ],
+    [
+      "four-segment module eventType",
+      { kind: "module", eventType: "0x1::a::b::c" as `${string}::${string}::${string}` },
+      {},
+    ],
+    [
+      "module eventType array with bad entry",
+      {
+        kind: "module",
+        eventType: [TYPE, "0x1::bad" as `${string}::${string}::${string}`],
+      },
+      { limit: 0 },
+    ],
     ["module cursor", moduleDesc, { cursor: "abc" }],
     ["account cursor", accountDesc, { cursor: "abc" }],
     ["handle cursor", handleDesc, { cursor: "abc" }],

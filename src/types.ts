@@ -2,11 +2,19 @@ import type { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
 
 // ---- Event identification ----
 
-/** Modern module event: `${address}::${module}::${struct}` */
+/** Move struct tag identifying a module event: `${address}::${module}::${struct}` */
+export type MoveEventType = `${string}::${string}::${string}`;
+
+/** Modern module event: one `${address}::${module}::${struct}` or a list of them */
 export interface ModuleEventDescriptor {
   kind: "module";
-  /** Full type string, e.g. "0x1::coin::WithdrawEvent" */
-  eventType: `${string}::${string}::${string}`;
+  /**
+   * One Move event type or a non-empty list of them (e.g.
+   * `"0x1::coin::WithdrawEvent"` or
+   * `["0x1::fungible_asset::Withdraw", "0x1::fungible_asset::Deposit"]`),
+   * served by a single transaction scan on `FullnodeScanAdapter`.
+   */
+  eventType: MoveEventType | readonly MoveEventType[];
 }
 
 /** Legacy EventHandle event, identified by account + handle + field */
@@ -84,8 +92,8 @@ export interface StreamdEvent<TData = unknown> {
  * Client-side test applied to each event after it is fetched.
  *
  * Used for anything the chain APIs can't filter on, most importantly fields
- * or addresses inside a module event's `data`. See `whereField` and
- * `involvesAddress`.
+ * or addresses inside a module event's `data`. See `whereField`,
+ * `involvesAddress`, `ofType`, `every`, `some`, and `not`.
  */
 export type EventPredicate = (event: StreamdEvent) => boolean;
 
@@ -173,14 +181,26 @@ export interface ListenerOptions {
    */
   maxErrors?: number;
   /**
+   * Maximum exponential backoff delay in ms between failed polls (default:
+   * 60000, valid range 0..2147483647).
+   */
+  maxBackoff?: number;
+  /**
+   * Sliding-window capacity for deduplicating seen events by
+   * `(version, eventIndex)` (default: 1000). Set to `0` to disable client-side
+   * deduplication.
+   */
+  dedupWindow?: number;
+  /**
    * Deliver only events satisfying this predicate. Applied client-side after
-   * fetching. See `whereField` and `involvesAddress`.
+   * fetching. See `whereField`, `involvesAddress`, `every`, `some`, and `not`.
    */
   where?: EventPredicate;
   /**
-   * Receives polling failures and errors thrown by `where` or the callback.
-   * A throw from it does not stop polling: it is rethrown on a microtask and
-   * surfaces as an uncaught error.
+   * Receives polling failures and errors thrown by `where` or the callback,
+   * overriding `StreamdConfig.onError` for this subscription. A throw from it
+   * does not stop polling: it is rethrown on a microtask and surfaces as an
+   * uncaught error.
    */
   onError?: (error: Error) => void;
   /**
@@ -202,20 +222,60 @@ export interface OnceOptions extends ListenerOptions {
 // ---- Client config ----
 
 export interface StreamdConfig {
-  /** An existing Aptos SDK instance, or AptosConfig to create one */
-  aptos: Aptos | AptosConfig;
+  /**
+   * An existing Aptos SDK instance, or AptosConfig to create one. Required
+   * when `adapter` is omitted; optional when a custom `adapter` (such as
+   * `MemoryAdapter`) is supplied.
+   */
+  aptos?: Aptos | AptosConfig;
   /** Default polling interval in ms (default: 1000) */
   defaultPollInterval?: number;
   /**
+   * Fallback error handler for subscriptions (`on`, `once`, `stream`) that do
+   * not set their own `options.onError`. Receives polling failures and errors
+   * thrown by `where` or the callback; a throw from it is rethrown on a
+   * microtask without stopping polling.
+   */
+  onError?: (error: Error) => void;
+  /**
    * Event source. Defaults to `FullnodeScanAdapter`, which reads from a
-   * fullnode and therefore only sees unpruned recent history. Supply your
-   * own adapter to query a self-hosted processor or third-party indexer —
-   * see the `EventAdapter` docs for the contract.
+   * fullnode and therefore only sees unpruned recent history. Supply
+   * `MemoryAdapter` to test handlers offline, compose sources with
+   * `RoutingAdapter` and `FallbackAdapter`, or implement `EventAdapter` to
+   * query a self-hosted processor or third-party indexer (see `EventAdapter`
+   * docs for the contract).
    */
   adapter?: EventAdapter;
 }
 
 // ---- Subscription handle ----
+
+export interface SubscriptionStatus {
+  /** Whether the subscription is currently active. */
+  readonly active: boolean;
+  /**
+   * The adapter's opaque resume token after the last finished page, or
+   * `undefined` before the first page finishes (unless seeded via
+   * `ListenerOptions.cursor`).
+   */
+  readonly cursor: string | undefined;
+  /**
+   * Highest `event.version` seen across events processed by this subscription,
+   * or `undefined` before any event has been seen.
+   */
+  readonly lastVersion: bigint | undefined;
+  /**
+   * Consecutive polling failures since the subscription started or last
+   * finished a poll. Resets to `0` after a poll finishes its page.
+   */
+  readonly consecutiveErrors: number;
+  /**
+   * Epoch timestamp in milliseconds (`Date.now()`) when the subscription last
+   * finished a poll without a polling error, or `undefined` before the first
+   * successful poll.
+   */
+  readonly lastSuccessAt: number | undefined;
+}
 
 export interface Subscription {
   /** Unique ID for this subscription */
@@ -229,6 +289,12 @@ export interface Subscription {
    * Undefined before the first page; still readable after unsubscribing.
    */
   readonly cursor: string | undefined;
+  /**
+   * Snapshot of the subscription's polling state (`active`, `cursor`,
+   * `lastVersion`, `consecutiveErrors`, `lastSuccessAt`). Still readable after
+   * unsubscribing or stopping.
+   */
+  readonly status: SubscriptionStatus;
 }
 
 // ---- Callback ----

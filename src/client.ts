@@ -30,9 +30,21 @@ function checkTimeout(ms: number | undefined): StreamdError | undefined {
   return new StreamdError(`Invalid timeout: ${String(ms)} (expected 0..${MAX_TIMEOUT}ms)`);
 }
 
+function resolveAdapter(config: StreamdConfig): EventAdapter {
+  if (config.adapter !== undefined) return config.adapter;
+  if (config.aptos === undefined) {
+    throw new StreamdError(
+      "StreamdClient requires either `aptos` or `adapter` in config",
+    );
+  }
+  const aptos =
+    config.aptos instanceof Aptos ? config.aptos : new Aptos(config.aptos);
+  return new FullnodeScanAdapter(aptos);
+}
+
 export class StreamdClient {
-  private readonly aptos: Aptos;
   private readonly defaultPollInterval: number;
+  private readonly onError?: (error: Error) => void;
   private readonly adapter: EventAdapter;
   private readonly query: EventQuery;
   private readonly subscriptions = new Map<string, EventPoller>();
@@ -40,12 +52,9 @@ export class StreamdClient {
   private readonly streams = new Set<() => void>();
 
   constructor(config: StreamdConfig) {
-    this.aptos =
-      config.aptos instanceof Aptos
-        ? config.aptos
-        : new Aptos(config.aptos);
     this.defaultPollInterval = config.defaultPollInterval ?? 1000;
-    this.adapter = config.adapter ?? new FullnodeScanAdapter(this.aptos);
+    this.onError = config.onError;
+    this.adapter = resolveAdapter(config);
     this.query = new EventQuery(this.adapter);
   }
 
@@ -54,8 +63,9 @@ export class StreamdClient {
    *
    * Every subscription polls on its own. For a `module` descriptor on the
    * default adapter that means its own ledger read and transaction scan per
-   * poll, so N module subscriptions scan the same transactions N times. Keep
-   * them few on a shared or rate-limited node.
+   * poll, so N module subscriptions scan the same transactions N times. Pass an
+   * array of `eventType`s on one `module` descriptor to serve several Move
+   * types from a single scan.
    */
   on<TData = unknown>(
     descriptor: EventDescriptor,
@@ -76,10 +86,9 @@ export class StreamdClient {
         pollInterval: this.defaultPollInterval,
         ...options,
         onError: (err) => {
-          // The poller stops itself before reporting its last failure, so an
-          // inactive poller here has given up and must not stay in the map.
+          // Drop the subscription once the poller has given up and stopped itself.
           if (!poller.active) forget();
-          options?.onError?.(err);
+          (options?.onError ?? this.onError)?.(err);
         },
       },
     );
@@ -88,7 +97,6 @@ export class StreamdClient {
     // An already-aborted signal leaves the poller stopped: nothing to track.
     if (poller.active) {
       this.subscriptions.set(id, poller);
-      // The poller stops itself on abort; the client only has to forget it.
       detach = onAbort(options?.signal, forget);
     }
 
@@ -99,6 +107,9 @@ export class StreamdClient {
       },
       get cursor() {
         return poller.cursor;
+      },
+      get status() {
+        return poller.status;
       },
       unsubscribe: () => {
         poller.stop();
@@ -142,7 +153,7 @@ export class StreamdClient {
             // Settle before the caller's handler runs, so a throw from it
             // cannot leave the promise pending.
             if (!sub.active || !(err instanceof StreamdPollingError)) fail(err);
-            options?.onError?.(err);
+            (options?.onError ?? this.onError)?.(err);
           },
         },
       );
@@ -172,15 +183,16 @@ export class StreamdClient {
     const close = () => void stream.return?.();
     const stream = eventStream<TData>(
       (callback, onError) => {
-        this.streams.add(close);
-        return this.on<TData>(descriptor, callback, {
+        const sub = this.on<TData>(descriptor, callback, {
           ...options,
           signal: undefined,
           onError: (err) => {
             onError(err);
-            options?.onError?.(err);
+            (options?.onError ?? this.onError)?.(err);
           },
         });
+        this.streams.add(close);
+        return sub;
       },
       () => this.streams.delete(close),
       options?.signal,

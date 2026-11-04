@@ -96,6 +96,58 @@ describe("EventPoller", () => {
     poller.stop();
   });
 
+  it("evicts older events once dedupWindow is exceeded and disables dedup when dedupWindow is 0", async () => {
+    const e1 = makeEvent(1);
+    const e2 = makeEvent(2);
+    const e3 = makeEvent(3);
+    const windowedAdapter = createMockAdapter([
+      page([e1, e2, e3], 4),
+      page([e2, e3, e1], 5),
+    ]);
+    const seenWindowed: bigint[] = [];
+    const windowedPoller = new EventPoller(
+      windowedAdapter,
+      descriptor,
+      (e) => seenWindowed.push(e.version),
+      { pollInterval: 100, dedupWindow: 2 },
+    );
+    windowedPoller.start();
+
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(100);
+    windowedPoller.stop();
+
+    // e1 was evicted when e3 was marked (window=2 held {e2, e3}), so on the
+    // second page e2 and e3 are skipped and e1 is delivered again.
+    expect(seenWindowed).toEqual([1n, 2n, 3n, 1n]);
+
+    const disabledAdapter = createMockAdapter([page([e1], 2), page([e1], 3)]);
+    const seenDisabled: bigint[] = [];
+    const disabledPoller = new EventPoller(
+      disabledAdapter,
+      descriptor,
+      (e) => seenDisabled.push(e.version),
+      { pollInterval: 100, dedupWindow: 0 },
+    );
+    disabledPoller.start();
+
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(100);
+    disabledPoller.stop();
+
+    expect(seenDisabled).toEqual([1n, 1n]);
+    expect(disabledPoller.status.lastVersion).toBe(1n);
+  });
+
+  it("throws StreamdError when constructed with an invalid dedupWindow", () => {
+    const adapter = createMockAdapter([]);
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        () => new EventPoller(adapter, descriptor, vi.fn(), { dedupWindow: bad }),
+      ).toThrow(StreamdError);
+    }
+  });
+
   it("distinguishes events sharing a version by eventIndex", async () => {
     // Module events routinely report sequenceNumber 0, so several events in
     // one transaction are only distinguishable by their index.
@@ -299,6 +351,71 @@ describe("EventPoller", () => {
       // next failure backs off 200 again rather than doubling from 400.
       expect(gaps()).toEqual([200, 400, 100, 200]);
       poller.stop();
+    });
+
+    it("caps backoff at a custom maxBackoff smaller or larger than the 60s default", async () => {
+      const small = timedAdapter();
+      const smallPoller = new EventPoller(
+        { fetchEvents: small.fetchEvents },
+        descriptor,
+        vi.fn(),
+        { pollInterval: 100, maxBackoff: 300, maxErrors: 10 },
+      );
+      smallPoller.start();
+      await advanceTimersByTimeAsync(850);
+      smallPoller.stop();
+      expect(small.gaps()).toEqual([200, 300, 300]);
+
+      const large = timedAdapter();
+      const largePoller = new EventPoller(
+        { fetchEvents: large.fetchEvents },
+        descriptor,
+        vi.fn(),
+        { pollInterval: 40_000, maxBackoff: 100_000, maxErrors: 10 },
+      );
+      largePoller.start();
+      for (let i = 0; i < 3; i++) await advanceTimersToNextTimerAsync();
+      largePoller.stop();
+      expect(large.gaps()).toEqual([80_000, 100_000]);
+    });
+
+    it("honours maxBackoff below pollInterval (including 0) and still resets to pollInterval on success", async () => {
+      const low = timedAdapter((n) => n === 3);
+      const lowPoller = new EventPoller(
+        { fetchEvents: low.fetchEvents },
+        descriptor,
+        vi.fn(),
+        { pollInterval: 200, maxBackoff: 50, maxErrors: 10 },
+      );
+      lowPoller.start();
+      await advanceTimersByTimeAsync(360);
+      lowPoller.stop();
+      // Fail (50), fail (50), succeed (200), fail (50).
+      expect(low.gaps()).toEqual([50, 50, 200, 50]);
+
+      const zero = timedAdapter();
+      const zeroPoller = new EventPoller(
+        { fetchEvents: zero.fetchEvents },
+        descriptor,
+        vi.fn(),
+        { pollInterval: 100, maxBackoff: 0, maxErrors: 3 },
+      );
+      zeroPoller.start();
+      for (let i = 0; i < 3; i++) await advanceTimersByTimeAsync(0);
+      expect(zero.fetchEvents).toHaveBeenCalledTimes(3);
+      expect(zeroPoller.active).toBe(false);
+    });
+
+    it("throws StreamdError when constructed with an invalid maxBackoff", () => {
+      const adapter = createMockAdapter([]);
+      for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+        expect(
+          () => new EventPoller(adapter, descriptor, vi.fn(), { maxBackoff: bad }),
+        ).toThrow(StreamdError);
+        expect(
+          () => new EventPoller(adapter, descriptor, vi.fn(), { maxBackoff: bad }),
+        ).toThrow(/Invalid maxBackoff/);
+      }
     });
   });
 
@@ -1038,5 +1155,320 @@ describe("EventPoller signal", () => {
     poller.start();
     controller.abort();
     expect(poller.active).toBe(false);
+  });
+});
+
+describe("EventPoller status", () => {
+  let now = 10_000;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    now = 10_000;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("reports initial status before start, after start with a seeded cursor, and on a pre-aborted signal", () => {
+    const adapter = createMockAdapter([]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      cursor: "42",
+    });
+    expect(poller.status).toEqual({
+      active: false,
+      cursor: "42",
+      lastVersion: undefined,
+      consecutiveErrors: 0,
+      lastSuccessAt: undefined,
+    });
+
+    poller.start();
+    expect(poller.status).toEqual({
+      active: true,
+      cursor: "42",
+      lastVersion: undefined,
+      consecutiveErrors: 0,
+      lastSuccessAt: undefined,
+    });
+    poller.stop();
+
+    const aborted = new EventPoller(adapter, descriptor, vi.fn(), {
+      signal: AbortSignal.abort(),
+    });
+    aborted.start();
+    expect(aborted.status).toEqual({
+      active: false,
+      cursor: undefined,
+      lastVersion: undefined,
+      consecutiveErrors: 0,
+      lastSuccessAt: undefined,
+    });
+  });
+
+  it("tracks lastVersion, cursor, and lastSuccessAt across empty, filtered, multi-event, and out-of-order pages", async () => {
+    const adapter = createMockAdapter([
+      page([], 10),
+      page([makeEvent(5), makeEvent(9), makeEvent(12)], 20),
+      page([makeEvent(7)], 30),
+    ]);
+    const versionsInCallback: Array<bigint | undefined> = [];
+    const lastSuccessInCallback: Array<number | undefined> = [];
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      () => {
+        versionsInCallback.push(poller.status.lastVersion);
+        lastSuccessInCallback.push(poller.status.lastSuccessAt);
+      },
+      {
+        pollInterval: 100,
+        where: (e) => e.version !== 12n,
+      },
+    );
+    poller.start();
+
+    // First poll: empty page at 10_000.
+    await advanceTimersByTimeAsync(0);
+    expect(poller.status).toEqual({
+      active: true,
+      cursor: "10",
+      lastVersion: undefined,
+      consecutiveErrors: 0,
+      lastSuccessAt: 10_000,
+    });
+
+    // Second poll at 10_100: events 5 and 9 match where, 12 is filtered out
+    // after being marked seen, so lastVersion reaches 12n.
+    now = 10_100;
+    await advanceTimersByTimeAsync(100);
+    expect(versionsInCallback).toEqual([5n, 9n]);
+    expect(lastSuccessInCallback).toEqual([10_000, 10_000]);
+    expect(poller.status).toEqual({
+      active: true,
+      cursor: "20",
+      lastVersion: 12n,
+      consecutiveErrors: 0,
+      lastSuccessAt: 10_100,
+    });
+
+    // Third poll at 10_200: out-of-order lower version 7n does not move lastVersion backwards.
+    now = 10_200;
+    await advanceTimersByTimeAsync(100);
+    expect(poller.status).toEqual({
+      active: true,
+      cursor: "30",
+      lastVersion: 12n,
+      consecutiveErrors: 0,
+      lastSuccessAt: 10_200,
+    });
+
+    poller.stop();
+  });
+
+  it("tracks consecutiveErrors across failures and resets on a successful poll while ignoring callback errors", async () => {
+    now = 50_000;
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockResolvedValueOnce(page([makeEvent(3)], 4))
+      .mockRejectedValueOnce(new Error("down 1"))
+      .mockRejectedValueOnce(new Error("down 2"))
+      .mockResolvedValueOnce(page([makeEvent(8)], 9))
+      .mockRejectedValue(new Error("down final"));
+    const statusAtError: Array<{
+      active: boolean;
+      consecutiveErrors: number;
+      lastVersion: bigint | undefined;
+      lastSuccessAt: number | undefined;
+    }> = [];
+    const poller = new EventPoller(
+      { fetchEvents },
+      descriptor,
+      (e) => {
+        if (e.version === 8n) throw new Error("callback bug");
+      },
+      {
+        pollInterval: 100,
+        maxErrors: 2,
+        onError: (err) => {
+          if (err instanceof StreamdPollingError) {
+            const s = poller.status;
+            statusAtError.push({
+              active: s.active,
+              consecutiveErrors: s.consecutiveErrors,
+              lastVersion: s.lastVersion,
+              lastSuccessAt: s.lastSuccessAt,
+            });
+          }
+        },
+      },
+    );
+    poller.start();
+
+    // Poll 1 at 50_000 succeeds.
+    await advanceTimersByTimeAsync(0);
+    expect(poller.status).toEqual({
+      active: true,
+      cursor: "4",
+      lastVersion: 3n,
+      consecutiveErrors: 0,
+      lastSuccessAt: 50_000,
+    });
+
+    // Poll 2 at 50_100 fails (1/2).
+    now = 50_100;
+    await advanceTimersByTimeAsync(100);
+    expect(poller.status).toEqual({
+      active: true,
+      cursor: "4",
+      lastVersion: 3n,
+      consecutiveErrors: 1,
+      lastSuccessAt: 50_000,
+    });
+
+    // Poll 3 at 50_300 fails (2/2) and auto-stops.
+    now = 50_300;
+    await advanceTimersByTimeAsync(200);
+    expect(poller.status).toEqual({
+      active: false,
+      cursor: "4",
+      lastVersion: 3n,
+      consecutiveErrors: 2,
+      lastSuccessAt: 50_000,
+    });
+    expect(statusAtError).toEqual([
+      { active: true, consecutiveErrors: 1, lastVersion: 3n, lastSuccessAt: 50_000 },
+      { active: false, consecutiveErrors: 2, lastVersion: 3n, lastSuccessAt: 50_000 },
+    ]);
+
+    // Restart and let poll 4 succeed despite a throwing callback: consecutiveErrors resets to 0.
+    now = 50_400;
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.status).toEqual({
+      active: true,
+      cursor: "9",
+      lastVersion: 8n,
+      consecutiveErrors: 0,
+      lastSuccessAt: 50_400,
+    });
+
+    poller.stop();
+  });
+
+  it("holds cursor and lastSuccessAt while an async handler is pending and when stopped mid-page", async () => {
+    now = 20_000;
+    let releaseFirst!: () => void;
+    let releaseSecond!: () => void;
+    const adapter = createMockAdapter([
+      page([makeEvent(1)], 2),
+      page([makeEvent(10), makeEvent(20)], 3),
+    ]);
+    const callback = vi
+      .fn<(e: StreamdEvent) => Promise<void> | void>()
+      .mockImplementationOnce(() => new Promise<void>((r) => (releaseFirst = r)))
+      .mockImplementationOnce(() => new Promise<void>((r) => (releaseSecond = r)));
+
+    const poller = new EventPoller(adapter, descriptor, callback, {
+      pollInterval: 100,
+      cursor: "0",
+    });
+    poller.start();
+
+    await advanceTimersByTimeAsync(0);
+    // While event 1's handler is pending, lastVersion is 1n, but cursor and lastSuccessAt have not advanced.
+    expect(poller.status).toEqual({
+      active: true,
+      cursor: "0",
+      lastVersion: 1n,
+      consecutiveErrors: 0,
+      lastSuccessAt: undefined,
+    });
+
+    now = 20_050;
+    releaseFirst();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.status).toEqual({
+      active: true,
+      cursor: "2",
+      lastVersion: 1n,
+      consecutiveErrors: 0,
+      lastSuccessAt: 20_050,
+    });
+
+    // Next poll starts at 20_150 and pauses on event 10; stop before it resolves.
+    now = 20_150;
+    await advanceTimersByTimeAsync(100);
+    expect(poller.status.lastVersion).toBe(10n);
+    expect(poller.status.cursor).toBe("2");
+    expect(poller.status.lastSuccessAt).toBe(20_050);
+
+    poller.stop();
+    releaseSecond();
+    await advanceTimersByTimeAsync(0);
+
+    // Stopped mid-page: event 20 was never seen, cursor stayed "2", and lastSuccessAt stayed 20_050.
+    expect(poller.status).toEqual({
+      active: false,
+      cursor: "2",
+      lastVersion: 10n,
+      consecutiveErrors: 0,
+      lastSuccessAt: 20_050,
+    });
+  });
+
+  it("leaves status untouched when a fetch resolves or rejects after stop, and returns an isolated snapshot", async () => {
+    let resolveStale!: (p: EventPage) => void;
+    let rejectStale!: (e: Error) => void;
+    const adapter: EventAdapter = {
+      fetchEvents: vi
+        .fn<EventAdapter["fetchEvents"]>()
+        .mockImplementationOnce(() => new Promise<EventPage>((r) => (resolveStale = r)))
+        .mockImplementationOnce(() => new Promise<EventPage>((_, r) => (rejectStale = r))),
+    };
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { cursor: "5" });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    poller.stop();
+    resolveStale(page([makeEvent(99)], 100));
+    await advanceTimersByTimeAsync(0);
+
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    poller.stop();
+    rejectStale(new Error("stale error"));
+    await advanceTimersByTimeAsync(0);
+
+    const snap = poller.status as {
+      active: boolean;
+      cursor: string | undefined;
+      lastVersion: bigint | undefined;
+      consecutiveErrors: number;
+      lastSuccessAt: number | undefined;
+    };
+    expect(snap).toEqual({
+      active: false,
+      cursor: "5",
+      lastVersion: undefined,
+      consecutiveErrors: 0,
+      lastSuccessAt: undefined,
+    });
+
+    snap.active = true;
+    snap.cursor = "mutated";
+    snap.lastVersion = 999n;
+    snap.consecutiveErrors = 77;
+    snap.lastSuccessAt = 12345;
+
+    expect(poller.status).toEqual({
+      active: false,
+      cursor: "5",
+      lastVersion: undefined,
+      consecutiveErrors: 0,
+      lastSuccessAt: undefined,
+    });
   });
 });

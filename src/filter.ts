@@ -119,6 +119,14 @@ export function some(...predicates: EventPredicate[]): EventPredicate {
   return (event) => predicates.some((p) => p(event));
 }
 
+/** Negates `predicate`; an event matches when `predicate(event)` is false. */
+export function not(predicate: EventPredicate): EventPredicate {
+  if (typeof predicate !== "function") {
+    throw new StreamdError("Predicate must be a function");
+  }
+  return (event) => !predicate(event);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

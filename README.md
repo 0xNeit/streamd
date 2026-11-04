@@ -43,15 +43,28 @@ const sub = streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
   (event) => console.log(event),
   {
-    pollInterval: 3000, // ms between polls (default 1000)
-    batchSize: 25,      // events fetched per poll (default 25)
-    maxErrors: 10,      // consecutive failures before stopping (default 10)
+    pollInterval: 3000,  // ms between polls (default 1000)
+    batchSize: 25,       // events fetched per poll (default 25)
+    maxErrors: 10,       // consecutive failures before stopping (default 10)
+    maxBackoff: 60_000,  // max backoff delay in ms on failures (default 60000)
+    dedupWindow: 1000,   // seen-event dedup window size, 0 to disable (default 1000)
     onError: (err) => console.error(err),
   },
 );
 
+console.log(sub.status);
+// { active, cursor, lastVersion, consecutiveErrors, lastSuccessAt }
+
 sub.unsubscribe();
 ```
+
+`sub.status` returns a snapshot of the subscription's polling state: `active`
+(`boolean`), `cursor` (`string | undefined`, after the last finished page),
+`lastVersion` (`bigint | undefined`, highest `event.version` seen so far),
+`consecutiveErrors` (`number`, reset to `0` after each successful poll), and
+`lastSuccessAt` (`number | undefined`, `Date.now()` in ms when the last poll
+finished). Like `sub.cursor`, `sub.status` stays readable after
+`unsubscribe()`, `destroy()`, abort, or auto-stop.
 
 Handlers may be `async`: each one is awaited before the next event, and polling waits
 for the page to finish, so a slow handler slows the subscription down instead of piling
@@ -60,10 +73,15 @@ delivered. A handler that never settles stops delivery with nothing reported, so
 long-running work its own timeout; `unsubscribe()` still works.
 
 Listening polls under the hood. When the source reports more data is waiting,
-the poller fetches again immediately instead of waiting for the next interval.
-On errors it backs off exponentially, and stops after `maxErrors` failures in
-a row. Invalid input, such as a malformed address or cursor, stops it at once,
-since retrying cannot fix it.
+the poller fetches again immediately instead of waiting for the next interval,
+deduplicating seen `(version, eventIndex)` pairs across a sliding window of
+`dedupWindow` events (default `1000`, or `0` to disable client-side
+deduplication). On errors it backs off exponentially up to `maxBackoff` ms
+(default `60000`), and stops after `maxErrors` failures in a row. Invalid
+input, such as a malformed address or cursor, stops it at once, since retrying
+cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
+a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
+its own `onError`.
 
 ### Iterate live events
 
@@ -163,9 +181,13 @@ Every call takes an event descriptor:
 
 | `kind` | Matches | Example |
 |---|---|---|
-| `module` | Module events of one Move type | `{ kind: "module", eventType: "0x1::coin::WithdrawEvent" }` |
+| `module` | Module events of one or more Move types | `{ kind: "module", eventType: "0x1::coin::WithdrawEvent" }` or `{ kind: "module", eventType: ["0x1::fungible_asset::Withdraw", "0x1::fungible_asset::Deposit"] }` |
 | `handle` | A legacy `EventHandle` on an account | `{ kind: "handle", accountAddress, eventHandleStruct, fieldName }` |
 | `account` | Events from transactions an account **sent** | `{ kind: "account", accountAddress, eventTypes?: [...] }` |
+
+When `module.eventType` is an array of Move types, `FullnodeScanAdapter` serves
+all of them in a single transaction scan per page, delivering matches in
+`(version, eventIndex)` order.
 
 `account` only sees transactions the account signed. If someone else's
 transaction deposits into the account, that event belongs to the sender's
@@ -185,7 +207,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, ofType, every, some } from "streamd";
+import { involvesAddress, whereField, ofType, every, some, not } from "streamd";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -202,7 +224,8 @@ streamd.on(
   payload mentions the address anywhere. `0x1` and `0x000…01` count as the
   same address.
 - `ofType(...types)` matches exact event types.
-- `every(...predicates)` and `some(...predicates)` combine filters.
+- `every(...predicates)`, `some(...predicates)`, and `not(predicate)` combine
+  and negate filters.
 - Any `(event) => boolean` function works too.
 
 `limit` counts events *after* filtering, so a filter that rarely matches keeps
@@ -230,6 +253,50 @@ const streamd = new StreamdClient({ aptos, adapter: myIndexAdapter });
 An adapter has one method, `fetchEvents(descriptor, options)`, returning
 `{ events, nextCursor, hasMore }`. See the `EventAdapter` type for the full
 contract.
+
+Combine sources with `RoutingAdapter` (by descriptor `kind`, with an optional
+`default` for the rest) and `FallbackAdapter` (try sources in order on each
+call when one fails, while still rejecting invalid input at once):
+
+```ts
+import {
+  FallbackAdapter,
+  FullnodeScanAdapter,
+  RoutingAdapter,
+  StreamdClient,
+} from "streamd";
+
+const fullnode = new FallbackAdapter([
+  new FullnodeScanAdapter(primaryAptos),
+  new FullnodeScanAdapter(backupAptos),
+]);
+
+const streamd = new StreamdClient({
+  adapter: new RoutingAdapter({
+    module: myModuleIndexAdapter,
+    default: fullnode,
+  }),
+});
+```
+
+For offline unit tests, pass `MemoryAdapter` with a list of events (`aptos` is
+optional when a custom `adapter` is supplied):
+
+```ts
+import { MemoryAdapter, StreamdClient } from "streamd";
+
+const streamd = new StreamdClient({
+  adapter: new MemoryAdapter([
+    {
+      type: "0x1::fungible_asset::Deposit",
+      data: { store: "0x1", amount: "100" },
+      version: 1n,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+    },
+  ]),
+});
+```
 
 ## Development
 
