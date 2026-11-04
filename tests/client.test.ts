@@ -7,7 +7,7 @@ import {
 } from "./timers.js";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { StreamdClient } from "../src/client.js";
-import { involvesAddress } from "../src/filter.js";
+import { involvesAddress, whereField } from "../src/filter.js";
 import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
 import { StreamdError, StreamdTimeoutError } from "../src/errors.js";
 
@@ -272,6 +272,41 @@ describe("StreamdClient", () => {
     sub.unsubscribe();
 
     expect(received).toEqual([2n]);
+
+    client.destroy();
+  });
+
+  it("filters getLogs and on() by nested payload field via whereField", async () => {
+    const longOne =
+      "0x0000000000000000000000000000000000000000000000000000000000000001";
+    const page = {
+      events: [
+        { ...makeEvent(1), data: { store: { owner: "0x2" }, to: "0x1" } },
+        { ...makeEvent(2), data: { store: { owner: longOne }, to: "0x2" } },
+      ],
+      nextCursor: "3",
+      hasMore: false,
+    };
+
+    const client = new StreamdClient({
+      aptos: makeAptos(),
+      adapter: adapterOf([page, page]),
+    });
+    const logs = await client.getLogs(
+      { kind: "module", eventType: "0x1::test::Event" },
+      { where: whereField("store.owner", "0x1") },
+    );
+    expect(logs.map((l) => l.version)).toEqual([2n]);
+
+    const live: bigint[] = [];
+    const sub = client.on(
+      { kind: "module", eventType: "0x1::test::Event" },
+      (e) => live.push(e.version),
+      { where: whereField("store.owner", "0x1") },
+    );
+    await advanceTimersByTimeAsync(0);
+    sub.unsubscribe();
+    expect(live).toEqual([2n]);
 
     client.destroy();
   });
