@@ -987,3 +987,56 @@ describe("EventPoller", () => {
     expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("EventPoller signal", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("stops polling when the signal aborts, without reporting an error", async () => {
+    const adapter = createMockAdapter([]);
+    const onError = vi.fn();
+    const controller = new AbortController();
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      pollInterval: 100,
+      onError,
+      signal: controller.signal,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(150);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+
+    controller.abort();
+    expect(poller.active).toBe(false);
+    await advanceTimersByTimeAsync(500);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("never starts on an already-aborted signal", async () => {
+    const adapter = createMockAdapter([]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      signal: AbortSignal.abort(),
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(100);
+
+    expect(poller.active).toBe(false);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("detaches from the signal when stopped", () => {
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const poller = new EventPoller(createMockAdapter([]), descriptor, vi.fn(), {
+      signal: controller.signal,
+    });
+    poller.start();
+    poller.stop();
+
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+    // Restarting after the stop still honours the signal.
+    poller.start();
+    controller.abort();
+    expect(poller.active).toBe(false);
+  });
+});

@@ -62,6 +62,20 @@ export interface StreamdEvent<TData = unknown> {
    * which keeps the pair unique and stable across pages.
    */
   eventIndex: number;
+  /**
+   * Hex hash of the transaction that emitted this event, when the event
+   * source had the transaction in hand (`module` and `account` paths on
+   * `FullnodeScanAdapter`). Omitted on `handle` events, whose endpoint returns
+   * events without their transactions.
+   */
+  transactionHash?: string;
+  /**
+   * Transaction timestamp in microseconds since the Unix epoch (the fullnode's
+   * `u64` `timestamp`), when the event source had the transaction in hand and
+   * the transaction carries one. Omitted on `handle` events and on genesis
+   * transactions.
+   */
+  timestamp?: bigint;
 }
 
 // ---- Filters ----
@@ -69,8 +83,9 @@ export interface StreamdEvent<TData = unknown> {
 /**
  * Client-side test applied to each event after it is fetched.
  *
- * Used for anything the chain APIs can't filter on — most importantly the
- * account inside a module event's `data`. See `involvesAddress`.
+ * Used for anything the chain APIs can't filter on, most importantly fields
+ * or addresses inside a module event's `data`. See `whereField` and
+ * `involvesAddress`.
  */
 export type EventPredicate = (event: StreamdEvent) => boolean;
 
@@ -97,6 +112,11 @@ export interface EventFilter {
    * when omitted. Use it to put a ceiling on a filtered walk.
    */
   maxPages?: number;
+  /**
+   * Aborting rejects `getLogs()` or the pending/next `getLogsIterator()` page
+   * with the signal's `reason` and stops fetching further pages.
+   */
+  signal?: AbortSignal;
 }
 
 /**
@@ -105,7 +125,8 @@ export interface EventFilter {
  * `where` is deliberately absent: predicates are functions, so they cannot be
  * pushed down to a remote data source. Query and poller apply them to results.
  */
-export interface FetchOptions extends Omit<EventFilter, "where" | "maxPages"> {
+export interface FetchOptions
+  extends Omit<EventFilter, "where" | "maxPages" | "signal"> {
   orderBy?: "asc" | "desc";
   /**
    * Opaque resume token returned by this adapter's previous page. When
@@ -153,7 +174,7 @@ export interface ListenerOptions {
   maxErrors?: number;
   /**
    * Deliver only events satisfying this predicate. Applied client-side after
-   * fetching. See `involvesAddress`.
+   * fetching. See `whereField` and `involvesAddress`.
    */
   where?: EventPredicate;
   /**
@@ -162,6 +183,20 @@ export interface ListenerOptions {
    * surfaces as an uncaught error.
    */
   onError?: (error: Error) => void;
+  /**
+   * Aborting stops the subscription as `unsubscribe()` does, without calling
+   * `onError`. Already aborted, it never polls. `once()` and `stream()` also
+   * reject with the signal's `reason`.
+   */
+  signal?: AbortSignal;
+}
+
+export interface OnceOptions extends ListenerOptions {
+  /**
+   * Milliseconds to wait before unsubscribing and rejecting with
+   * `StreamdTimeoutError` (0 to 2147483647).
+   */
+  timeout?: number;
 }
 
 // ---- Client config ----

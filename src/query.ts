@@ -4,6 +4,7 @@ import type {
   EventFilter,
   StreamdEvent,
 } from "./types.js";
+import { raceAbort } from "./utils.js";
 
 const DEFAULT_PAGE_SIZE = 25;
 
@@ -36,13 +37,14 @@ export class EventQuery {
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    const { where, maxPages, ...adapterFilter } = filter;
+    const { where, maxPages, signal, ...adapterFilter } = filter;
     const limit = filter.limit;
     let cursor: string | undefined;
     let fetched = 0;
     let pages = 0;
 
     while (true) {
+      if (signal?.aborted) throw signal.reason;
       if (maxPages !== undefined && pages >= maxPages) break;
       pages++;
 
@@ -50,16 +52,19 @@ export class EventQuery {
         limit !== undefined ? Math.min(pageSize, limit - fetched) : pageSize;
       if (batchLimit <= 0) break;
 
-      const page = await this.adapter.fetchEvents(descriptor, {
-        ...adapterFilter,
-        // The cursor carries position after the first page; fromVersion and
-        // offset only seed the initial request.
-        fromVersion: cursor === undefined ? filter.fromVersion : undefined,
-        offset: cursor === undefined ? filter.offset : undefined,
-        cursor,
-        limit: batchLimit,
-        orderBy: "asc",
-      });
+      const page = await raceAbort(
+        this.adapter.fetchEvents(descriptor, {
+          ...adapterFilter,
+          // The cursor carries position after the first page; fromVersion and
+          // offset only seed the initial request.
+          fromVersion: cursor === undefined ? filter.fromVersion : undefined,
+          offset: cursor === undefined ? filter.offset : undefined,
+          cursor,
+          limit: batchLimit,
+          orderBy: "asc",
+        }),
+        signal,
+      );
 
       // `where` runs here rather than in the adapter: predicates are functions
       // and cannot be pushed down to a remote source. `limit` counts what

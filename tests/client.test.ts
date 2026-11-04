@@ -7,9 +7,9 @@ import {
 } from "./timers.js";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { StreamdClient } from "../src/client.js";
-import { involvesAddress } from "../src/filter.js";
+import { involvesAddress, whereField } from "../src/filter.js";
 import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
-import { StreamdError } from "../src/errors.js";
+import { StreamdError, StreamdTimeoutError } from "../src/errors.js";
 
 function makeAptos() {
   // Constructing the SDK performs no network I/O; the injected adapter below
@@ -85,6 +85,53 @@ describe("StreamdClient", () => {
 
     expect(sub1.active).toBe(false);
     expect(sub2.active).toBe(false);
+  });
+
+  it("on() forgets a subscription whose signal aborts", async () => {
+    const adapter = adapterOf([]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const controller = new AbortController();
+    const onError = vi.fn();
+    const sub = client.on({ kind: "module", eventType: "0x1::test::Event" }, () => {}, {
+      pollInterval: 100,
+      onError,
+      signal: controller.signal,
+    });
+    await advanceTimersByTimeAsync(0);
+    expect(subscriptionCount(client)).toBe(1);
+
+    controller.abort();
+    expect(sub.active).toBe(false);
+    expect(subscriptionCount(client)).toBe(0);
+    await advanceTimersByTimeAsync(500);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("on() with an already-aborted signal never polls", async () => {
+    const adapter = adapterOf([]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const sub = client.on({ kind: "module", eventType: "0x1::test::Event" }, () => {}, {
+      signal: AbortSignal.abort(),
+    });
+    await advanceTimersByTimeAsync(100);
+
+    expect(sub.active).toBe(false);
+    expect(subscriptionCount(client)).toBe(0);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("on() detaches from the signal on unsubscribe", () => {
+    const client = new StreamdClient({ aptos: makeAptos(), adapter: adapterOf([]) });
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const sub = client.on({ kind: "module", eventType: "0x1::test::Event" }, () => {}, {
+      signal: controller.signal,
+    });
+    sub.unsubscribe();
+
+    // One listener is the poller's, the other the client's.
+    expect(remove).toHaveBeenCalledTimes(2);
   });
 
   it("uses the injected adapter instead of the fullnode default", async () => {
@@ -225,6 +272,41 @@ describe("StreamdClient", () => {
     sub.unsubscribe();
 
     expect(received).toEqual([2n]);
+
+    client.destroy();
+  });
+
+  it("filters getLogs and on() by nested payload field via whereField", async () => {
+    const longOne =
+      "0x0000000000000000000000000000000000000000000000000000000000000001";
+    const page = {
+      events: [
+        { ...makeEvent(1), data: { store: { owner: "0x2" }, to: "0x1" } },
+        { ...makeEvent(2), data: { store: { owner: longOne }, to: "0x2" } },
+      ],
+      nextCursor: "3",
+      hasMore: false,
+    };
+
+    const client = new StreamdClient({
+      aptos: makeAptos(),
+      adapter: adapterOf([page, page]),
+    });
+    const logs = await client.getLogs(
+      { kind: "module", eventType: "0x1::test::Event" },
+      { where: whereField("store.owner", "0x1") },
+    );
+    expect(logs.map((l) => l.version)).toEqual([2n]);
+
+    const live: bigint[] = [];
+    const sub = client.on(
+      { kind: "module", eventType: "0x1::test::Event" },
+      (e) => live.push(e.version),
+      { where: whereField("store.owner", "0x1") },
+    );
+    await advanceTimersByTimeAsync(0);
+    sub.unsubscribe();
+    expect(live).toEqual([2n]);
 
     client.destroy();
   });
@@ -476,6 +558,165 @@ describe("StreamdClient", () => {
     expect(outcome).toBeInstanceOf(StreamdError);
     expect(surfaced.thrown.map((e) => (e as Error).message)).toEqual(["handler bug"]);
 
+    client.destroy();
+  });
+
+  it("once() rejects with the signal reason on abort and stops fetching", async () => {
+    const adapter = adapterOf([]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const controller = new AbortController();
+    const onError = vi.fn();
+    const reason = new Error("caller cancelled");
+    const promise = client.once(
+      { kind: "module", eventType: "0x1::test::Event" },
+      { pollInterval: 100, onError, signal: controller.signal },
+    );
+    let outcome: unknown = "pending";
+    promise.then(
+      () => (outcome = "resolved"),
+      (err) => (outcome = err),
+    );
+
+    await advanceTimersByTimeAsync(0);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+    expect(subscriptionCount(client)).toBe(1);
+
+    controller.abort(reason);
+    await advanceTimersByTimeAsync(500);
+
+    expect(outcome).toBe(reason);
+    expect(subscriptionCount(client)).toBe(0);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+  });
+
+  it("once() with an already-aborted signal rejects without fetching", async () => {
+    const adapter = adapterOf([
+      { events: [makeEvent(1)], nextCursor: "2", hasMore: false },
+    ]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const reason = new Error("already aborted");
+    const promise = client.once(
+      { kind: "module", eventType: "0x1::test::Event" },
+      { signal: AbortSignal.abort(reason) },
+    );
+    let outcome: unknown = "pending";
+    promise.then(
+      () => (outcome = "resolved"),
+      (err) => (outcome = err),
+    );
+
+    await advanceTimersByTimeAsync(100);
+    expect(outcome).toBe(reason);
+    expect(subscriptionCount(client)).toBe(0);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("once() rejects with StreamdTimeoutError when the timeout elapses", async () => {
+    const adapter = adapterOf([]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const onError = vi.fn();
+    const promise = client.once(
+      { kind: "module", eventType: "0x1::test::Event" },
+      { pollInterval: 100, timeout: 250, onError, signal: controller.signal },
+    );
+    let outcome: unknown = "pending";
+    promise.then(
+      () => (outcome = "resolved"),
+      (err) => (outcome = err),
+    );
+
+    await advanceTimersByTimeAsync(200);
+    expect(outcome).toBe("pending");
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(3);
+
+    await advanceTimersByTimeAsync(50);
+    expect(outcome).toBeInstanceOf(StreamdTimeoutError);
+    expect((outcome as StreamdTimeoutError).timeout).toBe(250);
+    expect(subscriptionCount(client)).toBe(0);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(onError).not.toHaveBeenCalled();
+
+    await advanceTimersByTimeAsync(500);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(3);
+  });
+
+  it("once() clears its timer and detaches its abort listener when an event arrives", async () => {
+    const adapter = adapterOf([
+      { events: [], nextCursor: "1", hasMore: false },
+      { events: [makeEvent(42)], nextCursor: "43", hasMore: false },
+    ]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    const clear = vi.spyOn(globalThis, "clearTimeout");
+    const promise = client.once(
+      { kind: "module", eventType: "0x1::test::Event" },
+      { pollInterval: 100, timeout: 500, signal: controller.signal },
+    );
+
+    await advanceTimersByTimeAsync(100);
+    const event = await promise;
+    expect(event.version).toBe(42n);
+    expect(subscriptionCount(client)).toBe(0);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect(clear).toHaveBeenCalled();
+
+    await advanceTimersByTimeAsync(1000);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+    clear.mockRestore();
+  });
+
+  it("once() rejects an invalid timeout with StreamdError before subscribing", async () => {
+    const adapter = adapterOf([
+      { events: [makeEvent(1)], nextCursor: "2", hasMore: false },
+    ]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+
+    for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
+      let outcome: unknown = "pending";
+      client
+        .once({ kind: "module", eventType: "0x1::test::Event" }, { timeout: bad })
+        .then(
+          () => (outcome = "resolved"),
+          (err) => (outcome = err),
+        );
+      await advanceTimersByTimeAsync(0);
+      expect(outcome).toBeInstanceOf(StreamdError);
+      expect(outcome).not.toBeInstanceOf(StreamdTimeoutError);
+    }
+
+    expect(subscriptionCount(client)).toBe(0);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("delivers transactionHash and timestamp on events through getLogs and on()", async () => {
+    const enriched = {
+      ...makeEvent(10),
+      transactionHash: "0xabc123",
+      timestamp: 1700000010000000n,
+    };
+    const adapter = adapterOf([
+      { events: [enriched], nextCursor: "11", hasMore: false },
+      { events: [enriched], nextCursor: "11", hasMore: false },
+    ]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    const logs = await client.getLogs(descriptor);
+    expect(logs[0]?.transactionHash).toBe("0xabc123");
+    expect(logs[0]?.timestamp).toBe(1700000010000000n);
+
+    const live: Array<{ hash?: string; ts?: bigint }> = [];
+    const sub = client.on(descriptor, (e) => {
+      live.push({ hash: e.transactionHash, ts: e.timestamp });
+    });
+    await advanceTimersByTimeAsync(0);
+    sub.unsubscribe();
+
+    expect(live).toEqual([{ hash: "0xabc123", ts: 1700000010000000n }]);
     client.destroy();
   });
 });

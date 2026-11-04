@@ -110,6 +110,50 @@ describe("FullnodeScanAdapter module scan", () => {
     expect(page.events.map((e) => e.eventIndex)).toEqual([1, 2]);
   });
 
+  it("populates transactionHash and timestamp on module events when present on the transaction", async () => {
+    const txns = [
+      {
+        version: "0",
+        hash: "0xgenesis",
+        type: "genesis_transaction",
+        events: [{ type: TYPE, data: { v: 0 }, sequence_number: "0" }],
+      },
+      {
+        version: "1",
+        hash: "0xdeadbeef",
+        timestamp: "1700000000123456",
+        type: "user_transaction",
+        events: [
+          { type: OTHER, data: { v: 1 }, sequence_number: "0" },
+          { type: TYPE, data: { v: 1 }, sequence_number: "0" },
+          { type: TYPE, data: { v: 2 }, sequence_number: "1" },
+        ],
+      },
+      {
+        version: "2",
+        hash: "0xskipped",
+        timestamp: "not-a-bigint",
+        type: "user_transaction",
+        events: [{ type: OTHER, data: { v: 2 }, sequence_number: "0" }],
+      },
+    ];
+    const { aptos } = fakeNode(chain(2, txns));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(moduleDesc, {
+      fromVersion: 0n,
+      toVersion: 2n,
+    });
+
+    expect(page.events).toHaveLength(3);
+    expect(page.events[0]?.transactionHash).toBe("0xgenesis");
+    expect(page.events[0]?.timestamp).toBeUndefined();
+    expect("timestamp" in page.events[0]!).toBe(false);
+
+    expect(page.events[1]?.transactionHash).toBe("0xdeadbeef");
+    expect(page.events[1]?.timestamp).toBe(1700000000123456n);
+    expect(page.events[2]?.transactionHash).toBe("0xdeadbeef");
+    expect(page.events[2]?.timestamp).toBe(1700000000123456n);
+  });
+
   it("reports hasMore when it stops on the scan budget", async () => {
     const txns = Array.from({ length: 50 }, (_, i) => txn(i, [OTHER]));
     const { aptos, calls } = fakeNode(chain(100, txns));
@@ -170,6 +214,31 @@ describe("FullnodeScanAdapter account walk", () => {
     expect(await start({ fromVersion: 9n })).toBe(0);
     expect(await start({})).toBe(3);
   });
+
+  it("populates transactionHash and timestamp on account events", async () => {
+    const history = [
+      {
+        ...txn(5, [TYPE]),
+        hash: "0xacc5",
+        timestamp: "1700000005000000",
+      },
+      {
+        ...txn(9, [TYPE]),
+        hash: "0xacc9",
+        timestamp: "1700000009000000",
+      },
+    ];
+    const { aptos } = fakeNode(account(history));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(accountDesc, {
+      offset: 0,
+    });
+
+    expect(page.events.map((e) => e.transactionHash)).toEqual(["0xacc5", "0xacc9"]);
+    expect(page.events.map((e) => e.timestamp)).toEqual([
+      1700000005000000n,
+      1700000009000000n,
+    ]);
+  });
 });
 
 const HANDLE_PATH = `accounts/0x${"0".repeat(63)}1/events/0x1%3A%3Atest%3A%3AStore/pings`;
@@ -219,6 +288,10 @@ describe("FullnodeScanAdapter handle events", () => {
       page.events.find((e) => e.sequenceNumber === 1n)?.eventIndex;
     expect(indexOf(first)).toBe(1);
     expect(indexOf(second)).toBe(1);
+    expect(first.events[0]?.transactionHash).toBeUndefined();
+    expect(first.events[0]?.timestamp).toBeUndefined();
+    expect("transactionHash" in first.events[0]!).toBe(false);
+    expect("timestamp" in first.events[0]!).toBe(false);
   });
 
   it("requests a short address in its long form", async () => {

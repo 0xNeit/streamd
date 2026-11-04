@@ -16,7 +16,7 @@ const streamd = new StreamdClient({
 
 streamd.on(
   { kind: "module", eventType: "0x1::transaction_fee::FeeStatement" },
-  (event) => console.log(event.version, event.data),
+  (event) => console.log(event.version, event.transactionHash, event.data),
 );
 ```
 
@@ -104,14 +104,14 @@ idempotent on `(version, eventIndex)`.
 ### Wait for one event
 
 ```ts
-const event = await streamd.once({
-  kind: "module",
-  eventType: "0x1::transaction_fee::FeeStatement",
-});
+const event = await streamd.once(
+  { kind: "module", eventType: "0x1::transaction_fee::FeeStatement" },
+  { timeout: 10_000 }, // optional, ms
+);
 ```
 
-The promise rejects if polling gives up after `maxErrors`, or straight away on
-invalid input.
+The promise rejects with `StreamdTimeoutError` if `timeout` elapses first, if
+polling gives up after `maxErrors`, or straight away on invalid input.
 
 ### Query history
 
@@ -129,6 +129,27 @@ for await (const page of streamd.getLogsIterator(descriptor, { limit: 1000 }, 10
   handle(page);
 }
 ```
+
+### Cancel with AbortSignal
+
+Every listener and query takes a standard `signal`:
+
+```ts
+const controller = new AbortController();
+
+streamd.on(descriptor, handle, { signal: controller.signal });
+const logs = await streamd.getLogs(descriptor, {
+  fromVersion: 1_000_000n,
+  signal: AbortSignal.timeout(5000),
+});
+
+controller.abort();
+```
+
+Aborting `on()` unsubscribes quietly without calling `onError`. Aborting
+`once()`, `stream()`, `getLogs()` or `getLogsIterator()` stops polling or
+paging and rejects with `signal.reason`. An already-aborted signal never
+fetches.
 
 ### Clean up
 
@@ -150,21 +171,33 @@ Every call takes an event descriptor:
 transaction deposits into the account, that event belongs to the sender's
 transaction and won't appear.
 
+Each delivered `StreamdEvent` carries `type`, `data`, `version` (`bigint`),
+`sequenceNumber` (`bigint`), and `eventIndex` (`number`). Where the source
+transaction is in hand (`module` and `account` descriptors on
+`FullnodeScanAdapter`), events also carry `transactionHash` (`string`) and
+`timestamp` (`bigint`, microseconds since the Unix epoch). `handle` events
+come from an endpoint that omits the surrounding transaction, so both fields
+are `undefined` there (and `timestamp` is `undefined` on genesis transactions).
+
 ## Filtering
 
 Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, ofType, every, some } from "streamd";
+import { involvesAddress, whereField, ofType, every, some } from "streamd";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
   (event) => console.log(event),
-  { where: involvesAddress(myWallet) },
+  { where: whereField("store", myStore) },
 );
 ```
 
+- `whereField(path, value)` matches events whose `data` has `value` at `path`
+  (a dot-separated string such as `"store.owner"` or `"holders.0.owner"`, or an
+  array of keys and indices such as `["store", "owner"]` or `["key.with.dots"]`).
+  When `value` is an address, `0x1` and `0x000...01` count as the same address.
 - `involvesAddress(address, { fields?, maxDepth? })` matches events whose
   payload mentions the address anywhere. `0x1` and `0x000…01` count as the
   same address.
