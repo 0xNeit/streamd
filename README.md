@@ -63,7 +63,9 @@ Listening polls under the hood. When the source reports more data is waiting,
 the poller fetches again immediately instead of waiting for the next interval.
 On errors it backs off exponentially, and stops after `maxErrors` failures in
 a row. Invalid input, such as a malformed address or cursor, stops it at once,
-since retrying cannot fix it.
+since retrying cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })`
+to set a client-wide fallback for any `on()`, `once()`, or `stream()` call that
+omits its own `onError`.
 
 ### Iterate live events
 
