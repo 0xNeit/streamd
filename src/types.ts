@@ -186,9 +186,10 @@ export interface ListenerOptions {
    */
   where?: EventPredicate;
   /**
-   * Receives polling failures and errors thrown by `where` or the callback.
-   * A throw from it does not stop polling: it is rethrown on a microtask and
-   * surfaces as an uncaught error.
+   * Receives polling failures and errors thrown by `where` or the callback,
+   * overriding `StreamdConfig.onError` for this subscription. A throw from it
+   * does not stop polling: it is rethrown on a microtask and surfaces as an
+   * uncaught error.
    */
   onError?: (error: Error) => void;
   /**
@@ -214,6 +215,13 @@ export interface StreamdConfig {
   aptos: Aptos | AptosConfig;
   /** Default polling interval in ms (default: 1000) */
   defaultPollInterval?: number;
+  /**
+   * Fallback error handler for subscriptions (`on`, `once`, `stream`) that do
+   * not set their own `options.onError`. Receives polling failures and errors
+   * thrown by `where` or the callback; a throw from it is rethrown on a
+   * microtask without stopping polling.
+   */
+  onError?: (error: Error) => void;
   /**
    * Event source. Defaults to `FullnodeScanAdapter`, which reads from a
    * fullnode and therefore only sees unpruned recent history. Supply your
