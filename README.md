@@ -237,6 +237,31 @@ An adapter has one method, `fetchEvents(descriptor, options)`, returning
 `{ events, nextCursor, hasMore }`. See the `EventAdapter` type for the full
 contract.
 
+Combine sources with `RoutingAdapter` (by descriptor `kind`, with an optional
+`default` for the rest) and `FallbackAdapter` (try sources in order on each
+call when one fails, while still rejecting invalid input at once):
+
+```ts
+import {
+  FallbackAdapter,
+  FullnodeScanAdapter,
+  RoutingAdapter,
+  StreamdClient,
+} from "streamd";
+
+const fullnode = new FallbackAdapter([
+  new FullnodeScanAdapter(primaryAptos),
+  new FullnodeScanAdapter(backupAptos),
+]);
+
+const streamd = new StreamdClient({
+  adapter: new RoutingAdapter({
+    module: myModuleIndexAdapter,
+    default: fullnode,
+  }),
+});
+```
+
 For offline unit tests, pass `MemoryAdapter` with a list of events (`aptos` is
 optional when a custom `adapter` is supplied):
 
