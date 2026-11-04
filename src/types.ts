@@ -229,7 +229,8 @@ export interface StreamdConfig {
   /**
    * Event source. Defaults to `FullnodeScanAdapter`, which reads from a
    * fullnode and therefore only sees unpruned recent history. Supply
-   * `MemoryAdapter` to test handlers offline, or implement `EventAdapter` to
+   * `MemoryAdapter` to test handlers offline, compose sources with
+   * `RoutingAdapter` and `FallbackAdapter`, or implement `EventAdapter` to
    * query a self-hosted processor or third-party indexer (see `EventAdapter`
    * docs for the contract).
    */
