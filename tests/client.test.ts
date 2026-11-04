@@ -691,4 +691,32 @@ describe("StreamdClient", () => {
     expect(subscriptionCount(client)).toBe(0);
     expect(adapter.fetchEvents).not.toHaveBeenCalled();
   });
+
+  it("delivers transactionHash and timestamp on events through getLogs and on()", async () => {
+    const enriched = {
+      ...makeEvent(10),
+      transactionHash: "0xabc123",
+      timestamp: 1700000010000000n,
+    };
+    const adapter = adapterOf([
+      { events: [enriched], nextCursor: "11", hasMore: false },
+      { events: [enriched], nextCursor: "11", hasMore: false },
+    ]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    const logs = await client.getLogs(descriptor);
+    expect(logs[0]?.transactionHash).toBe("0xabc123");
+    expect(logs[0]?.timestamp).toBe(1700000010000000n);
+
+    const live: Array<{ hash?: string; ts?: bigint }> = [];
+    const sub = client.on(descriptor, (e) => {
+      live.push({ hash: e.transactionHash, ts: e.timestamp });
+    });
+    await advanceTimersByTimeAsync(0);
+    sub.unsubscribe();
+
+    expect(live).toEqual([{ hash: "0xabc123", ts: 1700000010000000n }]);
+    client.destroy();
+  });
 });

@@ -62,6 +62,20 @@ export interface StreamdEvent<TData = unknown> {
    * which keeps the pair unique and stable across pages.
    */
   eventIndex: number;
+  /**
+   * Hex hash of the transaction that emitted this event, when the event
+   * source had the transaction in hand (`module` and `account` paths on
+   * `FullnodeScanAdapter`). Omitted on `handle` events, whose endpoint returns
+   * events without their transactions.
+   */
+  transactionHash?: string;
+  /**
+   * Transaction timestamp in microseconds since the Unix epoch (the fullnode's
+   * `u64` `timestamp`), when the event source had the transaction in hand and
+   * the transaction carries one. Omitted on `handle` events and on genesis
+   * transactions.
+   */
+  timestamp?: bigint;
 }
 
 // ---- Filters ----

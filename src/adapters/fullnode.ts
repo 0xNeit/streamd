@@ -21,6 +21,8 @@ interface RawEvent {
 
 interface TransactionWithEvents {
   version?: string;
+  hash?: string;
+  timestamp?: string;
   type: string;
   events?: RawEvent[];
 }
@@ -42,15 +44,22 @@ function toStreamdEvents(
   keep: (type: string) => boolean,
 ): StreamdEvent[] {
   const out: StreamdEvent[] = [];
+  let timestamp: bigint | undefined;
   txn.events?.forEach((event, eventIndex) => {
     if (!keep(event.type)) return;
-    out.push({
+    const item: StreamdEvent = {
       type: event.type,
       data: event.data,
       version,
       sequenceNumber: BigInt(event.sequence_number ?? "0"),
       eventIndex,
-    });
+    };
+    if (txn.hash !== undefined) item.transactionHash = txn.hash;
+    if (txn.timestamp !== undefined) {
+      timestamp ??= BigInt(txn.timestamp);
+      item.timestamp = timestamp;
+    }
+    out.push(item);
   });
   return out;
 }
