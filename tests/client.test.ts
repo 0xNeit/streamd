@@ -6,12 +6,15 @@ import {
   mocked,
 } from "./timers.js";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { FallbackAdapter } from "../src/adapters/fallback.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
+import { RoutingAdapter } from "../src/adapters/routing.js";
 import { StreamdClient } from "../src/client.js";
 import { involvesAddress, whereField } from "../src/filter.js";
 import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
 import {
   StreamdError,
+  StreamdNetworkError,
   StreamdPollingError,
   StreamdTimeoutError,
 } from "../src/errors.js";
@@ -1015,6 +1018,74 @@ describe("StreamdClient", () => {
 
       client.destroy();
       resumedClient.destroy();
+    });
+  });
+
+  describe("RoutingAdapter and FallbackAdapter composition", () => {
+    const moduleDesc = { kind: "module", eventType: "0x1::test::Event" } as const;
+    const accountDesc = { kind: "account", accountAddress: "0x1" } as const;
+
+    it("composes RoutingAdapter and FallbackAdapter across getLogs, on, once, and stream", async () => {
+      let primaryCalls = 0;
+      const flakyModulePrimary: EventAdapter = {
+        fetchEvents: vi.fn(async () => {
+          if (primaryCalls++ === 0) {
+            throw new StreamdNetworkError("primary fullnode 503", 503);
+          }
+          return {
+            events: [makeEvent(11), makeEvent(12)],
+            nextCursor: "2",
+            hasMore: false,
+          };
+        }),
+      };
+      const moduleBackup = new MemoryAdapter([makeEvent(11), makeEvent(12)]);
+      const accountSource = new MemoryAdapter([makeEvent(99)]);
+
+      const adapter = new RoutingAdapter({
+        module: new FallbackAdapter([flakyModulePrimary, moduleBackup]),
+        default: accountSource,
+      });
+      const onError = vi.fn();
+      const client = new StreamdClient({ adapter, onError });
+
+      // First call on `module` falls back from flakyModulePrimary to moduleBackup seamlessly.
+      const moduleLogs = await client.getLogs(moduleDesc);
+      expect(moduleLogs.map((e) => e.version)).toEqual([11n, 12n]);
+      expect(flakyModulePrimary.fetchEvents).toHaveBeenCalledTimes(1);
+
+      const iterPages: bigint[][] = [];
+      for await (const page of client.getLogsIterator(moduleDesc, {}, 1)) {
+        iterPages.push(page.map((e) => e.version));
+      }
+      expect(iterPages).toEqual([[11n, 12n]]);
+
+      // `account` routes to default (accountSource).
+      const accountLogs = await client.getLogs(accountDesc);
+      expect(accountLogs.map((e) => e.version)).toEqual([99n]);
+
+      // Subsequent `on`, `once`, and `stream` calls on `module` succeed without firing onError.
+      const onceEvent = client.once(moduleDesc);
+      const seenOn: bigint[] = [];
+      const sub = client.on(moduleDesc, (e) => seenOn.push(e.version));
+      await advanceTimersByTimeAsync(0);
+      expect((await onceEvent).version).toBe(11n);
+      expect(seenOn).toEqual([11n, 12n]);
+      sub.unsubscribe();
+
+      const seenStream: bigint[] = [];
+      const streamLoop = (async () => {
+        for await (const e of client.stream(moduleDesc)) {
+          seenStream.push(e.version);
+          if (seenStream.length === 2) break;
+        }
+      })();
+      await advanceTimersByTimeAsync(0);
+      await streamLoop;
+      expect(seenStream).toEqual([11n, 12n]);
+      expect(onError).not.toHaveBeenCalled();
+
+      client.destroy();
     });
   });
 });

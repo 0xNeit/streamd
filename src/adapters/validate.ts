@@ -1,6 +1,6 @@
 import { StreamdError } from "../errors.js";
 import { normalizeAddress } from "../filter.js";
-import type { ModuleEventDescriptor } from "../types.js";
+import type { EventAdapter, ModuleEventDescriptor } from "../types.js";
 
 export const DEFAULT_LIMIT = 25;
 const MOVE_EVENT_TYPE = /^[^:\s]+::[^:\s]+::[^:\s<>]+(?:<.+>)?$/;
@@ -54,4 +54,15 @@ export function moduleTypeFilter(
   }
   const single = requireEventType(eventType);
   return (type) => type === single;
+}
+
+export function requireAdapter(value: unknown, label: string): EventAdapter {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    typeof (value as EventAdapter).fetchEvents !== "function"
+  ) {
+    throw new StreamdError(`${label} requires a valid EventAdapter`);
+  }
+  return value as EventAdapter;
 }
