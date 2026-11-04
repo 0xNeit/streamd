@@ -2,11 +2,19 @@ import type { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
 
 // ---- Event identification ----
 
-/** Modern module event: `${address}::${module}::${struct}` */
+/** Move struct tag identifying a module event: `${address}::${module}::${struct}` */
+export type MoveEventType = `${string}::${string}::${string}`;
+
+/** Modern module event: one `${address}::${module}::${struct}` or a list of them */
 export interface ModuleEventDescriptor {
   kind: "module";
-  /** Full type string, e.g. "0x1::coin::WithdrawEvent" */
-  eventType: `${string}::${string}::${string}`;
+  /**
+   * One Move event type or a non-empty list of them (e.g.
+   * `"0x1::coin::WithdrawEvent"` or
+   * `["0x1::fungible_asset::Withdraw", "0x1::fungible_asset::Deposit"]`),
+   * served by a single transaction scan on `FullnodeScanAdapter`.
+   */
+  eventType: MoveEventType | readonly MoveEventType[];
 }
 
 /** Legacy EventHandle event, identified by account + handle + field */

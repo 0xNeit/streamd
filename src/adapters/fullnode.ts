@@ -36,6 +36,7 @@ const DEFAULT_SCAN_BATCH = 100;
  */
 const DEFAULT_MAX_SCAN = 1000;
 const DEFAULT_LIMIT = 25;
+const MOVE_EVENT_TYPE = /^[^:\s]+::[^:\s]+::[^:\s<>]+(?:<.+>)?$/;
 
 /** Events of one transaction whose type passes `keep`, indexed by position in it. */
 function toStreamdEvents(
@@ -81,6 +82,29 @@ function parseCursor(cursor: string): bigint {
     throw new StreamdError(`Not a cursor this adapter issued: ${cursor}`);
   }
   return BigInt(cursor);
+}
+
+function requireEventType(value: unknown): string {
+  if (typeof value !== "string" || !MOVE_EVENT_TYPE.test(value)) {
+    throw new StreamdError(`Not a valid Move event type: ${String(value)}`);
+  }
+  return value;
+}
+
+function moduleTypeFilter(
+  eventType: ModuleEventDescriptor["eventType"],
+): (type: string) => boolean {
+  if (Array.isArray(eventType)) {
+    if (eventType.length === 0) {
+      throw new StreamdError(
+        "Module descriptor requires at least one eventType",
+      );
+    }
+    const types = new Set(eventType.map(requireEventType));
+    return (type) => types.has(type);
+  }
+  const single = requireEventType(eventType);
+  return (type) => type === single;
 }
 
 export interface FullnodeScanAdapterOptions {
@@ -180,46 +204,37 @@ export class FullnodeScanAdapter implements EventAdapter {
     descriptor: ModuleEventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage> {
+    const keep = moduleTypeFilter(descriptor.eventType);
     const wanted = options.limit ?? DEFAULT_LIMIT;
     if (wanted <= 0) return { events: [], hasMore: false };
 
     const head = await this.ledgerVersion();
     let next = this.resolveStart(options, head);
-
     const events: StreamdEvent[] = [];
     let scanned = 0;
     let hasMore = false;
 
-    while (events.length < wanted) {
+    while (events.length < wanted && next <= head) {
       if (options.toVersion !== undefined && next > options.toVersion) break;
-      if (next > head) break; // caught up to the chain head
-
       if (scanned >= this.maxScan) {
         hasMore = true; // stopped on budget, not on data
         break;
       }
 
-      const remainingScan = this.maxScan - scanned;
-      const limit = Math.min(this.scanBatch, remainingScan);
+      const limit = Math.min(this.scanBatch, this.maxScan - scanned);
       const txns = await this.getTransactions(next, limit);
       if (txns.length === 0) break;
 
       let stoppedAtToVersion = false;
-
       for (const txn of txns) {
         if (txn.version === undefined) continue;
         const version = BigInt(txn.version);
-
         if (options.toVersion !== undefined && version > options.toVersion) {
           stoppedAtToVersion = true;
           break;
         }
-
         next = version + 1n;
-
-        events.push(
-          ...toStreamdEvents(txn, version, (t) => t === descriptor.eventType),
-        );
+        events.push(...toStreamdEvents(txn, version, keep));
       }
 
       scanned += txns.length;

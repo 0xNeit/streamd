@@ -54,8 +54,9 @@ export class StreamdClient {
    *
    * Every subscription polls on its own. For a `module` descriptor on the
    * default adapter that means its own ledger read and transaction scan per
-   * poll, so N module subscriptions scan the same transactions N times. Keep
-   * them few on a shared or rate-limited node.
+   * poll, so N module subscriptions scan the same transactions N times. Pass an
+   * array of `eventType`s on one `module` descriptor to serve several Move
+   * types from a single scan.
    */
   on<TData = unknown>(
     descriptor: EventDescriptor,

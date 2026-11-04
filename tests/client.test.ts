@@ -719,4 +719,58 @@ describe("StreamdClient", () => {
     expect(live).toEqual([{ hash: "0xabc123", ts: 1700000010000000n }]);
     client.destroy();
   });
+
+  it("supports multi-type module descriptors across getLogs, on, once, and stream", async () => {
+    const ping: StreamdEvent = {
+      ...makeEvent(10, 0),
+      type: "0x1::test::Ping",
+    };
+    const pong: StreamdEvent = {
+      ...makeEvent(10, 1),
+      type: "0x1::test::Pong",
+    };
+    const page: EventPage = {
+      events: [ping, pong],
+      nextCursor: "11",
+      hasMore: false,
+    };
+    const adapter = adapterOf([page, page, page, page]);
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const descriptor = {
+      kind: "module",
+      eventType: ["0x1::test::Ping", "0x1::test::Pong"],
+    } as const;
+
+    const logs = await client.getLogs(descriptor);
+    expect(logs.map((e) => e.type)).toEqual([
+      "0x1::test::Ping",
+      "0x1::test::Pong",
+    ]);
+
+    const seenOn: string[] = [];
+    const sub = client.on(descriptor, (e) => seenOn.push(e.type));
+    await advanceTimersByTimeAsync(0);
+    sub.unsubscribe();
+    expect(seenOn).toEqual(["0x1::test::Ping", "0x1::test::Pong"]);
+
+    const oncePromise = client.once(descriptor);
+    await advanceTimersByTimeAsync(0);
+    expect((await oncePromise).type).toBe("0x1::test::Ping");
+
+    const seenStream: string[] = [];
+    const streamLoop = (async () => {
+      for await (const e of client.stream(descriptor)) {
+        seenStream.push(e.type);
+        if (seenStream.length === 2) break;
+      }
+    })();
+    await advanceTimersByTimeAsync(0);
+    await streamLoop;
+    expect(seenStream).toEqual(["0x1::test::Ping", "0x1::test::Pong"]);
+
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(4);
+    expect(mocked(adapter.fetchEvents).mock.calls[0]![0]).toEqual(descriptor);
+
+    client.destroy();
+  });
 });

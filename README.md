@@ -163,9 +163,13 @@ Every call takes an event descriptor:
 
 | `kind` | Matches | Example |
 |---|---|---|
-| `module` | Module events of one Move type | `{ kind: "module", eventType: "0x1::coin::WithdrawEvent" }` |
+| `module` | Module events of one or more Move types | `{ kind: "module", eventType: "0x1::coin::WithdrawEvent" }` or `{ kind: "module", eventType: ["0x1::fungible_asset::Withdraw", "0x1::fungible_asset::Deposit"] }` |
 | `handle` | A legacy `EventHandle` on an account | `{ kind: "handle", accountAddress, eventHandleStruct, fieldName }` |
 | `account` | Events from transactions an account **sent** | `{ kind: "account", accountAddress, eventTypes?: [...] }` |
+
+When `module.eventType` is an array of Move types, `FullnodeScanAdapter` serves
+all of them in a single transaction scan per page, delivering matches in
+`(version, eventIndex)` order.
 
 `account` only sees transactions the account signed. If someone else's
 transaction deposits into the account, that event belongs to the sender's
