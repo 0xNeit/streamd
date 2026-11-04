@@ -161,8 +161,8 @@ export class StreamdClient {
    * Live events as an async iterable: `for await (const e of client.stream(d))`.
    * Leaving the loop unsubscribes. Each event holds back the next poll until
    * the loop asks for the following one, and the loop throws if polling gives
-   * up (after `maxErrors`, or at once on invalid input). Other errors go to
-   * `options.onError`.
+   * up (after `maxErrors`, or at once on invalid input) or `options.signal`
+   * aborts. Other errors go to `options.onError`.
    */
   stream<TData = unknown>(
     descriptor: EventDescriptor,
@@ -175,6 +175,7 @@ export class StreamdClient {
         this.streams.add(close);
         return this.on<TData>(descriptor, callback, {
           ...options,
+          signal: undefined,
           onError: (err) => {
             onError(err);
             options?.onError?.(err);
@@ -182,6 +183,7 @@ export class StreamdClient {
         });
       },
       () => this.streams.delete(close),
+      options?.signal,
     );
     return stream;
   }
