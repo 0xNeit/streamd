@@ -29,3 +29,14 @@ export class StreamdPollingError extends StreamdError {
     this.name = "StreamdPollingError";
   }
 }
+
+export class StreamdTimeoutError extends StreamdError {
+  constructor(
+    message: string,
+    public readonly timeout: number,
+    cause?: unknown,
+  ) {
+    super(message, cause);
+    this.name = "StreamdTimeoutError";
+  }
+}

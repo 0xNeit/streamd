@@ -5,6 +5,7 @@ import type {
   EventDescriptor,
   EventFilter,
   ListenerOptions,
+  OnceOptions,
   StreamdConfig,
   StreamdEvent,
   Subscription,
@@ -12,9 +13,22 @@ import type {
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
 import { EventPoller } from "./poller.js";
 import { EventQuery } from "./query.js";
-import { StreamdPollingError } from "./errors.js";
+import {
+  StreamdError,
+  StreamdPollingError,
+  StreamdTimeoutError,
+} from "./errors.js";
 import { generateId, onAbort } from "./utils.js";
 import { eventStream } from "./stream.js";
+
+const MAX_TIMEOUT = 2_147_483_647;
+
+function checkTimeout(ms: number | undefined): StreamdError | undefined {
+  if (ms === undefined || (typeof ms === "number" && ms >= 0 && ms <= MAX_TIMEOUT)) {
+    return undefined;
+  }
+  return new StreamdError(`Invalid timeout: ${String(ms)} (expected 0..${MAX_TIMEOUT}ms)`);
+}
 
 export class StreamdClient {
   private readonly aptos: Aptos;
@@ -96,39 +110,50 @@ export class StreamdClient {
   /**
    * Wait for the next event matching the descriptor. Resolves with the first event received.
    *
-   * Rejects when polling gives up after `maxErrors`, at once when the adapter
-   * refuses the descriptor or options as invalid input, or on the first error
-   * thrown by `where`, even if a later event would have matched.
+   * Rejects with `signal.reason` on abort, with `StreamdTimeoutError` if
+   * `timeout` elapses first, when polling gives up after `maxErrors`, at once
+   * when the adapter refuses the descriptor or options as invalid input, or on
+   * the first error thrown by `where`, even if a later event would have matched.
    */
   once<TData = unknown>(
     descriptor: EventDescriptor,
-    options?: ListenerOptions,
+    options?: OnceOptions,
   ): Promise<StreamdEvent<TData>> {
+    const badTimeout = checkTimeout(options?.timeout);
+    if (badTimeout !== undefined) return Promise.reject(badTimeout);
+    if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
+
     return new Promise<StreamdEvent<TData>>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let detach = () => {};
+      const close = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        detach();
+        sub.unsubscribe();
+      };
+      const fail = (reason: unknown) => (close(), reject(reason));
       const sub = this.on<TData>(
         descriptor,
-        (event) => {
-          sub.unsubscribe();
-          resolve(event);
-        },
+        (event) => (close(), resolve(event)),
         {
           ...options,
+          signal: undefined,
           onError: (err) => {
             // Settle before the caller's handler runs, so a throw from it
             // cannot leave the promise pending.
-            if (!sub.active) {
-              // Polling stopped itself: maxErrors, or invalid input.
-              reject(err);
-            } else if (!(err instanceof StreamdPollingError)) {
-              // Filter and callback errors never stop the poller, so a
-              // predicate that always throws would otherwise wait forever.
-              sub.unsubscribe();
-              reject(err);
-            }
+            if (!sub.active || !(err instanceof StreamdPollingError)) fail(err);
             options?.onError?.(err);
           },
         },
       );
+      detach = onAbort(options?.signal, () => fail(options!.signal!.reason));
+      if (options?.timeout !== undefined) {
+        const ms = options.timeout;
+        timer = setTimeout(
+          () => fail(new StreamdTimeoutError(`Timed out after ${ms}ms waiting for event`, ms)),
+          ms,
+        );
+      }
     });
   }
 

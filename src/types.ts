@@ -170,6 +170,14 @@ export interface ListenerOptions {
   signal?: AbortSignal;
 }
 
+export interface OnceOptions extends ListenerOptions {
+  /**
+   * Milliseconds to wait before unsubscribing and rejecting with
+   * `StreamdTimeoutError` (0 to 2147483647).
+   */
+  timeout?: number;
+}
+
 // ---- Client config ----
 
 export interface StreamdConfig {
