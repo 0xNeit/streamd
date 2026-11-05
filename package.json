@@ -7,9 +7,6 @@
     ".": {
       "import": {
         "types": "./dist/index.d.ts",
-  "bin": {
-    "streamd": "./dist/cli.js"
-  },
         "default": "./dist/index.js"
       },
       "require": {
