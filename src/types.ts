@@ -121,7 +121,7 @@ export interface EventFilter {
    */
   maxPages?: number;
   /**
-   * Aborting rejects `getLogs()` or the pending/next `getLogsIterator()` page
+   * Aborting rejects `getEvents()` or the pending/next `getEventPages()` page
    * with the signal's `reason` and stops fetching further pages.
    */
   signal?: AbortSignal;

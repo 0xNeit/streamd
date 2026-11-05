@@ -54,7 +54,7 @@ function validateLimit(limit: number | undefined): number {
 
 /**
  * In-memory `EventAdapter` seeded with a static list of events, for testing
- * `on()`, `once()`, `stream()`, `getLogs()`, and `getLogsIterator()` handlers
+ * `on()`, `once()`, `stream()`, `getEvents()`, and `getEventPages()` handlers
  * and predicates offline without a fullnode.
  */
 export class MemoryAdapter implements EventAdapter {

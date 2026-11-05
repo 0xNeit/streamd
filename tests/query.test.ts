@@ -15,9 +15,9 @@ describe("EventQuery paging", () => {
       if (fetchEvents.mock.calls.length > 10) throw new Error("walk did not stop");
       return { events: [], nextCursor: "x", hasMore: true };
     });
-    const logs = await new EventQuery({ fetchEvents }).getLogs(descriptor);
+    const events = await new EventQuery({ fetchEvents }).getEvents(descriptor);
 
-    expect(logs).toEqual([]);
+    expect(events).toEqual([]);
     expect(fetchEvents).toHaveBeenCalledTimes(2);
   });
 
@@ -26,12 +26,12 @@ describe("EventQuery paging", () => {
       .fn<EventAdapter["fetchEvents"]>()
       .mockResolvedValueOnce({ events: [event(5)], nextCursor: "6", hasMore: true })
       .mockResolvedValueOnce({ events: [event(7)], nextCursor: "8", hasMore: false });
-    const logs = await new EventQuery({ fetchEvents }).getLogs(descriptor, {
+    const events = await new EventQuery({ fetchEvents }).getEvents(descriptor, {
       fromVersion: 5n,
       offset: 2,
     });
 
-    expect(logs.map((e) => e.version)).toEqual([5n, 7n]);
+    expect(events.map((e) => e.version)).toEqual([5n, 7n]);
     const [first, second] = fetchEvents.mock.calls.map((c) => c[1] as FetchOptions);
     expect(first).toMatchObject({ fromVersion: 5n, offset: 2, cursor: undefined });
     expect(second).toMatchObject({ cursor: "6" });
@@ -39,10 +39,10 @@ describe("EventQuery paging", () => {
     expect(second?.offset).toBeUndefined();
   });
 
-  it("rejects a pre-aborted getLogs with the signal reason without fetching", async () => {
+  it("rejects a pre-aborted getEvents with the signal reason without fetching", async () => {
     const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>();
     const reason = new Error("already aborted");
-    const promise = new EventQuery({ fetchEvents }).getLogs(descriptor, {
+    const promise = new EventQuery({ fetchEvents }).getEvents(descriptor, {
       signal: AbortSignal.abort(reason),
     });
 
@@ -61,7 +61,7 @@ describe("EventQuery paging", () => {
         }),
     );
 
-    const promise = new EventQuery({ fetchEvents }).getLogs(descriptor, {
+    const promise = new EventQuery({ fetchEvents }).getEvents(descriptor, {
       fromVersion: 1n,
       signal: controller.signal,
     });
@@ -76,7 +76,7 @@ describe("EventQuery paging", () => {
     resolvePage();
   });
 
-  it("stops fetching further pages when aborted between getLogsIterator pages, and detaches per page", async () => {
+  it("stops fetching further pages when aborted between getEventPages pages, and detaches per page", async () => {
     const controller = new AbortController();
     const remove = vi.spyOn(controller.signal, "removeEventListener");
     const reason = new Error("stop paging");
@@ -85,7 +85,7 @@ describe("EventQuery paging", () => {
       .mockResolvedValueOnce({ events: [event(1)], nextCursor: "2", hasMore: true })
       .mockResolvedValueOnce({ events: [event(2)], nextCursor: "3", hasMore: false });
 
-    const it = new EventQuery({ fetchEvents }).getLogsIterator(descriptor, {
+    const it = new EventQuery({ fetchEvents }).getEventPages(descriptor, {
       signal: controller.signal,
     });
 

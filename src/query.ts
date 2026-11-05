@@ -9,17 +9,17 @@ import { raceAbort } from "./utils.js";
 const DEFAULT_PAGE_SIZE = 25;
 
 /**
- * Historical event querying — the `getLogs` equivalent.
+ * Historical event querying: `getEvents` and its paged form `getEventPages`.
  */
 export class EventQuery {
   constructor(private readonly adapter: EventAdapter) {}
 
-  async getLogs<TData = unknown>(
+  async getEvents<TData = unknown>(
     descriptor: EventDescriptor,
     filter: EventFilter = {},
   ): Promise<StreamdEvent<TData>[]> {
     const collected: StreamdEvent<TData>[] = [];
-    for await (const page of this.getLogsIterator<TData>(descriptor, filter)) {
+    for await (const page of this.getEventPages<TData>(descriptor, filter)) {
       collected.push(...page);
     }
     return collected;
@@ -32,7 +32,7 @@ export class EventQuery {
    * so regions containing no matching events are skipped over instead of
    * terminating the walk early.
    */
-  async *getLogsIterator<TData = unknown>(
+  async *getEventPages<TData = unknown>(
     descriptor: EventDescriptor,
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,

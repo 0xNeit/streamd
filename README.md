@@ -1,10 +1,9 @@
 # streamd
 
-EVM-style event listening and querying for Aptos MoveVM chains.
+Event subscriptions and historical queries for blockchains, starting with Aptos.
 
-If you know `contract.on(...)` and `eth_getLogs` from ethers, you already know
-streamd: subscribe to events as they land, or query them historically, with
-cursors, deduplication, backoff and client-side filtering handled for you.
+Subscribe to events as they land, or query them historically, with cursors,
+deduplication, backoff and client-side filtering handled for you.
 
 ```ts
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
@@ -134,7 +133,7 @@ polling gives up after `maxErrors`, or straight away on invalid input.
 ### Query history
 
 ```ts
-const logs = await streamd.getLogs(
+const events = await streamd.getEvents(
   {
     kind: "account",
     accountAddress: "0xd503b95164384a5ebbccbb5c4bdc8b4a5893d9651e9953abda8e1c22fcc1181d",
@@ -143,10 +142,14 @@ const logs = await streamd.getLogs(
 );
 
 // Or page through large result sets
-for await (const page of streamd.getLogsIterator(descriptor, { limit: 1000 }, 100)) {
+for await (const page of streamd.getEventPages(descriptor, { limit: 1000 }, 100)) {
   handle(page);
 }
 ```
+
+> [!NOTE]
+> Renamed in 0.x: `getLogs` is now `getEvents` and `getLogsIterator` is now
+> `getEventPages`. Arguments and results are unchanged.
 
 ### Cancel with AbortSignal
 
@@ -156,7 +159,7 @@ Every listener and query takes a standard `signal`:
 const controller = new AbortController();
 
 streamd.on(descriptor, handle, { signal: controller.signal });
-const logs = await streamd.getLogs(descriptor, {
+const events = await streamd.getEvents(descriptor, {
   fromVersion: 1_000_000n,
   signal: AbortSignal.timeout(5000),
 });
@@ -165,7 +168,7 @@ controller.abort();
 ```
 
 Aborting `on()` unsubscribes quietly without calling `onError`. Aborting
-`once()`, `stream()`, `getLogs()` or `getLogsIterator()` stops polling or
+`once()`, `stream()`, `getEvents()` or `getEventPages()` stops polling or
 paging and rejects with `signal.reason`. An already-aborted signal never
 fetches.
 

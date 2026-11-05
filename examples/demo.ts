@@ -10,7 +10,7 @@ const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig
 // your own index instead.
 const streamd = new StreamdClient({ aptos });
 
-// --- Historical query (like eth_getLogs) ---
+// --- Historical query (getEvents) ---
 console.log("Fetching recent FeeStatement events...\n");
 
 interface FeeStatement {
@@ -21,18 +21,18 @@ interface FeeStatement {
   storage_fee_refund_octas: string;
 }
 
-const logs = await streamd.getLogs<FeeStatement>(
+const fees = await streamd.getEvents<FeeStatement>(
   { kind: "module", eventType: "0x1::transaction_fee::FeeStatement" },
   { limit: 5 },
 );
 
-for (const log of logs) {
+for (const event of fees) {
   console.log(
-    `  v${log.version} — gas: ${log.data.total_charge_gas_units} units, storage fee: ${log.data.storage_fee_octas} octas`,
+    `  v${event.version} — gas: ${event.data.total_charge_gas_units} units, storage fee: ${event.data.storage_fee_octas} octas`,
   );
 }
 
-console.log(`\nFetched ${logs.length} events.\n`);
+console.log(`\nFetched ${fees.length} events.\n`);
 
 // --- Events for one account ---
 // Walks that account's own transaction history instead of scanning the chain,
@@ -43,13 +43,13 @@ const account =
 
 console.log(`Fetching earliest events for ${account.slice(0, 10)}...\n`);
 
-const accountLogs = await streamd.getLogs(
+const accountEvents = await streamd.getEvents(
   { kind: "account", accountAddress: account },
   { offset: 0, limit: 5 },
 );
 
-for (const log of accountLogs) {
-  console.log(`  v${log.version} — ${log.type}`);
+for (const event of accountEvents) {
+  console.log(`  v${event.version} — ${event.type}`);
 }
 
 // `where` filters on payload contents, which no chain API can do for you.
@@ -60,7 +60,7 @@ for (const log of accountLogs) {
 // alone is too broad ("all Deposit events, but only mine").
 const market = "0x5e0e16f34adfb4b316f8d532d68acbfa206826feaaa418d3938046bdc2044861";
 
-const onMarket = await streamd.getLogs(
+const onMarket = await streamd.getEvents(
   { kind: "account", accountAddress: account },
   { offset: 0, limit: 5, maxPages: 2, where: involvesAddress(market) },
 );
@@ -69,7 +69,7 @@ console.log(
   `\n${onMarket.length} of those reference market ${market.slice(0, 10)}… in their payload.\n`,
 );
 
-// --- Real-time listening (like contract.on) ---
+// --- Real-time listening (on) ---
 console.log("Listening for new FeeStatement events (polling every 3s)...\n");
 
 const sub = streamd.on<FeeStatement>(
