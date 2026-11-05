@@ -201,24 +201,24 @@ export class StreamdClient {
   }
 
   /**
-   * Query historical events (like eth_getLogs).
+   * Query historical events matching a descriptor and filter.
    */
-  async getLogs<TData = unknown>(
+  async getEvents<TData = unknown>(
     descriptor: EventDescriptor,
     filter?: EventFilter,
   ): Promise<StreamdEvent<TData>[]> {
-    return this.query.getLogs<TData>(descriptor, filter);
+    return this.query.getEvents<TData>(descriptor, filter);
   }
 
   /**
    * Async iterator for paginating through large historical result sets.
    */
-  getLogsIterator<TData = unknown>(
+  getEventPages<TData = unknown>(
     descriptor: EventDescriptor,
     filter?: EventFilter,
     pageSize?: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    return this.query.getLogsIterator<TData>(descriptor, filter, pageSize);
+    return this.query.getEventPages<TData>(descriptor, filter, pageSize);
   }
 
   /**

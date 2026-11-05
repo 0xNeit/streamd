@@ -149,12 +149,12 @@ describe("StreamdClient", () => {
     ]);
 
     const client = new StreamdClient({ aptos: makeAptos(), adapter });
-    const logs = await client.getLogs(
+    const events = await client.getEvents(
       { kind: "module", eventType: "0x1::test::Event" },
       { fromVersion: 50n, limit: 10 },
     );
 
-    expect(logs).toEqual(mockEvents);
+    expect(events).toEqual(mockEvents);
     expect(adapter.fetchEvents).toHaveBeenCalledWith(
       { kind: "module", eventType: "0x1::test::Event" },
       expect.objectContaining({
@@ -167,7 +167,7 @@ describe("StreamdClient", () => {
     client.destroy();
   });
 
-  it("getLogs pages past windows with no matches", async () => {
+  it("getEvents pages past windows with no matches", async () => {
     const adapter = adapterOf([
       { events: [], nextCursor: "10", hasMore: true },
       { events: [], nextCursor: "20", hasMore: true },
@@ -175,37 +175,37 @@ describe("StreamdClient", () => {
     ]);
 
     const client = new StreamdClient({ aptos: makeAptos(), adapter });
-    const logs = await client.getLogs({
+    const events = await client.getEvents({
       kind: "module",
       eventType: "0x1::test::Event",
     });
 
-    expect(logs).toHaveLength(1);
-    expect(logs[0].version).toBe(25n);
+    expect(events).toHaveLength(1);
+    expect(events[0].version).toBe(25n);
     expect(adapter.fetchEvents).toHaveBeenCalledTimes(3);
 
     client.destroy();
   });
 
-  it("getLogs honours the overall limit across pages", async () => {
+  it("getEvents honours the overall limit across pages", async () => {
     const adapter = adapterOf([
       { events: [makeEvent(1), makeEvent(2)], nextCursor: "3", hasMore: true },
       { events: [makeEvent(3), makeEvent(4)], nextCursor: "5", hasMore: true },
     ]);
 
     const client = new StreamdClient({ aptos: makeAptos(), adapter });
-    const logs = await client.getLogs(
+    const events = await client.getEvents(
       { kind: "module", eventType: "0x1::test::Event" },
       { limit: 3 },
     );
 
-    expect(logs.map((l) => l.version)).toEqual([1n, 2n, 3n]);
+    expect(events.map((l) => l.version)).toEqual([1n, 2n, 3n]);
     expect(mocked(adapter.fetchEvents).mock.calls[1]![1].limit).toBe(1);
 
     client.destroy();
   });
 
-  it("getLogs applies `where` and counts limit after filtering", async () => {
+  it("getEvents applies `where` and counts limit after filtering", async () => {
     const mine = { owner: "0x1" };
     const theirs = { owner: "0x2" };
     const adapter = adapterOf([
@@ -228,14 +228,14 @@ describe("StreamdClient", () => {
     ]);
 
     const client = new StreamdClient({ aptos: makeAptos(), adapter });
-    const logs = await client.getLogs(
+    const events = await client.getEvents(
       { kind: "module", eventType: "0x1::test::Event" },
       { where: involvesAddress("0x1") },
     );
 
     // Two of the four match; the walk continued past a page that was
     // partially filtered rather than stopping short.
-    expect(logs.map((l) => l.version)).toEqual([2n, 4n]);
+    expect(events.map((l) => l.version)).toEqual([2n, 4n]);
 
     client.destroy();
   });
@@ -245,7 +245,7 @@ describe("StreamdClient", () => {
     const adapter = adapterOf([]);
     const client = new StreamdClient({ aptos: makeAptos(), adapter });
 
-    await client.getLogs(
+    await client.getEvents(
       { kind: "module", eventType: "0x1::test::Event" },
       { where: involvesAddress("0x1"), limit: 5 },
     );
@@ -284,7 +284,7 @@ describe("StreamdClient", () => {
     client.destroy();
   });
 
-  it("filters getLogs and on() by nested payload field via whereField", async () => {
+  it("filters getEvents and on() by nested payload field via whereField", async () => {
     const longOne =
       "0x0000000000000000000000000000000000000000000000000000000000000001";
     const page = {
@@ -300,11 +300,11 @@ describe("StreamdClient", () => {
       aptos: makeAptos(),
       adapter: adapterOf([page, page]),
     });
-    const logs = await client.getLogs(
+    const events = await client.getEvents(
       { kind: "module", eventType: "0x1::test::Event" },
       { where: whereField("store.owner", "0x1") },
     );
-    expect(logs.map((l) => l.version)).toEqual([2n]);
+    expect(events.map((l) => l.version)).toEqual([2n]);
 
     const live: bigint[] = [];
     const sub = client.on(
@@ -319,7 +319,7 @@ describe("StreamdClient", () => {
     client.destroy();
   });
 
-  it("filters getLogs, getLogsIterator, on(), once(), and stream() with not()", async () => {
+  it("filters getEvents, getEventPages, on(), once(), and stream() with not()", async () => {
     const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
     const e1 = { ...makeEvent(10, 0), data: { from: "0x1", to: "0x1" } };
     const e2 = { ...makeEvent(20, 0), data: { from: "0x2", to: "0x1" } };
@@ -332,11 +332,11 @@ describe("StreamdClient", () => {
     });
 
     // `limit` counts events after `where: not(...)` filtering across pages.
-    const logs = await client.getLogs(descriptor, { where, limit: 2 });
-    expect(logs.map((l) => l.version)).toEqual([20n, 40n]);
+    const events = await client.getEvents(descriptor, { where, limit: 2 });
+    expect(events.map((l) => l.version)).toEqual([20n, 40n]);
 
     const iterVersions: bigint[][] = [];
-    for await (const page of client.getLogsIterator(descriptor, { where }, 2)) {
+    for await (const page of client.getEventPages(descriptor, { where }, 2)) {
       iterVersions.push(page.map((e) => e.version));
     }
     expect(iterVersions).toEqual([[20n], [40n]]);
@@ -373,12 +373,12 @@ describe("StreamdClient", () => {
     };
 
     const client = new StreamdClient({ aptos: makeAptos(), adapter: endless });
-    const logs = await client.getLogs(
+    const events = await client.getEvents(
       { kind: "module", eventType: "0x1::test::Event" },
       { limit: 100, maxPages: 3, where: () => false },
     );
 
-    expect(logs).toHaveLength(0);
+    expect(events).toHaveLength(0);
     expect(endless.fetchEvents).toHaveBeenCalledTimes(3);
 
     client.destroy();
@@ -412,13 +412,13 @@ describe("StreamdClient", () => {
     ]);
 
     const client = new StreamdClient({ aptos: makeAptos(), adapter });
-    const logs = await client.getLogs({
+    const events = await client.getEvents({
       kind: "account",
       accountAddress: "0x1",
       eventTypes: ["0x1::test::Event"],
     });
 
-    expect(logs).toHaveLength(1);
+    expect(events).toHaveLength(1);
     expect(adapter.fetchEvents).toHaveBeenCalledWith(
       expect.objectContaining({ kind: "account", accountAddress: "0x1" }),
       expect.anything(),
@@ -744,7 +744,7 @@ describe("StreamdClient", () => {
     expect(adapter.fetchEvents).not.toHaveBeenCalled();
   });
 
-  it("delivers transactionHash and timestamp on events through getLogs and on()", async () => {
+  it("delivers transactionHash and timestamp on events through getEvents and on()", async () => {
     const enriched = {
       ...makeEvent(10),
       transactionHash: "0xabc123",
@@ -757,9 +757,9 @@ describe("StreamdClient", () => {
     const client = new StreamdClient({ aptos: makeAptos(), adapter });
     const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
 
-    const logs = await client.getLogs(descriptor);
-    expect(logs[0]?.transactionHash).toBe("0xabc123");
-    expect(logs[0]?.timestamp).toBe(1700000010000000n);
+    const events = await client.getEvents(descriptor);
+    expect(events[0]?.transactionHash).toBe("0xabc123");
+    expect(events[0]?.timestamp).toBe(1700000010000000n);
 
     const live: Array<{ hash?: string; ts?: bigint }> = [];
     const sub = client.on(descriptor, (e) => {
@@ -772,7 +772,7 @@ describe("StreamdClient", () => {
     client.destroy();
   });
 
-  it("supports multi-type module descriptors across getLogs, on, once, and stream", async () => {
+  it("supports multi-type module descriptors across getEvents, on, once, and stream", async () => {
     const ping: StreamdEvent = {
       ...makeEvent(10, 0),
       type: "0x1::test::Ping",
@@ -793,8 +793,8 @@ describe("StreamdClient", () => {
       eventType: ["0x1::test::Ping", "0x1::test::Pong"],
     } as const;
 
-    const logs = await client.getLogs(descriptor);
-    expect(logs.map((e) => e.type)).toEqual([
+    const events = await client.getEvents(descriptor);
+    expect(events.map((e) => e.type)).toEqual([
       "0x1::test::Ping",
       "0x1::test::Pong",
     ]);
@@ -999,7 +999,7 @@ describe("StreamdClient", () => {
       );
     });
 
-    it("drives getLogs, getLogsIterator, on, once, stream, and cursor resume offline without an Aptos instance", async () => {
+    it("drives getEvents, getEventPages, on, once, stream, and cursor resume offline without an Aptos instance", async () => {
       const e1 = { ...makeEvent(10, 0), data: { owner: "0x1", v: 1 } };
       const e2 = { ...makeEvent(10, 1), data: { owner: "0x2", v: 2 } };
       const e3 = { ...makeEvent(20, 0), data: { owner: "0x1", v: 3 } };
@@ -1007,16 +1007,16 @@ describe("StreamdClient", () => {
         adapter: new MemoryAdapter([e3, e1, e2]),
       });
 
-      const logs = await client.getLogs(descriptor, {
+      const events = await client.getEvents(descriptor, {
         where: whereField("owner", "0x1"),
       });
-      expect(logs.map((e) => [e.version, e.eventIndex])).toEqual([
+      expect(events.map((e) => [e.version, e.eventIndex])).toEqual([
         [10n, 0],
         [20n, 0],
       ]);
 
       const pages: bigint[][] = [];
-      for await (const page of client.getLogsIterator(descriptor, {}, 2)) {
+      for await (const page of client.getEventPages(descriptor, {}, 2)) {
         pages.push(page.map((e) => e.version));
       }
       expect(pages).toEqual([[10n, 10n], [20n]]);
@@ -1069,7 +1069,7 @@ describe("StreamdClient", () => {
     const moduleDesc = { kind: "module", eventType: "0x1::test::Event" } as const;
     const accountDesc = { kind: "account", accountAddress: "0x1" } as const;
 
-    it("composes RoutingAdapter and FallbackAdapter across getLogs, on, once, and stream", async () => {
+    it("composes RoutingAdapter and FallbackAdapter across getEvents, on, once, and stream", async () => {
       let primaryCalls = 0;
       const flakyModulePrimary: EventAdapter = {
         fetchEvents: vi.fn(async () => {
@@ -1094,19 +1094,19 @@ describe("StreamdClient", () => {
       const client = new StreamdClient({ adapter, onError });
 
       // First call on `module` falls back from flakyModulePrimary to moduleBackup seamlessly.
-      const moduleLogs = await client.getLogs(moduleDesc);
-      expect(moduleLogs.map((e) => e.version)).toEqual([11n, 12n]);
+      const moduleEvents = await client.getEvents(moduleDesc);
+      expect(moduleEvents.map((e) => e.version)).toEqual([11n, 12n]);
       expect(flakyModulePrimary.fetchEvents).toHaveBeenCalledTimes(1);
 
       const iterPages: bigint[][] = [];
-      for await (const page of client.getLogsIterator(moduleDesc, {}, 1)) {
+      for await (const page of client.getEventPages(moduleDesc, {}, 1)) {
         iterPages.push(page.map((e) => e.version));
       }
       expect(iterPages).toEqual([[11n, 12n]]);
 
       // `account` routes to default (accountSource).
-      const accountLogs = await client.getLogs(accountDesc);
-      expect(accountLogs.map((e) => e.version)).toEqual([99n]);
+      const accountEvents = await client.getEvents(accountDesc);
+      expect(accountEvents.map((e) => e.version)).toEqual([99n]);
 
       // Subsequent `on`, `once`, and `stream` calls on `module` succeed without firing onError.
       const onceEvent = client.once(moduleDesc);

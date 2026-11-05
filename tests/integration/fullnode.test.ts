@@ -75,18 +75,18 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
     const client = new StreamdClient({ aptos: mainnet() });
     const head = BigInt((await mainnet().getLedgerInfo()).ledger_version);
 
-    const logs = await client.getLogs(FEE_STATEMENT, {
+    const events = await client.getEvents(FEE_STATEMENT, {
       fromVersion: head - 200n,
       limit: 5,
     });
 
-    expect(logs.length).toBeGreaterThan(0);
-    expect(logs.length).toBeLessThanOrEqual(5);
-    for (const log of logs) {
-      expect(log.type).toBe("0x1::transaction_fee::FeeStatement");
+    expect(events.length).toBeGreaterThan(0);
+    expect(events.length).toBeLessThanOrEqual(5);
+    for (const event of events) {
+      expect(event.type).toBe("0x1::transaction_fee::FeeStatement");
     }
-    for (let i = 1; i < logs.length; i++) {
-      expect(logs[i].version >= logs[i - 1].version).toBe(true);
+    for (let i = 1; i < events.length; i++) {
+      expect(events[i].version >= events[i - 1].version).toBe(true);
     }
 
     client.destroy();
@@ -95,12 +95,12 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
   it("fetches legacy handle events", async () => {
     const client = new StreamdClient({ aptos: mainnet() });
 
-    const logs = await client.getLogs(NEW_BLOCK, { limit: 3 });
+    const events = await client.getEvents(NEW_BLOCK, { limit: 3 });
 
-    expect(logs).toHaveLength(3);
-    expect(logs[0].type).toBe("0x1::block::NewBlockEvent");
+    expect(events).toHaveLength(3);
+    expect(events[0].type).toBe("0x1::block::NewBlockEvent");
     // Handle events carry real sequence numbers, unlike module events.
-    expect(logs[1].sequenceNumber).toBe(logs[0].sequenceNumber + 1n);
+    expect(events[1].sequenceNumber).toBe(events[0].sequenceNumber + 1n);
 
     client.destroy();
   }, 60_000);
@@ -111,7 +111,7 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
     // A busy mainnet account; offset 0 starts at its first transaction.
     const account = "0xd503b95164384a5ebbccbb5c4bdc8b4a5893d9651e9953abda8e1c22fcc1181d";
 
-    const all = await client.getLogs(
+    const all = await client.getEvents(
       { kind: "account", accountAddress: account },
       { offset: 0, limit: 20 },
     );
@@ -120,7 +120,7 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
     const types = [...new Set(all.map((e) => e.type))];
     expect(types.length).toBeGreaterThan(0);
 
-    const filtered = await client.getLogs(
+    const filtered = await client.getEvents(
       { kind: "account", accountAddress: account, eventTypes: [types[0]] },
       { offset: 0, limit: 20 },
     );
@@ -142,11 +142,11 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
 
     // maxPages caps the walk. Without it a predicate this narrow keeps paging
     // until `limit` fills, which for this account means its whole history.
-    const unfiltered = await client.getLogs(
+    const unfiltered = await client.getEvents(
       { kind: "account", accountAddress: account },
       { offset: 0, limit: 50, maxPages: 2 },
     );
-    const filtered = await client.getLogs(
+    const filtered = await client.getEvents(
       { kind: "account", accountAddress: account },
       { offset: 0, limit: 50, maxPages: 2, where: involvesAddress(account) },
     );
@@ -167,7 +167,7 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
     const account = "0xd503b95164384a5ebbccbb5c4bdc8b4a5893d9651e9953abda8e1c22fcc1181d";
 
     const started = Date.now();
-    const logs = await client.getLogs(
+    const events = await client.getEvents(
       { kind: "account", accountAddress: account },
       {
         offset: 0,
@@ -179,7 +179,7 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
       },
     );
 
-    expect(logs).toHaveLength(0);
+    expect(events).toHaveLength(0);
     expect(Date.now() - started).toBeLessThan(20_000);
 
     client.destroy();
