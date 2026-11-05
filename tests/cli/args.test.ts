@@ -79,7 +79,6 @@ describe("parseCommand options", () => {
       "--network", "testnet",
       "--node-url", "http://127.0.0.1:8080/v1",
       "--from-version", "123456789012345678901",
-      "--cursor", "abc",
       "--poll-interval", "0",
       "--limit", "5",
     );
@@ -88,7 +87,6 @@ describe("parseCommand options", () => {
       network: "testnet",
       nodeUrl: "http://127.0.0.1:8080/v1",
       fromVersion: 123456789012345678901n,
-      cursor: "abc",
       pollInterval: 0,
       limit: 5,
     });
@@ -103,6 +101,7 @@ describe("parseCommand rejects", () => {
   it.each([
     [["watch"], /unknown command: watch/],
     [["tail", TYPE, "--bogus"], /bogus/],
+    [["tail", TYPE, "--cursor", "1"], /cursor/],
     [["tail"], /at least one event type/],
     [["tail", "not-a-type"], /Not a valid Move event type/],
     [["tail", "--account", "nope"], /Not a valid Aptos address/],

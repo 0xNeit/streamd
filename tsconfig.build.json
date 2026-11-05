@@ -6,5 +6,6 @@
     "emitDeclarationOnly": true,
     "sourceMap": false
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": ["src/cli"]
 }

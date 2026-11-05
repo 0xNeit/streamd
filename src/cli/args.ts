@@ -9,7 +9,6 @@ export interface TailOptions {
   network: Network;
   nodeUrl?: string;
   fromVersion?: bigint;
-  cursor?: string;
   pollInterval?: number;
   limit?: number;
 }
@@ -36,7 +35,6 @@ const OPTIONS = {
   network: { type: "string" },
   "node-url": { type: "string" },
   "from-version": { type: "string" },
-  cursor: { type: "string" },
   "poll-interval": { type: "string" },
   limit: { type: "string" },
   help: { type: "boolean", short: "h" },
@@ -56,7 +54,6 @@ Options:
   --network <name>       mainnet, testnet, or devnet (default: mainnet)
   --node-url <url>       fullnode URL, overriding the network's default
   --from-version <n>     start at this version instead of the chain head
-  --cursor <token>       resume from a cursor reported by an earlier run
   --poll-interval <ms>   delay between polls (default: 1000)
   --limit <n>            exit after printing n events
   -h, --help             show this help
@@ -161,7 +158,6 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
   if (url !== undefined) options.nodeUrl = url;
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
-  if (values.cursor !== undefined) options.cursor = values.cursor;
   if (pollInterval !== undefined) options.pollInterval = pollInterval;
   if (limit !== undefined) options.limit = limit;
   return { command: "tail", options };
