@@ -127,7 +127,32 @@ export interface StreamdEvent<TData = unknown> {
    * none.
    */
   guid?: EventGuid;
+  /**
+   * What the `withState` view function returned at this event's `version`,
+   * that is, as state stood once the emitting transaction had run. Set only
+   * when `withState` built a request for this event.
+   */
+  state?: unknown[];
 }
+
+/**
+ * A view function call, as `withState` builds it and `EventAdapter.view`
+ * takes it. Arguments are JSON Move values as the fullnode's `/view` takes
+ * them: u64 and wider as decimal strings (a `bigint` is sent as one),
+ * addresses as hex strings.
+ */
+export interface ViewRequest {
+  /** `${address}::${module}::${function}`, e.g. `"0x1::coin::balance"`. */
+  function: `${string}::${string}::${string}`;
+  typeArguments?: readonly string[];
+  functionArguments?: readonly unknown[];
+}
+
+/**
+ * Builds the view request whose result becomes `event.state`, or `undefined`
+ * to deliver the event without state. Runs after `decode` and `where`.
+ */
+export type StateRequestBuilder = (event: StreamdEvent) => ViewRequest | undefined;
 
 /** An `EventHandle`'s on-chain id: the account that created it and its creation number. */
 export interface EventGuid {
@@ -687,6 +712,16 @@ export interface EventAdapter {
     simulation: TransactionSimulation,
     descriptor?: EventDescriptor,
   ): Promise<TransactionEvents>;
+  /**
+   * The return values of the view function `request` names, read at
+   * `ledgerVersion`: state as of the end of that transaction. `descriptor` is
+   * for routing only. Optional; `withState` needs it.
+   */
+  view?(
+    request: ViewRequest,
+    ledgerVersion: bigint,
+    descriptor?: EventDescriptor,
+  ): Promise<unknown[]>;
 }
 
 /** A built, unsigned transaction to simulate, as `EventAdapter.simulateTransactionEvents` takes it. */

@@ -1037,3 +1037,85 @@ describe("FullnodeScanAdapter simulation", () => {
     expect((bad as StreamdNetworkError).cause).toBeUndefined();
   });
 });
+
+describe("FullnodeScanAdapter view", () => {
+  const BALANCE = "0x1::coin::balance";
+
+  it("POSTs one JSON view at the ledger version and returns its values", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: ["1500"] }));
+    const state = await new FullnodeScanAdapter(aptos).view(
+      {
+        function: BALANCE,
+        typeArguments: ["0x1::aptos_coin::AptosCoin"],
+        functionArguments: ["0xa", 7n, [1n, 2n]],
+      },
+      42n,
+    );
+    expect(state).toEqual(["1500"]);
+    expect(calls.map((c) => [c.method, c.path, c.params.ledger_version])).toEqual([
+      ["POST", "view", 42n],
+    ]);
+    expect(calls[0]!.body).toEqual({
+      function: BALANCE,
+      type_arguments: ["0x1::aptos_coin::AptosCoin"],
+      arguments: ["0xa", "7", ["1", "2"]],
+    });
+  });
+
+  it("sends empty type arguments and arguments when omitted", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    await new FullnodeScanAdapter(aptos).view({ function: "0x1::block::get_epoch_interval_secs" }, 0n);
+    expect(calls[0]!.body).toEqual({
+      function: "0x1::block::get_epoch_interval_secs",
+      type_arguments: [],
+      arguments: [],
+    });
+  });
+
+  it("refuses malformed requests and versions before any request", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    const bad: [unknown, unknown][] = [
+      [null, 1n],
+      [{ function: "coin::balance" }, 1n],
+      [{ function: "0x1::coin" }, 1n],
+      [{ function: "0xzz::coin::balance" }, 1n],
+      [{ function: "0x1::coin::balance/../x" }, 1n],
+      [{ function: 7 }, 1n],
+      [{ function: BALANCE, typeArguments: "0x1::aptos_coin::AptosCoin" }, 1n],
+      [{ function: BALANCE, typeArguments: [""] }, 1n],
+      [{ function: BALANCE, functionArguments: "0xa" }, 1n],
+      [{ function: BALANCE }, -1n],
+      [{ function: BALANCE }, 2n ** 64n],
+      [{ function: BALANCE }, 1],
+    ];
+    for (const [request, version] of bad) {
+      const err = await adapter.view(request as never, version as never).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("never echoes arguments and shows only the start of a bad function id", async () => {
+    const { aptos } = fakeNode(() => ({ data: [] }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    const long = await adapter.view({ function: `0x1::${"m".repeat(200)}` } as never, 1n).catch((e: Error) => e);
+    expect((long as Error).message.length).toBeLessThan(200);
+    const args = await adapter
+      .view({ function: BALANCE, functionArguments: "secret-arg" } as never, 1n)
+      .catch((e: Error) => e);
+    expect((args as Error).message).not.toContain("secret-arg");
+  });
+
+  it("rejects a pruned version with status 410 and no cause", async () => {
+    const { aptos } = fakeNode(() => ({ status: 410, data: { message: "Ledger version pruned" } }));
+    const err = await new FullnodeScanAdapter(aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(410);
+    expect((err as StreamdNetworkError).cause).toBeUndefined();
+    expect((err as Error).message).toContain(`${BALANCE} at version 5`);
+  });
+});
