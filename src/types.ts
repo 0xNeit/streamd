@@ -282,8 +282,17 @@ export interface Subscription {
   id: string;
   /** Stop listening and clean up */
   unsubscribe(): void;
-  /** Whether the subscription is active */
+  /**
+   * Stop polling without ending the subscription; `resume()` carries on from
+   * the same cursor and dedup window. No-op unless active.
+   */
+  pause(): void;
+  /** Undo `pause()`. No-op unless paused: it never revives an ended subscription. */
+  resume(): void;
+  /** Whether the subscription is polling; `false` while paused */
   readonly active: boolean;
+  /** Whether the subscription is paused; `false` once it has ended */
+  readonly paused: boolean;
   /**
    * Where to resume: pass it back as `ListenerOptions.cursor` after a restart.
    * Undefined before the first page; still readable after unsubscribing.

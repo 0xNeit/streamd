@@ -1342,3 +1342,113 @@ describe("StreamdClient", () => {
     });
   });
 });
+
+describe("Subscription pause and resume", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+  /** Serves a growing list; the cursor is the index of the next unread event. */
+  function growingAdapter(events: StreamdEvent[]): EventAdapter {
+    return {
+      fetchEvents: vi.fn(async (_d, options) => {
+        const from = Number(options.cursor ?? 0);
+        return { events: events.slice(from), nextCursor: String(events.length), hasMore: false };
+      }),
+    };
+  }
+
+  function tracked(client: StreamdClient): number {
+    return (client as unknown as { subscriptions: Map<string, unknown> }).subscriptions.size;
+  }
+
+  it("stops delivery while paused and delivers what arrived meanwhile on resume", async () => {
+    const events = [makeEvent(1)];
+    const adapter = growingAdapter(events);
+    const client = new StreamdClient({ adapter });
+    const seen: bigint[] = [];
+    const sub = client.on(descriptor, (e) => seen.push(e.version), { pollInterval: 100 });
+    await advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([1n]);
+
+    sub.pause();
+    expect(sub.paused).toBe(true);
+    expect(sub.active).toBe(false);
+    expect(sub.status.active).toBe(false);
+    expect(tracked(client)).toBe(1);
+    const fetchesAtPause = mocked(adapter.fetchEvents).mock.calls.length;
+    events.push(makeEvent(2), makeEvent(3));
+    await advanceTimersByTimeAsync(1000);
+    expect(mocked(adapter.fetchEvents).mock.calls.length).toBe(fetchesAtPause);
+    expect(seen).toEqual([1n]);
+
+    sub.resume();
+    expect(sub.paused).toBe(false);
+    expect(sub.active).toBe(true);
+    await advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([1n, 2n, 3n]);
+    expect(sub.cursor).toBe("3");
+
+    client.destroy();
+  });
+
+  it("ends a paused subscription on unsubscribe, destroy, or abort", async () => {
+    const adapter = growingAdapter([makeEvent(1)]);
+    const client = new StreamdClient({ adapter });
+    const controller = new AbortController();
+    const subs = [
+      client.on(descriptor, () => {}),
+      client.on(descriptor, () => {}),
+      client.on(descriptor, () => {}, { signal: controller.signal }),
+    ];
+    await advanceTimersByTimeAsync(0);
+    for (const sub of subs) sub.pause();
+
+    subs[0]!.unsubscribe();
+    controller.abort();
+    expect(tracked(client)).toBe(1);
+    client.destroy();
+    expect(tracked(client)).toBe(0);
+
+    const fetches = mocked(adapter.fetchEvents).mock.calls.length;
+    for (const sub of subs) {
+      expect(sub.paused).toBe(false);
+      sub.resume();
+      expect(sub.active).toBe(false);
+    }
+    await advanceTimersByTimeAsync(500);
+    expect(mocked(adapter.fetchEvents).mock.calls.length).toBe(fetches);
+  });
+
+  it("keeps a paused subscription when a pending handler fails while paused", async () => {
+    const events = [makeEvent(1)];
+    const client = new StreamdClient({ adapter: growingAdapter(events) });
+    let reject!: (e: Error) => void;
+    const onError = vi.fn();
+    const seen: bigint[] = [];
+    const sub = client.on(
+      descriptor,
+      (e) => {
+        seen.push(e.version);
+        if (e.version === 1n) return new Promise<void>((_, r) => (reject = r));
+      },
+      { onError },
+    );
+    await advanceTimersByTimeAsync(0);
+
+    sub.pause();
+    reject(new Error("handler failed"));
+    await advanceTimersByTimeAsync(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(sub.paused).toBe(true);
+    expect(tracked(client)).toBe(1);
+
+    events.push(makeEvent(2));
+    sub.resume();
+    await advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([1n, 2n]);
+
+    client.destroy();
+  });
+});

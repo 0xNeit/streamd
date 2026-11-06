@@ -82,6 +82,21 @@ cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
 a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
 its own `onError`.
 
+### Pause and resume
+
+```ts
+sub.pause();   // stop polling; the subscription stays open
+sub.paused;    // true
+sub.resume();  // poll again at once, from the same cursor
+```
+
+Pausing keeps the cursor, the dedup window, and the error count, so `resume()` picks up
+with the page it held and skips events already delivered. A handler already running when
+you pause finishes, the rest of its page waits for `resume()`, and a fetch in flight is
+discarded. While paused, `active` (and `sub.status.active`) is `false`. `unsubscribe()`,
+`destroy()`, or the `signal` aborting still ends a paused subscription, and `resume()` never
+revives one that has ended, including after `maxErrors`.
+
 ### Iterate live events
 
 ```ts
@@ -300,6 +315,49 @@ const streamd = new StreamdClient({
   ]),
 });
 ```
+
+## Command line
+
+The package installs a `streamd` executable. `streamd tail` follows matching events and
+prints each one to stdout as a single JSON line, so the output pipes straight into `jq` or a
+file. After `bun run build` it runs from the checkout as `node dist/cli.js`.
+
+```sh
+# module events, one or more Move event types
+streamd tail 0x1::transaction_fee::FeeStatement
+
+# events from transactions an account sent, optionally narrowed by type
+streamd tail --account 0x1 0x1::coin::WithdrawEvent
+
+# a legacy event handle
+streamd tail --account 0x1 --handle "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>" \
+  --field deposit_events
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--network <name>` | `mainnet`, `testnet`, or `devnet` (default `mainnet`) |
+| `--node-url <url>` | fullnode URL, overriding the network's default |
+| `--from-version <n>` | start at this version instead of the chain head |
+| `--poll-interval <ms>` | delay between polls (default `1000`) |
+| `--limit <n>` | exit after printing `n` events |
+| `-h`, `--help` | show usage |
+
+Each line carries `type`, `data`, `version`, `sequenceNumber`, `eventIndex`, and, when
+the source has them, `transactionHash` and `timestamp`. Every `bigint`, including any inside
+`data`, is printed as a decimal string:
+
+```json
+{"type":"0x1::transaction_fee::FeeStatement","data":{"total_charge_gas_units":"7"},"version":"2817350001","sequenceNumber":"0","eventIndex":3,"transactionHash":"0x5c...","timestamp":"1730000000000000"}
+```
+
+To pick up where a run stopped, pass the last printed `version` plus one as
+`--from-version`.
+
+Polling errors are reported on stderr and tailing continues until the subscription gives
+up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes
+(as when piped into `head`); `1` when the subscription stopped on an error; `2` for invalid
+arguments; `130` on a second Ctrl-C.
 
 ## Development
 
