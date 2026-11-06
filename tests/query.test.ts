@@ -99,3 +99,57 @@ describe("EventQuery paging", () => {
     expect(fetchEvents).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("EventQuery relative start", () => {
+  function adapter(head: bigint) {
+    return {
+      fetchEvents: vi.fn<EventAdapter["fetchEvents"]>(async () => ({
+        events: [],
+        nextCursor: "1",
+        hasMore: false,
+      })),
+      getHeadVersion: vi.fn(async () => head),
+    };
+  }
+
+  it("seeds the first request from the head, clamped at 0", async () => {
+    for (const [head, from, expected] of [[10n, -2n, 8n], [3n, -50n, 0n]] as const) {
+      const source = adapter(head);
+      await new EventQuery(source).getEvents(descriptor, { fromVersion: from });
+
+      expect(source.getHeadVersion).toHaveBeenCalledWith(descriptor);
+      expect(source.fetchEvents.mock.calls[0]![1].fromVersion).toBe(expected);
+    }
+  });
+
+  it("reads no head for a non-negative fromVersion", async () => {
+    const source = adapter(10n);
+    await new EventQuery(source).getEvents(descriptor, { fromVersion: 4n });
+
+    expect(source.getHeadVersion).not.toHaveBeenCalled();
+    expect(source.fetchEvents.mock.calls[0]![1].fromVersion).toBe(4n);
+  });
+
+  it("rejects when the adapter cannot report a head", async () => {
+    const { fetchEvents } = adapter(10n);
+    await expect(
+      new EventQuery({ fetchEvents }).getEvents(descriptor, { fromVersion: -2n }),
+    ).rejects.toThrow("getHeadVersion");
+    expect(fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("rejects with the signal's reason when aborted during the head read", async () => {
+    const source = adapter(10n);
+    const controller = new AbortController();
+    source.getHeadVersion.mockImplementation(() => new Promise(() => {}));
+    const pending = new EventQuery(source).getEvents(descriptor, {
+      fromVersion: -2n,
+      signal: controller.signal,
+    });
+    const reason = new Error("stop");
+    controller.abort(reason);
+
+    await expect(pending).rejects.toBe(reason);
+    expect(source.fetchEvents).not.toHaveBeenCalled();
+  });
+});

@@ -98,7 +98,11 @@ export interface StreamdEvent<TData = unknown> {
 export type EventPredicate = (event: StreamdEvent) => boolean;
 
 export interface EventFilter {
-  /** Start from this version (inclusive) */
+  /**
+   * Start from this version (inclusive). Negative counts back from the head,
+   * read once from `EventAdapter.getHeadVersion`: `-1000n` starts 1000
+   * versions before it, clamped at 0.
+   */
   fromVersion?: bigint;
   /** End at this version (inclusive) */
   toVersion?: bigint;
@@ -166,7 +170,11 @@ export interface ListenerOptions {
   pollInterval?: number;
   /** Maximum events to deliver per poll (default: 25) */
   batchSize?: number;
-  /** Start from this version; undefined = chain head */
+  /**
+   * Start from this version; undefined = chain head. Negative counts back from
+   * the head, read once on the first poll from `EventAdapter.getHeadVersion`:
+   * `-1000n` starts 1000 versions before it, clamped at 0.
+   */
   fromVersion?: bigint;
   /**
    * Resume from a token a previous subscription reported as `cursor`. It wins
@@ -366,4 +374,9 @@ export interface EventAdapter {
     descriptor: EventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage>;
+  /**
+   * The latest version this source can serve for `descriptor`. Optional; a
+   * negative `fromVersion` (relative to the head) needs it.
+   */
+  getHeadVersion?(descriptor: EventDescriptor): Promise<bigint>;
 }

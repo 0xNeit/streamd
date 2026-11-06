@@ -1941,3 +1941,117 @@ describe("EventPoller batch delivery", () => {
     expect(poller.cursor).toBe("1");
   });
 });
+
+describe("EventPoller relative start", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function headAdapter(head: bigint, pages: EventPage[] = []) {
+    const adapter = createMockAdapter(pages);
+    adapter.getHeadVersion = vi.fn(async () => head);
+    return adapter;
+  }
+
+  const firstFrom = (adapter: EventAdapter) =>
+    mocked(adapter.fetchEvents).mock.calls[0]?.[1]?.fromVersion;
+
+  it("starts a negative fromVersion that many versions before the head", async () => {
+    const adapter = headAdapter(10n);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { fromVersion: -2n });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    poller.stop();
+
+    expect(firstFrom(adapter)).toBe(8n);
+    expect(adapter.getHeadVersion).toHaveBeenCalledWith(descriptor);
+  });
+
+  it("clamps at version 0", async () => {
+    const adapter = headAdapter(3n);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { fromVersion: -50n });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    poller.stop();
+
+    expect(firstFrom(adapter)).toBe(0n);
+  });
+
+  it("reads no head for a non-negative fromVersion or a cursor", async () => {
+    for (const options of [{ fromVersion: 4n }, { fromVersion: -2n, cursor: "7" }, {}]) {
+      const adapter = headAdapter(10n);
+      const poller = new EventPoller(adapter, descriptor, vi.fn(), options);
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+      poller.stop();
+
+      expect(adapter.getHeadVersion).not.toHaveBeenCalled();
+      expect(firstFrom(adapter)).toBe(options.cursor ? undefined : options.fromVersion);
+    }
+  });
+
+  it("stops as invalid input when the adapter cannot report a head", async () => {
+    const adapter = createMockAdapter([]);
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      fromVersion: -2n,
+      onError,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(poller.active).toBe(false);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+    const err = onError.mock.calls[0]![0] as StreamdPollingError;
+    expect(err).toBeInstanceOf(StreamdPollingError);
+    expect(err.message).toContain("getHeadVersion");
+  });
+
+  it("retries a head read that failed on the network", async () => {
+    const adapter = headAdapter(10n);
+    mocked(adapter.getHeadVersion!).mockRejectedValueOnce(
+      new StreamdNetworkError("503", 503),
+    );
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      fromVersion: -2n,
+      pollInterval: 100,
+      onError,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(poller.active).toBe(true);
+
+    await advanceTimersByTimeAsync(200);
+    poller.stop();
+    expect(adapter.getHeadVersion).toHaveBeenCalledTimes(2);
+    expect(firstFrom(adapter)).toBe(8n);
+  });
+
+  it("reuses the resolved start when the fetch after it fails", async () => {
+    const adapter = headAdapter(10n);
+    mocked(adapter.fetchEvents).mockRejectedValueOnce(
+      new StreamdNetworkError("503", 503),
+    );
+    mocked(adapter.getHeadVersion!).mockResolvedValueOnce(10n).mockResolvedValue(99n);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      fromVersion: -2n,
+      pollInterval: 100,
+      onError: () => {},
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(200);
+    poller.stop();
+
+    const froms = mocked(adapter.fetchEvents).mock.calls.map((c) => c[1].fromVersion);
+    expect(froms.slice(0, 2)).toEqual([8n, 8n]);
+    expect(adapter.getHeadVersion).toHaveBeenCalledTimes(1);
+  });
+});

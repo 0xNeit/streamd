@@ -15,6 +15,7 @@ import {
   StreamdPollingError,
 } from "./errors.js";
 import { CursorManager } from "./cursor.js";
+import { resolveFromVersion } from "./utils.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
 const DEFAULT_BATCH_SIZE = 25;
@@ -64,7 +65,8 @@ export class EventPoller {
   private readonly batchSize: number;
   private readonly maxErrors: number;
   private readonly maxBackoff: number;
-  private readonly fromVersion?: bigint;
+  /** Absolute once the first poll has resolved a relative start. */
+  private fromVersion?: bigint;
   private readonly where?: EventPredicate;
   private readonly onError?: (error: Error) => void;
   private readonly onCaughtUp?: () => void;
@@ -186,6 +188,14 @@ export class EventPoller {
     try {
       await this.delivering;
       if (!this.isCurrent(gen)) return;
+      if (this.position.token === undefined) {
+        this.fromVersion = await resolveFromVersion(
+          this.adapter,
+          this.descriptor,
+          this.fromVersion,
+        );
+        if (!this.isCurrent(gen)) return;
+      }
       const page = await this.adapter.fetchEvents(this.descriptor, {
         // Once we have a cursor it supersedes fromVersion, which only seeds
         // the very first poll.
