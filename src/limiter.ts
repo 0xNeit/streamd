@@ -62,6 +62,10 @@ export class RequestLimiter {
       view.getTransactionEvents = (hash, descriptor) =>
         this.run(() => adapter.getTransactionEvents!(hash, descriptor), cancelled);
     }
+    if (adapter.simulateTransactionEvents !== undefined) {
+      view.simulateTransactionEvents = (simulation, descriptor) =>
+        this.run(() => adapter.simulateTransactionEvents!(simulation, descriptor), cancelled);
+    }
     return view;
   }
 

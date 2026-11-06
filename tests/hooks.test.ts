@@ -8,6 +8,7 @@ import type {
   EventDescriptor,
   EventPage,
   StreamdEvent,
+  TransactionSimulation,
 } from "../src/types.js";
 
 const PING = "0x1::test::Ping";
@@ -214,5 +215,24 @@ describe("withHooks transaction lookup", () => {
     expect(seen).toEqual([[hash, moduleDesc]]);
     expect(hooked).toBe(0);
     expect(withHooks({ fetchEvents: async () => PAGE }, hooks).getTransactionEvents).toBeUndefined();
+  });
+});
+
+describe("withHooks simulation", () => {
+  const simulation = { transaction: { rawTransaction: {} } } as unknown as TransactionSimulation;
+  const simulated = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+
+  it("passes simulateTransactionEvents through unhooked, only when the source has it", async () => {
+    let hooked = 0;
+    const hooks = { onRequest: () => void hooked++ };
+    const seen: unknown[] = [];
+    const wrapped = withHooks(
+      { fetchEvents: async () => PAGE, simulateTransactionEvents: async (...args) => (seen.push(args), simulated) },
+      hooks,
+    );
+    expect(await wrapped.simulateTransactionEvents!(simulation, moduleDesc)).toBe(simulated);
+    expect(seen).toEqual([[simulation, moduleDesc]]);
+    expect(hooked).toBe(0);
+    expect(withHooks({ fetchEvents: async () => PAGE }, hooks).simulateTransactionEvents).toBeUndefined();
   });
 });

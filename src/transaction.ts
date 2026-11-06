@@ -2,6 +2,7 @@ import type {
   EventAdapter,
   EventDescriptor,
   EventsOfOptions,
+  PreviewEventsOptions,
   StreamdEvent,
   TransactionEvents,
 } from "./types.js";
@@ -14,6 +15,7 @@ import {
   handlePath,
   moduleTypeFilter,
   requireAddress,
+  requireSimulation,
   requireTransactionHash,
 } from "./adapters/validate.js";
 
@@ -49,7 +51,7 @@ function eventMatcher(descriptor: EventDescriptor): (event: StreamdEvent) => boo
       // An event carries its handle's guid, not the struct and field holding it.
       if (creationNumber === undefined) {
         throw new StreamdError(
-          "eventsOf matches handle events by guid: pass the handle's creationNumber " +
+          "Transaction events match handle events by guid: pass the handle's creationNumber " +
             "(listEventHandles reports it) instead of eventHandleStruct and fieldName",
         );
       }
@@ -64,6 +66,25 @@ function eventMatcher(descriptor: EventDescriptor): (event: StreamdEvent) => boo
         `Unknown descriptor kind: ${String((descriptor as { kind?: unknown } | null)?.kind)}`,
       );
   }
+}
+
+/**
+ * Checks `descriptor` and `decode` now, so bad input is refused before any
+ * adapter call; the returned function narrows a transaction's events by
+ * them, then `where`, keeping transaction order.
+ */
+function narrower(
+  descriptor: EventDescriptor | undefined,
+  options: EventsOfOptions | PreviewEventsOptions,
+): (events: StreamdEvent[]) => StreamdEvent[] {
+  const keep = descriptor === undefined ? undefined : eventMatcher(descriptor);
+  const decode = fieldDecoder(options.decode);
+  const where = options.where;
+  return (events) => {
+    if (keep !== undefined) events = events.filter(keep);
+    if (decode !== undefined) events = events.map(decode);
+    return where === undefined ? events : events.filter(where);
+  };
 }
 
 /**
@@ -82,8 +103,7 @@ export async function eventsOf(
   options: EventsOfOptions,
 ): Promise<StreamdEvent[]> {
   const hash = requireTransactionHash(transactionHash);
-  const keep = descriptor === undefined ? undefined : eventMatcher(descriptor);
-  const decode = fieldDecoder(options.decode);
+  const narrow = narrower(descriptor, options);
   if (adapter.getTransactionEvents === undefined) {
     throw new StreamdError("eventsOf needs an adapter that implements getTransactionEvents");
   }
@@ -123,7 +143,33 @@ export async function eventsOf(
       found.vmStatus,
     );
   }
-  let events = keep === undefined ? found.events : found.events.filter(keep);
-  if (decode !== undefined) events = events.map(decode);
-  return options.where === undefined ? events : events.filter(options.where);
+  return narrow(found.events);
+}
+
+/**
+ * Simulates `transaction` through `adapter` and returns the events it would
+ * emit, narrowed as `eventsOf` narrows them. Input is refused before the call.
+ */
+export async function previewEvents(
+  adapter: EventAdapter,
+  limiter: RequestLimiter,
+  transaction: unknown,
+  descriptor: EventDescriptor | undefined,
+  options: PreviewEventsOptions,
+): Promise<StreamdEvent[]> {
+  const simulation = requireSimulation({ transaction, signerPublicKey: options.signerPublicKey });
+  const narrow = narrower(descriptor, options);
+  if (adapter.simulateTransactionEvents === undefined) {
+    throw new StreamdError("previewEvents needs an adapter that implements simulateTransactionEvents");
+  }
+  const found = await limiter.run(() => adapter.simulateTransactionEvents!(simulation, descriptor));
+  if (!found.success) {
+    throw new StreamdTransactionError(
+      `Simulated transaction failed at version ${found.version}: ${found.vmStatus}`,
+      undefined,
+      found.version,
+      found.vmStatus,
+    );
+  }
+  return narrow(found.events);
 }

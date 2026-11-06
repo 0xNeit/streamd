@@ -1,7 +1,7 @@
 // Kept in the emitted declarations so consumers whose `lib` predates
 // explicit resource management still have `Symbol.dispose` (TypeScript 5.2+).
 /// <reference lib="esnext.disposable" preserve="true" />
-import type { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
+import type { Aptos, AptosConfig, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
 
 // ---- Event identification ----
 
@@ -249,6 +249,16 @@ export interface EventsOfOptions {
   timeout?: number;
   /** Aborting rejects with the signal's `reason` and stops looking. */
   signal?: AbortSignal;
+}
+
+/** Options for `StreamdClient.previewEvents`. */
+export interface PreviewEventsOptions {
+  /** The sender's public key, so the simulation checks its auth key; omitted, that check is skipped. */
+  signerPublicKey?: PublicKey;
+  /** Keep only events satisfying this predicate, after `decode`. */
+  where?: EventPredicate;
+  /** Top-level `data` fields turned from decimal strings into `bigint`, as `EventFilter.decode`. */
+  decode?: readonly string[];
 }
 
 /**
@@ -507,7 +517,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, and the `getTransactionEvents` lookups behind `eventsOf`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, and the `simulateTransactionEvents` calls behind `previewEvents`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
@@ -666,6 +676,25 @@ export interface EventAdapter {
     transactionHash: string,
     descriptor?: EventDescriptor,
   ): Promise<TransactionEvents | undefined>;
+  /**
+   * The events `simulation.transaction` would emit if it ran now, from a
+   * simulation that commits nothing. `version` is the one the source simulated
+   * at, and events carry no `transactionHash`, since an unsigned transaction's
+   * hash is not the one it will commit under. `descriptor` is for routing only:
+   * return the events unfiltered. Optional; `StreamdClient.previewEvents` needs it.
+   */
+  simulateTransactionEvents?(
+    simulation: TransactionSimulation,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents>;
+}
+
+/** A built, unsigned transaction to simulate, as `EventAdapter.simulateTransactionEvents` takes it. */
+export interface TransactionSimulation {
+  /** From `aptos.transaction.build.simple`; multi-agent transactions are not supported. */
+  transaction: SimpleTransaction;
+  /** The sender's public key, so the node checks its auth key; omitted, that check is skipped. */
+  signerPublicKey?: PublicKey;
 }
 
 /** A committed transaction's events, as `EventAdapter.getTransactionEvents` reports them. */

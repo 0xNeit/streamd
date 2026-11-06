@@ -1,4 +1,5 @@
 import { Aptos } from "@aptos-labs/ts-sdk";
+import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type {
   BatchCallback,
   EventAdapter,
@@ -9,6 +10,7 @@ import type {
   ListenerDefaults,
   ListenerOptions,
   OnceOptions,
+  PreviewEventsOptions,
   ReduceOptions,
   Reducer,
   Reduction,
@@ -32,7 +34,7 @@ import { CursorManager } from "./cursor.js";
 import { fieldDecoder } from "./decode.js";
 import { SharedFetches } from "./shared.js";
 import { startReduction, type ReduceHost } from "./reduce.js";
-import { eventsOf } from "./transaction.js";
+import { eventsOf, previewEvents } from "./transaction.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -438,6 +440,26 @@ export class StreamdClient {
       descriptor,
       options,
     );
+    return events as StreamdEvent<TData>[];
+  }
+
+  /**
+   * Simulate a built, unsigned `transaction` (from
+   * `aptos.transaction.build.simple`) and resolve with the events it would
+   * emit if it ran now, narrowed like `eventsOf`. Nothing is signed or
+   * submitted. The events carry the simulated `version` and no
+   * `transactionHash`: neither is the one the transaction will commit under.
+   * Goes through `EventAdapter.simulateTransactionEvents`.
+   *
+   * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
+   * simulation fails, and with any simulation error as it is.
+   */
+  async previewEvents<TData = unknown>(
+    transaction: SimpleTransaction,
+    descriptor?: EventDescriptor<TData>,
+    options: PreviewEventsOptions = {},
+  ): Promise<StreamdEvent<TData>[]> {
+    const events = await previewEvents(this.adapter, this.limiter, transaction, descriptor, options);
     return events as StreamdEvent<TData>[];
   }
 

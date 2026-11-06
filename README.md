@@ -376,6 +376,32 @@ its `maxConcurrentRequests` slot until then. The hash must be
 `0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which
 `FullnodeScanAdapter` and `MemoryAdapter` have and the wrapping adapters pass through.
 
+### Preview a transaction's events before signing
+
+```ts
+const transaction = await aptos.transaction.build.simple({ sender, data });
+const deposits = await streamd.previewEvents(
+  transaction,
+  { kind: "module", eventType: "0x1::fungible_asset::Deposit" }, // optional
+  { signerPublicKey: account.publicKey, decode: ["amount"] }, // optional
+);
+```
+
+`previewEvents()` simulates a built, unsigned transaction on the fullnode and resolves with
+the events it would emit if it ran now, narrowed exactly as `eventsOf()` narrows them.
+Nothing is signed or submitted, and the simulation commits nothing. The events are
+previews, not history: `version` is the one the node simulated at, and `transactionHash`
+is unset, since an unsigned transaction's hash is not the one it will commit under. Pass
+`signerPublicKey` to have the node check the sender's auth key; without it that check is
+skipped. Only single-signer transactions are accepted, a fee-payer one included.
+
+A simulation that fails rejects with `StreamdTransactionError`, whose `vmStatus` says why
+and whose `transactionHash` is undefined. On `FullnodeScanAdapter` a failed request
+rejects with a `StreamdNetworkError` that carries neither the transaction nor the SDK
+error holding it. It needs an adapter with `simulateTransactionEvents`, which
+`FullnodeScanAdapter` has. The wrapping adapters pass it through, never cached or recorded,
+since a simulation answers for the chain's state at that moment.
+
 ### Query history
 
 ```ts
@@ -532,7 +558,7 @@ At most that many adapter calls run at once across every subscription and query 
 client; the rest wait their turn in order. `fetchEvents`, the `getHeadVersion` read behind
 a negative `fromVersion`, the `getEarliestVersion` read behind `"earliest"`, and the
 `getBlock` and `getBlockHeights` lookups behind `fromBlock`/`toBlock` and `fromTime`, and
-the lookups behind `eventsOf()` all count. The unit is one adapter call, not one HTTP request:
+the lookups behind `eventsOf()` and the simulations behind `previewEvents()` all count. The unit is one adapter call, not one HTTP request:
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
 dropped without reaching the adapter. Omit the option for no limit.
@@ -830,7 +856,9 @@ a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` tha
 `fromBlock`/`toBlock` need, an optional `getBlockHeights(descriptor)` that `fromTime`
 needs alongside `getBlock`, and an optional `getTransactionEvents(hash, descriptor?)` that
 `eventsOf()` needs, returning `{ version, success, vmStatus, events }` or `undefined` while
-the transaction is not committed. See the `EventAdapter` type for the full contract.
+the transaction is not committed, and an optional
+`simulateTransactionEvents({ transaction, signerPublicKey? }, descriptor?)` that
+`previewEvents()` needs, returning the same shape for a simulation. See the `EventAdapter` type for the full contract.
 
 A page may also carry `throughVersion`, the highest ledger version the source has
 finished examining: resuming from `nextCursor` returns nothing at or below it, so an

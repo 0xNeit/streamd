@@ -6,6 +6,7 @@ import type {
   EventPage,
   FetchOptions,
   TransactionEvents,
+  TransactionSimulation,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import { requireAdapter } from "./validate.js";
@@ -117,6 +118,20 @@ export class FallbackAdapter implements EventAdapter {
     }
     return tryInOrder(reporting, (adapter) =>
       adapter.getTransactionEvents!(transactionHash, descriptor),
+    );
+  }
+
+  /** From the first adapter that simulates transactions, with the same fallback rules. */
+  async simulateTransactionEvents(
+    simulation: TransactionSimulation,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents> {
+    const reporting = this.adapters.filter((a) => a.simulateTransactionEvents !== undefined);
+    if (reporting.length === 0) {
+      throw new StreamdError("No FallbackAdapter source simulates transactions");
+    }
+    return tryInOrder(reporting, (adapter) =>
+      adapter.simulateTransactionEvents!(simulation, descriptor),
     );
   }
 }

@@ -7,7 +7,13 @@ import {
   StreamdTimeoutError,
   StreamdTransactionError,
 } from "../src/errors.js";
-import type { EventAdapter, StreamdEvent, TransactionEvents } from "../src/types.js";
+import type { PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
+import type {
+  EventAdapter,
+  StreamdEvent,
+  TransactionEvents,
+  TransactionSimulation,
+} from "../src/types.js";
 
 const HASH = `0x${"cd".repeat(32)}`;
 const PING = "0x1::test::Ping";
@@ -276,5 +282,112 @@ describe("eventsOf", () => {
     await first;
     await Bun.sleep(5);
     expect(lookups).toBe(1);
+  });
+});
+
+const TRANSACTION = { rawTransaction: {} } as unknown as SimpleTransaction;
+const KEY = {} as PublicKey;
+const simulatedRun: TransactionEvents = {
+  version: 12n,
+  success: true,
+  vmStatus: "Executed successfully",
+  events: EVENTS.map((e) => ({ ...e, version: 12n, transactionHash: undefined })),
+};
+
+function simulator(result: TransactionEvents | Error = simulatedRun) {
+  const calls: { simulation: TransactionSimulation; descriptor: unknown }[] = [];
+  const adapter: EventAdapter = {
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    async simulateTransactionEvents(simulation, descriptor) {
+      calls.push({ simulation, descriptor });
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  };
+  return { adapter, calls };
+}
+
+describe("previewEvents", () => {
+  it("passes the transaction, key and descriptor to the adapter and resolves with every event", async () => {
+    const { adapter, calls } = simulator();
+    const descriptor = { kind: "account", accountAddress: SENDER } as const;
+    const events = await client(adapter).previewEvents(TRANSACTION, descriptor, { signerPublicKey: KEY });
+    expect(events).toEqual(simulatedRun.events);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.simulation.transaction).toBe(TRANSACTION);
+    expect(calls[0]!.simulation.signerPublicKey).toBe(KEY);
+    expect(calls[0]!.descriptor).toBe(descriptor);
+  });
+
+  it("filters by each descriptor kind, decoding before where", async () => {
+    const c = client(simulator().adapter);
+    expect((await c.previewEvents(TRANSACTION, { kind: "module", eventType: PONG })).map((e) => e.eventIndex))
+      .toEqual([1]);
+    expect(await c.previewEvents(TRANSACTION, { kind: "account", accountAddress: STRANGER })).toEqual([]);
+    expect(
+      (await c.previewEvents(TRANSACTION, { kind: "handle", accountAddress: SENDER, creationNumber: 5n })).map(
+        (e) => e.eventIndex,
+      ),
+    ).toEqual([1]);
+    const decoded = await c.previewEvents<{ amount: bigint }>(TRANSACTION, undefined, {
+      decode: ["amount"],
+      where: (e) => (e.data as { amount: unknown }).amount === 30n,
+    });
+    expect(decoded.map((e) => e.eventIndex)).toEqual([2]);
+  });
+
+  it("rejects a failed simulation with its vm status and no hash", async () => {
+    const failed = { ...simulatedRun, success: false, vmStatus: "Move abort: EINSUFFICIENT_BALANCE", events: [] };
+    const err = await client(simulator(failed).adapter).previewEvents(TRANSACTION).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdTransactionError);
+    expect(err).toMatchObject({ transactionHash: undefined, version: 12n, vmStatus: failed.vmStatus });
+  });
+
+  it("rejects with a simulation error as it is", async () => {
+    const boom = new StreamdNetworkError("down", 503);
+    const err = await client(simulator(boom).adapter).previewEvents(TRANSACTION).catch((e: unknown) => e);
+    expect(err).toBe(boom);
+  });
+
+  it("refuses bad input and a missing adapter method before any call", async () => {
+    const { adapter, calls } = simulator();
+    const c = client(adapter);
+    const refusals: [unknown, unknown, unknown][] = [
+      [undefined, undefined, {}],
+      [null, undefined, {}],
+      [{}, undefined, {}],
+      [{ rawTransaction: {}, secondarySignerAddresses: [] }, undefined, {}],
+      [TRANSACTION, undefined, { signerPublicKey: "0xkey" }],
+      [TRANSACTION, { kind: "handle", accountAddress: SENDER, eventHandleStruct: "0x1::a::B", fieldName: "f" }, {}],
+      [TRANSACTION, { kind: "nope" }, {}],
+      [TRANSACTION, undefined, { decode: "amount" }],
+    ];
+    for (const [transaction, descriptor, options] of refusals) {
+      const err = await c
+        .previewEvents(transaction as never, descriptor as never, options as never)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+    }
+    expect(calls).toEqual([]);
+    const bare = client({ fetchEvents: async () => ({ events: [], hasMore: false }) });
+    const err = await bare.previewEvents(TRANSACTION).catch((e: unknown) => e);
+    expect((err as Error).message).toContain("simulateTransactionEvents");
+  });
+
+  it("goes through maxConcurrentRequests", async () => {
+    let active = 0;
+    let peak = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async simulateTransactionEvents() {
+        peak = Math.max(peak, ++active);
+        await Bun.sleep(5);
+        active--;
+        return simulatedRun;
+      },
+    };
+    const c = client(adapter, { maxConcurrentRequests: 1 });
+    await Promise.all([c.previewEvents(TRANSACTION), c.previewEvents(TRANSACTION)]);
+    expect(peak).toBe(1);
   });
 });

@@ -72,11 +72,14 @@ export class StreamdTimeoutError extends StreamdError {
   }
 }
 
-/** A transaction that committed but failed, so the events it would have emitted were discarded. */
+/**
+ * A transaction that failed, so the events it would have emitted were
+ * discarded. `transactionHash` is undefined for a failed simulation.
+ */
 export class StreamdTransactionError extends StreamdError {
   constructor(
     message: string,
-    public readonly transactionHash: string,
+    public readonly transactionHash: string | undefined,
     public readonly version: bigint,
     public readonly vmStatus: string,
   ) {

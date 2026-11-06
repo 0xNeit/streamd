@@ -75,6 +75,8 @@ function transactionJson(found: TransactionEvents | undefined): unknown {
  * call whose descriptor is not one of the three kinds. `getHeadVersion`,
  * `getEarliestVersion`, `getBlock`, `getBlockHeights` and `getTransactionEvents`
  * (keyed by hash) are recorded only when the wrapped adapter has them.
+ * `simulateTransactionEvents` passes through unrecorded: a simulation answers
+ * for state at that moment, so replaying it would be stale.
  */
 export function recordingAdapter(adapter: EventAdapter): RecordingAdapter {
   const source = requireAdapter(adapter, "recordingAdapter");
@@ -128,6 +130,10 @@ export function recordingAdapter(adapter: EventAdapter): RecordingAdapter {
         source.getTransactionEvents!(hash, descriptor),
         transactionJson,
       );
+  }
+  if (source.simulateTransactionEvents !== undefined) {
+    recorder.simulateTransactionEvents = (simulation, descriptor) =>
+      source.simulateTransactionEvents!(simulation, descriptor);
   }
   return recorder;
 }
