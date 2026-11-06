@@ -71,3 +71,16 @@ export class StreamdTimeoutError extends StreamdError {
     this.name = "StreamdTimeoutError";
   }
 }
+
+/** A transaction that committed but failed, so the events it would have emitted were discarded. */
+export class StreamdTransactionError extends StreamdError {
+  constructor(
+    message: string,
+    public readonly transactionHash: string,
+    public readonly version: bigint,
+    public readonly vmStatus: string,
+  ) {
+    super(message);
+    this.name = "StreamdTransactionError";
+  }
+}

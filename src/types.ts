@@ -640,6 +640,27 @@ export interface EventAdapter {
    * `descriptor`. Optional; `fromTime` needs it, together with `getBlock`.
    */
   getBlockHeights?(descriptor: EventDescriptor): Promise<BlockHeights>;
+  /**
+   * Every event of the committed transaction with this hash, in transaction
+   * order, or `undefined` while the source does not have it committed (unknown
+   * or still pending). One lookup, no waiting. `descriptor` is the caller's,
+   * when given, for routing only: return the events unfiltered. Optional;
+   * `StreamdClient.eventsOf` needs it.
+   */
+  getTransactionEvents?(
+    transactionHash: string,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents | undefined>;
+}
+
+/** A committed transaction's events, as `EventAdapter.getTransactionEvents` reports them. */
+export interface TransactionEvents {
+  version: bigint;
+  /** False when the transaction aborted; the chain then keeps only its fee statement event. */
+  success: boolean;
+  /** The VM's verdict, such as `"Executed successfully"` or the abort it hit. */
+  vmStatus: string;
+  events: StreamdEvent[];
 }
 
 /** Block heights an adapter can serve, both inclusive, as `EventAdapter.getBlockHeights` reports them. */
