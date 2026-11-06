@@ -45,6 +45,21 @@ function validateBlockRange(filter: EventFilter): void {
   }
 }
 
+function validateToVersion(toVersion: unknown): void {
+  if (toVersion !== undefined && toVersion !== "head" && typeof toVersion !== "bigint") {
+    throw new StreamdError(
+      `Invalid toVersion: ${String(toVersion)} (expected a bigint or "head")`,
+    );
+  }
+}
+
+async function headVersion(adapter: EventAdapter, descriptor: EventDescriptor): Promise<bigint> {
+  if (adapter.getHeadVersion === undefined) {
+    throw new StreamdError('toVersion "head" needs an adapter that implements getHeadVersion');
+  }
+  return adapter.getHeadVersion(descriptor);
+}
+
 function blockAt(
   adapter: EventAdapter,
   descriptor: EventDescriptor,
@@ -115,6 +130,7 @@ export class EventQuery {
       throw new StreamdError('orderBy must be "asc" or "desc"');
     }
     validateRetries(rest.retries);
+    validateToVersion(rest.toVersion);
     validateBlockRange(rest);
     validateFromTime(rest);
     if (orderBy !== "desc") {
@@ -184,9 +200,10 @@ export class EventQuery {
     let fromVersion = isAbsoluteVersion(filter.fromVersion)
       ? filter.fromVersion
       : undefined;
-    let toVersion = filter.toVersion;
+    let toVersion = filter.toVersion === "head" ? undefined : filter.toVersion;
     let resolved =
       isAbsoluteVersion(filter.fromVersion) &&
+      filter.toVersion !== "head" &&
       fromBlock === undefined &&
       toBlock === undefined &&
       fromTime === undefined;
@@ -204,15 +221,20 @@ export class EventQuery {
         limit !== undefined ? Math.min(pageSize, limit - fetched) : pageSize;
       if (batchLimit <= 0) break;
 
-      // Only a relative, earliest, time or block bound awaits, so an absolute
-      // range fetches synchronously.
+      // Only a relative, earliest, head, time or block bound awaits, so an
+      // absolute range fetches synchronously.
       if (!resolved) {
+        const head =
+          filter.toVersion === "head"
+            ? await withRetries(() => headVersion(adapter, descriptor), retries, signal)
+            : undefined;
+        toVersion ??= head;
         const start = (): Promise<bigint | undefined> =>
           fromTime !== undefined
             ? resolveFromTime(adapter, descriptor, fromTime, () => signal?.aborted === true)
             : fromBlock !== undefined
               ? blockAt(adapter, descriptor, fromBlock).then((b) => b.firstVersion)
-              : resolveFromVersion(adapter, descriptor, filter.fromVersion);
+              : resolveFromVersion(adapter, descriptor, filter.fromVersion, head);
         fromVersion = await withRetries(start, retries, signal);
         if (toBlock !== undefined) {
           toVersion = (

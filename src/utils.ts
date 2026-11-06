@@ -68,12 +68,14 @@ export function isAbsoluteVersion(
 /**
  * A negative `fromVersion` counts back from the adapter's head, as ethers
  * reads a negative block tag, and `"earliest"` reads the adapter's oldest
- * servable version; other values pass through without a read.
+ * servable version; other values pass through without a read. A `head`
+ * already read for the same query is reused instead of read again.
  */
 export async function resolveFromVersion(
   adapter: EventAdapter,
   descriptor: EventDescriptor,
   fromVersion: bigint | "earliest" | undefined,
+  head?: bigint,
 ): Promise<bigint | undefined> {
   if (isAbsoluteVersion(fromVersion)) return fromVersion;
   if (fromVersion === "earliest") {
@@ -89,12 +91,12 @@ export async function resolveFromVersion(
       `Invalid fromVersion: ${String(fromVersion)} (expected a bigint or "earliest")`,
     );
   }
-  if (adapter.getHeadVersion === undefined) {
+  if (head === undefined && adapter.getHeadVersion === undefined) {
     throw new StreamdError(
       "A negative fromVersion needs an adapter that implements getHeadVersion",
     );
   }
-  const start = (await adapter.getHeadVersion(descriptor)) + fromVersion;
+  const start = (head ?? (await adapter.getHeadVersion!(descriptor))) + fromVersion;
   return start < 0n ? 0n : start;
 }
 
