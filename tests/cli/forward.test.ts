@@ -222,6 +222,30 @@ describe("runForward", () => {
     expect(errors.join("\n")).not.toContain(SECRET);
   });
 
+  it("stops without advancing when the batch callback throws", async () => {
+    writeFileSync(cursorFile(), "0\n");
+    handler = () => new Response("", { status: 500 });
+    const { io } = harness(new MemoryAdapter([ev(1)]));
+    let reports = 0;
+    io.error = () => {
+      reports++;
+      throw new Error("stderr closed");
+    };
+    expect(await runForward(options(), io)).toBe(1);
+    expect(received).toHaveLength(1);
+    expect(reports).toBeGreaterThan(0);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("0\n");
+  });
+
+  it("sends a given content-type instead of the default", async () => {
+    const { io, controller } = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(options({ headers: { "content-type": "text/plain" } }), io);
+    await until(() => existsSync(cursorFile()));
+    controller.abort();
+    expect(await run).toBe(0);
+    expect(received[0]!.headers.get("content-type")).toBe("text/plain");
+  });
+
   it("does not follow redirects", async () => {
     handler = () => new Response("", { status: 307, headers: { location: "http://127.0.0.1:1/" } });
     const { io, errors } = harness(new MemoryAdapter([ev(1)]));

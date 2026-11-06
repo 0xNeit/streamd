@@ -73,8 +73,8 @@ const MAX_RETRIES = 100;
 const DEFAULT_TIMEOUT = 10_000;
 // RFC 9110 token characters.
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
-// What fetch accepts in a value; anything else fails every attempt with an
-// error naming the offending character.
+// Printable latin1 plus tab, a little stricter than fetch: a value fetch refuses
+// would fail every attempt with an error naming the offending character.
 const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
 
 export const USAGE = `Usage:

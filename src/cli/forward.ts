@@ -157,19 +157,17 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     sub = io.client.onBatch(
       options.descriptor,
       async (events) => {
-        let delivered: boolean;
+        let delivered = false;
         try {
           delivered = await deliver(`[${events.map(serializeEvent).join(",")}]`, options, io);
         } catch (err) {
-          // A throw would let the poller move past the page: stop first instead.
           io.error(`streamd: ${message(err)}`);
-          delivered = false;
+        } finally {
+          // Stopping before returning, even on a throw, keeps the poller's cursor
+          // on this undelivered page.
+          if (!delivered) finish(io.signal.aborted ? 0 : 1);
         }
-        if (!delivered) {
-          // Stopping before returning keeps the cursor on this undelivered page.
-          finish(io.signal.aborted ? 0 : 1);
-          return;
-        }
+        if (!delivered) return;
         // The poller moves its cursor past the page once this callback's promise
         // settles, on a microtask; a timer runs after that.
         setTimeout(() => {
