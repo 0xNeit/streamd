@@ -43,6 +43,7 @@ export class EventPoller {
   private lastSuccessAt: number | undefined = undefined;
   private currentInterval: number;
   private _active = false;
+  private _paused = false;
   /** Bumped by start(), so a poll left over from an earlier run can tell. */
   private generation = 0;
   /**
@@ -100,9 +101,15 @@ export class EventPoller {
     };
   }
 
+  /** True between pause() and resume(), and false once stopped. */
+  get paused(): boolean {
+    return this._paused;
+  }
+
   start(): void {
     if (this._active || this.signal?.aborted) return;
     this._active = true;
+    this._paused = false;
     this.generation++;
     this.signal?.addEventListener("abort", this.abort, { once: true });
     this.schedulePoll(0);
@@ -110,7 +117,28 @@ export class EventPoller {
 
   stop(): void {
     this._active = false;
+    this._paused = false;
     this.signal?.removeEventListener("abort", this.abort);
+    this.clearTimer();
+  }
+
+  /**
+   * Stop polling but keep the cursor, dedup window, and error budget for
+   * resume(). The abort listener stays attached, so an abort still ends it.
+   */
+  pause(): void {
+    if (!this._active) return;
+    this._active = false;
+    this._paused = true;
+    this.clearTimer();
+  }
+
+  /** Undo a pause(); a stopped poller stays stopped. */
+  resume(): void {
+    if (this._paused) this.start();
+  }
+
+  private clearTimer(): void {
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
@@ -230,9 +258,9 @@ export class EventPoller {
         // of the page and the next poll rather than piling up work.
         if (isThenable(result)) await result;
       } catch (err) {
-        // Reported while any run is live: the handler is the same one, and
-        // this path touches neither the cursor nor the error budget.
-        if (this._active) this.report(callbackError(event, err));
+        // Reported while any run is live or paused: the handler is the same
+        // one, and this path touches neither the cursor nor the error budget.
+        if (this._active || this._paused) this.report(callbackError(event, err));
         if (!this.isCurrent(gen)) return;
       }
     }

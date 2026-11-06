@@ -82,6 +82,21 @@ cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
 a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
 its own `onError`.
 
+### Pause and resume
+
+```ts
+sub.pause();   // stop polling; the subscription stays open
+sub.paused;    // true
+sub.resume();  // poll again at once, from the same cursor
+```
+
+Pausing keeps the cursor, the dedup window, and the error count, so `resume()` picks up
+with the page it held and skips events already delivered. A handler already running when
+you pause finishes, the rest of its page waits for `resume()`, and a fetch in flight is
+discarded. While paused, `active` (and `sub.status.active`) is `false`. `unsubscribe()`,
+`destroy()`, or the `signal` aborting still ends a paused subscription, and `resume()` never
+revives one that has ended, including after `maxErrors`.
+
 ### Iterate live events
 
 ```ts

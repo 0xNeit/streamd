@@ -86,8 +86,9 @@ export class StreamdClient {
         pollInterval: this.defaultPollInterval,
         ...options,
         onError: (err) => {
-          // Drop the subscription once the poller has given up and stopped itself.
-          if (!poller.active) forget();
+          // Drop the subscription once the poller has given up and stopped
+          // itself; a paused one reporting a late handler error stays.
+          if (!poller.active && !poller.paused) forget();
           (options?.onError ?? this.onError)?.(err);
         },
       },
@@ -105,12 +106,17 @@ export class StreamdClient {
       get active() {
         return poller.active;
       },
+      get paused() {
+        return poller.paused;
+      },
       get cursor() {
         return poller.cursor;
       },
       get status() {
         return poller.status;
       },
+      pause: () => poller.pause(),
+      resume: () => poller.resume(),
       unsubscribe: () => {
         poller.stop();
         forget();
