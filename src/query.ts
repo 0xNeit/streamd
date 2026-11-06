@@ -4,7 +4,7 @@ import type {
   EventFilter,
   StreamdEvent,
 } from "./types.js";
-import { raceAbort } from "./utils.js";
+import { raceAbort, resolveFromVersion } from "./utils.js";
 
 const DEFAULT_PAGE_SIZE = 25;
 
@@ -40,6 +40,7 @@ export class EventQuery {
     const { where, maxPages, signal, ...adapterFilter } = filter;
     const limit = filter.limit;
     let cursor: string | undefined;
+    let fromVersion = filter.fromVersion;
     let fetched = 0;
     let pages = 0;
 
@@ -52,12 +53,20 @@ export class EventQuery {
         limit !== undefined ? Math.min(pageSize, limit - fetched) : pageSize;
       if (batchLimit <= 0) break;
 
+      // Only a relative start awaits, so an absolute one fetches synchronously.
+      if (fromVersion !== undefined && fromVersion < 0n) {
+        fromVersion = await raceAbort(
+          resolveFromVersion(this.adapter, descriptor, filter.fromVersion),
+          signal,
+        );
+      }
+
       const page = await raceAbort(
         this.adapter.fetchEvents(descriptor, {
           ...adapterFilter,
           // The cursor carries position after the first page; fromVersion and
           // offset only seed the initial request.
-          fromVersion: cursor === undefined ? filter.fromVersion : undefined,
+          fromVersion: cursor === undefined ? fromVersion : undefined,
           offset: cursor === undefined ? filter.offset : undefined,
           cursor,
           limit: batchLimit,

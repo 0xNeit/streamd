@@ -1,3 +1,6 @@
+import type { EventAdapter, EventDescriptor } from "./types.js";
+import { StreamdError } from "./errors.js";
+
 let nextId = 0;
 
 export function generateId(): string {
@@ -37,4 +40,23 @@ export function raceAbort<T>(
       },
     );
   });
+}
+
+/**
+ * A negative `fromVersion` counts back from the adapter's head, as ethers
+ * reads a negative block tag; other values pass through without a head read.
+ */
+export async function resolveFromVersion(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  fromVersion: bigint | undefined,
+): Promise<bigint | undefined> {
+  if (fromVersion === undefined || fromVersion >= 0n) return fromVersion;
+  if (adapter.getHeadVersion === undefined) {
+    throw new StreamdError(
+      "A negative fromVersion needs an adapter that implements getHeadVersion",
+    );
+  }
+  const start = (await adapter.getHeadVersion(descriptor)) + fromVersion;
+  return start < 0n ? 0n : start;
 }
