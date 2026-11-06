@@ -18,6 +18,7 @@ export {
 
 export {
   every,
+  fromSender,
   involvesAddress,
   normalizeAddress,
   not,
