@@ -1559,6 +1559,42 @@ describe("StreamdClient relative start", () => {
   });
 });
 
+describe("StreamdClient earliest start", () => {
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+  const versions = [5, 8, 9, 10].map((v) => makeEvent(v));
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("on() with fromVersion earliest delivers from the oldest available version", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter(versions) });
+    const seen: bigint[] = [];
+    client.on(descriptor, (e) => void seen.push(e.version), { fromVersion: "earliest" });
+    await advanceTimersByTimeAsync(0);
+    client.destroy();
+
+    expect(seen).toEqual([5n, 8n, 9n, 10n]);
+  });
+
+  it("getEvents() with fromVersion earliest reads from the oldest version, in either order", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter(versions) });
+    const asc = await client.getEvents(descriptor, { fromVersion: "earliest", limit: 2 });
+    const desc = await client.getEvents(descriptor, {
+      fromVersion: "earliest",
+      orderBy: "desc",
+      limit: 2,
+    });
+
+    expect(asc.map((e) => e.version)).toEqual([5n, 8n]);
+    expect(desc.map((e) => e.version)).toEqual([10n, 9n]);
+  });
+});
+
 describe("StreamdClient latest-first queries", () => {
   it("getEvents() with orderBy desc returns the most recent events across pages", async () => {
     const versions = Array.from({ length: 60 }, (_, i) => makeEvent(i + 1));
