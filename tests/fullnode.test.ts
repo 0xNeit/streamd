@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { Account, Aptos, AptosConfig, Network, parseTypeTag } from "@aptos-labs/ts-sdk";
 import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import type { EventDescriptor } from "../src/types.js";
@@ -13,6 +13,7 @@ interface Reply {
 }
 
 interface Call {
+  method?: string;
   path: string;
   params: Record<string, unknown>;
   headers: Record<string, unknown>;
@@ -30,13 +31,14 @@ function fakeNode(
   const calls: Call[] = [];
   const client = {
     async provider(req: {
+      method?: string;
       url: string;
       params?: Record<string, unknown>;
       headers?: Record<string, unknown>;
     }) {
       const path = req.url.replace(/^http:\/\/fake\/v1\/?/, "");
       const params = { ...(req.params ?? {}) };
-      calls.push({ path, params, headers: { ...(req.headers ?? {}) } });
+      calls.push({ method: req.method, path, params, headers: { ...(req.headers ?? {}) } });
       const reply = route(path, params);
       const status = reply.status ?? 200;
       return { status, statusText: status === 200 ? "OK" : "Error", data: reply.data, headers: {} };
@@ -889,5 +891,131 @@ describe("FullnodeScanAdapter transaction lookup", () => {
       expect(bad).toBeInstanceOf(StreamdError);
       expect(bad).not.toBeInstanceOf(StreamdNetworkError);
     }
+  });
+});
+
+/** A transfer built offline: explicit ABI and options mean the build makes no request. */
+function buildTransfer(aptos: Aptos) {
+  const sender = Account.generate();
+  return aptos.transaction.build.simple({
+    sender: sender.accountAddress,
+    data: {
+      function: "0x1::aptos_account::transfer",
+      functionArguments: [sender.accountAddress, 0],
+      abi: { typeParameters: [], parameters: [parseTypeTag("address"), parseTypeTag("u64")] },
+    },
+    options: { accountSequenceNumber: 0, gasUnitPrice: 100, maxGasAmount: 1000, expireTimestamp: 9_999_999_999 },
+  });
+}
+
+function simulated(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "user_transaction",
+    version: "42",
+    hash: "0x" + "ab".repeat(32),
+    sender: "0x1",
+    timestamp: "1700000000000000",
+    success: true,
+    vm_status: "Executed successfully",
+    events: [
+      { type: TYPE, data: { v: 1 }, sequence_number: "3", guid: { creation_number: "2", account_address: "0x1" } },
+      { type: OTHER, data: { v: 2 }, sequence_number: "0" },
+    ],
+    ...overrides,
+  };
+}
+
+describe("FullnodeScanAdapter simulation", () => {
+  it("POSTs to the simulate endpoint and maps the events without a transaction hash", async () => {
+    const { aptos, calls } = fakeNode((path) => {
+      if (path === "transactions/simulate") return { data: [simulated()] };
+      throw new Error(`unexpected path ${path}`);
+    });
+    const transaction = await buildTransfer(aptos);
+    const found = await new FullnodeScanAdapter(aptos).simulateTransactionEvents({ transaction });
+    expect(calls.map((c) => [c.method, c.path])).toEqual([["POST", "transactions/simulate"]]);
+    expect(found.version).toBe(42n);
+    expect(found.success).toBe(true);
+    expect(found.vmStatus).toBe("Executed successfully");
+    expect(found.events).toEqual([
+      {
+        type: TYPE,
+        data: { v: 1 },
+        version: 42n,
+        sequenceNumber: 3n,
+        eventIndex: 0,
+        sender: "0x1",
+        guid: { creationNumber: 2n, accountAddress: "0x1" },
+        timestamp: 1700000000000000n,
+      },
+      {
+        type: OTHER,
+        data: { v: 2 },
+        version: 42n,
+        sequenceNumber: 0n,
+        eventIndex: 1,
+        sender: "0x1",
+        timestamp: 1700000000000000n,
+      },
+    ]);
+  });
+
+  it("reports a failed simulation's vm status", async () => {
+    const { aptos } = fakeNode(() => ({
+      data: [simulated({ success: false, vm_status: "Move abort: EINSUFFICIENT_BALANCE", events: [] })],
+    }));
+    const found = await new FullnodeScanAdapter(aptos).simulateTransactionEvents({
+      transaction: await buildTransfer(aptos),
+    });
+    expect(found.success).toBe(false);
+    expect(found.vmStatus).toBe("Move abort: EINSUFFICIENT_BALANCE");
+  });
+
+  it("refuses a malformed response", async () => {
+    for (const data of [
+      [],
+      {},
+      [null],
+      [simulated({ version: "x" })],
+      [simulated({ success: "yes" })],
+      [simulated({ events: [{ type: TYPE, data: {}, sequence_number: "nope" }] })],
+    ]) {
+      const { aptos } = fakeNode(() => ({ data }));
+      const bad = await new FullnodeScanAdapter(aptos)
+        .simulateTransactionEvents({ transaction: await buildTransfer(aptos) })
+        .catch((e: unknown) => e);
+      expect(bad).toBeInstanceOf(StreamdError);
+      expect((bad as Error).message).toBe("Fullnode returned a malformed simulation");
+    }
+  });
+
+  it("refuses a non-transaction or multi-agent one before any request", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [simulated()] }));
+    const transaction = await buildTransfer(aptos);
+    const adapter = new FullnodeScanAdapter(aptos);
+    for (const simulation of [
+      undefined,
+      null,
+      {},
+      { transaction: "0x1234" },
+      { transaction: {} },
+      { transaction: { rawTransaction: {}, secondarySignerAddresses: [] } },
+      { transaction, signerPublicKey: "0xkey" },
+    ]) {
+      const bad = await adapter.simulateTransactionEvents(simulation as never).catch((e: unknown) => e);
+      expect(bad).toBeInstanceOf(StreamdError);
+      expect((bad as Error).message).not.toContain("0x1234");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects a node error with its status and no cause", async () => {
+    const { aptos } = fakeNode(() => ({ status: 400, data: { message: "Invalid transaction" } }));
+    const bad = await new FullnodeScanAdapter(aptos)
+      .simulateTransactionEvents({ transaction: await buildTransfer(aptos) })
+      .catch((e: unknown) => e);
+    expect(bad).toBeInstanceOf(StreamdNetworkError);
+    expect((bad as StreamdNetworkError).statusCode).toBe(400);
+    expect((bad as StreamdNetworkError).cause).toBeUndefined();
   });
 });

@@ -5,6 +5,7 @@ import type {
   EventAdapter,
   HandleEventDescriptor,
   ModuleEventDescriptor,
+  TransactionSimulation,
 } from "../types.js";
 
 export const DEFAULT_LIMIT = 25;
@@ -30,6 +31,29 @@ export function requireTransactionHash(value: unknown): string {
     throw new StreamdError(`Not a valid transaction hash: ${shown}`);
   }
   return value;
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/**
+ * A single-signer transaction and optional public key to simulate. Refusals
+ * name only what is wrong, never the transaction's contents.
+ */
+export function requireSimulation(value: unknown): TransactionSimulation {
+  const simulation = value as Partial<Record<keyof TransactionSimulation, unknown>> | null;
+  const transaction = simulation?.transaction;
+  if (!isObject(transaction) || !isObject(transaction.rawTransaction)) {
+    throw new StreamdError("Not a built transaction: pass the result of aptos.transaction.build.simple");
+  }
+  if (transaction.secondarySignerAddresses !== undefined) {
+    throw new StreamdError("Only single-signer transactions can be simulated, not multi-agent ones");
+  }
+  if (simulation!.signerPublicKey !== undefined && !isObject(simulation!.signerPublicKey)) {
+    throw new StreamdError("signerPublicKey must be a PublicKey");
+  }
+  return value as TransactionSimulation;
 }
 
 export function parseCursor(cursor: string): bigint {

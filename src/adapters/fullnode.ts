@@ -13,6 +13,7 @@ import type {
   ModuleEventDescriptor,
   StreamdEvent,
   TransactionEvents,
+  TransactionSimulation,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import {
@@ -21,6 +22,7 @@ import {
   moduleTypeFilter,
   parseCursor,
   requireAddress,
+  requireSimulation,
   requireTransactionHash,
   validateOffset,
 } from "./validate.js";
@@ -250,6 +252,42 @@ export class FullnodeScanAdapter implements EventAdapter {
       };
     } catch (err) {
       throw toStreamdError(err, "transaction by hash");
+    }
+  }
+
+  /**
+   * Simulates `simulation.transaction` on the fullnode, which executes it
+   * against current state and commits nothing. A failure carries no `cause`:
+   * the SDK error holds the request, transaction bytes and client config included.
+   */
+  async simulateTransactionEvents(simulation: TransactionSimulation): Promise<TransactionEvents> {
+    const { transaction, signerPublicKey } = requireSimulation(simulation);
+    let responses: unknown;
+    try {
+      responses = await this.aptos.transaction.simulate.simple({ transaction, signerPublicKey });
+    } catch (err) {
+      const status = (err as { status?: unknown } | null)?.status;
+      throw new StreamdNetworkError(
+        `Fullnode simulation failed: ${err instanceof Error ? err.message : "unknown error"}`,
+        typeof status === "number" ? status : undefined,
+      );
+    }
+    const txn = (Array.isArray(responses) ? responses[0] : undefined) as
+      | TransactionWithEvents
+      | undefined;
+    try {
+      if (txn == null || !/^\d+$/.test(String(txn.version)) || typeof txn.success !== "boolean") {
+        throw new Error("malformed");
+      }
+      const version = BigInt(txn.version!);
+      return {
+        version,
+        success: txn.success,
+        vmStatus: String(txn.vm_status ?? ""),
+        events: toStreamdEvents({ ...txn, hash: undefined }, version, () => true),
+      };
+    } catch {
+      throw new StreamdError("Fullnode returned a malformed simulation");
     }
   }
 

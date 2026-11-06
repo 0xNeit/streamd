@@ -1,7 +1,7 @@
 // Kept in the emitted declarations so consumers whose `lib` predates
 // explicit resource management still have `Symbol.dispose` (TypeScript 5.2+).
 /// <reference lib="esnext.disposable" preserve="true" />
-import type { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
+import type { Aptos, AptosConfig, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
 
 // ---- Event identification ----
 
@@ -666,6 +666,25 @@ export interface EventAdapter {
     transactionHash: string,
     descriptor?: EventDescriptor,
   ): Promise<TransactionEvents | undefined>;
+  /**
+   * The events `simulation.transaction` would emit if it ran now, from a
+   * simulation that commits nothing. `version` is the one the source simulated
+   * at, and events carry no `transactionHash`, since an unsigned transaction's
+   * hash is not the one it will commit under. `descriptor` is for routing only:
+   * return the events unfiltered. Optional; `StreamdClient.previewEvents` needs it.
+   */
+  simulateTransactionEvents?(
+    simulation: TransactionSimulation,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents>;
+}
+
+/** A built, unsigned transaction to simulate, as `EventAdapter.simulateTransactionEvents` takes it. */
+export interface TransactionSimulation {
+  /** From `aptos.transaction.build.simple`; multi-agent transactions are not supported. */
+  transaction: SimpleTransaction;
+  /** The sender's public key, so the node checks its auth key; omitted, that check is skipped. */
+  signerPublicKey?: PublicKey;
 }
 
 /** A committed transaction's events, as `EventAdapter.getTransactionEvents` reports them. */
