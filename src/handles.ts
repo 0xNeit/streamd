@@ -7,7 +7,10 @@ export interface EventHandleInfo {
   descriptor: HandleEventDescriptor;
   /** Events emitted on the handle so far, from its `counter`. */
   count: bigint;
-  /** The handle's guid, for a `CreationNumberEventDescriptor` or matching `StreamdEvent.guid`. */
+  /**
+   * The handle's guid, for a `CreationNumberEventDescriptor`. Its address is as
+   * the node reports it; compare with `StreamdEvent.guid` through `normalizeAddress`.
+   */
   guid: EventGuid;
 }
 

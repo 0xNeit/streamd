@@ -48,10 +48,19 @@ const DEFAULT_SCAN_BATCH = 100;
  */
 const DEFAULT_MAX_SCAN = 1000;
 
-/** The raw guid, unless it is missing or the zero guid module events report. */
+/**
+ * The raw guid, unless it is missing, malformed, or the zero guid module
+ * events report. A bad guid drops only the field, never the page.
+ */
 function toGuid(raw: RawEvent): EventGuid | undefined {
   const guid = raw.guid;
-  if (guid === undefined) return undefined;
+  if (
+    guid === undefined ||
+    !/^\d+$/.test(String(guid.creation_number)) ||
+    !/^0x[0-9a-fA-F]+$/.test(String(guid.account_address))
+  ) {
+    return undefined;
+  }
   const creationNumber = BigInt(guid.creation_number);
   if (creationNumber === 0n && BigInt(guid.account_address) === 0n) return undefined;
   return { creationNumber, accountAddress: guid.account_address };

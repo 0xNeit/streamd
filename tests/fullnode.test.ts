@@ -471,6 +471,23 @@ describe("FullnodeScanAdapter guids", () => {
     ]);
   });
 
+  it("keeps creation number 0 at a real account and drops a malformed guid", async () => {
+    const first = { creation_number: "0", account_address: "0x1" };
+    const { aptos } = fakeNode(
+      handle([
+        { ...handleEvent(0, 3), guid: first },
+        { ...handleEvent(1, 4), guid: { creation_number: "x", account_address: "0x1" } },
+        { ...handleEvent(2, 5), guid: { creation_number: "1", account_address: "0x" } },
+      ]),
+    );
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {});
+    expect(page.events.map((e) => e.guid)).toEqual([
+      { creationNumber: 0n, accountAddress: "0x1" },
+      undefined,
+      undefined,
+    ]);
+  });
+
   it("carries the handle's guid on handle events", async () => {
     const { aptos } = fakeNode(handle([{ ...handleEvent(0, 3), guid: legacy }]));
     const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {});
