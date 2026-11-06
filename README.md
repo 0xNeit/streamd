@@ -851,8 +851,9 @@ Identical requests get their recorded results in the order they were issued,
 then the last one again, so a replayed `on()` sees what the recorded one saw.
 Any other request rejects with a plain `StreamdError` (not a
 `StreamdNetworkError`), and failures are never recorded, so a replayed
-subscription stops once it asks for a page the recording never saw. Events are stored as `serializeEvent` writes them, so a
-`bigint` inside `data` comes back as a decimal string; fullnode data has none.
+subscription stops once it asks for a page the recording never saw. Events
+are stored as `serializeEvent` writes them, so a `bigint` inside `data` comes
+back as a decimal string; fullnode data has none.
 The library writes no files itself. A malformed recording throws a
 `StreamdError` when `replayAdapter` reads it.
 

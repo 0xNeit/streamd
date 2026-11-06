@@ -239,6 +239,26 @@ describe("replayAdapter", () => {
     expect([a, b]).toEqual([100n, 200n]);
   });
 
+  it("drops a failed call and leaves a pending one out until it settles", async () => {
+    const settle: [(head: bigint) => void, (err: unknown) => void][] = [];
+    const recorder = recordingAdapter({
+      async fetchEvents() {
+        return { events: [], hasMore: false };
+      },
+      getHeadVersion: () => new Promise<bigint>((resolve, reject) => settle.push([resolve, reject])),
+    });
+    const failed = recorder.getHeadVersion!(moduleDesc).catch(() => "failed");
+    const ok = recorder.getHeadVersion!(moduleDesc);
+    settle[0]![1](new StreamdNetworkError("down"));
+    expect(await failed).toBe("failed");
+    expect(recorder.toJSON().calls).toEqual([]);
+    settle[1]![0](7n);
+    await ok;
+    const { calls } = recorder.toJSON();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.result).toBe("7");
+  });
+
   it("rejects an unrecorded request with a StreamdError that is not a network error", async () => {
     const recorder = recordingAdapter(new MemoryAdapter(events));
     await recorder.fetchEvents(moduleDesc, { limit: 2 });
@@ -270,6 +290,9 @@ describe("replayAdapter", () => {
   });
 
   const page = { events: [], hasMore: false };
+  const boom = () => {
+    throw new Error("boom");
+  };
   const event = { type: PING, data: {}, version: "1", sequenceNumber: "0", eventIndex: 0 };
   const malformed: [string, unknown, string][] = [
     ["bad JSON", "{nope", "not valid JSON"],
@@ -277,8 +300,19 @@ describe("replayAdapter", () => {
     ["a wrong format tag", { format: "other", version: 1, calls: [] }, "format"],
     ["an unknown version", { format: "streamd-recording", version: 2, calls: [] }, "version 2"],
     ["calls that are not an array", { format: "streamd-recording", version: 1 }, '"calls"'],
-    ["a bigint version", { format: "streamd-recording", version: 1n, calls: [] }, "version 1"],
-    ["a bigint method", valid([{ method: 1n, key: "k", result: page }]), "unknown method 1"],
+    ["a bigint version", { format: "streamd-recording", version: 1n, calls: [] }, "version 1n"],
+    ["a string version", { format: "streamd-recording", version: "1", calls: [] }, 'version "1"'],
+    [
+      "a null-prototype version",
+      { format: "streamd-recording", version: Object.create(null), calls: [] },
+      "version {}",
+    ],
+    ["a bigint method", valid([{ method: 1n, key: "k", result: page }]), "unknown method 1n"],
+    [
+      "a method with a throwing toString",
+      valid([{ method: { toString: boom, toJSON: boom }, key: "k" }]),
+      "unknown method object",
+    ],
     ["a call without a key", valid([{ method: "fetchEvents", result: page }]), "call 0"],
     ["an unknown method", valid([{ method: "toString", key: "k", result: page }]), "unknown method"],
     ["a page without events", valid([{ method: "fetchEvents", key: "k", result: {} }]), '"events"'],

@@ -161,6 +161,15 @@ const PARSERS: Record<RecordedMethod, (result: unknown) => unknown> = {
   getBlockHeights: (result) => decimals(result, ["oldest", "newest"]),
 };
 
+/** A value for an error message that never throws itself, whatever the input holds. */
+function describe(value: unknown): string {
+  try {
+    return typeof value === "bigint" ? `${value}n` : (JSON.stringify(value) ?? String(value));
+  } catch {
+    return typeof value;
+  }
+}
+
 function invalid(message: string, cause?: unknown): never {
   throw new StreamdError(`Invalid recording: ${message}`, cause);
 }
@@ -169,7 +178,7 @@ function parseCall(call: unknown, i: number): [string, unknown] {
   if (!isObject(call) || typeof call.key !== "string") invalid(`call ${i} needs a string "key"`);
   const method = call.method;
   if (typeof method !== "string" || !Object.hasOwn(PARSERS, method)) {
-    invalid(`call ${i} has unknown method ${String(method)}`);
+    invalid(`call ${i} has unknown method ${describe(method)}`);
   }
   try {
     return [`${method}:${call.key}`, PARSERS[method as RecordedMethod](call.result)];
@@ -191,7 +200,7 @@ function loadRecording(input: unknown): Map<string, unknown[]> {
   if (!isObject(value) || value.format !== FORMAT) {
     invalid(`expected an object with format "${FORMAT}"`);
   }
-  if (value.version !== 1) invalid(`unsupported version ${String(value.version)}`);
+  if (value.version !== 1) invalid(`unsupported version ${describe(value.version)}`);
   if (!Array.isArray(value.calls)) invalid('"calls" must be an array');
   const answers = new Map<string, unknown[]>();
   value.calls.forEach((call, i) => {
