@@ -208,3 +208,110 @@ describe("withState on queries", () => {
     expect(most).toBe(1);
   });
 });
+
+const until = async (done: () => boolean) => {
+  for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 2));
+  expect(done()).toBe(true);
+};
+
+describe("withState on listeners", () => {
+  it("delivers state through on, onBatch, once and stream", async () => {
+    const { adapter, calls } = viewing([ev(1), ev(2)]);
+    const client = new StreamdClient({ adapter });
+    const opts = { fromVersion: 0n, pollInterval: 5, withState: balanceOf };
+    const seen: unknown[] = [];
+    const sub = client.on(pings, (e) => void seen.push(e.state), opts);
+    const batches: unknown[][] = [];
+    const batchSub = client.onBatch(pings, (es) => void batches.push(es.map((e) => e.state)), opts);
+    await until(() => seen.length === 2 && batches.length === 1);
+    sub.unsubscribe();
+    batchSub.unsubscribe();
+    expect(seen).toEqual([["1"], ["2"]]);
+    expect(batches).toEqual([[["1"], ["2"]]]);
+    expect((await client.once(pings, opts)).state).toEqual(["1"]);
+    for await (const e of client.stream(pings, opts)) {
+      expect(e.state).toEqual(["1"]);
+      break;
+    }
+    expect(calls.every((c) => c.descriptor === pings)).toBe(true);
+  });
+
+  it("reports a builder throw or invalid request and skips the event", async () => {
+    const { adapter } = viewing([ev(1), ev(2), ev(3)]);
+    const errors: Error[] = [];
+    const seen: bigint[] = [];
+    const sub = new StreamdClient({ adapter }).on(pings, (e) => void seen.push(e.version), {
+      fromVersion: 0n,
+      pollInterval: 5,
+      onError: (err) => errors.push(err),
+      withState: (e) => {
+        if (e.version === 1n) throw new Error("builder bug");
+        if (e.version === 2n) return { function: "bad" } as never;
+        return balanceOf(e);
+      },
+    });
+    await until(() => seen.length === 1);
+    expect(sub.active).toBe(true);
+    sub.unsubscribe();
+    expect(seen).toEqual([3n]);
+    expect(errors.map((e) => e.constructor)).toEqual([StreamdError, StreamdError]);
+    expect(sub.status.consecutiveErrors).toBe(0);
+  });
+
+  it("fails the poll on a failed view and delivers the event on the retry", async () => {
+    const { adapter, calls } = viewing([ev(1), ev(2), ev(3)], (c, n) => {
+      if (n === 2) throw new StreamdNetworkError("flaky", 503);
+      return [String(c.version)];
+    });
+    const errors: Error[] = [];
+    const seen: [bigint, unknown][] = [];
+    const sub = new StreamdClient({ adapter }).on(pings, (e) => void seen.push([e.version, e.state]), {
+      fromVersion: 0n,
+      pollInterval: 1,
+      onError: (err) => errors.push(err),
+      withState: balanceOf,
+    });
+    await until(() => seen.length === 3);
+    sub.unsubscribe();
+    expect(seen).toEqual([[1n, ["1"]], [2n, ["2"]], [3n, ["3"]]]);
+    expect(calls.map((c) => c.version)).toEqual([1n, 2n, 2n, 3n]);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as StreamdError).cause).toBeInstanceOf(StreamdNetworkError);
+  });
+
+  it("delivers a partial batch before failing the poll", async () => {
+    const { adapter } = viewing([ev(1), ev(2), ev(3)], (c, n) => {
+      if (n === 2) throw new StreamdNetworkError("flaky", 503);
+      return [String(c.version)];
+    });
+    const batches: bigint[][] = [];
+    const sub = new StreamdClient({ adapter }).onBatch(
+      pings,
+      (es) => void batches.push(es.map((e) => e.version)),
+      { fromVersion: 0n, pollInterval: 1, onError: () => {}, withState: balanceOf },
+    );
+    await until(() => batches.flat().length === 3);
+    sub.unsubscribe();
+    expect(batches).toEqual([[1n], [2n, 3n]]);
+  });
+
+  it("stops on an adapter without view", async () => {
+    const errors: Error[] = [];
+    const sub = new StreamdClient({ adapter: new MemoryAdapter([ev(1)]) }).on(pings, () => {}, {
+      fromVersion: 0n,
+      pollInterval: 5,
+      onError: (err) => errors.push(err),
+      withState: balanceOf,
+    });
+    await until(() => errors.length === 1);
+    expect(sub.active).toBe(false);
+    expect(errors[0]!.message).toContain("implements view");
+  });
+
+  it("refuses a non-function withState when subscribing", () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter() });
+    expect(() => client.on(pings, () => {}, { withState: {} as never })).toThrow(
+      "withState must be a function",
+    );
+  });
+});

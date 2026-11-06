@@ -422,6 +422,16 @@ export interface ListenerOptions {
    */
   decode?: readonly string[];
   /**
+   * Attach `state` to each delivered event: the view function this builds,
+   * read at the event's `version` through `EventAdapter.view`, after `where`.
+   * One request per delivered event, in order, through
+   * `maxConcurrentRequests`. A throw or an invalid request skips the event
+   * and goes to `onError` without counting toward `maxErrors`. A failed view
+   * fails the poll: events before it on the page are delivered, and the next
+   * poll retries from it (with `dedupWindow: 0`, redelivering those before).
+   */
+  withState?: StateRequestBuilder;
+  /**
    * Receives polling failures and errors thrown by `where` or the callback,
    * overriding `StreamdConfig.onError` for this subscription. A throw from it
    * does not stop polling: it is rethrown on a microtask and surfaces as an

@@ -6,8 +6,10 @@ import type {
   EventPage,
   EventPredicate,
   ListenerOptions,
+  StateRequestBuilder,
   StreamdEvent,
   SubscriptionStatus,
+  ViewRequest,
 } from "./types.js";
 import {
   StreamdError,
@@ -20,6 +22,7 @@ import { resolveFromVersion } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
+import { buildStateRequest, readState, validateWithState } from "./state.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
 const DEFAULT_BATCH_SIZE = 25;
@@ -75,6 +78,7 @@ export class EventPoller {
   private fromTime?: bigint;
   private readonly where?: EventPredicate;
   private readonly decode?: (event: StreamdEvent) => StreamdEvent;
+  private readonly withState?: StateRequestBuilder;
   private readonly onError?: (error: Error) => void;
   private readonly onCaughtUp?: () => void;
   private readonly signal?: AbortSignal;
@@ -98,6 +102,8 @@ export class EventPoller {
     this.fromTime = options.fromTime;
     this.where = options.where;
     this.decode = fieldDecoder(options.decode);
+    validateWithState(options.withState);
+    this.withState = options.withState;
     this.onError = options.onError;
     this.onCaughtUp = options.onCaughtUp;
     this.signal = options.signal;
@@ -228,7 +234,7 @@ export class EventPoller {
       // not touch the cursor or the error budget the live run resumes with.
       if (!this.isCurrent(gen)) return;
 
-      const delivery = this.processPage(page, gen);
+      const delivery = this.processPage(page, gen, adapter);
       // A failed page is this poll's error alone; later polls must not inherit it.
       this.delivering = delivery.catch(() => {});
       await delivery;
@@ -295,28 +301,36 @@ export class EventPoller {
     );
   }
 
-  private async processPage(page: EventPage, gen: number): Promise<void> {
+  private async processPage(page: EventPage, gen: number, adapter: EventAdapter): Promise<void> {
     const batch: StreamdEvent[] = [];
+    let viewFailure: unknown;
     for (const raw of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
       if (this.position.hasSeen(raw)) continue;
-      // Mark before filtering: a rejected event has still been processed, and
-      // marking it keeps overlapping pages from re-testing it.
-      this.position.mark(raw);
-      if (this.lastVersion === undefined || raw.version > this.lastVersion) {
-        this.lastVersion = raw.version;
+      const prepared = this.prepare(raw);
+      if (prepared === undefined) {
+        if (!this.isCurrent(gen)) return;
+        continue;
       }
-      let event = raw;
-      // A predicate or handler bug is the caller's, not the source's: report
-      // it without counting toward maxErrors or abandoning the rest of the page.
-      try {
-        if (this.decode !== undefined) event = this.decode(raw);
-        if (this.where !== undefined && !this.where(event)) continue;
-        if (this.onBatch !== undefined) {
-          batch.push(event);
-          continue;
+      let event = prepared.event;
+      if (prepared.request !== undefined) {
+        // A failed view is the source's: it fails this poll with the event
+        // unmarked, so the retry delivers it rather than losing it.
+        try {
+          event = await readState(adapter, this.descriptor, event, prepared.request);
+        } catch (err) {
+          viewFailure = err;
+          break;
         }
+        if (!this.isCurrent(gen)) return;
+      }
+      this.see(raw);
+      if (this.onBatch !== undefined) {
+        batch.push(event);
+        continue;
+      }
+      try {
         // Awaited one event at a time, so a slow handler holds back the rest
         // of the page and the next poll rather than piling up work.
         const result: unknown = this.callback!(event);
@@ -327,6 +341,8 @@ export class EventPoller {
       }
     }
 
+    // Delivered even when a view failed: these events are marked seen, so a
+    // retried page would skip them.
     if (batch.length > 0 && this.isCurrent(gen)) {
       try {
         const result: unknown = this.onBatch!(batch);
@@ -335,6 +351,7 @@ export class EventPoller {
         this.reportHandlerError(batchError(batch, err));
       }
     }
+    if (viewFailure !== undefined) throw viewFailure;
 
     // A run stopped while a handler was pending must not move the cursor past
     // a page it did not finish: resuming from it delivers the page again.
@@ -345,6 +362,38 @@ export class EventPoller {
     // the scan window would re-read the same transactions forever.
     if (page.nextCursor !== undefined) {
       this.position.token = page.nextCursor;
+    }
+  }
+
+  /**
+   * `raw` decoded, filtered and with its view request built, or `undefined`
+   * when it is not to be delivered. A skipped event is marked processed, so
+   * overlapping pages do not re-test it. A decode, predicate or builder bug
+   * is the caller's, not the source's: reported without counting toward
+   * maxErrors or abandoning the rest of the page.
+   */
+  private prepare(raw: StreamdEvent): { event: StreamdEvent; request?: ViewRequest } | undefined {
+    let event = raw;
+    try {
+      if (this.decode !== undefined) event = this.decode(raw);
+      if (this.where !== undefined && !this.where(event)) {
+        this.see(raw);
+        return undefined;
+      }
+      const request =
+        this.withState === undefined ? undefined : buildStateRequest(this.withState, event);
+      return { event, request };
+    } catch (err) {
+      this.see(raw);
+      this.reportHandlerError(callbackError(event, err));
+      return undefined;
+    }
+  }
+
+  private see(raw: StreamdEvent): void {
+    this.position.mark(raw);
+    if (this.lastVersion === undefined || raw.version > this.lastVersion) {
+      this.lastVersion = raw.version;
     }
   }
 

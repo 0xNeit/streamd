@@ -15,6 +15,7 @@ const PASS_THROUGH = [
   "getEarliestVersion",
   "getBlock",
   "getBlockHeights",
+  "view",
 ] as const;
 
 /**
