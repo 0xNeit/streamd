@@ -10,6 +10,7 @@ import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
+import { mergeEvents, validateMerge } from "./merge.js";
 
 const DEFAULT_PAGE_SIZE = 25;
 const RETRY_BASE_DELAY = 1000;
@@ -124,6 +125,9 @@ async function resolveBounds(
   return { fromVersion, toVersion };
 }
 
+/** One descriptor, or several whose events are merged into one history. */
+type Descriptors = EventDescriptor | readonly EventDescriptor[];
+
 /**
  * Historical event querying: `getEvents` and its paged form `getEventPages`.
  */
@@ -134,7 +138,7 @@ export class EventQuery {
   ) {}
 
   async getEvents<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: Descriptors,
     filter: EventFilter = {},
   ): Promise<StreamdEvent<TData>[]> {
     const collected: StreamdEvent<TData>[] = [];
@@ -150,9 +154,13 @@ export class EventQuery {
    * Pages are chained by the adapter's cursor rather than a numeric offset,
    * so regions containing no matching events are skipped over instead of
    * terminating the walk early.
+   *
+   * An array of descriptors walks each one and merges their events in
+   * ascending `(version, eventIndex)` order (reversed for `"desc"`), an event
+   * selected by more than one returned once.
    */
   async *getEventPages<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: Descriptors,
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
@@ -164,8 +172,14 @@ export class EventQuery {
     validateToVersion(rest.toVersion);
     validateBlockRange(rest);
     validateFromTime(rest);
+    const merged = Array.isArray(descriptor) ? (descriptor as readonly EventDescriptor[]) : undefined;
+    if (merged !== undefined) validateMerge(merged, filter);
+    const ascending = (f: EventFilter) =>
+      merged !== undefined
+        ? this.mergedPages<TData>(merged, f, pageSize)
+        : this.ascendingPages<TData>(descriptor as EventDescriptor, f, pageSize);
     if (orderBy !== "desc") {
-      const end = yield* this.ascendingPages<TData>(descriptor, rest, pageSize);
+      const end = yield* ascending(rest);
       onCursor?.(end);
       return;
     }
@@ -178,7 +192,7 @@ export class EventQuery {
       return;
     }
     let latest: StreamdEvent<TData>[] = [];
-    const walk = this.ascendingPages<TData>(descriptor, { ...rest, limit: undefined }, pageSize);
+    const walk = ascending({ ...rest, limit: undefined });
     let step = await walk.next();
     for (; !step.done; step = await walk.next()) {
       latest.push(...step.value);
@@ -196,7 +210,7 @@ export class EventQuery {
    * `signal` is checked before each event rather than only between pages.
    */
   async *iterateEvents<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: Descriptors,
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>, void, unknown> {
@@ -206,6 +220,62 @@ export class EventQuery {
         yield event;
       }
     }
+  }
+
+  /**
+   * One ascending walk per descriptor, merged, in pages of `pageSize`. Each
+   * walk gets `limit` too: no descriptor supplies more than `limit` of the
+   * first `limit` merged events. `maxPages` therefore caps each walk.
+   */
+  private async *mergedPages<TData>(
+    descriptors: readonly EventDescriptor[],
+    filter: EventFilter,
+    pageSize: number,
+  ): AsyncGenerator<StreamdEvent<TData>[], undefined, unknown> {
+    if (filter.limit !== undefined && filter.limit <= 0) return undefined;
+    const shared = await this.sharedBounds(descriptors[0]!, filter);
+    const walks = descriptors.map((d) => this.ascendingPages<TData>(d, shared, pageSize));
+    let page: StreamdEvent<TData>[] = [];
+    for await (const event of mergeEvents(walks, filter.limit)) {
+      page.push(event);
+      if (page.length < pageSize) continue;
+      yield page;
+      page = [];
+    }
+    if (page.length > 0) yield page;
+    return undefined;
+  }
+
+  /**
+   * `filter` with its head, block and time bounds read once, against the
+   * first descriptor, so every walk of a merge covers the same versions.
+   * `"earliest"` is left for each walk, since sources prune differently.
+   */
+  private async sharedBounds(
+    descriptor: EventDescriptor,
+    filter: EventFilter,
+  ): Promise<EventFilter> {
+    const earliest = filter.fromVersion === "earliest";
+    const shared =
+      filter.toVersion === "head" ||
+      filter.fromBlock !== undefined ||
+      filter.toBlock !== undefined ||
+      filter.fromTime !== undefined ||
+      (!earliest && !isAbsoluteVersion(filter.fromVersion));
+    if (!shared) return filter;
+    const adapter = this.limiter.wrap(this.source, () => filter.signal?.aborted === true);
+    const bounds = await resolveBounds(adapter, descriptor, {
+      ...filter,
+      fromVersion: earliest ? undefined : filter.fromVersion,
+    });
+    return {
+      ...filter,
+      fromBlock: undefined,
+      toBlock: undefined,
+      fromTime: undefined,
+      fromVersion: earliest ? "earliest" : bounds.fromVersion,
+      toVersion: bounds.toVersion,
+    };
   }
 
   private async *ascendingPages<TData>(

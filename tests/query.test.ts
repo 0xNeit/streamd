@@ -1039,3 +1039,94 @@ describe("EventQuery onCursor", () => {
     expect("onCursor" in fetchEvents.mock.calls[0]![1]).toBe(false);
   });
 });
+
+describe("EventQuery over several descriptors", () => {
+  const A: EventDescriptor = { kind: "module", eventType: "0x1::a::A" };
+  const B: EventDescriptor = { kind: "module", eventType: "0x1::b::B" };
+  const all: EventDescriptor = { kind: "account", accountAddress: "0x1" };
+  const at = (type: string, version: number, eventIndex = 0, n = version) => ({
+    type,
+    data: { n },
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex,
+  });
+  const seeded = () =>
+    new MemoryAdapter([
+      at("0x1::a::A", 1),
+      at("0x1::b::B", 2),
+      at("0x1::a::A", 3, 1),
+      at("0x1::b::B", 3, 0),
+      at("0x1::a::A", 5),
+      at("0x1::b::B", 6),
+    ]);
+  const ids = (events: { version: bigint; eventIndex: number }[]) =>
+    events.map((e) => `${e.version}:${e.eventIndex}`);
+
+  it("merges every descriptor's events in (version, eventIndex) order", async () => {
+    const events = await new EventQuery(seeded()).getEvents([A, B]);
+    expect(ids(events)).toEqual(["1:0", "2:0", "3:0", "3:1", "5:0", "6:0"]);
+  });
+
+  it("returns an event two descriptors select once", async () => {
+    const events = await new EventQuery(seeded()).getEvents([A, all, B]);
+    expect(ids(events)).toEqual(["1:0", "2:0", "3:0", "3:1", "5:0", "6:0"]);
+  });
+
+  it("pages the merged history by pageSize", async () => {
+    const sizes: number[] = [];
+    for await (const page of new EventQuery(seeded()).getEventPages([A, B], {}, 4)) {
+      sizes.push(page.length);
+    }
+    expect(sizes).toEqual([4, 2]);
+  });
+
+  it("counts limit over the merge, after where", async () => {
+    const events = await new EventQuery(seeded()).getEvents([A, B], {
+      where: (e) => (e.data as { n: number }).n > 1,
+      limit: 3,
+    });
+    expect(ids(events)).toEqual(["2:0", "3:0", "3:1"]);
+  });
+
+  it("applies maxPages to each descriptor's walk", async () => {
+    const pages: string[][] = [];
+    for await (const page of new EventQuery(seeded()).getEventPages([A, B], { maxPages: 1 }, 1)) {
+      pages.push(ids(page));
+    }
+    expect(pages).toEqual([["1:0"], ["2:0"]]);
+  });
+
+  it("returns the last matches newest first for orderBy desc", async () => {
+    const events = await new EventQuery(seeded()).getEvents([A, B], { orderBy: "desc", limit: 3 });
+    expect(ids(events)).toEqual(["6:0", "5:0", "3:1"]);
+  });
+
+  it("reads the head once for every descriptor", async () => {
+    const adapter = seeded();
+    const getHeadVersion = vi.spyOn(adapter, "getHeadVersion").mockResolvedValue(3n);
+    const events = await new EventQuery(adapter).getEvents([A, B], {
+      fromVersion: -1n,
+      toVersion: "head",
+    });
+    expect(ids(events)).toEqual(["2:0", "3:0", "3:1"]);
+    expect(getHeadVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves fromVersion earliest for each descriptor", async () => {
+    const adapter = seeded();
+    const getEarliestVersion = vi.spyOn(adapter, "getEarliestVersion");
+    const events = await new EventQuery(adapter).getEvents([A, B], { fromVersion: "earliest" });
+    expect(events).toHaveLength(6);
+    expect(getEarliestVersion).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects an empty list, onCursor and offset without fetching", async () => {
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>();
+    const query = new EventQuery({ fetchEvents });
+    await expect(query.getEvents([])).rejects.toThrow("at least one descriptor");
+    await expect(query.getEvents([A], { onCursor: () => {} })).rejects.toThrow("onCursor");
+    await expect(query.getEvents([A, B], { offset: 1 })).rejects.toThrow("offset");
+    expect(fetchEvents).not.toHaveBeenCalled();
+  });
+});

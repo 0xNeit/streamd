@@ -1,7 +1,21 @@
-import type { StreamdEvent } from "./types.js";
+import type { EventDescriptor, EventFilter, StreamdEvent } from "./types.js";
 import { eventId } from "./cursor.js";
+import { StreamdError } from "./errors.js";
 
 type Walk<TData> = AsyncIterator<StreamdEvent<TData>[], unknown>;
+
+/** Rejects what a query over several descriptors cannot honour. */
+export function validateMerge(descriptors: readonly EventDescriptor[], filter: EventFilter): void {
+  if (descriptors.length === 0) {
+    throw new StreamdError("A merged query needs at least one descriptor");
+  }
+  if (filter.onCursor !== undefined) {
+    throw new StreamdError("onCursor needs a single descriptor: one cursor cannot resume a merge");
+  }
+  if (filter.offset !== undefined) {
+    throw new StreamdError("offset needs a single descriptor");
+  }
+}
 
 function before(a: StreamdEvent, b: StreamdEvent): boolean {
   return a.version < b.version || (a.version === b.version && a.eventIndex < b.eventIndex);
