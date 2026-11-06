@@ -25,6 +25,7 @@ import { eventStream } from "./stream.js";
 import { RequestLimiter } from "./limiter.js";
 import { CursorManager } from "./cursor.js";
 import { fieldDecoder } from "./decode.js";
+import { SharedFetches } from "./shared.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -112,6 +113,8 @@ export class StreamdClient {
   private readonly query: EventQuery;
   /** Shared by every poller and query, so the cap holds client-wide. */
   private readonly limiter: RequestLimiter;
+  /** Lets identical subscriptions share each poll's adapter request. */
+  private readonly shared: SharedFetches;
   private readonly subscriptions = new Map<string, { poller: EventPoller; stop: () => void }>();
   /** The `on()`/`onBatch()` subset of `subscriptions`; `once()` and streams own theirs. */
   private readonly listeners = new Map<string, Listener>();
@@ -123,17 +126,21 @@ export class StreamdClient {
     this.onError = config.onError;
     this.limiter = resolveLimiter(config.maxConcurrentRequests);
     this.adapter = resolveAdapter(config);
+    this.shared = new SharedFetches(this.adapter);
     this.query = new EventQuery(this.adapter, this.limiter);
   }
 
   /**
    * Subscribe to real-time events. Polls under the hood.
    *
-   * Every subscription polls on its own. For a `module` descriptor on the
-   * default adapter that means its own ledger read and transaction scan per
-   * poll, so N module subscriptions scan the same transactions N times. Pass an
-   * array of `eventType`s on one `module` descriptor to serve several Move
-   * types from a single scan.
+   * Subscriptions on this client that would send the adapter the identical
+   * request (same descriptor value, cursor or absolute start, `batchSize` and
+   * `pollInterval`) share one request per `pollInterval`; everything else about
+   * each one, its cursor, pause and error budget included, stays its own. A
+   * start at the head is never shared, so subscriptions started at different
+   * times share only once their cursors coincide. Pass an array of
+   * `eventType`s on one `module` descriptor to serve several Move types from a
+   * single scan.
    */
   on<TData = unknown>(
     descriptor: EventDescriptor<TData>,
@@ -173,12 +180,13 @@ export class StreamdClient {
       this.listeners.delete(id);
       detach();
     };
+    const resolved = withDefaults(options, this.defaults);
     const poller = new EventPoller(
-      this.adapter,
+      this.shared.view(resolved.pollInterval!),
       descriptor,
       delivery,
       {
-        ...withDefaults(options, this.defaults),
+        ...resolved,
         onError: (err) => {
           // Drop the subscription once the poller has given up and stopped
           // itself; a paused one reporting a late handler error stays.

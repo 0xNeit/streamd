@@ -69,12 +69,10 @@ function shareKey(
   const descriptorPart = descriptorKey(descriptor);
   if (descriptorPart === undefined) return undefined;
   if (options.cursor === undefined && options.fromVersion === undefined) return undefined;
-  return JSON.stringify([
-    descriptorPart,
-    options.cursor ?? null,
-    options.cursor === undefined ? String(options.fromVersion) : null,
-    options.limit ?? null,
-    options.orderBy ?? null,
-    ttl,
-  ]);
+  // Every option is part of the request, so every option is part of the key.
+  const fields = Object.entries(options)
+    .filter(([, v]) => v !== undefined)
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([k, v]) => [k, typeof v === "bigint" ? `${v}n` : v]);
+  return JSON.stringify([descriptorPart, ttl, fields]);
 }

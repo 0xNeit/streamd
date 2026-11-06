@@ -65,7 +65,7 @@ describe("SharedFetches", () => {
     expect(s.calls).toHaveLength(2);
   });
 
-  it("keeps calls apart that differ in descriptor, cursor, limit, order, or interval", async () => {
+  it("keeps calls apart that differ in descriptor, any option, or interval", async () => {
     const s = spy();
     const shared = new SharedFetches(s.adapter);
     const base: FetchOptions = { cursor: "5", limit: 25, orderBy: "asc" };
@@ -74,8 +74,11 @@ describe("SharedFetches", () => {
     await shared.view(1000).fetchEvents(desc, { ...base, cursor: "6" });
     await shared.view(1000).fetchEvents(desc, { ...base, limit: 10 });
     await shared.view(1000).fetchEvents(desc, { ...base, orderBy: "desc" });
+    await shared.view(1000).fetchEvents(desc, { ...base, offset: 1 });
+    await shared.view(1000).fetchEvents(desc, { ...base, toVersion: 9n });
     await shared.view(500).fetchEvents(desc, base);
-    expect(s.calls).toHaveLength(6);
+    await shared.view(1000).fetchEvents(desc, { orderBy: "asc", limit: 25, cursor: "5" });
+    expect(s.calls).toHaveLength(8);
   });
 
   it("hands a failure to the calls already waiting, then requests again", async () => {
