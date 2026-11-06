@@ -11,6 +11,7 @@ import type {
   StreamdConfig,
   StreamdEvent,
   Subscription,
+  SubscriptionOptions,
 } from "./types.js";
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
 import { EventPoller, resolveMaxBackoff, type Delivery } from "./poller.js";
@@ -152,9 +153,9 @@ export class StreamdClient {
   on<TData = unknown>(
     descriptor: EventDescriptor<TData>,
     callback: EventCallback<TData>,
-    options?: ListenerOptions,
+    options?: SubscriptionOptions,
   ): Subscription {
-    return this.subscribe(descriptor, callback as EventCallback, options, callback);
+    return this.subscribe(descriptor, callback as EventCallback, options, callback, options?.id);
   }
 
   /**
@@ -164,13 +165,14 @@ export class StreamdClient {
   onBatch<TData = unknown>(
     descriptor: EventDescriptor<TData>,
     callback: BatchCallback<TData>,
-    options?: ListenerOptions,
+    options?: SubscriptionOptions,
   ): Subscription {
     return this.subscribe(
       descriptor,
       { batch: callback as BatchCallback },
       options,
       callback,
+      options?.id,
     );
   }
 
@@ -179,12 +181,16 @@ export class StreamdClient {
     delivery: Delivery,
     options?: ListenerOptions,
     listener?: unknown,
+    callerId?: string,
   ): Subscription {
-    const id = generateId();
+    const id = callerId === undefined ? generateId() : this.claimId(callerId);
     let detach = () => {};
     const forget = () => {
-      this.subscriptions.delete(id);
-      this.listeners.delete(id);
+      // A later subscription may hold this id by now; leave its entries alone.
+      if (this.subscriptions.get(id)?.poller === poller) {
+        this.subscriptions.delete(id);
+        this.listeners.delete(id);
+      }
       detach();
     };
     const resolved = withDefaults(options, this.defaults);
@@ -238,6 +244,16 @@ export class StreamdClient {
       unsubscribe,
       [DISPOSE]: unsubscribe,
     };
+  }
+
+  private claimId(id: unknown): string {
+    if (typeof id !== "string" || id === "") {
+      throw new StreamdError(`Invalid id: ${String(id)} (expected a non-empty string)`);
+    }
+    if (this.subscriptions.has(id)) {
+      throw new StreamdError(`Subscription id already in use on this client: ${id}`);
+    }
+    return id;
   }
 
   /**

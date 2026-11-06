@@ -16,6 +16,7 @@ import type {
   EventAdapter,
   EventDescriptor,
   EventPage,
+  ListenerDefaults,
   ModuleEventDescriptor,
   StreamdEvent,
 } from "../src/types.js";
@@ -2502,5 +2503,118 @@ describe("backfill, then follow", () => {
 
     expect(history).toEqual([2n, 4n]);
     expect(live).toEqual([[6n, 8n]]);
+  });
+});
+
+describe("caller-supplied subscription ids", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+  it("uses the given id on on() and onBatch(), and generates one otherwise", () => {
+    const client = new StreamdClient({ adapter: adapterOf([]) });
+    expect(client.on(descriptor, () => {}, { id: "deposits" }).id).toBe("deposits");
+    expect(client.onBatch(descriptor, () => {}, { id: "batches" }).id).toBe("batches");
+    expect(client.on(descriptor, () => {}).id).toMatch(/^streamd_\d+_\d+$/);
+    client.destroy();
+  });
+
+  it("refuses an empty or non-string id", () => {
+    const client = new StreamdClient({ adapter: adapterOf([]) });
+    expect(() => client.on(descriptor, () => {}, { id: "" })).toThrow(StreamdError);
+    expect(() =>
+      client.on(descriptor, () => {}, { id: 7 as unknown as string }),
+    ).toThrow(/Invalid id: 7/);
+    expect(client.listenerCount()).toBe(0);
+  });
+
+  it("refuses an id a live subscription holds, leaving that one polling", async () => {
+    const adapter = adapterOf([]);
+    const client = new StreamdClient({ adapter });
+    const first = client.on(descriptor, () => {}, { id: "deposits", pollInterval: 100 });
+    expect(() => client.onBatch(descriptor, () => {}, { id: "deposits" })).toThrow(
+      /already in use on this client: deposits/,
+    );
+    expect(client.listenerCount()).toBe(1);
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(200);
+    expect(first.active).toBe(true);
+    expect(mocked(adapter.fetchEvents).mock.calls.length).toBeGreaterThan(1);
+    client.destroy();
+  });
+
+  it("frees the id when the subscription ends, however it ends", () => {
+    const client = new StreamdClient({ adapter: adapterOf([]) });
+    const reuse = () => client.on(descriptor, () => {}, { id: "x" });
+
+    reuse().unsubscribe();
+    const second = reuse();
+    second[Symbol.dispose]();
+    const viaOff = reuse();
+    client.off(descriptor);
+    expect(viaOff.active).toBe(false);
+    const controller = new AbortController();
+    client.on(descriptor, () => {}, { id: "x", signal: controller.signal });
+    controller.abort();
+    reuse();
+    client.destroy();
+    expect(reuse().id).toBe("x");
+    client.destroy();
+  });
+
+  it("frees the id once polling gives up after maxErrors", async () => {
+    const client = new StreamdClient({
+      adapter: {
+        fetchEvents: vi.fn(async () => {
+          throw new Error("network down");
+        }),
+      },
+    });
+    const sub = client.on(descriptor, () => {}, {
+      id: "x",
+      pollInterval: 100,
+      maxErrors: 2,
+      onError: () => {},
+    });
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(200);
+    expect(sub.active).toBe(false);
+    expect(client.on(descriptor, () => {}, { id: "x" }).id).toBe("x");
+    client.destroy();
+  });
+
+  it("does not let an ended subscription's unsubscribe() drop the one that reused its id", () => {
+    const client = new StreamdClient({ adapter: adapterOf([]) });
+    const controller = new AbortController();
+    const old = client.on(descriptor, () => {}, { id: "x", signal: controller.signal });
+    controller.abort();
+    const current = client.on(descriptor, () => {}, { id: "x" });
+
+    old.unsubscribe();
+    expect(client.listenerCount()).toBe(1);
+    expect(() => client.on(descriptor, () => {}, { id: "x" })).toThrow(/already in use/);
+
+    client.destroy();
+    expect(current.active).toBe(false);
+  });
+
+  it("gives a never-polling subscription the id without holding it", () => {
+    const client = new StreamdClient({ adapter: adapterOf([]) });
+    const sub = client.on(descriptor, () => {}, { id: "x", signal: AbortSignal.abort() });
+    expect(sub.id).toBe("x");
+    expect(sub.active).toBe(false);
+    expect(client.on(descriptor, () => {}, { id: "x" }).id).toBe("x");
+    client.destroy();
+  });
+
+  it("refuses id as a client-wide default", () => {
+    expect(
+      () =>
+        new StreamdClient({
+          adapter: adapterOf([]),
+          defaults: { id: "x" } as unknown as ListenerDefaults,
+        }),
+    ).toThrow(/Unsupported listener default: id/);
   });
 });
