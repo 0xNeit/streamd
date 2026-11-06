@@ -1833,4 +1833,34 @@ describe("off and removeAllListeners", () => {
     await it.return!();
     client.destroy();
   });
+
+  it("destroy() clears the listener count", () => {
+    const client = quiet();
+    client.on(moduleOf(T), () => {});
+    client.onBatch(moduleOf(U), () => {});
+    client.destroy();
+    expect(client.listenerCount()).toBe(0);
+  });
+
+  it("off() after destroy() and re-subscribing stops the live subscription", () => {
+    const client = quiet();
+    const cb = () => {};
+    client.on(moduleOf(T), cb);
+    client.destroy();
+    const live = client.on(moduleOf(T), cb);
+    client.off(moduleOf(T), cb);
+    expect(live.active).toBe(false);
+    expect(client.listenerCount()).toBe(0);
+  });
+
+  it("destroy() detaches on()'s listener from the signal", () => {
+    const client = quiet();
+    const controller = new AbortController();
+    const remove = vi.spyOn(controller.signal, "removeEventListener");
+    client.on(moduleOf(T), () => {}, { signal: controller.signal });
+    client.destroy();
+
+    // One listener is the poller's, the other the client's.
+    expect(remove).toHaveBeenCalledTimes(2);
+  });
 });
