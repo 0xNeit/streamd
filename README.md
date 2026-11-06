@@ -112,6 +112,21 @@ the head, after the first successful poll. It is not called again, even after a 
 resume. A throw from it goes to `onError` without counting toward `maxErrors`. `once()` and
 `stream()` accept it too.
 
+### Batch delivery
+
+```ts
+const sub = streamd.onBatch(descriptor, async (events) => {
+  await db.insertMany(events); // one write per poll
+}, { batchSize: 100 });
+```
+
+`onBatch` takes the same options as `on()` and returns the same `Subscription`, but calls
+your handler once per poll with that page's new events that pass `where`, in order, at most
+`batchSize` of them. A page with nothing new is skipped rather than delivered as `[]`. The
+handler is awaited before the cursor moves past the page, so a crash or a stop mid-batch
+redelivers the whole page on resume. A throw or rejection goes to `onError` without counting
+toward `maxErrors`, and polling moves on to the next page.
+
 ### Iterate live events
 
 ```ts

@@ -1799,3 +1799,145 @@ describe("EventPoller onCaughtUp", () => {
     poller.stop();
   });
 });
+
+describe("EventPoller batch delivery", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((res) => (resolve = res));
+    return { promise, resolve };
+  }
+
+  const versions = (events: StreamdEvent[]) => events.map((e) => Number(e.version));
+
+  it("delivers each page's new, filtered events in one call, in order", async () => {
+    const adapter = createMockAdapter([
+      page([makeEvent(1), makeEvent(2), makeEvent(3)], 3, true),
+      page([makeEvent(3), makeEvent(4), makeEvent(5)], 5),
+    ]);
+    const batch = vi.fn((_: StreamdEvent[]) => {});
+    const poller = new EventPoller(adapter, descriptor, { batch }, {
+      pollInterval: 1000,
+      where: (e) => e.version !== 2n,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(1);
+
+    expect(batch.mock.calls.map(([events]) => versions(events))).toEqual([
+      [1, 3],
+      [4, 5],
+    ]);
+    expect(poller.cursor).toBe("5");
+    expect(poller.status.lastVersion).toBe(5n);
+    poller.stop();
+  });
+
+  it("skips the call for a page with nothing new but still advances", async () => {
+    const adapter = createMockAdapter([
+      page([makeEvent(1)], 1, true),
+      page([makeEvent(1)], 2, true),
+      page([], 3),
+    ]);
+    const batch = vi.fn((_: StreamdEvent[]) => {});
+    const poller = new EventPoller(adapter, descriptor, { batch }, { pollInterval: 1000 });
+    poller.start();
+    await advanceTimersByTimeAsync(2);
+
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(3);
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(poller.cursor).toBe("3");
+    poller.stop();
+  });
+
+  it("holds the cursor and the next poll until the batch settles", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 2)]);
+    const pending = deferred();
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      { batch: () => pending.promise },
+      { pollInterval: 100, cursor: "0" },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(300);
+    expect(poller.cursor).toBe("0");
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+
+    pending.resolve();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.cursor).toBe("2");
+    await advanceTimersByTimeAsync(100);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+    poller.stop();
+  });
+
+  it("reports a rejected batch without spending the error budget", async () => {
+    const onError = vi.fn();
+    const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 2)]);
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      { batch: async () => Promise.reject(new Error("boom")) },
+      { pollInterval: 1000, onError },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    const err = mocked(onError).mock.calls[0]![0] as StreamdError;
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdPollingError);
+    expect(err.message).toBe("Batch callback threw for 2 events from 1:0 to 2:0");
+    expect((err.cause as Error).message).toBe("boom");
+    expect(poller.status.consecutiveErrors).toBe(0);
+    expect(poller.cursor).toBe("2");
+
+    await advanceTimersByTimeAsync(1000);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+    poller.stop();
+  });
+
+  it("drops only the event whose where predicate throws", async () => {
+    const onError = vi.fn();
+    const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2), makeEvent(3)], 3)]);
+    const batch = vi.fn((_: StreamdEvent[]) => {});
+    const poller = new EventPoller(adapter, descriptor, { batch }, {
+      onError,
+      where: (e) => {
+        if (e.version === 2n) throw new Error("bad");
+        return true;
+      },
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(versions(batch.mock.calls[0]![0])).toEqual([1, 3]);
+    poller.stop();
+  });
+
+  it("leaves the cursor alone when stopped during a pending batch", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1)], 2)]);
+    const pending = deferred();
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      { batch: () => pending.promise },
+      { pollInterval: 100, cursor: "1" },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    poller.stop();
+    pending.resolve();
+    await advanceTimersByTimeAsync(0);
+
+    expect(poller.cursor).toBe("1");
+  });
+});

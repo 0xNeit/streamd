@@ -1,5 +1,6 @@
 import { Aptos } from "@aptos-labs/ts-sdk";
 import type {
+  BatchCallback,
   EventAdapter,
   EventCallback,
   EventDescriptor,
@@ -11,7 +12,7 @@ import type {
   Subscription,
 } from "./types.js";
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
-import { EventPoller } from "./poller.js";
+import { EventPoller, type Delivery } from "./poller.js";
 import { EventQuery } from "./query.js";
 import {
   StreamdError,
@@ -72,6 +73,26 @@ export class StreamdClient {
     callback: EventCallback<TData>,
     options?: ListenerOptions,
   ): Subscription {
+    return this.subscribe(descriptor, callback as EventCallback, options);
+  }
+
+  /**
+   * Like `on()`, but each poll's new events arrive together in one
+   * `callback(events)` call, at most `batchSize` of them.
+   */
+  onBatch<TData = unknown>(
+    descriptor: EventDescriptor,
+    callback: BatchCallback<TData>,
+    options?: ListenerOptions,
+  ): Subscription {
+    return this.subscribe(descriptor, { batch: callback as BatchCallback }, options);
+  }
+
+  private subscribe(
+    descriptor: EventDescriptor,
+    delivery: Delivery,
+    options?: ListenerOptions,
+  ): Subscription {
     const id = generateId();
     let detach = () => {};
     const forget = () => {
@@ -81,7 +102,7 @@ export class StreamdClient {
     const poller = new EventPoller(
       this.adapter,
       descriptor,
-      callback as EventCallback,
+      delivery,
       {
         pollInterval: this.defaultPollInterval,
         ...options,

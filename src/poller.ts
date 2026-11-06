@@ -1,4 +1,5 @@
 import type {
+  BatchCallback,
   EventAdapter,
   EventCallback,
   EventDescriptor,
@@ -36,6 +37,9 @@ function resolveMaxBackoff(maxBackoff: number | undefined): number {
   return maxBackoff;
 }
 
+/** One event at a time, or `{ batch }` for each page's new events in one call. */
+export type Delivery = EventCallback | { batch: BatchCallback };
+
 export class EventPoller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private consecutiveErrors = 0;
@@ -53,6 +57,8 @@ export class EventPoller {
    */
   private delivering: Promise<void> = Promise.resolve();
   private readonly position: CursorManager;
+  private readonly callback?: EventCallback;
+  private readonly onBatch?: BatchCallback;
 
   private readonly pollInterval: number;
   private readonly batchSize: number;
@@ -68,9 +74,11 @@ export class EventPoller {
   constructor(
     private readonly adapter: EventAdapter,
     private readonly descriptor: EventDescriptor,
-    private readonly callback: EventCallback,
+    delivery: Delivery,
     options: ListenerOptions = {},
   ) {
+    if (typeof delivery === "function") this.callback = delivery;
+    else this.onBatch = delivery.batch;
     this.pollInterval = options.pollInterval ?? DEFAULT_POLL_INTERVAL;
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.maxErrors = options.maxErrors ?? DEFAULT_MAX_ERRORS;
@@ -255,6 +263,7 @@ export class EventPoller {
   }
 
   private async processPage(page: EventPage, gen: number): Promise<void> {
+    const batch: StreamdEvent[] = [];
     for (const event of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
@@ -269,15 +278,26 @@ export class EventPoller {
       // it without counting toward maxErrors or abandoning the rest of the page.
       try {
         if (this.where !== undefined && !this.where(event)) continue;
-        const result: unknown = this.callback(event);
+        if (this.onBatch !== undefined) {
+          batch.push(event);
+          continue;
+        }
         // Awaited one event at a time, so a slow handler holds back the rest
         // of the page and the next poll rather than piling up work.
+        const result: unknown = this.callback!(event);
         if (isThenable(result)) await result;
       } catch (err) {
-        // Reported while any run is live or paused: the handler is the same
-        // one, and this path touches neither the cursor nor the error budget.
-        if (this._active || this._paused) this.report(callbackError(event, err));
+        this.reportHandlerError(callbackError(event, err));
         if (!this.isCurrent(gen)) return;
+      }
+    }
+
+    if (batch.length > 0 && this.isCurrent(gen)) {
+      try {
+        const result: unknown = this.onBatch!(batch);
+        if (isThenable(result)) await result;
+      } catch (err) {
+        this.reportHandlerError(batchError(batch, err));
       }
     }
 
@@ -292,6 +312,14 @@ export class EventPoller {
       this.position.token = page.nextCursor;
     }
   }
+
+  /**
+   * Reported while any run is live or paused: the handler is the same one,
+   * and this path touches neither the cursor nor the error budget.
+   */
+  private reportHandlerError(error: StreamdError): void {
+    if (this._active || this._paused) this.report(error);
+  }
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
@@ -305,6 +333,15 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 function callbackError(event: StreamdEvent, cause: unknown): StreamdError {
   return new StreamdError(
     `Event filter or callback threw for ${event.version}:${event.eventIndex}`,
+    cause,
+  );
+}
+
+function batchError(events: StreamdEvent[], cause: unknown): StreamdError {
+  const first = events[0]!;
+  const last = events[events.length - 1]!;
+  return new StreamdError(
+    `Batch callback threw for ${events.length} events from ${first.version}:${first.eventIndex} to ${last.version}:${last.eventIndex}`,
     cause,
   );
 }

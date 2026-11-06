@@ -1473,3 +1473,27 @@ describe("onCaughtUp", () => {
     sub.unsubscribe();
   });
 });
+
+describe("onBatch", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("delivers the backlog one page at a time and stops on destroy()", async () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([makeEvent(1), makeEvent(2), makeEvent(3)]),
+    });
+    const order: string[] = [];
+    const sub = client.onBatch(
+      descriptor,
+      (events) => void order.push(events.map((e) => e.version).join(",")),
+      { batchSize: 2, pollInterval: 100, onCaughtUp: () => void order.push("caught up") },
+    );
+    await advanceTimersByTimeAsync(500);
+    expect(order).toEqual(["1,2", "3", "caught up"]);
+    expect(sub.active).toBe(true);
+
+    client.destroy();
+    expect(sub.active).toBe(false);
+  });
+});
