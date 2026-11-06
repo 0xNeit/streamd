@@ -82,6 +82,26 @@ cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
 a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
 its own `onError`.
 
+### Client-wide listener defaults
+
+```ts
+const streamd = new StreamdClient({
+  aptos,
+  defaults: { pollInterval: 3000, maxErrors: 3, decode: ["amount"] },
+});
+
+streamd.on(deposits, handle);                           // polls every 3000 ms
+streamd.on(withdrawals, handle, { pollInterval: 500 }); // its own interval, still maxErrors 3
+```
+
+`defaults` sets `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`, `dedupWindow`
+and `decode` for every `on()`, `onBatch()`, `once()` and `stream()` call on the client.
+A call's own value for a field wins, and one it leaves `undefined` takes the default; a
+call's `decode` replaces the default list rather than adding to it. `defaults.pollInterval`
+wins over `defaultPollInterval`. Start positions, `where`, `signal`, `onCaughtUp` and
+`once()`'s `timeout` stay per call, and `onError` has its own client-wide option. The
+constructor throws a `StreamdError` for an invalid value or any other key.
+
 ### Pause and resume
 
 ```ts
