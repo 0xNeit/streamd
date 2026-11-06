@@ -33,6 +33,7 @@ export type {
 
 export type {
   AccountEventDescriptor,
+  BatchCallback,
   EventAdapter,
   EventCallback,
   EventDescriptor,
