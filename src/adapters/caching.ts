@@ -5,7 +5,7 @@ import type {
   FetchOptions,
 } from "../types.js";
 import { StreamdError } from "../errors.js";
-import { descriptorKey } from "../utils.js";
+import { fetchKey } from "../utils.js";
 import { requireAdapter } from "./validate.js";
 
 const DEFAULT_MAX_ENTRIES = 1000;
@@ -13,15 +13,6 @@ const DEFAULT_MAX_ENTRIES = 1000;
 export interface CachingAdapterOptions {
   /** Pages kept before the least recently used is dropped (default: 1000). */
   maxEntries?: number;
-}
-
-function optionsKey(options: FetchOptions): string {
-  const fields = Object.entries(options)
-    .filter(([, value]) => value !== undefined)
-    .sort(([a], [b]) => a.localeCompare(b));
-  return JSON.stringify(fields, (_key, value: unknown) =>
-    typeof value === "bigint" ? `${value}n` : value,
-  );
 }
 
 function copy(page: EventPage): EventPage {
@@ -75,10 +66,9 @@ export class CachingAdapter implements EventAdapter {
     descriptor: EventDescriptor,
     options: FetchOptions = {},
   ): Promise<EventPage> {
-    const selector = descriptorKey(descriptor);
-    if (selector === undefined) return this.source.fetchEvents(descriptor, options);
+    const key = fetchKey(descriptor, options);
+    if (key === undefined) return this.source.fetchEvents(descriptor, options);
 
-    const key = `${selector}|${optionsKey(options)}`;
     const cached = this.pages.get(key);
     if (cached !== undefined) {
       this.pages.delete(key);
