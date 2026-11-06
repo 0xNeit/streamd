@@ -89,6 +89,7 @@ export type {
   ModuleEventDescriptor,
   MoveEventType,
   OnceOptions,
+  PreviewEventsOptions,
   ReduceOptions,
   Reducer,
   Reduction,
@@ -98,4 +99,5 @@ export type {
   SubscriptionOptions,
   SubscriptionStatus,
   TransactionEvents,
+  TransactionSimulation,
 } from "./types.js";
