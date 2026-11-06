@@ -15,6 +15,7 @@ import type {
   EventAdapter,
   EventDescriptor,
   EventPage,
+  ListenerOptions,
   StreamdEvent,
 } from "../src/types.js";
 
@@ -2053,6 +2054,115 @@ describe("EventPoller relative start", () => {
     const froms = mocked(adapter.fetchEvents).mock.calls.map((c) => c[1].fromVersion);
     expect(froms.slice(0, 2)).toEqual([8n, 8n]);
     expect(adapter.getHeadVersion).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("EventPoller earliest start", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function earliestAdapter(earliest: bigint, pages: EventPage[] = []) {
+    const adapter = createMockAdapter(pages);
+    adapter.getEarliestVersion = vi.fn(async () => earliest);
+    return adapter;
+  }
+
+  const firstFrom = (adapter: EventAdapter) =>
+    mocked(adapter.fetchEvents).mock.calls[0]?.[1]?.fromVersion;
+
+  async function firstPoll(adapter: EventAdapter, options: ListenerOptions) {
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { onError, ...options });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    return { poller, onError };
+  }
+
+  it("starts at the adapter's earliest version", async () => {
+    const adapter = earliestAdapter(5n);
+    const { poller } = await firstPoll(adapter, { fromVersion: "earliest" });
+    poller.stop();
+
+    expect(firstFrom(adapter)).toBe(5n);
+    expect(adapter.getEarliestVersion).toHaveBeenCalledWith(descriptor);
+  });
+
+  it("reads no earliest version when a cursor is given or fromVersion is a bigint", async () => {
+    for (const options of [
+      { fromVersion: "earliest", cursor: "7" },
+      { fromVersion: 4n },
+    ] as ListenerOptions[]) {
+      const adapter = earliestAdapter(5n);
+      const { poller } = await firstPoll(adapter, options);
+      poller.stop();
+
+      expect(adapter.getEarliestVersion).not.toHaveBeenCalled();
+      expect(firstFrom(adapter)).toBe(options.cursor ? undefined : 4n);
+    }
+  });
+
+  it("stops as invalid input when the adapter cannot report an earliest version", async () => {
+    const adapter = createMockAdapter([]);
+    const { poller, onError } = await firstPoll(adapter, { fromVersion: "earliest" });
+
+    expect(poller.active).toBe(false);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+    const err = onError.mock.calls[0]![0] as StreamdPollingError;
+    expect(err).toBeInstanceOf(StreamdPollingError);
+    expect(err.message).toContain("getEarliestVersion");
+  });
+
+  it("stops as invalid input on a fromVersion that is neither a bigint nor earliest", async () => {
+    const adapter = earliestAdapter(5n);
+    const { poller, onError } = await firstPoll(adapter, {
+      fromVersion: "latest" as unknown as bigint,
+    });
+
+    expect(poller.active).toBe(false);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+    expect(adapter.getEarliestVersion).not.toHaveBeenCalled();
+    expect((onError.mock.calls[0]![0] as Error).message).toContain("Invalid fromVersion");
+  });
+
+  it("retries an earliest read that failed on the network", async () => {
+    const adapter = earliestAdapter(5n);
+    mocked(adapter.getEarliestVersion!).mockRejectedValueOnce(
+      new StreamdNetworkError("503", 503),
+    );
+    const { poller, onError } = await firstPoll(adapter, {
+      fromVersion: "earliest",
+      pollInterval: 100,
+    });
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(poller.active).toBe(true);
+
+    await advanceTimersByTimeAsync(200);
+    poller.stop();
+    expect(adapter.getEarliestVersion).toHaveBeenCalledTimes(2);
+    expect(firstFrom(adapter)).toBe(5n);
+  });
+
+  it("reuses the resolved start when the fetch after it fails", async () => {
+    const adapter = earliestAdapter(5n);
+    mocked(adapter.fetchEvents).mockRejectedValueOnce(
+      new StreamdNetworkError("503", 503),
+    );
+    mocked(adapter.getEarliestVersion!).mockResolvedValueOnce(5n).mockResolvedValue(99n);
+    const { poller } = await firstPoll(adapter, {
+      fromVersion: "earliest",
+      pollInterval: 100,
+    });
+    await advanceTimersByTimeAsync(200);
+    poller.stop();
+
+    const froms = mocked(adapter.fetchEvents).mock.calls.map((c) => c[1].fromVersion);
+    expect(froms.slice(0, 2)).toEqual([5n, 5n]);
+    expect(adapter.getEarliestVersion).toHaveBeenCalledTimes(1);
   });
 });
 

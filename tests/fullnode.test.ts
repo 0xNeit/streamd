@@ -437,3 +437,33 @@ describe("FullnodeScanAdapter head version", () => {
     expect((err as StreamdNetworkError).statusCode).toBe(503);
   });
 });
+
+describe("FullnodeScanAdapter earliest version", () => {
+  it("reports the oldest unpruned ledger version", async () => {
+    const { aptos } = fakeNode(
+      (path) => {
+        if (path === "") {
+          return { data: { ledger_version: "900", oldest_ledger_version: "120" } };
+        }
+        throw new Error(`unexpected path ${path}`);
+      },
+      {},
+      Network.MAINNET,
+    );
+    expect(await new FullnodeScanAdapter(aptos).getEarliestVersion()).toBe(120n);
+  });
+
+  it("surfaces a failed ledger read as StreamdNetworkError with its status", async () => {
+    const { aptos } = fakeNode(
+      () => ({ status: 503, data: { message: "down" } }),
+      {},
+      Network.SHELBYNET,
+    );
+    const err = await new FullnodeScanAdapter(aptos)
+      .getEarliestVersion()
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(503);
+  });
+});

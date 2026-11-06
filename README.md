@@ -180,6 +180,24 @@ fetches its first page; a `cursor` still wins and skips that read. `once()`, `st
 and `onBatch()` accept it too. An adapter without `getHeadVersion` is rejected as invalid
 input.
 
+### Start at the earliest available version
+
+```ts
+// everything the fullnode still holds, then live
+streamd.on(descriptor, handle, { fromVersion: "earliest" });
+
+const all = await streamd.getEvents(descriptor, { fromVersion: "earliest", maxPages: 100 });
+```
+
+`fromVersion: "earliest"` starts at the oldest version the source can still serve. On
+`FullnodeScanAdapter` that is the ledger's `oldest_ledger_version`: history below it is
+pruned. It is read once, from the adapter's `getEarliestVersion`, at the same point a
+relative start reads the head, and a `cursor` still wins and skips the read. `once()`,
+`stream()` and `onBatch()` accept it too. An adapter without `getEarliestVersion` is
+rejected as invalid input, and so is any `fromVersion` that is neither a `bigint` nor
+`"earliest"`. A module-event scan from the earliest version walks every transaction since,
+so bound a query with `limit` or `maxPages`.
+
 ### Wait for one event
 
 ```ts
@@ -266,8 +284,8 @@ const streamd = new StreamdClient({ aptos, maxConcurrentRequests: 4 });
 ```
 
 At most that many adapter calls run at once across every subscription and query on the
-client; the rest wait their turn in order. Both `fetchEvents` and the `getHeadVersion` read
-behind a negative `fromVersion` count. The unit is one adapter call, not one HTTP request:
+client; the rest wait their turn in order. `fetchEvents`, the `getHeadVersion` read behind
+a negative `fromVersion`, and the `getEarliestVersion` read behind `"earliest"` all count. The unit is one adapter call, not one HTTP request:
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
 dropped without reaching the adapter. Omit the option for no limit.
@@ -417,8 +435,9 @@ const streamd = new StreamdClient({ aptos, adapter: myIndexAdapter });
 ```
 
 An adapter has one required method, `fetchEvents(descriptor, options)`, returning
-`{ events, nextCursor, hasMore }`, and an optional `getHeadVersion(descriptor)` that
-a negative `fromVersion` needs. See the `EventAdapter` type for the full contract.
+`{ events, nextCursor, hasMore }`, an optional `getHeadVersion(descriptor)` that
+a negative `fromVersion` needs, and an optional `getEarliestVersion(descriptor)` that
+`fromVersion: "earliest"` needs. See the `EventAdapter` type for the full contract.
 
 Combine sources with `RoutingAdapter` (by descriptor `kind`, with an optional
 `default` for the rest) and `FallbackAdapter` (try sources in order on each
@@ -449,7 +468,8 @@ To log or time requests, wrap any adapter with `withHooks`. `onRequest` runs
 before each `fetchEvents` call and `onResponse` after it settles, with the
 `page` or the `error` and `durationMs` for the source call alone (time spent
 waiting on `maxConcurrentRequests` is not included). Hooks are synchronous; one
-that throws fails that fetch. `getHeadVersion` passes through unhooked:
+that throws fails that fetch. `getHeadVersion` and `getEarliestVersion` pass through
+unhooked:
 
 ```ts
 import { FullnodeScanAdapter, StreamdClient, withHooks } from "streamd";

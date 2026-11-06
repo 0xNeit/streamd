@@ -44,8 +44,8 @@ function requireHook<K extends keyof AdapterHooks>(
 
 /**
  * Wraps `adapter` so every `fetchEvents` call is reported to `hooks`, to log
- * or time requests. `getHeadVersion` passes through, unhooked, only when the
- * wrapped adapter has one.
+ * or time requests. `getHeadVersion` and `getEarliestVersion` pass through,
+ * unhooked, only when the wrapped adapter has them.
  */
 export function withHooks(
   adapter: EventAdapter,
@@ -77,6 +77,10 @@ export function withHooks(
   };
   if (source.getHeadVersion !== undefined) {
     wrapped.getHeadVersion = (descriptor) => source.getHeadVersion!(descriptor);
+  }
+  if (source.getEarliestVersion !== undefined) {
+    wrapped.getEarliestVersion = (descriptor) =>
+      source.getEarliestVersion!(descriptor);
   }
   return wrapped;
 }

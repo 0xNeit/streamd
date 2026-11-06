@@ -69,6 +69,11 @@ export class MemoryAdapter implements EventAdapter {
     return this.events.at(-1)?.version ?? 0n;
   }
 
+  /** The lowest seeded version, or `0n` when empty. */
+  async getEarliestVersion(): Promise<bigint> {
+    return this.events[0]?.version ?? 0n;
+  }
+
   async fetchEvents(
     descriptor: EventDescriptor,
     options: FetchOptions = {},

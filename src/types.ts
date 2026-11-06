@@ -113,9 +113,11 @@ export interface EventFilter {
   /**
    * Start from this version (inclusive). Negative counts back from the head,
    * read once from `EventAdapter.getHeadVersion`: `-1000n` starts 1000
-   * versions before it, clamped at 0.
+   * versions before it, clamped at 0. `"earliest"` starts at the oldest
+   * version the source still serves, read once from
+   * `EventAdapter.getEarliestVersion`.
    */
-  fromVersion?: bigint;
+  fromVersion?: bigint | "earliest";
   /** End at this version (inclusive) */
   toVersion?: bigint;
   /** Maximum events to return, counted *after* `where` is applied */
@@ -169,7 +171,12 @@ export interface EventFilter {
  * pushed down to a remote data source. Query and poller apply them to results.
  */
 export interface FetchOptions
-  extends Omit<EventFilter, "where" | "decode" | "maxPages" | "retries" | "signal"> {
+  extends Omit<
+    EventFilter,
+    "fromVersion" | "where" | "decode" | "maxPages" | "retries" | "signal"
+  > {
+  /** Start from this version (inclusive); always absolute by the time an adapter sees it. */
+  fromVersion?: bigint;
   orderBy?: "asc" | "desc";
   /**
    * Opaque resume token returned by this adapter's previous page. When
@@ -204,9 +211,11 @@ export interface ListenerOptions {
   /**
    * Start from this version; undefined = chain head. Negative counts back from
    * the head, read once on the first poll from `EventAdapter.getHeadVersion`:
-   * `-1000n` starts 1000 versions before it, clamped at 0.
+   * `-1000n` starts 1000 versions before it, clamped at 0. `"earliest"` starts
+   * at the oldest version the source still serves, read once on the first
+   * poll from `EventAdapter.getEarliestVersion`.
    */
-  fromVersion?: bigint;
+  fromVersion?: bigint | "earliest";
   /**
    * Resume from a token a previous subscription reported as `cursor`. It wins
    * over `fromVersion`, and is only meaningful with the same descriptor and
@@ -299,7 +308,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents` and `getHeadVersion`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
@@ -423,4 +432,9 @@ export interface EventAdapter {
    * negative `fromVersion` (relative to the head) needs it.
    */
   getHeadVersion?(descriptor: EventDescriptor): Promise<bigint>;
+  /**
+   * The oldest version this source can still serve for `descriptor`, below
+   * which history is pruned. Optional; `fromVersion: "earliest"` needs it.
+   */
+  getEarliestVersion?(descriptor: EventDescriptor): Promise<bigint>;
 }

@@ -65,4 +65,15 @@ export class FallbackAdapter implements EventAdapter {
       adapter.getHeadVersion!(descriptor),
     );
   }
+
+  /** From the first adapter that reports one, with the same fallback rules. */
+  async getEarliestVersion(descriptor: EventDescriptor): Promise<bigint> {
+    const reporting = this.adapters.filter((a) => a.getEarliestVersion !== undefined);
+    if (reporting.length === 0) {
+      throw new StreamdError("No FallbackAdapter source reports an earliest version");
+    }
+    return tryInOrder(reporting, (adapter) =>
+      adapter.getEarliestVersion!(descriptor),
+    );
+  }
 }
