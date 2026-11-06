@@ -83,7 +83,7 @@ export class StreamdClient {
    * types from a single scan.
    */
   on<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: EventDescriptor<TData>,
     callback: EventCallback<TData>,
     options?: ListenerOptions,
   ): Subscription {
@@ -95,7 +95,7 @@ export class StreamdClient {
    * `callback(events)` call, at most `batchSize` of them.
    */
   onBatch<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: EventDescriptor<TData>,
     callback: BatchCallback<TData>,
     options?: ListenerOptions,
   ): Subscription {
@@ -169,7 +169,7 @@ export class StreamdClient {
    * the first error thrown by `where`, even if a later event would have matched.
    */
   once<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: EventDescriptor<TData>,
     options?: OnceOptions,
   ): Promise<StreamdEvent<TData>> {
     const badTimeout = checkTimeout(options?.timeout);
@@ -218,7 +218,7 @@ export class StreamdClient {
    * aborts. Other errors go to `options.onError`.
    */
   stream<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: EventDescriptor<TData>,
     options?: ListenerOptions,
   ): AsyncIterableIterator<StreamdEvent<TData>> {
     // Registered only once the stream subscribes, so an unused stream costs nothing.
@@ -246,7 +246,7 @@ export class StreamdClient {
    * Query historical events matching a descriptor and filter.
    */
   async getEvents<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: EventDescriptor<TData>,
     filter?: EventFilter,
   ): Promise<StreamdEvent<TData>[]> {
     return this.query.getEvents<TData>(descriptor, filter);
@@ -256,7 +256,7 @@ export class StreamdClient {
    * Async iterator for paginating through large historical result sets.
    */
   getEventPages<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: EventDescriptor<TData>,
     filter?: EventFilter,
     pageSize?: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {

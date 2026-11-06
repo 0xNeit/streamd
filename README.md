@@ -279,6 +279,24 @@ transaction is in hand (`module` and `account` descriptors on
 come from an endpoint that omits the surrounding transaction, so both fields
 are `undefined` there (and `timestamp` is `undefined` on genesis transactions).
 
+### Typed events
+
+`defineEvent<T>(eventType)` returns a `module` descriptor that carries its
+payload type, so every client method infers `event.data` from it:
+
+```ts
+import { defineEvent } from "streamd";
+
+const Deposit = defineEvent<{ amount: string }>("0x1::coin::DepositEvent");
+
+client.on(Deposit, (event) => console.log(event.data.amount));
+const recent = await client.getEvents(Deposit, { fromVersion: -1000n });
+```
+
+The type is your claim about the decoded JSON, not a runtime check: `u64`
+values still arrive as strings. At runtime the descriptor is the same plain
+object you would write by hand.
+
 ## Filtering
 
 Chain APIs can't filter on what's inside an event. `where` filters on your

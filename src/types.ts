@@ -5,9 +5,21 @@ import type { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
 /** Move struct tag identifying a module event: `${address}::${module}::${struct}` */
 export type MoveEventType = `${string}::${string}::${string}`;
 
-/** Modern module event: one `${address}::${module}::${struct}` or a list of them */
-export interface ModuleEventDescriptor {
+declare const eventData: unique symbol;
+
+/**
+ * Modern module event: one `${address}::${module}::${struct}` or a list of
+ * them. `TData` is the payload type `defineEvent` attaches, so client methods
+ * infer `event.data` from the descriptor.
+ */
+export interface ModuleEventDescriptor<TData = unknown> {
   kind: "module";
+  /**
+   * Type-only carrier for `TData`; never present at runtime. A method
+   * signature so it compares bivariantly: a plain `EventDescriptor` still
+   * accepts an explicit type argument, while unrelated payload types clash.
+   */
+  [eventData]?(data: TData): void;
   /**
    * One Move event type or a non-empty list of them (e.g.
    * `"0x1::coin::WithdrawEvent"` or
@@ -42,8 +54,8 @@ export interface AccountEventDescriptor {
   eventTypes?: string[];
 }
 
-export type EventDescriptor =
-  | ModuleEventDescriptor
+export type EventDescriptor<TData = unknown> =
+  | ModuleEventDescriptor<TData>
   | HandleEventDescriptor
   | AccountEventDescriptor;
 
