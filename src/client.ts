@@ -8,6 +8,9 @@ import type {
   ListenerDefaults,
   ListenerOptions,
   OnceOptions,
+  ReduceOptions,
+  Reducer,
+  Reduction,
   StreamdConfig,
   StreamdEvent,
   Subscription,
@@ -27,6 +30,7 @@ import { RequestLimiter } from "./limiter.js";
 import { CursorManager } from "./cursor.js";
 import { fieldDecoder } from "./decode.js";
 import { SharedFetches } from "./shared.js";
+import { startReduction, type ReduceHost } from "./reduce.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -127,6 +131,8 @@ export class StreamdClient {
   private readonly listeners = new Map<string, Listener>();
   /** Open streams, so destroy() can end their loops rather than strand them. */
   private readonly streams = new Set<() => void>();
+  /** What `reduce()` needs, built once. */
+  private readonly reduceHost: ReduceHost;
 
   constructor(config: StreamdConfig) {
     this.defaults = resolveDefaults(config);
@@ -135,6 +141,13 @@ export class StreamdClient {
     this.adapter = resolveAdapter(config);
     this.shared = new SharedFetches(this.adapter);
     this.query = new EventQuery(this.adapter, this.limiter);
+    this.reduceHost = {
+      query: this.query,
+      defaults: this.defaults,
+      onError: this.onError,
+      subscribe: (d, callback, options) => this.subscribe(d, callback, options),
+      track: (stop) => (this.streams.add(stop), () => void this.streams.delete(stop)),
+    };
   }
 
   /**
@@ -337,6 +350,24 @@ export class StreamdClient {
       options?.signal,
     );
     return stream;
+  }
+
+  /**
+   * Keep a value reduced over a descriptor's events: fold the history from the
+   * start position (`fromVersion`, `fromTime` or `fromBlock`; as for
+   * `getEvents` when omitted) into `initial`, then fold each live event as it arrives, each
+   * exactly once. Read the current state as `value`; `ready` resolves once
+   * the history is folded. A reducer throw stops the reduction, as folding
+   * past a lost event would leave `value` wrong. Like `once()` and `stream()`,
+   * it is not a listener for `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  reduce<S, TData = unknown>(
+    descriptor: EventDescriptor<TData>,
+    reducer: Reducer<S, TData>,
+    initial: S,
+    options?: ReduceOptions<S, TData>,
+  ): Reduction<S> {
+    return startReduction(this.reduceHost, descriptor, reducer, initial, options);
   }
 
   /**

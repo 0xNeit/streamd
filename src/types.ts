@@ -400,6 +400,60 @@ export interface OnceOptions extends ListenerOptions {
   timeout?: number;
 }
 
+/** Folds one event into the state; synchronous, and should not mutate `state`. */
+export type Reducer<S, TData = unknown> = (state: S, event: StreamdEvent<TData>) => S;
+
+/**
+ * Options for `reduce()`. History options shape the backfill, live options
+ * the subscription that follows it, and `where`/`decode` apply to both.
+ * Anything that would leave no exact point to follow from (`limit`,
+ * `offset`, `toVersion`, `toBlock`, `orderBy`, `onCursor`, `cursor`) is
+ * refused.
+ */
+export interface ReduceOptions<S = unknown, TData = unknown>
+  extends Pick<EventFilter, "fromBlock" | "maxPages" | "retries">,
+    Pick<
+      ListenerOptions,
+      | "fromVersion"
+      | "fromTime"
+      | "where"
+      | "decode"
+      | "pollInterval"
+      | "batchSize"
+      | "maxErrors"
+      | "maxBackoff"
+      | "dedupWindow"
+      | "onError"
+      | "onCaughtUp"
+      | "signal"
+    > {
+  /**
+   * Called after each live event is folded in, with the new state. Not called
+   * during the backfill, whose result `ready` resolves with. A throw goes to
+   * `onError` and does not stop the reduction.
+   */
+  onChange?: (state: S, event: StreamdEvent<TData>) => void;
+}
+
+/** A running `reduce()`: the reduced value, kept current as events arrive. */
+export interface Reduction<S> {
+  /** The reduction of every event folded so far; the last good one once stopped. */
+  readonly value: S;
+  /**
+   * Resolves with the backfilled value once the history is folded and live
+   * following has started. Rejects if the backfill fails, the reducer throws,
+   * or the reduction is stopped or aborted first. Never an unhandled
+   * rejection, so it is safe to ignore.
+   */
+  readonly ready: Promise<S>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  /** Stop folding, whether still backfilling or following. */
+  unsubscribe(): void;
+  /** `unsubscribe()`, for `using`. */
+  [Symbol.dispose](): void;
+}
+
 /**
  * Listener options a client can set once for every `on`, `onBatch`, `once` and
  * `stream` call. Start position, filters, callbacks and `signal` are per
