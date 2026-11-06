@@ -1497,3 +1497,33 @@ describe("onBatch", () => {
     expect(sub.active).toBe(false);
   });
 });
+
+describe("StreamdClient relative start", () => {
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+  const versions = [5, 8, 9, 10].map((v) => makeEvent(v));
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("on() with a negative fromVersion delivers from that many versions before the head", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter(versions) });
+    const seen: bigint[] = [];
+    client.on(descriptor, (e) => void seen.push(e.version), { fromVersion: -2n });
+    await advanceTimersByTimeAsync(0);
+    client.destroy();
+
+    expect(seen).toEqual([8n, 9n, 10n]);
+  });
+
+  it("getEvents() with a negative fromVersion starts that many versions before the head", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter(versions) });
+    const events = await client.getEvents(descriptor, { fromVersion: -1n });
+
+    expect(events.map((e) => e.version)).toEqual([9n, 10n]);
+  });
+});

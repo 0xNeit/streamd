@@ -163,6 +163,23 @@ on a page has settled, and the dedup window is not saved, so events from the pag
 flight when the process stopped arrive again after a restart: make your handler
 idempotent on `(version, eventIndex)`.
 
+### Start relative to the head
+
+```ts
+// the last 10,000 versions, then live
+streamd.on(descriptor, handle, { fromVersion: -10_000n });
+
+// history from 1,000 versions back
+const recent = await streamd.getEvents(descriptor, { fromVersion: -1_000n });
+```
+
+A negative `fromVersion` counts back from the chain head, as a negative block tag does in
+ethers: `-10_000n` starts at `head - 10_000`, and never below version 0. The head is read
+once, from the adapter's `getHeadVersion`, when the subscription first polls or the query
+fetches its first page; a `cursor` still wins and skips that read. `once()`, `stream()`
+and `onBatch()` accept it too. An adapter without `getHeadVersion` is rejected as invalid
+input.
+
 ### Wait for one event
 
 ```ts
@@ -298,9 +315,9 @@ self-hosted processor or third-party indexer) and pass it in:
 const streamd = new StreamdClient({ aptos, adapter: myIndexAdapter });
 ```
 
-An adapter has one method, `fetchEvents(descriptor, options)`, returning
-`{ events, nextCursor, hasMore }`. See the `EventAdapter` type for the full
-contract.
+An adapter has one required method, `fetchEvents(descriptor, options)`, returning
+`{ events, nextCursor, hasMore }`, and an optional `getHeadVersion(descriptor)` that
+a negative `fromVersion` needs. See the `EventAdapter` type for the full contract.
 
 Combine sources with `RoutingAdapter` (by descriptor `kind`, with an optional
 `default` for the rest) and `FallbackAdapter` (try sources in order on each
