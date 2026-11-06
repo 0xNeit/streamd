@@ -517,6 +517,29 @@ a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` tha
 `fromVersion: "earliest"` needs, and an optional `getBlock(descriptor, height)` that
 `fromBlock`/`toBlock` need. See the `EventAdapter` type for the full contract.
 
+To check a custom adapter against that contract, run `checkAdapter` from any
+test runner or a plain script. It walks a few pages (`maxPages`, default 3),
+then makes two more fetches and one call to each optional method present, and
+reports a result per rule (`page-shape`, `order`, `cursor-advance`,
+`cursor-precedence`, `foreign-cursor`, `head-version`, ...) instead of
+throwing. It only reads, but against a real source those reads are network
+calls:
+
+```ts
+import { checkAdapter } from "streamd";
+
+const report = await checkAdapter(
+  myIndexAdapter,
+  { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
+  { fromVersion: 1_000_000n, blockHeight: 500_000n },
+);
+if (!report.ok) console.table(report.results.filter((r) => r.status === "fail"));
+```
+
+`fromVersion` is where the walk starts (omit it to start where the adapter
+does, usually the head), and `blockHeight` lets it check `getBlock`; a rule
+whose method or input is missing is `skip`.
+
 Combine sources with `RoutingAdapter` (by descriptor `kind`, with an optional
 `default` for the rest) and `FallbackAdapter` (try sources in order on each
 call when one fails, while still rejecting invalid input at once):
