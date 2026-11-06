@@ -330,6 +330,16 @@ export type EventCallback<TData = unknown> = (
   event: StreamdEvent<TData>,
 ) => void;
 
+/**
+ * Called once per poll with that page's new events that pass `where`, in
+ * order; never with an empty array. Otherwise as `EventCallback`: a returned
+ * promise is awaited before the cursor moves past the page, and a throw or
+ * rejection goes to `onError` without counting toward `maxErrors`.
+ */
+export type BatchCallback<TData = unknown> = (
+  events: StreamdEvent<TData>[],
+) => void;
+
 // ---- Adapter interface ----
 
 /**
