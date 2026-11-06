@@ -230,6 +230,27 @@ fetches its first page; a `cursor` still wins and skips that read. `once()`, `st
 and `onBatch()` accept it too. An adapter without `getHeadVersion` is rejected as invalid
 input.
 
+### End at the head as of the query's start
+
+```ts
+// the latest 50 transfers, even on a type that never stops emitting
+const latest = await streamd.getEvents(descriptor, {
+  fromVersion: -100_000n,
+  toVersion: "head",
+  orderBy: "desc",
+  limit: 50,
+});
+```
+
+`toVersion: "head"` reads the head once, from the adapter's `getHeadVersion`, before the
+first page, and ends the query there (inclusive). Without it a walk over a busy type keeps
+finding new pages as transactions land and may never finish. With a negative `fromVersion`
+the same single read sets both ends, and `retries` covers it like the other lookups. A query
+that fetches nothing (`limit: 0`, `maxPages: 0`) reads no head. An adapter without
+`getHeadVersion` is rejected as invalid input before any fetch, as is `"head"` together with
+`toBlock`. Like any `toVersion`, it makes `onCursor` report `undefined`. Listeners have no
+end bound, so `"head"` is for queries only.
+
 ### Start at the earliest available version
 
 ```ts
