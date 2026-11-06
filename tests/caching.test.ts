@@ -157,17 +157,20 @@ describe("CachingAdapter", () => {
         lastVersion: 2n,
         timestamp: 0n,
       }),
+      getBlockHeights: async () => ({ oldest: 4n, newest: 8n }),
     };
     const cache = new CachingAdapter(full);
     expect(await cache.getHeadVersion!(moduleDesc)).toBe(1n);
     expect(await cache.getHeadVersion!(moduleDesc)).toBe(2n);
     expect(await cache.getEarliestVersion!(moduleDesc)).toBe(3n);
     expect((await cache.getBlock!(moduleDesc, 7n)).height).toBe(7n);
+    expect(await cache.getBlockHeights!(moduleDesc)).toEqual({ oldest: 4n, newest: 8n });
 
     const bare = new CachingAdapter({ fetchEvents: full.fetchEvents });
     expect(bare.getHeadVersion).toBeUndefined();
     expect(bare.getEarliestVersion).toBeUndefined();
     expect(bare.getBlock).toBeUndefined();
+    expect(bare.getBlockHeights).toBeUndefined();
   });
 
   it("rejects an invalid adapter or maxEntries", () => {

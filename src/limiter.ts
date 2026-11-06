@@ -54,6 +54,10 @@ export class RequestLimiter {
       view.getBlock = (descriptor, height) =>
         this.run(() => adapter.getBlock!(descriptor, height), cancelled);
     }
+    if (adapter.getBlockHeights !== undefined) {
+      view.getBlockHeights = (descriptor) =>
+        this.run(() => adapter.getBlockHeights!(descriptor), cancelled);
+    }
     return view;
   }
 

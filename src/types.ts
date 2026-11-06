@@ -137,6 +137,14 @@ export interface EventFilter {
    * `EventAdapter.getBlock`. Cannot be combined with `toVersion`.
    */
   toBlock?: bigint;
+  /**
+   * Start at the first block stamped at or after this time, in microseconds
+   * since the Unix epoch (the unit of `StreamdEvent.timestamp`), searched once
+   * through `EventAdapter.getBlockHeights` and `getBlock`. Before the oldest
+   * served block clamps to it; in the future starts at the head. Cannot be
+   * combined with `fromVersion` or `fromBlock`.
+   */
+  fromTime?: bigint;
   /** Maximum events to return, counted *after* `where` is applied */
   limit?: number;
   /** Offset for pagination */
@@ -192,6 +200,7 @@ export interface FetchOptions
     EventFilter,
     | "fromVersion"
     | "fromBlock"
+    | "fromTime"
     | "toBlock"
     | "where"
     | "decode"
@@ -247,8 +256,16 @@ export interface ListenerOptions {
    */
   fromVersion?: bigint | "earliest";
   /**
+   * Start at the first block stamped at or after this time, in microseconds
+   * since the Unix epoch, searched once on the first poll through
+   * `EventAdapter.getBlockHeights` and `getBlock`. Before the oldest served
+   * block clamps to it; in the future starts at the head. Cannot be combined
+   * with `fromVersion`.
+   */
+  fromTime?: bigint;
+  /**
    * Resume from a token a previous subscription reported as `cursor`. It wins
-   * over `fromVersion`, and is only meaningful with the same descriptor and
+   * over `fromVersion` and `fromTime`, and is only meaningful with the same descriptor and
    * adapter that produced it.
    */
   cursor?: string;
@@ -338,7 +355,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
@@ -472,6 +489,17 @@ export interface EventAdapter {
    * `fromBlock`/`toBlock` on a query need it.
    */
   getBlock?(descriptor: EventDescriptor, height: bigint): Promise<BlockInfo>;
+  /**
+   * The oldest and newest block heights this source can serve for
+   * `descriptor`. Optional; `fromTime` needs it, together with `getBlock`.
+   */
+  getBlockHeights?(descriptor: EventDescriptor): Promise<BlockHeights>;
+}
+
+/** Block heights an adapter can serve, both inclusive, as `EventAdapter.getBlockHeights` reports them. */
+export interface BlockHeights {
+  oldest: bigint;
+  newest: bigint;
 }
 
 /** A block's position in the ledger, as `EventAdapter.getBlock` reports it. */

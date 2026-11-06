@@ -168,6 +168,21 @@ describe("withHooks", () => {
     expect("getBlock" in adapter).toBe(false);
   });
 
+  it("delegates getBlockHeights when the wrapped adapter has one, without calling hooks", async () => {
+    let hooked = 0;
+    const adapter = withHooks(
+      { fetchEvents: async () => PAGE, getBlockHeights: async () => ({ oldest: 1n, newest: 4n }) },
+      { onRequest: () => hooked++, onResponse: () => hooked++ },
+    );
+    expect(await adapter.getBlockHeights!(moduleDesc)).toEqual({ oldest: 1n, newest: 4n });
+    expect(hooked).toBe(0);
+  });
+
+  it("has no getBlockHeights when the wrapped adapter lacks one", () => {
+    const adapter = withHooks({ fetchEvents: async () => PAGE }, {});
+    expect("getBlockHeights" in adapter).toBe(false);
+  });
+
   it("refuses an invalid adapter, hooks object, or hook", () => {
     const inner = new MemoryAdapter([]);
     expect(() => withHooks({} as EventAdapter, {})).toThrow(StreamdError);

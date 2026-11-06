@@ -56,6 +56,7 @@ export type {
 export type {
   AccountEventDescriptor,
   BatchCallback,
+  BlockHeights,
   BlockInfo,
   EventAdapter,
   EventCallback,

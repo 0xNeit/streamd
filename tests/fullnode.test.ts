@@ -550,6 +550,35 @@ describe("FullnodeScanAdapter earliest version", () => {
   });
 });
 
+describe("FullnodeScanAdapter block heights", () => {
+  it("reports the oldest and newest block heights from one ledger read", async () => {
+    const { aptos } = fakeNode(() => {
+      throw new Error("no HTTP expected");
+    });
+    let reads = 0;
+    aptos.getLedgerInfo = async () => {
+      reads++;
+      return { oldest_block_height: "1142401405", block_height: "1165817595" } as never;
+    };
+    expect(await new FullnodeScanAdapter(aptos).getBlockHeights()).toEqual({
+      oldest: 1142401405n,
+      newest: 1165817595n,
+    });
+    expect(reads).toBe(1);
+  });
+
+  it("surfaces a failed ledger read as StreamdNetworkError with its status", async () => {
+    const { aptos } = fakeNode(() => ({ status: 429, data: { message: "slow down" } }));
+    aptos.getLedgerInfo = async () => {
+      throw Object.assign(new Error("Too Many Requests"), { status: 429 });
+    };
+    const err = await new FullnodeScanAdapter(aptos).getBlockHeights().catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(429);
+  });
+});
+
 describe("FullnodeScanAdapter blocks", () => {
   it("maps a block to bigints without fetching its transactions", async () => {
     const { aptos, calls } = fakeNode((path) => {
