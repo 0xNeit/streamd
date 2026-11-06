@@ -42,6 +42,21 @@ export function raceAbort<T>(
   });
 }
 
+/** Resolves after `ms`, or rejects with `signal.reason` as soon as it aborts. */
+export function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      detach();
+      resolve();
+    }, ms);
+    const detach = onAbort(signal, () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    });
+  });
+}
+
 /**
  * A negative `fromVersion` counts back from the adapter's head, as ethers
  * reads a negative block tag; other values pass through without a head read.

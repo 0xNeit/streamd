@@ -1,6 +1,7 @@
-import { describe, it, expect, vi } from "bun:test";
+import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import { EventQuery } from "../src/query.js";
-import { StreamdError } from "../src/errors.js";
+import { StreamdError, StreamdNetworkError } from "../src/errors.js";
+import { advanceTimersByTimeAsync, advanceTimersToNextTimerAsync } from "./timers.js";
 import type { EventAdapter, EventDescriptor, FetchOptions } from "../src/types.js";
 
 const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::test::Event" };
@@ -277,5 +278,149 @@ describe("EventQuery orderBy desc", () => {
       limit: 3,
     });
     expect(ids(events)).toEqual(["1:0", "2:0", "3:0"]);
+  });
+});
+
+describe("EventQuery retries", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const down = () => new StreamdNetworkError("node down", 503);
+  const page = (versions: number[], next: string, hasMore: boolean) => ({
+    events: versions.map(event),
+    nextCursor: next,
+    hasMore,
+  });
+
+  // Settles `promise` while stepping the fake clock through each backoff wait.
+  async function drain<T>(promise: Promise<T>): Promise<T> {
+    let done = false;
+    promise.then(
+      () => (done = true),
+      () => (done = true),
+    );
+    for (let i = 0; i < 20 && !done; i++) await advanceTimersToNextTimerAsync();
+    return promise;
+  }
+
+  it("retries a network failure from the same cursor, waiting 1s then 2s", async () => {
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockResolvedValueOnce(page([1], "2", true))
+      .mockRejectedValueOnce(down())
+      .mockRejectedValueOnce(new Error("socket hang up"))
+      .mockResolvedValueOnce(page([2, 3], "4", false));
+    const result = new EventQuery({ fetchEvents }).getEvents(descriptor, { retries: 2 });
+    // The helper adds a tick per call, so these windows straddle 1000ms and 2000ms.
+    await advanceTimersByTimeAsync(990);
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+    await advanceTimersByTimeAsync(20);
+    expect(fetchEvents).toHaveBeenCalledTimes(3);
+    await advanceTimersByTimeAsync(1970);
+    expect(fetchEvents).toHaveBeenCalledTimes(3);
+    await advanceTimersByTimeAsync(20);
+
+    expect((await result).map((e) => e.version)).toEqual([1n, 2n, 3n]);
+    expect(fetchEvents.mock.calls.slice(1).map((c) => c[1].cursor)).toEqual(["2", "2", "2"]);
+    expect("retries" in fetchEvents.mock.calls[0]![1]).toBe(false);
+  });
+
+  it("rejects with the last error once retries are spent", async () => {
+    const last = down();
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockRejectedValueOnce(down())
+      .mockRejectedValueOnce(last);
+    const result = new EventQuery({ fetchEvents }).getEvents(descriptor, { retries: 1 });
+
+    await expect(drain(result)).rejects.toBe(last);
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives each page its own budget", async () => {
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockRejectedValueOnce(down())
+      .mockResolvedValueOnce(page([1], "2", true))
+      .mockRejectedValueOnce(down())
+      .mockResolvedValueOnce(page([2], "3", false));
+    const result = new EventQuery({ fetchEvents }).getEvents(descriptor, { retries: 1 });
+
+    expect((await drain(result)).map((e) => e.version)).toEqual([1n, 2n]);
+  });
+
+  it("does not retry a StreamdError that is not a network failure", async () => {
+    const invalid = new StreamdError("bad cursor");
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>().mockRejectedValue(invalid);
+    const result = new EventQuery({ fetchEvents }).getEvents(descriptor, { retries: 3 });
+
+    await expect(drain(result)).rejects.toBe(invalid);
+    expect(fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry when retries is omitted", async () => {
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>().mockRejectedValue(down());
+
+    await expect(drain(new EventQuery({ fetchEvents }).getEvents(descriptor))).rejects.toThrow(
+      "node down",
+    );
+    expect(fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries a failed head read for a relative start", async () => {
+    const getHeadVersion = vi.fn<() => Promise<bigint>>()
+      .mockRejectedValueOnce(down())
+      .mockResolvedValueOnce(10n);
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>().mockResolvedValue(page([], "11", false));
+    const result = new EventQuery({ fetchEvents, getHeadVersion }).getEvents(descriptor, {
+      fromVersion: -2n,
+      retries: 1,
+    });
+
+    await drain(result);
+    expect(getHeadVersion).toHaveBeenCalledTimes(2);
+    expect(fetchEvents.mock.calls[0]![1].fromVersion).toBe(8n);
+  });
+
+  it("retries a failed middle page of a descending walk", async () => {
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockResolvedValueOnce(page([1, 2], "3", true))
+      .mockRejectedValueOnce(down())
+      .mockResolvedValueOnce(page([3, 4], "5", false));
+    const result = new EventQuery({ fetchEvents }).getEvents(descriptor, {
+      orderBy: "desc",
+      limit: 3,
+      retries: 1,
+    });
+
+    expect((await drain(result)).map((e) => e.version)).toEqual([4n, 3n, 2n]);
+    expect(fetchEvents.mock.calls[2]![1].cursor).toBe("3");
+  });
+
+  it("rejects with the signal reason when aborted during the wait, with no further call", async () => {
+    const controller = new AbortController();
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>().mockRejectedValue(down());
+    const result = new EventQuery({ fetchEvents }).getEvents(descriptor, {
+      retries: 5,
+      signal: controller.signal,
+    });
+    await advanceTimersByTimeAsync(500);
+    const reason = new Error("stop");
+    controller.abort(reason);
+
+    await expect(result).rejects.toBe(reason);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an invalid retries value without fetching", async () => {
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>();
+    for (const retries of [-1, 1.5, NaN, Infinity]) {
+      await expect(
+        new EventQuery({ fetchEvents }).getEvents(descriptor, { retries }),
+      ).rejects.toBeInstanceOf(StreamdError);
+    }
+    expect(fetchEvents).not.toHaveBeenCalled();
   });
 });

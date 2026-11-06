@@ -149,6 +149,13 @@ export interface EventFilter {
    */
   orderBy?: "asc" | "desc";
   /**
+   * Retry a failed adapter call up to this many times (default 0), waiting
+   * 1s, 2s, 4s... (capped at 60s) between attempts. Only failures worth
+   * retrying are: a `StreamdError` that is not a `StreamdNetworkError` rejects
+   * at once. The query rejects with the last attempt's error.
+   */
+  retries?: number;
+  /**
    * Aborting rejects `getEvents()` or the pending/next `getEventPages()` page
    * with the signal's `reason` and stops fetching further pages.
    */
@@ -162,7 +169,7 @@ export interface EventFilter {
  * pushed down to a remote data source. Query and poller apply them to results.
  */
 export interface FetchOptions
-  extends Omit<EventFilter, "where" | "decode" | "maxPages" | "signal"> {
+  extends Omit<EventFilter, "where" | "decode" | "maxPages" | "retries" | "signal"> {
   orderBy?: "asc" | "desc";
   /**
    * Opaque resume token returned by this adapter's previous page. When

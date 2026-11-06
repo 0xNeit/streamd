@@ -4,12 +4,45 @@ import type {
   EventFilter,
   StreamdEvent,
 } from "./types.js";
-import { raceAbort, resolveFromVersion } from "./utils.js";
+import { raceAbort, resolveFromVersion, sleep } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
-import { StreamdError } from "./errors.js";
+import { StreamdError, StreamdNetworkError } from "./errors.js";
 
 const DEFAULT_PAGE_SIZE = 25;
+const RETRY_BASE_DELAY = 1000;
+const RETRY_MAX_DELAY = 60_000;
+
+function validateRetries(retries: number | undefined): void {
+  if (retries === undefined) return;
+  if (!Number.isSafeInteger(retries) || retries < 0) {
+    throw new StreamdError(
+      `Invalid retries: ${String(retries)} (expected a non-negative integer)`,
+    );
+  }
+}
+
+/**
+ * Runs `call` until it succeeds or `retries` extra attempts are spent. A
+ * `StreamdError` that is not a network failure is the caller's input, which
+ * fails the same way every time, so it is never retried.
+ */
+async function withRetries<T>(
+  call: () => Promise<T>,
+  retries: number,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await raceAbort(call(), signal);
+    } catch (err) {
+      const invalidInput =
+        err instanceof StreamdError && !(err instanceof StreamdNetworkError);
+      if (attempt >= retries || invalidInput || signal?.aborted) throw err;
+      await sleep(Math.min(RETRY_BASE_DELAY * 2 ** attempt, RETRY_MAX_DELAY), signal);
+    }
+  }
+}
 
 /**
  * Historical event querying: `getEvents` and its paged form `getEventPages`.
@@ -47,6 +80,7 @@ export class EventQuery {
     if (orderBy !== undefined && orderBy !== "asc" && orderBy !== "desc") {
       throw new StreamdError('orderBy must be "asc" or "desc"');
     }
+    validateRetries(rest.retries);
     if (orderBy !== "desc") {
       yield* this.ascendingPages<TData>(descriptor, rest, pageSize);
       return;
@@ -72,7 +106,8 @@ export class EventQuery {
     filter: EventFilter,
     pageSize: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    const { where, decode: fields, maxPages, signal, ...adapterFilter } = filter;
+    const { where, decode: fields, maxPages, retries = 0, signal, ...adapterFilter } =
+      filter;
     const decode = fieldDecoder(fields);
     const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
     const limit = filter.limit;
@@ -92,14 +127,16 @@ export class EventQuery {
 
       // Only a relative start awaits, so an absolute one fetches synchronously.
       if (fromVersion !== undefined && fromVersion < 0n) {
-        fromVersion = await raceAbort(
-          resolveFromVersion(adapter, descriptor, filter.fromVersion),
+        fromVersion = await withRetries(
+          () => resolveFromVersion(adapter, descriptor, filter.fromVersion),
+          retries,
           signal,
         );
       }
 
-      const page = await raceAbort(
-        adapter.fetchEvents(descriptor, {
+      const page = await withRetries(
+        () =>
+          adapter.fetchEvents(descriptor, {
           ...adapterFilter,
           // The cursor carries position after the first page; fromVersion and
           // offset only seed the initial request.
@@ -109,6 +146,7 @@ export class EventQuery {
           limit: batchLimit,
           orderBy: "asc",
         }),
+        retries,
         signal,
       );
 
