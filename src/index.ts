@@ -66,6 +66,7 @@ export type {
   EventPredicate,
   FetchOptions,
   HandleEventDescriptor,
+  ListenerDefaults,
   ListenerOptions,
   ModuleEventDescriptor,
   MoveEventType,

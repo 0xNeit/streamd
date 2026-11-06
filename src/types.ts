@@ -327,6 +327,16 @@ export interface OnceOptions extends ListenerOptions {
   timeout?: number;
 }
 
+/**
+ * Listener options a client can set once for every `on`, `onBatch`, `once` and
+ * `stream` call. Start position, filters, callbacks and `signal` are per
+ * subscription; `StreamdConfig.onError` is the client-wide error handler.
+ */
+export type ListenerDefaults = Pick<
+  ListenerOptions,
+  "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "dedupWindow" | "decode"
+>;
+
 // ---- Client config ----
 
 export interface StreamdConfig {
@@ -360,6 +370,13 @@ export interface StreamdConfig {
    * Further calls wait in order. Omit for no limit.
    */
   maxConcurrentRequests?: number;
+  /**
+   * Listener options for every subscription this client creates. A call's own
+   * value for a field wins; one it leaves `undefined` takes this one. A call's
+   * `decode` replaces this list rather than adding to it. `pollInterval` here
+   * wins over `defaultPollInterval`. Checked when the client is constructed.
+   */
+  defaults?: ListenerDefaults;
 }
 
 // ---- Subscription handle ----

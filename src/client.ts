@@ -5,6 +5,7 @@ import type {
   EventCallback,
   EventDescriptor,
   EventFilter,
+  ListenerDefaults,
   ListenerOptions,
   OnceOptions,
   StreamdConfig,
@@ -12,7 +13,7 @@ import type {
   Subscription,
 } from "./types.js";
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
-import { EventPoller, type Delivery } from "./poller.js";
+import { EventPoller, resolveMaxBackoff, type Delivery } from "./poller.js";
 import { EventQuery } from "./query.js";
 import {
   StreamdError,
@@ -22,6 +23,8 @@ import {
 import { descriptorKey, generateId, onAbort } from "./utils.js";
 import { eventStream } from "./stream.js";
 import { RequestLimiter } from "./limiter.js";
+import { CursorManager } from "./cursor.js";
+import { fieldDecoder } from "./decode.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -40,6 +43,47 @@ function resolveLimiter(max: number | undefined): RequestLimiter {
     );
   }
   return new RequestLimiter(max);
+}
+
+const DEFAULT_KEYS = [
+  "pollInterval",
+  "batchSize",
+  "maxErrors",
+  "maxBackoff",
+  "dedupWindow",
+  "decode",
+] as const satisfies readonly (keyof ListenerDefaults)[];
+
+/** `config.defaults` checked as a call's options would be, with `defaultPollInterval` folded in. */
+function resolveDefaults(config: StreamdConfig): ListenerDefaults {
+  const defaults: unknown = config.defaults === undefined ? {} : config.defaults;
+  if (typeof defaults !== "object" || defaults === null || Array.isArray(defaults)) {
+    throw new StreamdError("defaults must be an object of listener options");
+  }
+  const refused = Object.keys(defaults).find(
+    (k) => !(DEFAULT_KEYS as readonly string[]).includes(k),
+  );
+  if (refused !== undefined) {
+    throw new StreamdError(
+      `Unsupported listener default: ${refused} (allowed: ${DEFAULT_KEYS.join(", ")})`,
+    );
+  }
+  const resolved: ListenerDefaults = { ...defaults };
+  resolveMaxBackoff(resolved.maxBackoff);
+  fieldDecoder(resolved.decode);
+  new CursorManager(undefined, resolved.dedupWindow);
+  resolved.pollInterval ??= config.defaultPollInterval ?? 1000;
+  return resolved;
+}
+
+/** `options` with each field it leaves `undefined` taken from `defaults`. */
+function withDefaults(
+  options: ListenerOptions | undefined,
+  defaults: ListenerDefaults,
+): ListenerOptions {
+  const merged: Record<string, unknown> = { ...options };
+  for (const key of DEFAULT_KEYS) merged[key] ??= defaults[key];
+  return merged as ListenerOptions;
 }
 
 /** An `on()` or `onBatch()` subscription, as `off()` and friends see it. */
@@ -62,7 +106,7 @@ function resolveAdapter(config: StreamdConfig): EventAdapter {
 }
 
 export class StreamdClient {
-  private readonly defaultPollInterval: number;
+  private readonly defaults: ListenerDefaults;
   private readonly onError?: (error: Error) => void;
   private readonly adapter: EventAdapter;
   private readonly query: EventQuery;
@@ -75,7 +119,7 @@ export class StreamdClient {
   private readonly streams = new Set<() => void>();
 
   constructor(config: StreamdConfig) {
-    this.defaultPollInterval = config.defaultPollInterval ?? 1000;
+    this.defaults = resolveDefaults(config);
     this.onError = config.onError;
     this.limiter = resolveLimiter(config.maxConcurrentRequests);
     this.adapter = resolveAdapter(config);
@@ -134,8 +178,7 @@ export class StreamdClient {
       descriptor,
       delivery,
       {
-        pollInterval: this.defaultPollInterval,
-        ...options,
+        ...withDefaults(options, this.defaults),
         onError: (err) => {
           // Drop the subscription once the poller has given up and stopped
           // itself; a paused one reporting a late handler error stays.
