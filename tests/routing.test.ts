@@ -328,15 +328,17 @@ describe("RoutingAdapter transaction lookup", () => {
 describe("RoutingAdapter simulation", () => {
   const simulation = { transaction: { rawTransaction: {} } } as unknown as TransactionSimulation;
   const simulated = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+  const seen: unknown[] = [];
   const simulating = (label: string): EventAdapter => ({
     fetchEvents: async () => ({ events: [], hasMore: false }),
-    simulateTransactionEvents: async () => ({ ...simulated, vmStatus: label }),
+    simulateTransactionEvents: async (...args) => (seen.push(args), { ...simulated, vmStatus: label }),
   });
 
   it("routes by the descriptor's kind, and to default without a descriptor", async () => {
     const router = new RoutingAdapter({ account: simulating("account"), default: simulating("default") });
     const accountDescriptor: EventDescriptor = { kind: "account", accountAddress: "0x1" };
     expect((await router.simulateTransactionEvents(simulation, accountDescriptor)).vmStatus).toBe("account");
+    expect(seen[0]).toEqual([simulation, accountDescriptor]);
     expect((await router.simulateTransactionEvents(simulation)).vmStatus).toBe("default");
   });
 

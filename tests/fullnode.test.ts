@@ -14,6 +14,7 @@ interface Reply {
 
 interface Call {
   method?: string;
+  body?: unknown;
   path: string;
   params: Record<string, unknown>;
   headers: Record<string, unknown>;
@@ -32,13 +33,14 @@ function fakeNode(
   const client = {
     async provider(req: {
       method?: string;
+      body?: unknown;
       url: string;
       params?: Record<string, unknown>;
       headers?: Record<string, unknown>;
     }) {
       const path = req.url.replace(/^http:\/\/fake\/v1\/?/, "");
       const params = { ...(req.params ?? {}) };
-      calls.push({ method: req.method, path, params, headers: { ...(req.headers ?? {}) } });
+      calls.push({ method: req.method, body: req.body, path, params, headers: { ...(req.headers ?? {}) } });
       const reply = route(path, params);
       const status = reply.status ?? 200;
       return { status, statusText: status === 200 ? "OK" : "Error", data: reply.data, headers: {} };
@@ -977,6 +979,8 @@ describe("FullnodeScanAdapter simulation", () => {
       {},
       [null],
       [simulated({ version: "x" })],
+      [simulated({ version: "" })],
+      [simulated({ version: "0x2a" })],
       [simulated({ success: "yes" })],
       [simulated({ events: [{ type: TYPE, data: {}, sequence_number: "nope" }] })],
     ]) {
@@ -997,6 +1001,7 @@ describe("FullnodeScanAdapter simulation", () => {
       undefined,
       null,
       {},
+      { transaction: null },
       { transaction: "0x1234" },
       { transaction: {} },
       { transaction: { rawTransaction: {}, secondarySignerAddresses: [] } },
@@ -1007,6 +1012,19 @@ describe("FullnodeScanAdapter simulation", () => {
       expect((bad as Error).message).not.toContain("0x1234");
     }
     expect(calls).toEqual([]);
+  });
+
+  it("sends the signer's public key for the auth-key check", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [simulated({ vm_status: undefined })] }));
+    const transaction = await buildTransfer(aptos);
+    const adapter = new FullnodeScanAdapter(aptos);
+    const key = Account.generate().publicKey;
+    expect((await adapter.simulateTransactionEvents({ transaction })).vmStatus).toBe("");
+    await adapter.simulateTransactionEvents({ transaction, signerPublicKey: key });
+    const hex = (body: unknown) => Buffer.from(body as Uint8Array).toString("hex");
+    const keyHex = Buffer.from(key.toUint8Array()).toString("hex");
+    expect(hex(calls[0]!.body)).not.toContain(keyHex);
+    expect(hex(calls[1]!.body)).toContain(keyHex);
   });
 
   it("rejects a node error with its status and no cause", async () => {

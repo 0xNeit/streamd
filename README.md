@@ -396,8 +396,9 @@ is unset, since an unsigned transaction's hash is not the one it will commit und
 skipped. Only single-signer transactions are accepted, a fee-payer one included.
 
 A simulation that fails rejects with `StreamdTransactionError`, whose `vmStatus` says why
-and whose `transactionHash` is undefined; a failed request rejects with its error, which
-never carries the transaction. It needs an adapter with `simulateTransactionEvents`, which
+and whose `transactionHash` is undefined. On `FullnodeScanAdapter` a failed request
+rejects with a `StreamdNetworkError` that carries neither the transaction nor the SDK
+error holding it. It needs an adapter with `simulateTransactionEvents`, which
 `FullnodeScanAdapter` has. The wrapping adapters pass it through, never cached or recorded,
 since a simulation answers for the chain's state at that moment.
 

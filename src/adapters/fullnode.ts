@@ -257,8 +257,9 @@ export class FullnodeScanAdapter implements EventAdapter {
 
   /**
    * Simulates `simulation.transaction` on the fullnode, which executes it
-   * against current state and commits nothing. A failure carries no `cause`:
-   * the SDK error holds the request, transaction bytes and client config included.
+   * against current state and commits nothing. A failure keeps the SDK's
+   * message and status but not its `cause`, which holds the request: header
+   * API key and transaction bytes. The message still names the node URL.
    */
   async simulateTransactionEvents(simulation: TransactionSimulation): Promise<TransactionEvents> {
     const { transaction, signerPublicKey } = requireSimulation(simulation);
@@ -275,20 +276,18 @@ export class FullnodeScanAdapter implements EventAdapter {
     const txn = (Array.isArray(responses) ? responses[0] : undefined) as
       | TransactionWithEvents
       | undefined;
-    try {
-      if (txn == null || !/^\d+$/.test(String(txn.version)) || typeof txn.success !== "boolean") {
-        throw new Error("malformed");
-      }
-      const version = BigInt(txn.version!);
-      return {
-        version,
-        success: txn.success,
-        vmStatus: String(txn.vm_status ?? ""),
-        events: toStreamdEvents({ ...txn, hash: undefined }, version, () => true),
-      };
-    } catch {
-      throw new StreamdError("Fullnode returned a malformed simulation");
+    const malformed = new StreamdError("Fullnode returned a malformed simulation");
+    if (txn == null || !/^\d+$/.test(String(txn.version)) || typeof txn.success !== "boolean") {
+      throw malformed;
     }
+    const version = BigInt(txn.version!);
+    let events: StreamdEvent[];
+    try {
+      events = toStreamdEvents({ ...txn, hash: undefined }, version, () => true);
+    } catch {
+      throw malformed;
+    }
+    return { version, success: txn.success, vmStatus: String(txn.vm_status ?? ""), events };
   }
 
   private dispatch(

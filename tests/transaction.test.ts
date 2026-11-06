@@ -354,6 +354,7 @@ describe("previewEvents", () => {
     const c = client(adapter);
     const refusals: [unknown, unknown, unknown][] = [
       [undefined, undefined, {}],
+      [null, undefined, {}],
       [{}, undefined, {}],
       [{ rawTransaction: {}, secondarySignerAddresses: [] }, undefined, {}],
       [TRANSACTION, undefined, { signerPublicKey: "0xkey" }],
