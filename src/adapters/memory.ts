@@ -114,10 +114,18 @@ export class MemoryAdapter implements EventAdapter {
       (maxVersion === undefined || this.events[i]!.version <= maxVersion);
     if (options.orderBy === "desc") events.reverse();
 
-    return {
-      events,
-      nextCursor: String(i),
-      hasMore,
-    };
+    const page: EventPage = { events, nextCursor: String(i), hasMore };
+    const through = this.throughVersion(Number(startBig), i, maxVersion);
+    if (through !== undefined) page.throughVersion = through;
+    return page;
+  }
+
+  /** Settled below the next unexamined event, which may share a version with the last one examined. */
+  private throughVersion(start: number, i: number, maxVersion: bigint | undefined) {
+    if (i === start) return undefined;
+    const settled =
+      i < this.events.length ? this.events[i]!.version - 1n : this.events[i - 1]!.version;
+    const through = maxVersion !== undefined && maxVersion < settled ? maxVersion : settled;
+    return through >= 0n ? through : undefined;
   }
 }

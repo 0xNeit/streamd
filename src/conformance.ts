@@ -16,6 +16,7 @@ export type AdapterCheckName =
   | "from-version"
   | "order"
   | "cursor-advance"
+  | "through-version"
   | "cursor-precedence"
   | "foreign-cursor"
   | "head-version"
@@ -136,6 +137,9 @@ function pageShapeError(value: unknown): string | undefined {
   if (page.nextCursor !== undefined && typeof page.nextCursor !== "string") {
     return "nextCursor is not a string";
   }
+  const through = page.throughVersion;
+  const badThrough = through !== undefined && (typeof through !== "bigint" || through < 0n);
+  if (badThrough) return "throughVersion is not a non-negative bigint";
   for (const [i, event] of page.events.entries()) {
     const error = eventShapeError(event);
     if (error !== undefined) return `events[${i}] ${error}`;
@@ -208,6 +212,19 @@ function cursorAdvanceError(w: Walk): string | undefined {
   return undefined;
 }
 
+/** Each page's `throughVersion` must not fall, and later pages must stay above it. */
+function throughVersionError(w: Walk): string | undefined {
+  let settled = -1n;
+  for (const [i, { page }] of w.pages.entries()) {
+    const early = page.events.find((e) => e.version <= settled);
+    if (early) return `page ${i + 1} has event ${eventId(early)} at or below throughVersion ${settled}`;
+    const through = page.throughVersion ?? settled;
+    if (through < settled) return `page ${i + 1} throughVersion ${through} is below an earlier ${settled}`;
+    settled = through;
+  }
+  return undefined;
+}
+
 function fromVersionError(events: StreamdEvent[], from: bigint): string | undefined {
   const below = events.find((e) => e.version < from);
   return below && `event ${eventId(below)} is below fromVersion ${from}`;
@@ -225,6 +242,9 @@ function walkResults(w: Walk, s: Settings): AdapterCheckResult[] {
       : judge("from-version", fromVersionError(events, s.fromVersion)),
     judge("order", orderError(events)),
     judge("cursor-advance", cursorAdvanceError(w)),
+    w.pages.some(({ page }) => page.throughVersion !== undefined)
+      ? verdict("through-version", throughVersionError(w))
+      : skip("through-version", "no page sets throughVersion (optional)"),
   ];
 }
 

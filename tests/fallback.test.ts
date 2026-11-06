@@ -383,3 +383,18 @@ describe("FallbackAdapter blocks", () => {
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
   });
 });
+
+describe("FallbackAdapter scan progress", () => {
+  it("keeps throughVersion from whichever source answered", async () => {
+    const primary: EventAdapter = {
+      fetchEvents: async () => {
+        throw new StreamdNetworkError("down");
+      },
+    };
+    const backup: EventAdapter = {
+      fetchEvents: async () => ({ events: [ev(4)], hasMore: false, throughVersion: 9n }),
+    };
+    const page = await new FallbackAdapter([primary, backup]).fetchEvents(moduleDesc, {});
+    expect(page.throughVersion).toBe(9n);
+  });
+});
