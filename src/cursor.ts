@@ -13,6 +13,17 @@ function validateDedupWindow(dedupWindow: number): number {
 }
 
 /**
+ * The `version:eventIndex` key that identifies an event, the same one the client
+ * deduplicates on. `sequenceNumber` is not part of it: module events commonly
+ * report 0, so several events in one transaction would share it. `handle` events
+ * from `FullnodeScanAdapter` carry the handle's sequence number as `eventIndex`,
+ * because that endpoint omits the event's position in its transaction.
+ */
+export function eventId(event: Pick<StreamdEvent, "version" | "eventIndex">): string {
+  return `${event.version}:${event.eventIndex}`;
+}
+
+/**
  * Tracks polling position and deduplicates events using a sliding window.
  *
  * `token` is the adapter's opaque resume position. Dedup is a safety net on
@@ -30,23 +41,14 @@ export class CursorManager {
     this.dedupWindow = validateDedupWindow(dedupWindow);
   }
 
-  /**
-   * Identity is (version, eventIndex). `sequenceNumber` is not usable here:
-   * module events commonly report 0, so several events in one transaction
-   * would collide and all but the first would be dropped as duplicates.
-   */
-  private key(event: StreamdEvent): string {
-    return `${event.version}:${event.eventIndex}`;
-  }
-
   hasSeen(event: StreamdEvent): boolean {
     if (this.dedupWindow === 0) return false;
-    return this.seen.has(this.key(event));
+    return this.seen.has(eventId(event));
   }
 
   mark(event: StreamdEvent): void {
     if (this.dedupWindow === 0) return;
-    const k = this.key(event);
+    const k = eventId(event);
     if (this.seen.has(k)) return;
 
     this.seen.add(k);

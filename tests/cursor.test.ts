@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { CursorManager } from "../src/cursor.js";
 import { StreamdError } from "../src/errors.js";
+import { eventId, parseEvent, serializeEvent } from "../src/index.js";
 import type { StreamdEvent } from "../src/types.js";
 
 function ev(version: number, eventIndex = 0, sequenceNumber = 0): StreamdEvent {
@@ -108,5 +109,22 @@ describe("CursorManager", () => {
       expect(() => new CursorManager(undefined, bad)).toThrow(StreamdError);
       expect(() => new CursorManager(undefined, bad)).toThrow(/Invalid dedupWindow/);
     }
+  });
+});
+
+describe("eventId", () => {
+  it("joins version and eventIndex", () => {
+    expect(eventId(ev(12, 3))).toBe("12:3");
+  });
+
+  it("accepts a parsed event and a bare pair", () => {
+    const parsed = parseEvent(serializeEvent(ev(12, 3)));
+    expect(eventId(parsed)).toBe("12:3");
+    expect(eventId({ version: 12n, eventIndex: 3 })).toBe("12:3");
+  });
+
+  it("ignores sequenceNumber", () => {
+    expect(eventId(ev(7, 0, 0))).not.toBe(eventId(ev(7, 1, 0)));
+    expect(eventId(ev(7, 1, 5))).toBe(eventId(ev(7, 1, 9)));
   });
 });

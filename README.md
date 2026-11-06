@@ -181,7 +181,7 @@ The cursor is the adapter's own token, so it only works with the same descriptor
 adapter that produced it, and it wins over `fromVersion`. It moves only once every handler
 on a page has settled, and the dedup window is not saved, so events from the page in
 flight when the process stopped arrive again after a restart: make your handler
-idempotent on `(version, eventIndex)`.
+idempotent on `(version, eventIndex)`, which [`eventId`](#event-identity) returns as one string.
 
 ### Backfill, then follow
 
@@ -568,6 +568,30 @@ Inside `data`, every `bigint` is written as a decimal string, and only the
 top-level fields named in `decode` are turned back into `bigint`, by the same
 rule as the `decode` option; deeper ones stay strings. Malformed input throws
 a `StreamdError`.
+
+### Event identity
+
+`eventId(event)` returns the key streamd deduplicates on, `version:eventIndex`
+(for example `"2817350001:3"`). Use it to make a handler idempotent across restarts, or to key a
+store or `Map`. It takes anything with `version` and `eventIndex`, so parsed
+events work too:
+
+```ts
+import { eventId } from "streamd";
+
+const seen = new Set<string>();
+streamd.on(descriptor, (event) => {
+  if (seen.has(eventId(event))) return;
+  seen.add(eventId(event));
+  handle(event);
+});
+```
+
+`sequenceNumber` is not part of it, since module events commonly report `0`.
+`handle` events from `FullnodeScanAdapter` use the handle's sequence number as
+`eventIndex`, because that endpoint does not say where an event sits in its
+transaction, so their ids stay unique per handle but are not transaction
+positions.
 
 ## Filtering
 

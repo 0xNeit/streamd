@@ -7,6 +7,7 @@ import type {
 } from "./types.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
 import { DEFAULT_LIMIT, requireAdapter } from "./adapters/validate.js";
+import { eventId } from "./cursor.js";
 
 /** The `EventAdapter` contract rules `checkAdapter` reports on, in report order. */
 export type AdapterCheckName =
@@ -179,16 +180,12 @@ function allEvents(w: Walk): StreamdEvent[] {
   return w.pages.flatMap(({ page }) => page.events);
 }
 
-function id(e: StreamdEvent): string {
-  return `${e.version}:${e.eventIndex}`;
-}
-
 function orderError(events: StreamdEvent[]): string | undefined {
   for (let i = 1; i < events.length; i++) {
     const a = events[i - 1]!;
     const b = events[i]!;
     if (b.version < a.version || (b.version === a.version && b.eventIndex <= a.eventIndex)) {
-      return `event ${id(b)} follows ${id(a)}; (version, eventIndex) must strictly ascend`;
+      return `event ${eventId(b)} follows ${eventId(a)}; (version, eventIndex) must strictly ascend`;
     }
   }
   return undefined;
@@ -207,7 +204,7 @@ function cursorAdvanceError(w: Walk): string | undefined {
 
 function fromVersionError(events: StreamdEvent[], from: bigint): string | undefined {
   const below = events.find((e) => e.version < from);
-  return below && `event ${id(below)} is below fromVersion ${from}`;
+  return below && `event ${eventId(below)} is below fromVersion ${from}`;
 }
 
 function walkResults(w: Walk, s: Settings): AdapterCheckResult[] {
@@ -242,8 +239,8 @@ async function cursorPrecedence(
   }
   const shapeError = pageShapeError(page);
   if (shapeError !== undefined) return verdict("cursor-precedence", shapeError);
-  const got = (page as EventPage).events.map(id).join(",");
-  const want = second.page.events.map(id).join(",");
+  const got = (page as EventPage).events.map(eventId).join(",");
+  const want = second.page.events.map(eventId).join(",");
   return verdict(
     "cursor-precedence",
     got === want ? undefined : `cursor plus fromVersion returned [${got}], cursor alone [${want}]`,
@@ -285,7 +282,7 @@ async function readVersion(
 function headResult(head: bigint | string, events: StreamdEvent[]): AdapterCheckResult {
   if (typeof head === "string") return verdict("head-version", head);
   const above = events.find((e) => e.version > head);
-  return verdict("head-version", above && `head ${head} is below seen event ${id(above)}`);
+  return verdict("head-version", above && `head ${head} is below seen event ${eventId(above)}`);
 }
 
 function earliestResult(
@@ -296,7 +293,7 @@ function earliestResult(
   if (typeof earliest === "string") return verdict("earliest-version", earliest);
   const below = events.find((e) => e.version < earliest);
   if (below !== undefined) {
-    return verdict("earliest-version", `earliest ${earliest} is above seen event ${id(below)}`);
+    return verdict("earliest-version", `earliest ${earliest} is above seen event ${eventId(below)}`);
   }
   const overHead = typeof head === "bigint" && earliest > head;
   return verdict("earliest-version", overHead ? `earliest ${earliest} is above head ${head}` : undefined);
