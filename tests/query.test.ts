@@ -821,3 +821,113 @@ describe("EventQuery iterateEvents", () => {
     }
   });
 });
+
+describe("EventQuery onCursor", () => {
+  // Ten events at versions 1..10; MemoryAdapter cursors are indexes into that list.
+  const ten = () => new MemoryAdapter(Array.from({ length: 10 }, (_, i) => event(i + 1)));
+
+  async function endOf(adapter: EventAdapter, filter: EventFilter, pageSize?: number) {
+    const reported: (string | undefined)[] = [];
+    const pages = new EventQuery(adapter).getEventPages(
+      descriptor,
+      { ...filter, onCursor: (c) => reported.push(c) },
+      pageSize,
+    );
+    for await (const _ of pages);
+    expect(reported).toHaveLength(1);
+    return reported[0];
+  }
+
+  it("reports the cursor after a full walk", async () => {
+    expect(await endOf(ten(), {}, 3)).toBe("10");
+  });
+
+  it("reports the cursor after the last page maxPages read", async () => {
+    expect(await endOf(ten(), { maxPages: 2 }, 3)).toBe("6");
+  });
+
+  it("reports the cursor when limit is met exactly at a page end", async () => {
+    expect(await endOf(ten(), { limit: 4 }, 2)).toBe("4");
+  });
+
+  it("reports the cursor past events where filtered out", async () => {
+    const where = (e: { version: bigint }) => e.version % 2n === 0n;
+    expect(await endOf(ten(), { where }, 3)).toBe("10");
+    expect(await endOf(ten(), { where, limit: 2 }, 3)).toBe("4");
+  });
+
+  it("reports the end of the walked range for desc", async () => {
+    expect(await endOf(ten(), { orderBy: "desc", limit: 3 }, 4)).toBe("10");
+    expect(await endOf(ten(), { orderBy: "desc", maxPages: 1 }, 4)).toBe("4");
+  });
+
+  it("reports undefined when limit drops events of the last page", async () => {
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>(async () => ({
+      // One transaction can overshoot the requested limit.
+      events: [event(1), { ...event(1), eventIndex: 1 }],
+      nextCursor: "2",
+      hasMore: true,
+    }));
+    expect(await endOf({ fetchEvents }, { limit: 1 })).toBeUndefined();
+  });
+
+  it("reports undefined when no page is read", async () => {
+    expect(await endOf(ten(), { limit: 0 })).toBeUndefined();
+    expect(await endOf(ten(), { maxPages: 0 })).toBeUndefined();
+    expect(await endOf(ten(), { orderBy: "desc", limit: 0 })).toBeUndefined();
+  });
+
+  it("reports undefined when a version bound ended the walk", async () => {
+    expect(await endOf(ten(), { toVersion: 5n })).toBeUndefined();
+    expect(await endOf(ten(), { orderBy: "desc", toVersion: 5n })).toBeUndefined();
+    const source = {
+      fetchEvents: ten().fetchEvents.bind(ten()),
+      getBlock: async (_d: EventDescriptor, height: bigint) => ({
+        height,
+        firstVersion: height,
+        lastVersion: height,
+        timestamp: 0n,
+      }),
+    };
+    expect(await endOf(source, { toBlock: 5n })).toBeUndefined();
+  });
+
+  it("reports undefined when the last page has no cursor", async () => {
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>(async () => ({
+      events: [event(1)],
+      hasMore: false,
+    }));
+    expect(await endOf({ fetchEvents }, {})).toBeUndefined();
+  });
+
+  it("is called once from getEvents and iterateEvents", async () => {
+    const onCursor = vi.fn();
+    const query = new EventQuery(ten());
+    expect(await query.getEvents(descriptor, { onCursor })).toHaveLength(10);
+    for await (const _ of query.iterateEvents(descriptor, { onCursor }, 4));
+    expect(onCursor.mock.calls).toEqual([["10"], ["10"]]);
+  });
+
+  it("is not called when the loop is left early or the query rejects", async () => {
+    const onCursor = vi.fn();
+    const query = new EventQuery(ten());
+    for await (const _ of query.getEventPages(descriptor, { onCursor }, 3)) break;
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>(async () => {
+      throw new StreamdNetworkError("node down", 503);
+    });
+    await expect(
+      new EventQuery({ fetchEvents }).getEvents(descriptor, { onCursor }),
+    ).rejects.toBeInstanceOf(StreamdNetworkError);
+    expect(onCursor).not.toHaveBeenCalled();
+  });
+
+  it("never passes onCursor to the adapter", async () => {
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>(async () => ({
+      events: [],
+      nextCursor: "1",
+      hasMore: false,
+    }));
+    await new EventQuery({ fetchEvents }).getEvents(descriptor, { onCursor: () => {} });
+    expect("onCursor" in fetchEvents.mock.calls[0]![1]).toBe(false);
+  });
+});

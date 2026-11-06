@@ -190,6 +190,16 @@ export interface EventFilter {
    * with the signal's `reason` and stops fetching further pages.
    */
   signal?: AbortSignal;
+  /**
+   * Called once when the walk finishes, with the cursor to pass as
+   * `ListenerOptions.cursor` so a subscription on the same descriptor and
+   * client resumes exactly where the query ended. `undefined` means there is
+   * no exact resume point: no page was read, `limit` cut the last page short,
+   * `toVersion` or `toBlock` bounded the walk (follow with `fromVersion` past
+   * the bound instead), or the adapter gave no cursor. Not called when the
+   * query rejects or a `getEventPages`/`iterateEvents` loop is left early.
+   */
+  onCursor?: (cursor: string | undefined) => void;
 }
 
 /**
@@ -210,6 +220,7 @@ export interface FetchOptions
     | "maxPages"
     | "retries"
     | "signal"
+    | "onCursor"
   > {
   /** Start from this version (inclusive); always absolute by the time an adapter sees it. */
   fromVersion?: bigint;

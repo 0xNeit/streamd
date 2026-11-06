@@ -110,7 +110,7 @@ export class EventQuery {
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    const { orderBy, ...rest } = filter;
+    const { orderBy, onCursor, ...rest } = filter;
     if (orderBy !== undefined && orderBy !== "asc" && orderBy !== "desc") {
       throw new StreamdError('orderBy must be "asc" or "desc"');
     }
@@ -118,23 +118,30 @@ export class EventQuery {
     validateBlockRange(rest);
     validateFromTime(rest);
     if (orderBy !== "desc") {
-      yield* this.ascendingPages<TData>(descriptor, rest, pageSize);
+      const end = yield* this.ascendingPages<TData>(descriptor, rest, pageSize);
+      onCursor?.(end);
       return;
     }
 
     // Adapters only page forward, so walk the whole range and keep the tail.
+    // The walk still ends at the end of the range, so its cursor is exact.
     const limit = rest.limit;
-    if (limit !== undefined && limit <= 0) return;
+    if (limit !== undefined && limit <= 0) {
+      onCursor?.(undefined);
+      return;
+    }
     let latest: StreamdEvent<TData>[] = [];
-    const walk = { ...rest, limit: undefined };
-    for await (const page of this.ascendingPages<TData>(descriptor, walk, pageSize)) {
-      latest.push(...page);
+    const walk = this.ascendingPages<TData>(descriptor, { ...rest, limit: undefined }, pageSize);
+    let step = await walk.next();
+    for (; !step.done; step = await walk.next()) {
+      latest.push(...step.value);
       if (limit !== undefined && latest.length > limit) latest = latest.slice(-limit);
     }
     latest.reverse();
     for (let i = 0; i < latest.length; i += pageSize) {
       yield latest.slice(i, i + pageSize);
     }
+    onCursor?.(step.value);
   }
 
   /**
@@ -158,7 +165,7 @@ export class EventQuery {
     descriptor: EventDescriptor,
     filter: EventFilter,
     pageSize: number,
-  ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
+  ): AsyncGenerator<StreamdEvent<TData>[], string | undefined, unknown> {
     const {
       where,
       decode: fields,
@@ -185,6 +192,8 @@ export class EventQuery {
       fromTime === undefined;
     let fetched = 0;
     let pages = 0;
+    // The cursor after the last page read in full; see `EventFilter.onCursor`.
+    let end: string | undefined;
 
     while (true) {
       if (signal?.aborted) throw signal.reason;
@@ -247,6 +256,13 @@ export class EventQuery {
           ? matched.slice(0, limit - fetched)
           : matched;
 
+      // A clamped page has unread events behind its cursor, and a version
+      // bound lets adapters move the cursor past events beyond it.
+      end =
+        events.length < matched.length || toVersion !== undefined
+          ? undefined
+          : page.nextCursor;
+
       if (events.length > 0) {
         fetched += events.length;
         yield events as StreamdEvent<TData>[];
@@ -260,5 +276,6 @@ export class EventQuery {
       if (page.nextCursor === cursor) break; // adapter made no progress
       cursor = page.nextCursor;
     }
+    return end;
   }
 }
