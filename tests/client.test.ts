@@ -2378,3 +2378,64 @@ describe("shared polling", () => {
     expect(client.listenerCount()).toBe(0);
   });
 });
+
+describe("disposal", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+  it("stops a subscription and drops it from the listeners at scope exit", () => {
+    const client = new StreamdClient({ adapter: adapterOf([]) });
+    let outer;
+    {
+      using sub = client.on(descriptor, () => {});
+      outer = sub;
+      expect(client.listenerCount()).toBe(1);
+    }
+    expect(outer.active).toBe(false);
+    expect(client.listenerCount()).toBe(0);
+    client.destroy();
+  });
+
+  it("is a no-op after unsubscribe or a second dispose", () => {
+    const client = new StreamdClient({ adapter: adapterOf([]) });
+    const sub = client.onBatch(descriptor, () => {});
+    sub.unsubscribe();
+    sub[Symbol.dispose]();
+    sub[Symbol.dispose]();
+    expect(sub.active).toBe(false);
+    expect(client.listenerCount()).toBe(0);
+  });
+
+  it("leaves a subscription sharing its fetches polling", async () => {
+    const adapter = new MemoryAdapter([makeEvent(1), makeEvent(2), makeEvent(3)]);
+    const fetch = vi.spyOn(adapter, "fetchEvents");
+    const client = new StreamdClient({ adapter });
+    const opts = { fromVersion: 0n, pollInterval: 100, batchSize: 2 };
+    const seen: bigint[] = [];
+    const live = client.on(descriptor, (e) => void seen.push(e.version), opts);
+    {
+      using _ = client.on(descriptor, () => {}, opts);
+      await advanceTimersByTimeAsync(30);
+    }
+    const before = fetch.mock.calls.length;
+    await advanceTimersByTimeAsync(500);
+    expect(live.active).toBe(true);
+    expect(seen).toEqual([1n, 2n, 3n]);
+    expect(fetch.mock.calls.length).toBeGreaterThan(before);
+    expect(client.listenerCount()).toBe(1);
+    client.destroy();
+  });
+
+  it("destroys the client at scope exit", () => {
+    let a, b;
+    {
+      using client = new StreamdClient({ adapter: adapterOf([]) });
+      a = client.on(descriptor, () => {});
+      b = client.on({ kind: "module", eventType: "0x1::test::Other" }, () => {});
+    }
+    expect(a.active).toBe(false);
+    expect(b.active).toBe(false);
+  });
+});

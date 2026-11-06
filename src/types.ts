@@ -413,6 +413,8 @@ export interface Subscription {
   id: string;
   /** Stop listening and clean up */
   unsubscribe(): void;
+  /** `unsubscribe()`, so `using sub = client.on(...)` stops it at scope exit. */
+  [Symbol.dispose](): void;
   /**
    * Stop polling without ending the subscription; `resume()` carries on from
    * the same cursor and dedup window. No-op unless active.
