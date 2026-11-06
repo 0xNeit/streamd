@@ -119,4 +119,43 @@ describe("SharedFetches", () => {
     expect(view.getBlock).toBeUndefined();
     expect(view.getBlockHeights).toBeUndefined();
   });
+
+  it("joins a backfill page in flight but does not keep it", async () => {
+    const s = spy((n) => Promise.resolve({ ...page(n), hasMore: true }));
+    const view = new SharedFetches(s.adapter).view(1000);
+    await Promise.all([view.fetchEvents(desc, { cursor: "5" }), view.fetchEvents(desc, { cursor: "5" })]);
+    await view.fetchEvents(desc, { cursor: "5" });
+    expect(s.calls).toHaveLength(2);
+  });
+
+  it("keeps a slow request joinable past its interval", async () => {
+    let release!: () => void;
+    const s = spy((n) => new Promise((r) => (release = () => r(page(n)))));
+    const view = new SharedFetches(s.adapter).view(100);
+    const a = view.fetchEvents(desc, { cursor: "5" });
+    vi.advanceTimersByTime(500);
+    const b = view.fetchEvents(desc, { cursor: "5" });
+    await Promise.resolve();
+    release();
+    expect(await a).toBe(await b);
+    expect(s.calls).toHaveLength(1);
+  });
+
+  it("never shares under an interval a timer cannot honour", async () => {
+    for (const interval of [0, -1, NaN, Infinity, 3_000_000_000]) {
+      const s = spy();
+      const view = new SharedFetches(s.adapter).view(interval);
+      await Promise.all([view.fetchEvents(desc, { cursor: "5" }), view.fetchEvents(desc, { cursor: "5" })]);
+      expect(s.calls).toHaveLength(2);
+    }
+  });
+
+  it("forgets every kept page on clear()", async () => {
+    const s = spy();
+    const shared = new SharedFetches(s.adapter);
+    await shared.view(1000).fetchEvents(desc, { cursor: "5" });
+    shared.clear();
+    await shared.view(1000).fetchEvents(desc, { cursor: "5" });
+    expect(s.calls).toHaveLength(2);
+  });
 });

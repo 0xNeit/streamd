@@ -2293,7 +2293,8 @@ describe("shared polling", () => {
     await advanceTimersByTimeAsync(30);
     client.onBatch(descriptor, (es) => es.forEach((e) => seen.push(["b", e.version])), opts);
     await advanceTimersByTimeAsync(970);
-    expect(fetch.mock.calls.length).toBe(alone);
+    // The second pays only for its first backfill page, which is not kept.
+    expect(fetch.mock.calls.length).toBe(alone + 1);
     expect(seen.filter(([s]) => s === "a").map(([, v]) => v)).toEqual([1n, 2n, 3n]);
     expect(seen.filter(([s]) => s === "b").map(([, v]) => v)).toEqual([1n, 2n, 3n]);
     client.destroy();

@@ -138,7 +138,8 @@ export class StreamdClient {
    * `pollInterval`) share one request per `pollInterval`; everything else about
    * each one, its cursor, pause and error budget included, stays its own. A
    * start at the head is never shared, so subscriptions started at different
-   * times share only once their cursors coincide. Pass an array of
+   * times share only once their cursors coincide. Shared subscriptions receive
+   * the same event objects, so treat them as read-only. Pass an array of
    * `eventType`s on one `module` descriptor to serve several Move types from a
    * single scan.
    */
@@ -393,5 +394,6 @@ export class StreamdClient {
   destroy(): void {
     for (const close of [...this.streams]) close();
     for (const { stop } of [...this.subscriptions.values()]) stop();
+    this.shared.clear();
   }
 }
