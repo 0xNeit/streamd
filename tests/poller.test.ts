@@ -1472,3 +1472,208 @@ describe("EventPoller status", () => {
     });
   });
 });
+
+describe("EventPoller pause and resume", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("stops fetching while paused and resumes from the held cursor", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1)], 2), page([makeEvent(2)], 3)]);
+    const callback = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, callback, { pollInterval: 100 });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.cursor).toBe("2");
+
+    poller.pause();
+    expect(poller.active).toBe(false);
+    expect(poller.paused).toBe(true);
+    expect(poller.status.active).toBe(false);
+    await advanceTimersByTimeAsync(1000);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+
+    poller.resume();
+    expect(poller.active).toBe(true);
+    expect(poller.paused).toBe(false);
+    await advanceTimersByTimeAsync(0);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+    expect(mocked(adapter.fetchEvents).mock.calls[1]![1].cursor).toBe("2");
+    expect(callback.mock.calls.map(([e]) => e.version)).toEqual([1n, 2n]);
+
+    poller.stop();
+  });
+
+  it("discards a fetch that resolves while paused", async () => {
+    let release!: (p: EventPage) => void;
+    const fetchEvents = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise<EventPage>((r) => (release = r)))
+      .mockImplementation(async () => page([], 5));
+    const callback = vi.fn();
+    const poller = new EventPoller({ fetchEvents }, descriptor, callback, { cursor: "1" });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    poller.pause();
+    release(page([makeEvent(1)], 2));
+    await advanceTimersByTimeAsync(0);
+    expect(callback).not.toHaveBeenCalled();
+    expect(poller.cursor).toBe("1");
+    expect(poller.status.lastVersion).toBeUndefined();
+
+    poller.resume();
+    await advanceTimersByTimeAsync(0);
+    expect(fetchEvents.mock.calls[1]![1].cursor).toBe("1");
+
+    poller.stop();
+  });
+
+  it("stops the page when paused from the callback and skips delivered events on resume", async () => {
+    const twoEvents = page([makeEvent(1), makeEvent(2)], 3);
+    const adapter = createMockAdapter([twoEvents, twoEvents]);
+    const callback = vi.fn((_e: StreamdEvent) => {
+      if (callback.mock.calls.length === 1) poller.pause();
+    });
+    const poller = new EventPoller(adapter, descriptor, callback, { cursor: "1" });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(poller.cursor).toBe("1");
+
+    poller.resume();
+    await advanceTimersByTimeAsync(0);
+    expect(mocked(adapter.fetchEvents).mock.calls[1]![1].cursor).toBe("1");
+    expect(callback.mock.calls.map(([e]) => e.version)).toEqual([1n, 2n]);
+    expect(poller.cursor).toBe("3");
+
+    poller.stop();
+  });
+
+  it("seeds from fromVersion when resumed before any page finished", async () => {
+    const adapter = createMockAdapter([]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { fromVersion: 42n });
+    poller.start();
+    poller.pause();
+    await advanceTimersByTimeAsync(100);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+
+    poller.resume();
+    await advanceTimersByTimeAsync(0);
+    expect(mocked(adapter.fetchEvents).mock.calls[0]![1]).toMatchObject({
+      cursor: undefined,
+      fromVersion: 42n,
+    });
+
+    poller.stop();
+  });
+
+  it("ignores pause() when not active and resume() unless paused", async () => {
+    const adapter = createMockAdapter([]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { pollInterval: 100 });
+
+    poller.pause();
+    expect(poller.paused).toBe(false);
+    poller.resume();
+    expect(poller.active).toBe(false);
+
+    poller.start();
+    poller.resume();
+    await advanceTimersByTimeAsync(0);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+
+    poller.pause();
+    poller.pause();
+    poller.stop();
+    expect(poller.paused).toBe(false);
+    poller.resume();
+    expect(poller.active).toBe(false);
+    await advanceTimersByTimeAsync(500);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not revive a poller that gave up after maxErrors", async () => {
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async () => {
+        throw new Error("down");
+      }),
+    };
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      pollInterval: 10,
+      maxErrors: 1,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.active).toBe(false);
+
+    poller.resume();
+    await advanceTimersByTimeAsync(100);
+    expect(poller.active).toBe(false);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends on abort while paused", async () => {
+    const controller = new AbortController();
+    const adapter = createMockAdapter([]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      signal: controller.signal,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    poller.pause();
+
+    controller.abort();
+    expect(poller.paused).toBe(false);
+    poller.resume();
+    await advanceTimersByTimeAsync(100);
+    expect(poller.active).toBe(false);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports a pending handler that rejects while paused", async () => {
+    let reject!: (e: Error) => void;
+    const pending = new Promise<void>((_, r) => (reject = r));
+    const onError = vi.fn();
+    const callback = vi
+      .fn<(e: StreamdEvent) => Promise<void> | void>()
+      .mockReturnValueOnce(pending);
+    const poller = new EventPoller(
+      createMockAdapter([page([makeEvent(1)], 2)]),
+      descriptor,
+      callback,
+      { onError },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    poller.pause();
+    reject(new Error("handler failed"));
+    await advanceTimersByTimeAsync(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(onError.mock.calls[0]![0]).toBeInstanceOf(StreamdError);
+    expect(poller.paused).toBe(true);
+    expect(poller.status.consecutiveErrors).toBe(0);
+  });
+
+  it("carries consecutiveErrors across a pause and retries at once on resume", async () => {
+    const fetchEvents = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("down"))
+      .mockImplementation(async () => page([], 1));
+    const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+      pollInterval: 1000,
+      maxErrors: 5,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.status.consecutiveErrors).toBe(1);
+
+    poller.pause();
+    expect(poller.status.consecutiveErrors).toBe(1);
+    poller.resume();
+    await advanceTimersByTimeAsync(0);
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+    expect(poller.status.consecutiveErrors).toBe(0);
+
+    poller.stop();
+  });
+});
