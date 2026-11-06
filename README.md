@@ -327,7 +327,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, ofType, every, some, not } from "streamd";
+import { involvesAddress, whereField, ofType, ofModule, every, some, not } from "streamd";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -344,6 +344,10 @@ streamd.on(
   payload mentions the address anywhere. `0x1` and `0x000…01` count as the
   same address.
 - `ofType(...types)` matches exact event types.
+- `ofModule(...modules)` matches every event declared in a module, written
+  `address::module` (`ofModule("0x1::coin")` matches `0x1::coin::CoinDeposit`
+  and `0x1::coin::CoinStore<...>`). `0x1` and `0x000...01` count as the same
+  address.
 - `every(...predicates)`, `some(...predicates)`, and `not(predicate)` combine
   and negate filters.
 - Any `(event) => boolean` function works too.
