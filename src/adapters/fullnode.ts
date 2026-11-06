@@ -105,6 +105,10 @@ function toStreamdEvents(
   return out;
 }
 
+/**
+ * Keeps the SDK error's message and status but not the error itself, whose
+ * `request` carries the client config: header API key included.
+ */
 export function toStreamdError(err: unknown, what: string): StreamdError {
   if (err instanceof StreamdError) return err;
   const status = (err as { status?: unknown } | null)?.status;
@@ -113,7 +117,6 @@ export function toStreamdError(err: unknown, what: string): StreamdError {
       err instanceof Error ? err.message : String(err)
     }`,
     typeof status === "number" ? status : undefined,
-    err,
   );
 }
 
