@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import { advanceTimersByTimeAsync } from "./timers.js";
 import { StreamdClient } from "../src/client.js";
-import { StreamdError } from "../src/errors.js";
+import { StreamdError, StreamdNetworkError, StreamdPollingError } from "../src/errors.js";
 import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
 
 const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
@@ -176,5 +176,240 @@ describe("reduce", () => {
         `Unsupported reduce option: ${key}`,
       );
     }
+  });
+});
+
+describe("reduce failure and stop paths", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  /** An adapter whose fetches wait until released, to stop a reduction mid-backfill. */
+  function stalled(events: StreamdEvent[]) {
+    let release = () => {};
+    let fetches = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: async (d, options) => {
+        fetches++;
+        await new Promise<void>((r) => (release = r));
+        return growing(events).adapter.fetchEvents(d, options);
+      },
+    };
+    return { adapter, release: () => release(), fetches: () => fetches };
+  }
+
+  const failOn = (version: bigint) => (n: number, e: StreamdEvent) => {
+    if (e.version === version) throw new Error("bad event");
+    return n + 1;
+  };
+
+  it("stops when the reducer throws during the backfill", async () => {
+    const errors: Error[] = [];
+    const { adapter, calls } = growing([ev(1), ev(2), ev(3)]);
+    const client = new StreamdClient({ adapter, onError: (e) => errors.push(e) });
+    const r = client.reduce(descriptor, failOn(2n), 0);
+
+    const err = await r.ready.catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect((err as StreamdError).message).toBe("Reducer threw for 2:0");
+    expect(((err as StreamdError).cause as Error).message).toBe("bad event");
+    expect(errors).toEqual([err as Error]);
+    expect(r.value).toBe(1);
+    expect(r.active).toBe(false);
+    await advanceTimersByTimeAsync(2000);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("stops when the reducer throws on a live event", async () => {
+    const errors: Error[] = [];
+    const changes: number[] = [];
+    const events = [ev(1)];
+    const client = new StreamdClient({ adapter: growing(events).adapter });
+    const r = client.reduce(descriptor, failOn(3n), 0, {
+      onError: (e) => errors.push(e),
+      onChange: (n) => changes.push(n),
+    });
+    await r.ready;
+    events.push(ev(2), ev(3), ev(4));
+    await advanceTimersByTimeAsync(2000);
+
+    expect(errors.map((e) => e.message)).toEqual(["Reducer threw for 3:0"]);
+    expect(r.value).toBe(2);
+    expect(changes).toEqual([2]);
+    expect(r.active).toBe(false);
+  });
+
+  it("keeps folding when onChange throws, reporting it", async () => {
+    const errors: Error[] = [];
+    const events = [ev(1)];
+    const client = new StreamdClient({ adapter: growing(events).adapter });
+    const r = client.reduce(descriptor, (n: number) => n + 1, 0, {
+      onError: (e) => errors.push(e),
+      onChange: () => {
+        throw new Error("ui bug");
+      },
+    });
+    await r.ready;
+    events.push(ev(2), ev(3));
+    await advanceTimersByTimeAsync(1000);
+    r.unsubscribe();
+    expect(r.value).toBe(3);
+    expect(errors).toHaveLength(2);
+  });
+
+  it("stops and reports when the backfill query rejects", async () => {
+    const errors: Error[] = [];
+    const failure = new StreamdError("refused");
+    const client = new StreamdClient({
+      adapter: { fetchEvents: async () => Promise.reject(failure) },
+      onError: (e) => errors.push(e),
+    });
+    const r = client.reduce(descriptor, (n: number) => n + 1, 0);
+    await expect(r.ready).rejects.toBe(failure);
+    expect(errors).toEqual([failure]);
+    expect(r.active).toBe(false);
+  });
+
+  it("goes inactive when live polling gives up after maxErrors", async () => {
+    const errors: Error[] = [];
+    let failing = false;
+    const inner = growing([ev(1)]).adapter;
+    const client = new StreamdClient({
+      adapter: {
+        fetchEvents: (d, o) =>
+          failing ? Promise.reject(new StreamdNetworkError("down")) : inner.fetchEvents(d, o),
+      },
+    });
+    const r = client.reduce(descriptor, (n: number) => n + 1, 0, {
+      maxErrors: 2,
+      maxBackoff: 0,
+      onError: (e) => errors.push(e),
+    });
+    await r.ready;
+    failing = true;
+    for (let i = 0; i < 5; i++) await advanceTimersByTimeAsync(1000);
+    expect(r.active).toBe(false);
+    expect(errors.at(-1)).toBeInstanceOf(StreamdPollingError);
+    expect(r.value).toBe(1);
+  });
+
+  it("rejects ready with the signal's reason when aborted mid-backfill, without onError", async () => {
+    const errors: Error[] = [];
+    const { adapter, release } = stalled([ev(1)]);
+    const client = new StreamdClient({ adapter, onError: (e) => errors.push(e) });
+    const controller = new AbortController();
+    const r = client.reduce(descriptor, (n: number) => n + 1, 0, { signal: controller.signal });
+    await advanceTimersByTimeAsync(0);
+    controller.abort("gone");
+    release();
+    await expect(r.ready).rejects.toBe("gone");
+    expect(r.active).toBe(false);
+    expect(r.value).toBe(0);
+    expect(errors).toEqual([]);
+  });
+
+  it("never fetches with an already-aborted signal", async () => {
+    const { adapter, calls } = growing([ev(1)]);
+    const client = new StreamdClient({ adapter });
+    const r = client.reduce(descriptor, (n: number) => n + 1, 0, {
+      signal: AbortSignal.abort("early"),
+    });
+    await expect(r.ready).rejects.toBe("early");
+    expect(calls).toEqual([]);
+  });
+
+  it("rejects ready when unsubscribed mid-backfill, and never folds or follows", async () => {
+    const errors: Error[] = [];
+    const { adapter, release, fetches } = stalled([ev(1)]);
+    const client = new StreamdClient({ adapter, onError: (e) => errors.push(e) });
+    const r = client.reduce(descriptor, (n: number) => n + 1, 0);
+    await advanceTimersByTimeAsync(0);
+    r.unsubscribe();
+    release();
+    await expect(r.ready).rejects.toThrow("Reduction stopped before its backfill finished");
+    await advanceTimersByTimeAsync(2000);
+    expect(r.value).toBe(0);
+    expect(fetches()).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  it("stops following on abort, unsubscribe, dispose and destroy", async () => {
+    const stops: ((r: { unsubscribe(): void; [Symbol.dispose](): void }) => void)[] = [
+      (r) => r.unsubscribe(),
+      (r) => r[Symbol.dispose](),
+    ];
+    for (const stop of stops) {
+      const events = [ev(1)];
+      const client = new StreamdClient({ adapter: growing(events).adapter });
+      const r = client.reduce(descriptor, (n: number) => n + 1, 0);
+      await r.ready;
+      stop(r);
+      events.push(ev(2));
+      await advanceTimersByTimeAsync(2000);
+      expect([r.value, r.active]).toEqual([1, false]);
+    }
+
+    const events = [ev(1)];
+    const controller = new AbortController();
+    const client = new StreamdClient({ adapter: growing(events).adapter });
+    const aborted = client.reduce(descriptor, (n: number) => n + 1, 0, {
+      signal: controller.signal,
+    });
+    const destroyed = client.reduce(descriptor, (n: number) => n + 1, 0);
+    await Promise.all([aborted.ready, destroyed.ready]);
+    controller.abort();
+    client.destroy();
+    events.push(ev(2));
+    await advanceTimersByTimeAsync(2000);
+    expect([aborted.value, aborted.active, destroyed.value, destroyed.active]).toEqual([
+      1,
+      false,
+      1,
+      false,
+    ]);
+  });
+
+  it("ends a reduction still backfilling on destroy()", async () => {
+    const { adapter, release } = stalled([ev(1)]);
+    const client = new StreamdClient({ adapter });
+    const r = client.reduce(descriptor, (n: number) => n + 1, 0);
+    await advanceTimersByTimeAsync(0);
+    client.destroy();
+    release();
+    await expect(r.ready).rejects.toThrow(StreamdError);
+    expect(r.active).toBe(false);
+  });
+
+  it("leaves no unhandled rejection when ready is never awaited", async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const client = new StreamdClient({ adapter: growing([ev(1)]).adapter });
+      client.reduce(descriptor, (n: number) => n + 1, 0).unsubscribe();
+      client.reduce(descriptor, failOn(1n), 0);
+      await advanceTimersByTimeAsync(10);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("is not a listener, and its live half shares polling with an identical on()", async () => {
+    const events = [ev(1)];
+    const { adapter, calls } = growing(events);
+    const client = new StreamdClient({ adapter });
+    const r = client.reduce(descriptor, (n: number) => n + 1, 0);
+    await r.ready;
+    expect(client.listenerCount()).toBe(0);
+    client.removeAllListeners();
+    const seen: string[] = [];
+    const sub = client.on(descriptor, (e) => seen.push(`${e.version}`), { cursor: "1" });
+    const before = calls.length;
+    events.push(ev(2));
+    await advanceTimersByTimeAsync(0);
+    sub.unsubscribe();
+    r.unsubscribe();
+    expect(calls.length - before).toBe(1);
+    expect([r.value, seen]).toEqual([2, ["2"]]);
   });
 });

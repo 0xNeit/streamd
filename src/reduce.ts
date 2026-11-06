@@ -91,6 +91,7 @@ export function startReduction<S, TData>(
   };
   const untrack = host.track(stop);
   const detachSignal = onAbort(options.signal, () => stop(options.signal!.reason));
+  if (options.signal?.aborted) stop(options.signal.reason);
 
   /** Folds `event`, or stops and reports when the reducer throws. */
   const fold = (event: StreamdEvent): boolean => {
@@ -131,6 +132,7 @@ export function startReduction<S, TData>(
   };
 
   const run = async (): Promise<S> => {
+    if (stopped) throw backfill.signal.reason;
     let cursor: string | undefined;
     const filter: EventFilter = {
       ...pick(options, HISTORY_KEYS),
