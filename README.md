@@ -334,10 +334,12 @@ transaction and won't appear.
 Each delivered `StreamdEvent` carries `type`, `data`, `version` (`bigint`),
 `sequenceNumber` (`bigint`), and `eventIndex` (`number`). Where the source
 transaction is in hand (`module` and `account` descriptors on
-`FullnodeScanAdapter`), events also carry `transactionHash` (`string`) and
-`timestamp` (`bigint`, microseconds since the Unix epoch). `handle` events
-come from an endpoint that omits the surrounding transaction, so both fields
-are `undefined` there (and `timestamp` is `undefined` on genesis transactions).
+`FullnodeScanAdapter`), events also carry `transactionHash` (`string`),
+`timestamp` (`bigint`, microseconds since the Unix epoch), and `sender`
+(`string`, the address that signed the transaction). `handle` events come from
+an endpoint that omits the surrounding transaction, so all three are
+`undefined` there. `timestamp` is `undefined` on genesis transactions, and
+`sender` on system transactions such as block metadata, which no account signs.
 
 ### Typed events
 
@@ -406,7 +408,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, ofType, ofModule, every, some, not } from "streamd";
+import { involvesAddress, whereField, ofType, ofModule, fromSender, every, some, not } from "streamd";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -427,6 +429,10 @@ streamd.on(
   `address::module` (`ofModule("0x1::coin")` matches `0x1::coin::CoinDeposit`
   and `0x1::coin::CoinStore<...>`). `0x1` and `0x000...01` count as the same
   address.
+- `fromSender(address)` matches events whose transaction `address` signed, so
+  it narrows a `module` subscription to one wallet's own transactions. It
+  needs `sender` on the event; events without one never match. `0x1` and
+  `0x000...01` count as the same address.
 - `every(...predicates)`, `some(...predicates)`, and `not(predicate)` combine
   and negate filters.
 - Any `(event) => boolean` function works too.
@@ -549,11 +555,11 @@ streamd tail --account 0x1 --handle "0x1::coin::CoinStore<0x1::aptos_coin::Aptos
 | `-h`, `--help` | show usage |
 
 Each line carries `type`, `data`, `version`, `sequenceNumber`, `eventIndex`, and, when
-the source has them, `transactionHash` and `timestamp`. Every `bigint`, including any inside
+the source has them, `transactionHash`, `timestamp` and `sender`. Every `bigint`, including any inside
 `data`, is printed as a decimal string:
 
 ```json
-{"type":"0x1::transaction_fee::FeeStatement","data":{"total_charge_gas_units":"7"},"version":"2817350001","sequenceNumber":"0","eventIndex":3,"transactionHash":"0x5c...","timestamp":"1730000000000000"}
+{"type":"0x1::transaction_fee::FeeStatement","data":{"total_charge_gas_units":"7"},"version":"2817350001","sequenceNumber":"0","eventIndex":3,"transactionHash":"0x5c...","timestamp":"1730000000000000","sender":"0x9f..."}
 ```
 
 To pick up where a run stopped, pass the last printed `version` plus one as
