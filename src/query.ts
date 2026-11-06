@@ -101,6 +101,23 @@ export class EventQuery {
     }
   }
 
+  /**
+   * `getEventPages` one event at a time. Pages are buffered as fetched, so
+   * `signal` is checked before each event rather than only between pages.
+   */
+  async *iterateEvents<TData = unknown>(
+    descriptor: EventDescriptor,
+    filter: EventFilter = {},
+    pageSize = DEFAULT_PAGE_SIZE,
+  ): AsyncGenerator<StreamdEvent<TData>, void, unknown> {
+    for await (const page of this.getEventPages<TData>(descriptor, filter, pageSize)) {
+      for (const event of page) {
+        if (filter.signal?.aborted) throw filter.signal.reason;
+        yield event;
+      }
+    }
+  }
+
   private async *ascendingPages<TData>(
     descriptor: EventDescriptor,
     filter: EventFilter,

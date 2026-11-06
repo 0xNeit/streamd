@@ -315,6 +315,18 @@ export class StreamdClient {
   }
 
   /**
+   * Historical events one at a time: `getEventPages` flattened, with the same
+   * options. Leaving the loop early fetches nothing further.
+   */
+  iterateEvents<TData = unknown>(
+    descriptor: EventDescriptor<TData>,
+    filter?: EventFilter,
+    pageSize?: number,
+  ): AsyncGenerator<StreamdEvent<TData>, void, unknown> {
+    return this.query.iterateEvents<TData>(descriptor, filter, pageSize);
+  }
+
+  /**
    * Stop the earliest `on()`/`onBatch()` subscription on `descriptor` whose
    * callback is `callback`, or all of them on `descriptor` when it is omitted.
    */

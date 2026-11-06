@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import { EventQuery } from "../src/query.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import { advanceTimersByTimeAsync, advanceTimersToNextTimerAsync } from "./timers.js";
-import type { EventAdapter, EventDescriptor, FetchOptions } from "../src/types.js";
+import type { EventAdapter, EventDescriptor, EventFilter, FetchOptions } from "../src/types.js";
+import { MemoryAdapter } from "../src/adapters/memory.js";
 
 const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::test::Event" };
 
@@ -492,5 +493,93 @@ describe("EventQuery retries", () => {
       ).rejects.toBeInstanceOf(StreamdError);
     }
     expect(fetchEvents).not.toHaveBeenCalled();
+  });
+});
+
+describe("EventQuery iterateEvents", () => {
+  const typed = (version: number, amount: number) => ({
+    ...event(version),
+    data: { amount: String(amount) },
+  });
+  const memory = () =>
+    new MemoryAdapter(Array.from({ length: 12 }, (_, i) => typed(i + 1, (i + 1) * 10)));
+
+  async function collect<T>(iterable: AsyncIterable<T>): Promise<T[]> {
+    const out: T[] = [];
+    for await (const item of iterable) out.push(item);
+    return out;
+  }
+
+  it("yields the events of getEventPages one at a time, across options", async () => {
+    const query = new EventQuery(memory());
+    const filters: EventFilter[] = [
+      {},
+      { where: (e) => e.version % 2n === 0n, limit: 4 },
+      { orderBy: "desc", limit: 5 },
+      { fromVersion: -6n, decode: ["amount"], where: (e) => (e.data as { amount: bigint }).amount > 80n },
+      { maxPages: 2 },
+    ];
+    for (const filter of filters) {
+      const single = await collect(query.iterateEvents(descriptor, filter, 3));
+      const pages = await collect(query.getEventPages(descriptor, filter, 3));
+      expect(single.length).toBeGreaterThan(0);
+      expect(single).toEqual(pages.flat());
+      if (filter.maxPages === undefined) {
+        expect(single).toEqual(await query.getEvents(descriptor, filter));
+      }
+    }
+    const first = await query.iterateEvents(descriptor, {}, 3).next();
+    expect(first.value?.version).toBe(1n);
+  });
+
+  it("fetches nothing further after the loop breaks", async () => {
+    const source = memory();
+    const fetchEvents = vi.spyOn(source, "fetchEvents");
+    for await (const e of new EventQuery(source).iterateEvents(descriptor, {}, 3)) {
+      expect(e.version).toBe(1n);
+      break;
+    }
+    expect(fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects the next event with the reason when aborted mid-page", async () => {
+    const source = memory();
+    const fetchEvents = vi.spyOn(source, "fetchEvents");
+    const controller = new AbortController();
+    const reason = new Error("stop");
+    const it = new EventQuery(source).iterateEvents(descriptor, { signal: controller.signal }, 3);
+
+    expect((await it.next()).value?.version).toBe(1n);
+    controller.abort(reason);
+    await expect(it.next()).rejects.toBe(reason);
+    expect(await it.next()).toEqual({ value: undefined, done: true });
+    expect(fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects invalid input as getEventPages does", async () => {
+    const it = new EventQuery(memory()).iterateEvents(descriptor, {
+      orderBy: "sideways" as "asc",
+    });
+    await expect(it.next()).rejects.toBeInstanceOf(StreamdError);
+  });
+
+  it("retries a network failure, then keeps yielding", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchEvents = vi
+        .fn<EventAdapter["fetchEvents"]>()
+        .mockRejectedValueOnce(new StreamdNetworkError("node down", 503))
+        .mockResolvedValueOnce({ events: [event(1), event(2)], nextCursor: "3", hasMore: false });
+      const it = new EventQuery({ fetchEvents }).iterateEvents(descriptor, { retries: 1 });
+      const next = it.next();
+      await advanceTimersByTimeAsync(1010);
+
+      expect((await next).value?.version).toBe(1n);
+      expect((await it.next()).value?.version).toBe(2n);
+      expect((await it.next()).done).toBe(true);
+      expect(fetchEvents).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
