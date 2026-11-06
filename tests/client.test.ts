@@ -1452,3 +1452,24 @@ describe("Subscription pause and resume", () => {
     client.destroy();
   });
 });
+
+describe("onCaughtUp", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("fires once on() has delivered the backlog", async () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([makeEvent(1), makeEvent(2), makeEvent(3)]),
+    });
+    const order: string[] = [];
+    const sub = client.on(descriptor, (e) => void order.push(`event ${e.version}`), {
+      batchSize: 2,
+      pollInterval: 100,
+      onCaughtUp: () => void order.push("caught up"),
+    });
+    await advanceTimersByTimeAsync(500);
+    expect(order).toEqual(["event 1", "event 2", "event 3", "caught up"]);
+    sub.unsubscribe();
+  });
+});
