@@ -225,7 +225,17 @@ const events = await streamd.getEvents(
 for await (const page of streamd.getEventPages(descriptor, { limit: 1000 }, 100)) {
   handle(page);
 }
+
+// Or one event at a time
+for await (const event of streamd.iterateEvents(descriptor, { fromVersion: 1_000_000n })) {
+  handle(event);
+  if (done) break; // nothing further is fetched
+}
 ```
+
+`iterateEvents` takes the same arguments as `getEventPages` and yields the same events,
+one per step. A page is fetched only once the previous one is used up, and leaving the loop
+stops the walk. Aborting `signal` rejects the next event, even mid-page.
 
 For the most recent events first, pass `orderBy: "desc"`:
 
@@ -273,7 +283,7 @@ controller.abort();
 ```
 
 Aborting `on()` unsubscribes quietly without calling `onError`. Aborting
-`once()`, `stream()`, `getEvents()` or `getEventPages()` stops polling or
+`once()`, `stream()`, `getEvents()`, `getEventPages()` or `iterateEvents()` stops polling or
 paging and rejects with `signal.reason`. An already-aborted signal never
 fetches.
 
@@ -399,7 +409,7 @@ client.on(Deposit, (event) => console.log(event.data.amount + 1n), {
 const big = await client.getEvents(Deposit, { decode: ["amount"], limit: 10 });
 ```
 
-`decode` works on `on`, `onBatch`, `once`, `stream`, `getEvents` and
+`decode` works on `on`, `onBatch`, `once`, `stream`, `getEvents`, `iterateEvents` and
 `getEventPages`, and runs before `where`, so predicates see the decoded
 values. An event without the field is left alone. A named field holding
 anything other than an unsigned decimal string is an error: a subscription
