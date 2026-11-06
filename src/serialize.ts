@@ -23,6 +23,7 @@ export function serializeEvent(event: StreamdEvent): string {
       timestamp: event.timestamp,
       sender: event.sender,
       guid: event.guid,
+      state: event.state,
     },
     bigintToString,
   );
@@ -100,5 +101,11 @@ export function parseEvent<TData = unknown>(
     event.sender = record.sender;
   }
   if (record.guid !== undefined) event.guid = guidOf(record.guid);
+  if (record.state !== undefined) {
+    if (!Array.isArray(record.state)) {
+      throw new StreamdError('Cannot parse event: "state" must be an array');
+    }
+    event.state = record.state;
+  }
   return (decode ? decode(event) : event) as StreamdEvent<TData>;
 }

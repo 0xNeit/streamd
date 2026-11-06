@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
-import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { Account, Aptos, AptosConfig, Network, parseTypeTag } from "@aptos-labs/ts-sdk";
 import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
+import { FallbackAdapter } from "../src/adapters/fallback.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import type { EventDescriptor } from "../src/types.js";
 
@@ -13,6 +14,8 @@ interface Reply {
 }
 
 interface Call {
+  method?: string;
+  body?: unknown;
   path: string;
   params: Record<string, unknown>;
   headers: Record<string, unknown>;
@@ -30,13 +33,15 @@ function fakeNode(
   const calls: Call[] = [];
   const client = {
     async provider(req: {
+      method?: string;
+      body?: unknown;
       url: string;
       params?: Record<string, unknown>;
       headers?: Record<string, unknown>;
     }) {
       const path = req.url.replace(/^http:\/\/fake\/v1\/?/, "");
       const params = { ...(req.params ?? {}) };
-      calls.push({ path, params, headers: { ...(req.headers ?? {}) } });
+      calls.push({ method: req.method, body: req.body, path, params, headers: { ...(req.headers ?? {}) } });
       const reply = route(path, params);
       const status = reply.status ?? 200;
       return { status, statusText: status === 200 ? "OK" : "Error", data: reply.data, headers: {} };
@@ -548,6 +553,63 @@ describe("FullnodeScanAdapter page finality", () => {
   });
 });
 
+describe("FullnodeScanAdapter scan progress", () => {
+  const ten = Array.from({ length: 10 }, (_, i) => txn(i, i % 3 === 0 ? [TYPE] : [OTHER]));
+  const moduleThrough = async (head: number, options: Record<string, unknown>) => {
+    const { aptos } = fakeNode(chain(head, ten.slice(0, head + 1)));
+    aptos.getLedgerInfo = async () => ({ ledger_version: String(head) }) as never;
+    const adapter = new FullnodeScanAdapter(aptos, { scanBatch: 2 });
+    return (await adapter.fetchEvents(moduleDesc, options)).throughVersion;
+  };
+
+  it("reports the last module version scanned, matches or not", async () => {
+    expect(await moduleThrough(9, { fromVersion: 0n, limit: 2 })).toBe(3n);
+    expect(await moduleThrough(9, { fromVersion: 1n, limit: 50 })).toBe(9n);
+    expect(await moduleThrough(9, { cursor: "2", toVersion: 4n })).toBe(4n);
+    expect(await moduleThrough(9, {})).toBe(9n);
+  });
+
+  it("leaves module progress unset when nothing was scanned", async () => {
+    expect(await moduleThrough(9, { fromVersion: 5n, toVersion: 4n })).toBeUndefined();
+    expect(await moduleThrough(9, { fromVersion: 0n, limit: 0 })).toBeUndefined();
+    expect(await moduleThrough(4, { fromVersion: 7n })).toBeUndefined();
+  });
+
+  const accountThrough = async (options: Record<string, unknown>) => {
+    const history = [txn(3), txn(8), txn(12), txn(20)];
+    const { aptos } = fakeNode(account(history));
+    const adapter = new FullnodeScanAdapter(aptos, { scanBatch: 2 });
+    return (await adapter.fetchEvents(accountDesc, options)).throughVersion;
+  };
+
+  it("reports the version of the last account transaction examined", async () => {
+    expect(await accountThrough({ offset: 0, limit: 1 })).toBe(8n);
+    expect(await accountThrough({ fromVersion: 15n, limit: 50 })).toBe(20n);
+    expect(await accountThrough({ toVersion: 10n })).toBe(10n);
+    expect(await accountThrough({ cursor: "4" })).toBeUndefined();
+    expect(await accountThrough({})).toBeUndefined();
+  });
+
+  const handleThrough = async (options: Record<string, unknown>) => {
+    const events = [handleEvent(0, 3), handleEvent(1, 7), handleEvent(2, 7)];
+    const { aptos } = fakeNode(handle(events));
+    return (await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, options)).throughVersion;
+  };
+
+  it("settles a full handle page only below its last event's version", async () => {
+    expect(await handleThrough({ limit: 2 })).toBe(6n);
+    expect(await handleThrough({ cursor: "2", limit: 2 })).toBe(7n);
+    expect(await handleThrough({ limit: 5, fromVersion: 8n })).toBe(7n);
+    expect(await handleThrough({ cursor: "3", limit: 2 })).toBeUndefined();
+  });
+
+  it("never reports a negative handle version", async () => {
+    const { aptos } = fakeNode(handle([handleEvent(0, 0)]));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, { limit: 1 });
+    expect(page.throughVersion).toBeUndefined();
+  });
+});
+
 describe("FullnodeScanAdapter errors", () => {
   const failing = () => ({ status: 429, data: { message: "slow down" } });
 
@@ -736,5 +798,367 @@ describe("FullnodeScanAdapter blocks", () => {
 
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect((err as StreamdNetworkError).statusCode).toBe(410);
+  });
+});
+
+describe("FullnodeScanAdapter transaction lookup", () => {
+  const HASH = `0x${"ab".repeat(32)}`;
+  const SENDER = "0xcafe";
+  const committed = {
+    type: "user_transaction",
+    version: "77",
+    hash: HASH,
+    sender: SENDER,
+    timestamp: "1700000000000000",
+    success: true,
+    vm_status: "Executed successfully",
+    events: [
+      { type: TYPE, data: { n: "1" }, sequence_number: "0", guid: { creation_number: "0", account_address: "0x0" } },
+      { type: OTHER, data: { n: "2" }, sequence_number: "4", guid: { creation_number: "3", account_address: SENDER } },
+    ],
+  };
+
+  it("maps a committed transaction's events as the scan does", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: committed }));
+    const found = await new FullnodeScanAdapter(aptos).getTransactionEvents(HASH);
+
+    expect(calls[0]!.path).toBe(`transactions/by_hash/${HASH}`);
+    expect(found).toEqual({
+      version: 77n,
+      success: true,
+      vmStatus: "Executed successfully",
+      events: [
+        { type: TYPE, data: { n: "1" }, version: 77n, sequenceNumber: 0n, eventIndex: 0, transactionHash: HASH, sender: SENDER, timestamp: 1700000000000000n },
+        {
+          type: OTHER,
+          data: { n: "2" },
+          version: 77n,
+          sequenceNumber: 4n,
+          eventIndex: 1,
+          transactionHash: HASH,
+          sender: SENDER,
+          timestamp: 1700000000000000n,
+          guid: { creationNumber: 3n, accountAddress: SENDER },
+        },
+      ],
+    });
+  });
+
+  it("reports a failed transaction with its vm status", async () => {
+    const { aptos } = fakeNode(() => ({
+      data: { ...committed, success: false, vm_status: "Move abort: 0x1", events: [] },
+    }));
+    const found = await new FullnodeScanAdapter(aptos).getTransactionEvents(HASH);
+    expect(found).toEqual({ version: 77n, success: false, vmStatus: "Move abort: 0x1", events: [] });
+    const { vm_status: _, ...silent } = committed;
+    const quiet = fakeNode(() => ({ data: silent }));
+    expect((await new FullnodeScanAdapter(quiet.aptos).getTransactionEvents(HASH))!.vmStatus).toBe("");
+  });
+
+  it("gives undefined for an unknown or pending transaction", async () => {
+    const unknown = fakeNode(() => ({
+      status: 404,
+      data: { error_code: "transaction_not_found", message: "not found" },
+    }));
+    expect(await new FullnodeScanAdapter(unknown.aptos).getTransactionEvents(HASH)).toBeUndefined();
+    const pending = fakeNode(() => ({ data: { type: "pending_transaction", hash: HASH } }));
+    expect(await new FullnodeScanAdapter(pending.aptos).getTransactionEvents(HASH)).toBeUndefined();
+  });
+
+  it("refuses a malformed hash before any request", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: committed }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    for (const bad of ["0x1234", `${"ab".repeat(32)}`, `0x${"ab".repeat(31)}/../`, `0x${"zz".repeat(32)}`, `../0x${"ab".repeat(32)}`, Object.create(null)]) {
+      const err = await adapter.getTransactionEvents(bad as string).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+    expect(calls).toHaveLength(0);
+    const long = await adapter.getTransactionEvents(`0x${"a".repeat(5000)}`).catch((e: Error) => e);
+    expect((long as Error).message.length).toBeLessThan(150);
+  });
+
+  it("rejects a server error as StreamdNetworkError and a malformed reply as StreamdError", async () => {
+    const down = fakeNode(() => ({ status: 500, data: { message: "boom" } }));
+    const err = await new FullnodeScanAdapter(down.aptos).getTransactionEvents(HASH).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(500);
+
+    for (const reply of [
+      { ...committed, success: "yes" },
+      { ...committed, version: "abc" },
+      { ...committed, hash: `0x${"cd".repeat(32)}` },
+    ]) {
+      const odd = fakeNode(() => ({ data: reply }));
+      const bad = await new FullnodeScanAdapter(odd.aptos).getTransactionEvents(HASH).catch((e: unknown) => e);
+      expect(bad).toBeInstanceOf(StreamdError);
+      expect(bad).not.toBeInstanceOf(StreamdNetworkError);
+    }
+  });
+});
+
+/** A transfer built offline: explicit ABI and options mean the build makes no request. */
+function buildTransfer(aptos: Aptos) {
+  const sender = Account.generate();
+  return aptos.transaction.build.simple({
+    sender: sender.accountAddress,
+    data: {
+      function: "0x1::aptos_account::transfer",
+      functionArguments: [sender.accountAddress, 0],
+      abi: { typeParameters: [], parameters: [parseTypeTag("address"), parseTypeTag("u64")] },
+    },
+    options: { accountSequenceNumber: 0, gasUnitPrice: 100, maxGasAmount: 1000, expireTimestamp: 9_999_999_999 },
+  });
+}
+
+function simulated(overrides: Record<string, unknown> = {}) {
+  return {
+    type: "user_transaction",
+    version: "42",
+    hash: "0x" + "ab".repeat(32),
+    sender: "0x1",
+    timestamp: "1700000000000000",
+    success: true,
+    vm_status: "Executed successfully",
+    events: [
+      { type: TYPE, data: { v: 1 }, sequence_number: "3", guid: { creation_number: "2", account_address: "0x1" } },
+      { type: OTHER, data: { v: 2 }, sequence_number: "0" },
+    ],
+    ...overrides,
+  };
+}
+
+describe("FullnodeScanAdapter simulation", () => {
+  it("POSTs to the simulate endpoint and maps the events without a transaction hash", async () => {
+    const { aptos, calls } = fakeNode((path) => {
+      if (path === "transactions/simulate") return { data: [simulated()] };
+      throw new Error(`unexpected path ${path}`);
+    });
+    const transaction = await buildTransfer(aptos);
+    const found = await new FullnodeScanAdapter(aptos).simulateTransactionEvents({ transaction });
+    expect(calls.map((c) => [c.method, c.path])).toEqual([["POST", "transactions/simulate"]]);
+    expect(found.version).toBe(42n);
+    expect(found.success).toBe(true);
+    expect(found.vmStatus).toBe("Executed successfully");
+    expect(found.events).toEqual([
+      {
+        type: TYPE,
+        data: { v: 1 },
+        version: 42n,
+        sequenceNumber: 3n,
+        eventIndex: 0,
+        sender: "0x1",
+        guid: { creationNumber: 2n, accountAddress: "0x1" },
+        timestamp: 1700000000000000n,
+      },
+      {
+        type: OTHER,
+        data: { v: 2 },
+        version: 42n,
+        sequenceNumber: 0n,
+        eventIndex: 1,
+        sender: "0x1",
+        timestamp: 1700000000000000n,
+      },
+    ]);
+  });
+
+  it("reports a failed simulation's vm status", async () => {
+    const { aptos } = fakeNode(() => ({
+      data: [simulated({ success: false, vm_status: "Move abort: EINSUFFICIENT_BALANCE", events: [] })],
+    }));
+    const found = await new FullnodeScanAdapter(aptos).simulateTransactionEvents({
+      transaction: await buildTransfer(aptos),
+    });
+    expect(found.success).toBe(false);
+    expect(found.vmStatus).toBe("Move abort: EINSUFFICIENT_BALANCE");
+  });
+
+  it("refuses a malformed response", async () => {
+    for (const data of [
+      [],
+      {},
+      [null],
+      [simulated({ version: "x" })],
+      [simulated({ version: "" })],
+      [simulated({ version: "0x2a" })],
+      [simulated({ success: "yes" })],
+      [simulated({ events: [{ type: TYPE, data: {}, sequence_number: "nope" }] })],
+    ]) {
+      const { aptos } = fakeNode(() => ({ data }));
+      const bad = await new FullnodeScanAdapter(aptos)
+        .simulateTransactionEvents({ transaction: await buildTransfer(aptos) })
+        .catch((e: unknown) => e);
+      expect(bad).toBeInstanceOf(StreamdError);
+      expect((bad as Error).message).toBe("Fullnode returned a malformed simulation");
+    }
+  });
+
+  it("refuses a non-transaction or multi-agent one before any request", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [simulated()] }));
+    const transaction = await buildTransfer(aptos);
+    const adapter = new FullnodeScanAdapter(aptos);
+    for (const simulation of [
+      undefined,
+      null,
+      {},
+      { transaction: null },
+      { transaction: "0x1234" },
+      { transaction: {} },
+      { transaction: { rawTransaction: {}, secondarySignerAddresses: [] } },
+      { transaction, signerPublicKey: "0xkey" },
+    ]) {
+      const bad = await adapter.simulateTransactionEvents(simulation as never).catch((e: unknown) => e);
+      expect(bad).toBeInstanceOf(StreamdError);
+      expect((bad as Error).message).not.toContain("0x1234");
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it("sends the signer's public key for the auth-key check", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [simulated({ vm_status: undefined })] }));
+    const transaction = await buildTransfer(aptos);
+    const adapter = new FullnodeScanAdapter(aptos);
+    const key = Account.generate().publicKey;
+    expect((await adapter.simulateTransactionEvents({ transaction })).vmStatus).toBe("");
+    await adapter.simulateTransactionEvents({ transaction, signerPublicKey: key });
+    const hex = (body: unknown) => Buffer.from(body as Uint8Array).toString("hex");
+    const keyHex = Buffer.from(key.toUint8Array()).toString("hex");
+    expect(hex(calls[0]!.body)).not.toContain(keyHex);
+    expect(hex(calls[1]!.body)).toContain(keyHex);
+  });
+
+  it("rejects a node error with its status and no cause", async () => {
+    const { aptos } = fakeNode(() => ({ status: 400, data: { message: "Invalid transaction" } }));
+    const bad = await new FullnodeScanAdapter(aptos)
+      .simulateTransactionEvents({ transaction: await buildTransfer(aptos) })
+      .catch((e: unknown) => e);
+    expect(bad).toBeInstanceOf(StreamdNetworkError);
+    expect((bad as StreamdNetworkError).statusCode).toBe(400);
+    expect((bad as StreamdNetworkError).cause).toBeUndefined();
+  });
+});
+
+describe("FullnodeScanAdapter view", () => {
+  const BALANCE = "0x1::coin::balance";
+
+  it("POSTs one JSON view at the ledger version and returns its values", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: ["1500"] }));
+    const state = await new FullnodeScanAdapter(aptos).view(
+      {
+        function: BALANCE,
+        typeArguments: ["0x1::aptos_coin::AptosCoin"],
+        functionArguments: ["0xa", 7n, [1n, 2n]],
+      },
+      42n,
+    );
+    expect(state).toEqual(["1500"]);
+    expect(calls.map((c) => [c.method, c.path, c.params.ledger_version])).toEqual([
+      ["POST", "view", 42n],
+    ]);
+    expect(calls[0]!.body).toEqual({
+      function: BALANCE,
+      type_arguments: ["0x1::aptos_coin::AptosCoin"],
+      arguments: ["0xa", "7", ["1", "2"]],
+    });
+  });
+
+  it("sends empty type arguments and arguments when omitted", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    await new FullnodeScanAdapter(aptos).view({ function: "0x1::block::get_epoch_interval_secs" }, 0n);
+    expect(calls[0]!.body).toEqual({
+      function: "0x1::block::get_epoch_interval_secs",
+      type_arguments: [],
+      arguments: [],
+    });
+  });
+
+  it("refuses malformed requests and versions before any request", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    const bad: [unknown, unknown][] = [
+      [null, 1n],
+      [{ function: "coin::balance" }, 1n],
+      [{ function: "0x1::coin" }, 1n],
+      [{ function: "0xzz::coin::balance" }, 1n],
+      [{ function: `0x${"1".repeat(65)}::m::f` }, 1n],
+      [{ function: BALANCE, typeArguments: [1] }, 1n],
+      [{ function: "0x1::coin::balance/../x" }, 1n],
+      [{ function: 7 }, 1n],
+      [{ function: BALANCE, typeArguments: "0x1::aptos_coin::AptosCoin" }, 1n],
+      [{ function: BALANCE, typeArguments: [""] }, 1n],
+      [{ function: BALANCE, functionArguments: "0xa" }, 1n],
+      [{ function: BALANCE }, -1n],
+      [{ function: BALANCE }, 2n ** 64n],
+      [{ function: BALANCE }, 1],
+    ];
+    for (const [request, version] of bad) {
+      const err = await adapter.view(request as never, version as never).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("never echoes arguments and shows only the start of a bad function id", async () => {
+    const { aptos } = fakeNode(() => ({ data: [] }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    const long = await adapter.view({ function: `0x1::${"m".repeat(200)}` } as never, 1n).catch((e: Error) => e);
+    expect((long as Error).message.length).toBeLessThan(200);
+    const args = await adapter
+      .view({ function: BALANCE, functionArguments: "secret-arg" } as never, 1n)
+      .catch((e: Error) => e);
+    expect((args as Error).message).not.toContain("secret-arg");
+  });
+
+  it("refuses an aborting view as invalid input, with no cause", async () => {
+    const { aptos } = fakeNode(() => ({ status: 400, data: { message: "nope" } }));
+    const err = await new FullnodeScanAdapter(aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdError).cause).toBeUndefined();
+    expect((err as Error).message).toContain(`${BALANCE} at version 5`);
+  });
+
+  it("rejects a pruned version and other node errors as network errors with status and no cause", async () => {
+    for (const status of [410, 503]) {
+      const { aptos } = fakeNode(() => ({ status, data: { message: "down" } }));
+      const err = await new FullnodeScanAdapter(aptos).view({ function: BALANCE }, 5n).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdNetworkError);
+      expect((err as StreamdNetworkError).statusCode).toBe(status);
+      expect((err as StreamdNetworkError).cause).toBeUndefined();
+    }
+  });
+
+  it("lets FallbackAdapter answer a pruned view from another node", async () => {
+    const pruned = fakeNode(() => ({ status: 410, data: { message: "pruned" } }));
+    const archive = fakeNode(() => ({ data: ["7"] }));
+    const adapter = new FallbackAdapter([
+      new FullnodeScanAdapter(pruned.aptos),
+      new FullnodeScanAdapter(archive.aptos),
+    ]);
+    expect(await adapter.view({ function: BALANCE }, 5n)).toEqual(["7"]);
+  });
+
+  it("sends the values it checked and refuses unserialisable arguments", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    let reads = 0;
+    const shifty = {
+      get function() {
+        return reads++ === 0 ? BALANCE : "0x1::other::thing";
+      },
+    };
+    await adapter.view(shifty as never, 1n);
+    expect((calls[0]!.body as { function: string }).function).toBe(BALANCE);
+    const circular: unknown[] = [];
+    circular.push(circular);
+    const err = await adapter.view({ function: BALANCE, functionArguments: circular }, 1n).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("JSON-serialisable");
+    expect(calls).toHaveLength(1);
   });
 });

@@ -8,6 +8,7 @@ import type {
   EventDescriptor,
   EventPage,
   StreamdEvent,
+  TransactionSimulation,
 } from "../src/types.js";
 
 const PING = "0x1::test::Ping";
@@ -195,5 +196,59 @@ describe("withHooks", () => {
     expect(() =>
       withHooks(inner, { onResponse: 1 } as unknown as AdapterHooks),
     ).toThrow(StreamdError);
+  });
+});
+
+describe("withHooks transaction lookup", () => {
+  const hash = `0x${"ef".repeat(32)}`;
+  const found = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+
+  it("passes getTransactionEvents through unhooked, only when the source has it", async () => {
+    let hooked = 0;
+    const hooks = { onRequest: () => void hooked++ };
+    const seen: unknown[] = [];
+    const wrapped = withHooks(
+      { fetchEvents: async () => PAGE, getTransactionEvents: async (...args) => (seen.push(args), found) },
+      hooks,
+    );
+    expect(await wrapped.getTransactionEvents!(hash, moduleDesc)).toBe(found);
+    expect(seen).toEqual([[hash, moduleDesc]]);
+    expect(hooked).toBe(0);
+    expect(withHooks({ fetchEvents: async () => PAGE }, hooks).getTransactionEvents).toBeUndefined();
+  });
+});
+
+describe("withHooks simulation", () => {
+  const simulation = { transaction: { rawTransaction: {} } } as unknown as TransactionSimulation;
+  const simulated = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+
+  it("passes simulateTransactionEvents through unhooked, only when the source has it", async () => {
+    let hooked = 0;
+    const hooks = { onRequest: () => void hooked++ };
+    const seen: unknown[] = [];
+    const wrapped = withHooks(
+      { fetchEvents: async () => PAGE, simulateTransactionEvents: async (...args) => (seen.push(args), simulated) },
+      hooks,
+    );
+    expect(await wrapped.simulateTransactionEvents!(simulation, moduleDesc)).toBe(simulated);
+    expect(seen).toEqual([[simulation, moduleDesc]]);
+    expect(hooked).toBe(0);
+    expect(withHooks({ fetchEvents: async () => PAGE }, hooks).simulateTransactionEvents).toBeUndefined();
+  });
+});
+
+describe("withHooks view", () => {
+  it("passes view through unhooked, only when the source has it", async () => {
+    const calls: unknown[] = [];
+    const source = Object.assign(new MemoryAdapter(), {
+      view: async (...args: unknown[]) => (calls.push(args), ["1"]),
+    });
+    const requests: unknown[] = [];
+    const wrapped = withHooks(source, { onRequest: (r) => void requests.push(r) });
+    const request = { function: "0x1::coin::balance" as const };
+    expect(await wrapped.view!(request, 4n)).toEqual(["1"]);
+    expect(calls).toEqual([[request, 4n, undefined]]);
+    expect(requests).toHaveLength(0);
+    expect(withHooks(new MemoryAdapter(), {}).view).toBeUndefined();
   });
 });

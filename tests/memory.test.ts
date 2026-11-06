@@ -198,6 +198,7 @@ describe("MemoryAdapter", () => {
       events: [],
       nextCursor: "3",
       hasMore: false,
+      throughVersion: 3n,
     });
   });
 
@@ -377,5 +378,57 @@ describe("MemoryAdapter earliest version", () => {
 
   it("reports 0n when empty", async () => {
     expect(await new MemoryAdapter().getEarliestVersion()).toBe(0n);
+  });
+});
+
+describe("MemoryAdapter scan progress", () => {
+  const adapter = new MemoryAdapter([ev(1), ev(3, 0), ev(3, 1, PONG), ev(5)]);
+  const through = async (options: Record<string, unknown>) =>
+    (await adapter.fetchEvents(moduleDesc, options)).throughVersion;
+
+  it("settles only below the next unexamined event", async () => {
+    expect(await through({ limit: 1 })).toBe(2n);
+    expect(await through({ limit: 2 })).toBe(2n);
+    expect(await through({ cursor: "1", limit: 1 })).toBe(2n);
+    expect(await through({ cursor: "2", limit: 1 })).toBe(5n);
+  });
+
+  it("reports the last seeded version once every event was examined", async () => {
+    expect(await through({ cursor: "3" })).toBe(5n);
+    expect(await through({ toVersion: 3n })).toBe(3n);
+    expect(await through({ toVersion: 4n })).toBe(4n);
+  });
+
+  it("leaves it unset when nothing was examined", async () => {
+    expect(await through({ cursor: "4" })).toBeUndefined();
+    expect(await through({ limit: 0 })).toBeUndefined();
+    expect(await through({ toVersion: 0n })).toBeUndefined();
+    expect(await new MemoryAdapter([ev(0), ev(0, 1)]).fetchEvents(moduleDesc, { limit: 1 }))
+      .not.toHaveProperty("throughVersion");
+  });
+});
+
+describe("MemoryAdapter transaction lookup", () => {
+  const hash = `0x${"ef".repeat(32)}`;
+  const seeded: StreamdEvent[] = [
+    { type: "0x1::t::A", data: {}, version: 4n, sequenceNumber: 0n, eventIndex: 1, transactionHash: `0x${"EF".repeat(32)}` },
+    { type: "0x1::t::B", data: {}, version: 3n, sequenceNumber: 0n, eventIndex: 0, transactionHash: `0x${"01".repeat(32)}` },
+    { type: "0x1::t::A", data: {}, version: 4n, sequenceNumber: 0n, eventIndex: 0, transactionHash: hash },
+  ];
+
+  it("serves the seeded events carrying the hash, in order, as a successful transaction", async () => {
+    const found = await new MemoryAdapter(seeded).getTransactionEvents(`0x${"EF".repeat(32)}`);
+    expect(found).toEqual({
+      version: 4n,
+      success: true,
+      vmStatus: "Executed successfully",
+      events: [seeded[2]!, seeded[0]!],
+    });
+  });
+
+  it("gives undefined for an unseeded hash and refuses a malformed one", async () => {
+    const adapter = new MemoryAdapter(seeded);
+    expect(await adapter.getTransactionEvents(`0x${"99".repeat(32)}`)).toBeUndefined();
+    await expect(adapter.getTransactionEvents("0x1")).rejects.toBeInstanceOf(StreamdError);
   });
 });

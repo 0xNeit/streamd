@@ -12,6 +12,9 @@ import type {
   HandleEventDescriptor,
   ModuleEventDescriptor,
   StreamdEvent,
+  TransactionEvents,
+  TransactionSimulation,
+  ViewRequest,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import {
@@ -20,6 +23,10 @@ import {
   moduleTypeFilter,
   parseCursor,
   requireAddress,
+  requireLedgerVersion,
+  requireSimulation,
+  requireTransactionHash,
+  requireViewRequest,
   validateOffset,
 } from "./validate.js";
 
@@ -36,6 +43,8 @@ interface TransactionWithEvents {
   timestamp?: string;
   sender?: string;
   type: string;
+  success?: unknown;
+  vm_status?: unknown;
   events?: RawEvent[];
 }
 
@@ -214,6 +223,112 @@ export class FullnodeScanAdapter implements EventAdapter {
     }
   }
 
+  /**
+   * Every event of the transaction with this hash, mapped as the scan maps
+   * them; `undefined` while the node reports it unknown (404) or pending.
+   */
+  async getTransactionEvents(transactionHash: string): Promise<TransactionEvents | undefined> {
+    try {
+      const hash = requireTransactionHash(transactionHash);
+      let txn: TransactionWithEvents;
+      try {
+        txn = (await this.aptos.getTransactionByHash({
+          transactionHash: hash,
+        })) as unknown as TransactionWithEvents;
+      } catch (err) {
+        if ((err as { status?: unknown } | null)?.status === 404) return undefined;
+        throw err;
+      }
+      if (txn.type === "pending_transaction") return undefined;
+      if (typeof txn.hash === "string" && txn.hash.toLowerCase() !== hash.toLowerCase()) {
+        throw new StreamdError(`Fullnode answered ${hash} with a different transaction`);
+      }
+      if (!/^\d+$/.test(String(txn.version)) || typeof txn.success !== "boolean") {
+        throw new StreamdError(`Fullnode returned a malformed transaction for ${hash}`);
+      }
+      const version = BigInt(txn.version!);
+      return {
+        version,
+        success: txn.success,
+        vmStatus: String(txn.vm_status ?? ""),
+        events: toStreamdEvents(txn, version, () => true),
+      };
+    } catch (err) {
+      throw toStreamdError(err, "transaction by hash");
+    }
+  }
+
+  /**
+   * Simulates `simulation.transaction` on the fullnode, which executes it
+   * against current state and commits nothing. A failure keeps the SDK's
+   * message and status but not its `cause`, which holds the request: header
+   * API key and transaction bytes. The message still names the node URL.
+   */
+  async simulateTransactionEvents(simulation: TransactionSimulation): Promise<TransactionEvents> {
+    const { transaction, signerPublicKey } = requireSimulation(simulation);
+    let responses: unknown;
+    try {
+      responses = await this.aptos.transaction.simulate.simple({ transaction, signerPublicKey });
+    } catch (err) {
+      const status = (err as { status?: unknown } | null)?.status;
+      throw new StreamdNetworkError(
+        `Fullnode simulation failed: ${err instanceof Error ? err.message : "unknown error"}`,
+        typeof status === "number" ? status : undefined,
+      );
+    }
+    const txn = (Array.isArray(responses) ? responses[0] : undefined) as
+      | TransactionWithEvents
+      | undefined;
+    const malformed = new StreamdError("Fullnode returned a malformed simulation");
+    if (txn == null || !/^\d+$/.test(String(txn.version)) || typeof txn.success !== "boolean") {
+      throw malformed;
+    }
+    const version = BigInt(txn.version!);
+    let events: StreamdEvent[];
+    try {
+      events = toStreamdEvents({ ...txn, hash: undefined }, version, () => true);
+    } catch {
+      throw malformed;
+    }
+    return { version, success: txn.success, vmStatus: String(txn.vm_status ?? ""), events };
+  }
+
+  /**
+   * Runs the view function at `ledgerVersion`, whatever the descriptor: one
+   * JSON POST to `/view`, so no module ABI is fetched first. An aborting view
+   * (400) fails the same way every time, so it is a plain `StreamdError`; any
+   * other failure is a `StreamdNetworkError`, a pruned version included (410),
+   * since another node may still serve it, as `FallbackAdapter` relies on. Either
+   * keeps the SDK's message and status but not its `cause`, which holds the
+   * request and client config; the message still names the node URL.
+   */
+  async view(request: ViewRequest, ledgerVersion: bigint): Promise<unknown[]> {
+    const { function: fn, typeArguments = [], functionArguments = [] } = requireViewRequest(request);
+    const version = requireLedgerVersion(ledgerVersion);
+    let args: never[];
+    try {
+      // JSON has no bigint; Move takes u64 and wider as decimal strings.
+      args = JSON.parse(
+        JSON.stringify(functionArguments, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v)),
+      ) as never[];
+    } catch {
+      throw new StreamdError(`functionArguments for ${fn} must be JSON-serialisable`);
+    }
+    try {
+      return await this.aptos.viewJson({
+        payload: { function: fn, typeArguments: [...typeArguments] as never[], functionArguments: args },
+        options: { ledgerVersion: version },
+      });
+    } catch (err) {
+      const status = (err as { status?: unknown } | null)?.status;
+      const message = `Fullnode view ${fn} at version ${version} failed: ${
+        err instanceof Error ? err.message : "unknown error"
+      }`;
+      if (status === 400) throw new StreamdError(message);
+      throw new StreamdNetworkError(message, typeof status === "number" ? status : undefined);
+    }
+  }
+
   private dispatch(
     descriptor: EventDescriptor,
     options: FetchOptions,
@@ -244,7 +359,8 @@ export class FullnodeScanAdapter implements EventAdapter {
     if (wanted <= 0) return { events: [], hasMore: false };
 
     const head = await this.ledgerVersion();
-    let next = this.resolveStart(options, head);
+    const start = this.resolveStart(options, head);
+    let next = start;
     const events: StreamdEvent[] = [];
     let scanned = 0;
     let hasMore = false;
@@ -295,6 +411,8 @@ export class FullnodeScanAdapter implements EventAdapter {
     // SDK caches ledger info per network, not per node).
     const fixedStart = options.cursor !== undefined || options.fromVersion !== undefined;
     if (fixedStart && !ranDry && next <= head) page.final = true;
+    // Whole transactions are scanned, so nothing at the last one is left over.
+    if (next > start) page.throughVersion = next - 1n;
     return page;
   }
 
@@ -329,6 +447,9 @@ export class FullnodeScanAdapter implements EventAdapter {
     // A full batch by sequence number never changes; a short one ended at the
     // account's latest transaction, which a later request reads past.
     let batchesFull = false;
+    // The account's sequence order is version order, so everything it sent up
+    // to the last transaction examined has been seen.
+    let through: bigint | undefined;
 
     while (events.length < wanted) {
       if (scanned >= this.maxScan) {
@@ -361,8 +482,10 @@ export class FullnodeScanAdapter implements EventAdapter {
         // toVersion nothing later can qualify.
         if (options.toVersion !== undefined && version > options.toVersion) {
           pastToVersion = true;
+          through = options.toVersion;
           break;
         }
+        through = version;
         if (options.fromVersion !== undefined && version < options.fromVersion) {
           continue;
         }
@@ -389,6 +512,7 @@ export class FullnodeScanAdapter implements EventAdapter {
       options.fromVersion !== undefined ||
       options.toVersion !== undefined;
     if (fixedStart && batchesFull) page.final = true;
+    if (through !== undefined) page.throughVersion = through;
     return page;
   }
 
@@ -452,9 +576,15 @@ export class FullnodeScanAdapter implements EventAdapter {
     // The start comes from the request, and a full page of a handle's events
     // by sequence number never changes.
     const full = raw.length >= limit;
-    return full
+    const page: EventPage = full
       ? { events, nextCursor, hasMore: true, final: true }
       : { events, nextCursor, hasMore: false };
+    // A full page may stop partway through one transaction's events, so only
+    // the versions below its last event are settled.
+    const last = raw.at(-1);
+    const through = last === undefined ? -1n : BigInt(last.version) - (full ? 1n : 0n);
+    if (through >= 0n) page.throughVersion = through;
+    return page;
   }
 
   /** Cursor wins over fromVersion; neither means "start at the head". */

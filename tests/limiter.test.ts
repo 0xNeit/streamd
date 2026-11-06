@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { RequestLimiter } from "../src/limiter.js";
 import { StreamdError } from "../src/errors.js";
-import type { EventAdapter, EventPage } from "../src/types.js";
+import type { EventAdapter, EventPage, TransactionSimulation } from "../src/types.js";
 
 const flush = () => new Promise<void>((r) => setTimeout(r, 0));
 
@@ -214,5 +214,81 @@ describe("RequestLimiter", () => {
     await fetched;
     expect(await heights).toEqual({ oldest: 1n, newest: 2n });
     expect(calls).toEqual(["fetch", "heights module"]);
+  });
+});
+
+describe("RequestLimiter.wrap transaction lookups", () => {
+  it("runs getTransactionEvents through the cap, only when the adapter has it", async () => {
+    const hash = `0x${"ef".repeat(32)}`;
+    let active = 0;
+    let peak = 0;
+    const inner: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async getTransactionEvents() {
+        peak = Math.max(peak, ++active);
+        await Bun.sleep(2);
+        active--;
+        return undefined;
+      },
+    };
+    const view = new RequestLimiter(1).wrap(inner);
+    const seen: unknown[] = [];
+    const lookup = inner.getTransactionEvents!;
+    inner.getTransactionEvents = (...args) => (seen.push(args), lookup(...args));
+    const descriptor = { kind: "module", eventType: "0x1::t::A" } as const;
+    await Promise.all([view.getTransactionEvents!(hash, descriptor), view.getTransactionEvents!(hash)]);
+    expect(peak).toBe(1);
+    expect(seen[0]).toEqual([hash, descriptor]);
+    expect(new RequestLimiter(1).wrap({ fetchEvents: inner.fetchEvents }).getTransactionEvents).toBeUndefined();
+  });
+});
+
+describe("RequestLimiter.wrap simulations", () => {
+  it("runs simulateTransactionEvents through the cap, only when the adapter has it", async () => {
+    const simulation = { transaction: { rawTransaction: {} } } as unknown as TransactionSimulation;
+  const simulated = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+    let active = 0;
+    let peak = 0;
+    const seen: unknown[] = [];
+    const inner: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async simulateTransactionEvents(...args) {
+        seen.push(args);
+        peak = Math.max(peak, ++active);
+        await Bun.sleep(2);
+        active--;
+        return simulated;
+      },
+    };
+    const view = new RequestLimiter(1).wrap(inner);
+    const descriptor = { kind: "module", eventType: "0x1::t::A" } as const;
+    await Promise.all([view.simulateTransactionEvents!(simulation, descriptor), view.simulateTransactionEvents!(simulation)]);
+    expect(peak).toBe(1);
+    expect(seen[0]).toEqual([simulation, descriptor]);
+    expect(new RequestLimiter(1).wrap({ fetchEvents: inner.fetchEvents }).simulateTransactionEvents).toBeUndefined();
+  });
+});
+
+describe("RequestLimiter.wrap views", () => {
+  it("runs view through the cap, only when the adapter has it", async () => {
+    let release!: () => void;
+    const order: string[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: async () => {
+        order.push("fetch");
+        await new Promise<void>((r) => (release = r));
+        return { events: [], hasMore: false };
+      },
+      view: async (request, version) => (order.push("view"), [request.function, String(version)]),
+    };
+    const view = new RequestLimiter(1).wrap(adapter);
+    const fetching = view.fetchEvents({ kind: "module", eventType: "0x1::a::B" }, {});
+    const viewing = view.view!({ function: "0x1::coin::balance" }, 2n);
+    await Promise.resolve();
+    expect(order).toEqual(["fetch"]);
+    release();
+    await fetching;
+    expect(await viewing).toEqual(["0x1::coin::balance", "2"]);
+    expect(new RequestLimiter().wrap({ fetchEvents: adapter.fetchEvents }).view).toBeUndefined();
   });
 });

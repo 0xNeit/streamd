@@ -8,6 +8,7 @@ import type {
   EventPage,
   FetchOptions,
   StreamdEvent,
+  TransactionSimulation,
 } from "../src/types.js";
 
 const PING = "0x1::test::Ping";
@@ -179,5 +180,67 @@ describe("CachingAdapter", () => {
     for (const maxEntries of [0, -1, 1.5, Number.NaN]) {
       expect(() => new CachingAdapter(adapter, { maxEntries })).toThrow("Invalid maxEntries");
     }
+  });
+});
+
+describe("CachingAdapter transaction lookup", () => {
+  const hash = `0x${"ef".repeat(32)}`;
+  const event: StreamdEvent = {
+    type: "0x1::t::A",
+    data: {},
+    version: 2n,
+    sequenceNumber: 0n,
+    eventIndex: 0,
+    transactionHash: hash,
+  };
+
+  it("passes getTransactionEvents through, only when the source has it", async () => {
+    const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    const seen: unknown[] = [];
+    const source = new MemoryAdapter([event]);
+    const lookup = source.getTransactionEvents.bind(source);
+    source.getTransactionEvents = (...args) => (seen.push(args), lookup(...args));
+    expect((await new CachingAdapter(source).getTransactionEvents!(hash, descriptor))!.events).toEqual([
+      event,
+    ]);
+    expect(seen).toEqual([[hash, descriptor]]);
+    expect(
+      new CachingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).getTransactionEvents,
+    ).toBeUndefined();
+  });
+});
+
+describe("CachingAdapter simulation", () => {
+  const simulation = { transaction: { rawTransaction: {} } } as unknown as TransactionSimulation;
+  const simulated = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+
+  it("passes simulateTransactionEvents through uncached, only when the source has it", async () => {
+    const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    const seen: unknown[] = [];
+    const caching = new CachingAdapter({
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      simulateTransactionEvents: async (...args) => (seen.push(args), simulated),
+    });
+    expect(await caching.simulateTransactionEvents!(simulation, descriptor)).toBe(simulated);
+    expect(await caching.simulateTransactionEvents!(simulation, descriptor)).toBe(simulated);
+    expect(seen).toEqual([[simulation, descriptor], [simulation, descriptor]]);
+    expect(
+      new CachingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).simulateTransactionEvents,
+    ).toBeUndefined();
+  });
+});
+
+describe("CachingAdapter view", () => {
+  it("passes view through uncached, only when the source has it", async () => {
+    let calls = 0;
+    const source = Object.assign(new MemoryAdapter(), {
+      view: async (_r: unknown, version: bigint) => (calls++, [String(version)]),
+    });
+    const cached = new CachingAdapter(source);
+    const request = { function: "0x1::coin::balance" as const };
+    expect(await cached.view!(request, 4n)).toEqual(["4"]);
+    expect(await cached.view!(request, 4n)).toEqual(["4"]);
+    expect(calls).toBe(2);
+    expect(new CachingAdapter(new MemoryAdapter()).view).toBeUndefined();
   });
 });

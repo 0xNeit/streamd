@@ -5,6 +5,9 @@ import type {
   EventDescriptor,
   EventPage,
   FetchOptions,
+  TransactionEvents,
+  TransactionSimulation,
+  ViewRequest,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import { requireAdapter } from "./validate.js";
@@ -36,6 +39,8 @@ async function tryInOrder<T>(
  * error. Invalid caller input (a `StreamdError` that is not a
  * `StreamdNetworkError`) is rethrown at once without trying later adapters.
  * A page from any source but the first comes back with `final: false`.
+ * `throughVersion` is kept from whichever source answered, since it describes
+ * how far that source scanned for the events it returned.
  */
 export class FallbackAdapter implements EventAdapter {
   private readonly adapters: readonly EventAdapter[];
@@ -101,5 +106,44 @@ export class FallbackAdapter implements EventAdapter {
       throw new StreamdError("No FallbackAdapter source reports block heights");
     }
     return tryInOrder(reporting, (adapter) => adapter.getBlockHeights!(descriptor));
+  }
+
+  /** From the first adapter that looks transactions up, with the same fallback rules. */
+  async getTransactionEvents(
+    transactionHash: string,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents | undefined> {
+    const reporting = this.adapters.filter((a) => a.getTransactionEvents !== undefined);
+    if (reporting.length === 0) {
+      throw new StreamdError("No FallbackAdapter source looks up transactions");
+    }
+    return tryInOrder(reporting, (adapter) =>
+      adapter.getTransactionEvents!(transactionHash, descriptor),
+    );
+  }
+
+  /** From the first adapter that simulates transactions, with the same fallback rules. */
+  async simulateTransactionEvents(
+    simulation: TransactionSimulation,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents> {
+    const reporting = this.adapters.filter((a) => a.simulateTransactionEvents !== undefined);
+    if (reporting.length === 0) {
+      throw new StreamdError("No FallbackAdapter source simulates transactions");
+    }
+    return tryInOrder(reporting, (adapter) =>
+      adapter.simulateTransactionEvents!(simulation, descriptor),
+    );
+  }
+
+  /** From the first adapter that runs views, with the same fallback rules. */
+  async view(
+    request: ViewRequest,
+    ledgerVersion: bigint,
+    descriptor?: EventDescriptor,
+  ): Promise<unknown[]> {
+    const reporting = this.adapters.filter((a) => a.view !== undefined);
+    if (reporting.length === 0) throw new StreamdError("No FallbackAdapter source runs views");
+    return tryInOrder(reporting, (adapter) => adapter.view!(request, ledgerVersion, descriptor));
   }
 }

@@ -1,7 +1,7 @@
 // Kept in the emitted declarations so consumers whose `lib` predates
 // explicit resource management still have `Symbol.dispose` (TypeScript 5.2+).
 /// <reference lib="esnext.disposable" preserve="true" />
-import type { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
+import type { Aptos, AptosConfig, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
 
 // ---- Event identification ----
 
@@ -127,7 +127,32 @@ export interface StreamdEvent<TData = unknown> {
    * none.
    */
   guid?: EventGuid;
+  /**
+   * What the `withState` view function returned at this event's `version`,
+   * that is, as state stood once the emitting transaction had run. Set only
+   * when `withState` built a request for this event.
+   */
+  state?: unknown[];
 }
+
+/**
+ * A view function call, as `withState` builds it and `EventAdapter.view`
+ * takes it. Arguments are JSON Move values as the fullnode's `/view` takes
+ * them: u64 and wider as decimal strings (a `bigint` is sent as one),
+ * addresses as hex strings.
+ */
+export interface ViewRequest {
+  /** `${address}::${module}::${function}`, e.g. `"0x1::coin::balance"`. */
+  function: `${string}::${string}::${string}`;
+  typeArguments?: readonly string[];
+  functionArguments?: readonly unknown[];
+}
+
+/**
+ * Builds the view request whose result becomes `event.state`, or `undefined`
+ * to deliver the event without state. Runs after `decode` and `where`.
+ */
+export type StateRequestBuilder = (event: StreamdEvent) => ViewRequest | undefined;
 
 /** An `EventHandle`'s on-chain id: the account that created it and its creation number. */
 export interface EventGuid {
@@ -200,6 +225,15 @@ export interface EventFilter {
    */
   decode?: readonly string[];
   /**
+   * Attach `state` to each returned event: the view function this builds,
+   * read at the event's `version` through `EventAdapter.view`. Runs after
+   * `where`, `limit` and `orderBy`, so only returned events cost a call: one
+   * request each, in order, through `maxConcurrentRequests` and with
+   * `retries`. A throw, an invalid request or a failed view rejects the query.
+   * On `FullnodeScanAdapter` an aborting view is not retried.
+   */
+  withState?: StateRequestBuilder;
+  /**
    * Stop after this many adapter pages, even if `limit` is unmet. Unbounded
    * when omitted. Use it to put a ceiling on a filtered walk.
    */
@@ -215,7 +249,8 @@ export interface EventFilter {
    * Retry a failed adapter call up to this many times (default 0), waiting
    * 1s, 2s, 4s... (capped at 60s) between attempts. Only failures worth
    * retrying are: a `StreamdError` that is not a `StreamdNetworkError` rejects
-   * at once. The query rejects with the last attempt's error.
+   * at once. A `StreamdNetworkError` carrying `retryAfter` waits that long
+   * instead, capped at 60s. The query rejects with the last attempt's error.
    */
   retries?: number;
   /**
@@ -235,6 +270,31 @@ export interface EventFilter {
   onCursor?: (cursor: string | undefined) => void;
 }
 
+/** Options for `StreamdClient.eventsOf`. */
+export interface EventsOfOptions {
+  /** Keep only events satisfying this predicate, after `decode`. */
+  where?: EventPredicate;
+  /** Top-level `data` fields turned from decimal strings into `bigint`, as `EventFilter.decode`. */
+  decode?: readonly string[];
+  /**
+   * How long to wait for the transaction to be committed, in ms (default
+   * 20000), before rejecting with `StreamdTimeoutError`.
+   */
+  timeout?: number;
+  /** Aborting rejects with the signal's `reason` and stops looking. */
+  signal?: AbortSignal;
+}
+
+/** Options for `StreamdClient.previewEvents`. */
+export interface PreviewEventsOptions {
+  /** The sender's public key, so the simulation checks its auth key; omitted, that check is skipped. */
+  signerPublicKey?: PublicKey;
+  /** Keep only events satisfying this predicate, after `decode`. */
+  where?: EventPredicate;
+  /** Top-level `data` fields turned from decimal strings into `bigint`, as `EventFilter.decode`. */
+  decode?: readonly string[];
+}
+
 /**
  * What an adapter receives on each fetch.
  *
@@ -251,6 +311,7 @@ export interface FetchOptions
     | "toBlock"
     | "where"
     | "decode"
+    | "withState"
     | "maxPages"
     | "retries"
     | "signal"
@@ -288,6 +349,15 @@ export interface EventPage {
    * since only it can read its cursor; leave it unset when unsure.
    */
   final?: boolean;
+  /**
+   * The highest ledger version the source has finished examining for this
+   * descriptor: resuming from `nextCursor` returns nothing at or below it,
+   * and nothing at or below it is missing from this or earlier pages of the
+   * walk. Never decreases across a walk. Events on this same page may sit
+   * above it, such as when a page ends partway through a transaction's
+   * events. Leave it unset when the source cannot say.
+   */
+  throughVersion?: bigint;
 }
 
 // ---- Listener options ----
@@ -328,7 +398,9 @@ export interface ListenerOptions {
   maxErrors?: number;
   /**
    * Maximum exponential backoff delay in ms between failed polls (default:
-   * 60000, valid range 0..2147483647).
+   * 60000, valid range 0..2147483647). A `StreamdNetworkError` carrying
+   * `retryAfter` waits that long instead, capped at this value, and still
+   * counts toward `maxErrors`.
    */
   maxBackoff?: number;
   /**
@@ -349,6 +421,18 @@ export interface ListenerOptions {
    * without counting toward `maxErrors`.
    */
   decode?: readonly string[];
+  /**
+   * Attach `state` to each delivered event: the view function this builds,
+   * read at the event's `version` through `EventAdapter.view`, after `where`.
+   * One request per delivered event, in order, through
+   * `maxConcurrentRequests`. A throw or an invalid request skips the event
+   * and goes to `onError` without counting toward `maxErrors`. A failed view
+   * fails the poll: events before it on the page are delivered, and the next
+   * poll retries from it (with `dedupWindow: 0`, redelivering those before).
+   * A view refused as invalid input, such as an aborting view on
+   * `FullnodeScanAdapter`, stops the subscription at once.
+   */
+  withState?: StateRequestBuilder;
   /**
    * Receives polling failures and errors thrown by `where` or the callback,
    * overriding `StreamdConfig.onError` for this subscription. A throw from it
@@ -386,6 +470,60 @@ export interface OnceOptions extends ListenerOptions {
    * `StreamdTimeoutError` (0 to 2147483647).
    */
   timeout?: number;
+}
+
+/** Folds one event into the state; synchronous, and should not mutate `state`. */
+export type Reducer<S, TData = unknown> = (state: S, event: StreamdEvent<TData>) => S;
+
+/**
+ * Options for `reduce()`. History options shape the backfill, live options
+ * the subscription that follows it, and `where`/`decode` apply to both.
+ * Anything that would leave no exact point to follow from (`limit`,
+ * `offset`, `toVersion`, `toBlock`, `orderBy`, `onCursor`, `cursor`) is
+ * refused.
+ */
+export interface ReduceOptions<S = unknown, TData = unknown>
+  extends Pick<EventFilter, "fromBlock" | "maxPages" | "retries">,
+    Pick<
+      ListenerOptions,
+      | "fromVersion"
+      | "fromTime"
+      | "where"
+      | "decode"
+      | "pollInterval"
+      | "batchSize"
+      | "maxErrors"
+      | "maxBackoff"
+      | "dedupWindow"
+      | "onError"
+      | "onCaughtUp"
+      | "signal"
+    > {
+  /**
+   * Called after each live event is folded in, with the new state. Not called
+   * during the backfill, whose result `ready` resolves with. A throw goes to
+   * `onError` and does not stop the reduction.
+   */
+  onChange?: (state: S, event: StreamdEvent<TData>) => void;
+}
+
+/** A running `reduce()`: the reduced value, kept current as events arrive. */
+export interface Reduction<S> {
+  /** The reduction of every event folded so far; the last good one once stopped. */
+  readonly value: S;
+  /**
+   * Resolves with the backfilled value once the history is folded and live
+   * following has started. Rejects if the backfill fails, the reducer throws,
+   * or the reduction is stopped or aborted first. Never an unhandled
+   * rejection, so it is safe to ignore.
+   */
+  readonly ready: Promise<S>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  /** Stop folding, whether still backfilling or following. */
+  unsubscribe(): void;
+  /** `unsubscribe()`, for `using`. */
+  [Symbol.dispose](): void;
 }
 
 /**
@@ -426,7 +564,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, the `simulateTransactionEvents` calls behind `previewEvents`, and the `view` calls behind `withState`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
@@ -574,6 +712,56 @@ export interface EventAdapter {
    * `descriptor`. Optional; `fromTime` needs it, together with `getBlock`.
    */
   getBlockHeights?(descriptor: EventDescriptor): Promise<BlockHeights>;
+  /**
+   * Every event of the committed transaction with this hash, in transaction
+   * order, or `undefined` while the source does not have it committed (unknown
+   * or still pending). One lookup, no waiting. `descriptor` is the caller's,
+   * when given, for routing only: return the events unfiltered. Optional;
+   * `StreamdClient.eventsOf` needs it.
+   */
+  getTransactionEvents?(
+    transactionHash: string,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents | undefined>;
+  /**
+   * The events `simulation.transaction` would emit if it ran now, from a
+   * simulation that commits nothing. `version` is the one the source simulated
+   * at, and events carry no `transactionHash`, since an unsigned transaction's
+   * hash is not the one it will commit under. `descriptor` is for routing only:
+   * return the events unfiltered. Optional; `StreamdClient.previewEvents` needs it.
+   */
+  simulateTransactionEvents?(
+    simulation: TransactionSimulation,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents>;
+  /**
+   * The return values of the view function `request` names, read at
+   * `ledgerVersion`: state as of the end of that transaction. `descriptor` is
+   * for routing only. Optional; `withState` needs it.
+   */
+  view?(
+    request: ViewRequest,
+    ledgerVersion: bigint,
+    descriptor?: EventDescriptor,
+  ): Promise<unknown[]>;
+}
+
+/** A built, unsigned transaction to simulate, as `EventAdapter.simulateTransactionEvents` takes it. */
+export interface TransactionSimulation {
+  /** From `aptos.transaction.build.simple`; multi-agent transactions are not supported. */
+  transaction: SimpleTransaction;
+  /** The sender's public key, so the node checks its auth key; omitted, that check is skipped. */
+  signerPublicKey?: PublicKey;
+}
+
+/** A committed transaction's events, as `EventAdapter.getTransactionEvents` reports them. */
+export interface TransactionEvents {
+  version: bigint;
+  /** False when the transaction aborted; the chain then keeps only its fee statement event. */
+  success: boolean;
+  /** The VM's verdict, such as `"Executed successfully"` or the abort it hit. */
+  vmStatus: string;
+  events: StreamdEvent[];
 }
 
 /** Block heights an adapter can serve, both inclusive, as `EventAdapter.getBlockHeights` reports them. */

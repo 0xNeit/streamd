@@ -8,6 +8,7 @@ import type {
   EventDescriptor,
   FetchOptions,
   StreamdEvent,
+  TransactionSimulation,
 } from "../src/types.js";
 
 const PING = "0x1::test::Ping";
@@ -295,5 +296,91 @@ describe("RoutingAdapter blocks", () => {
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
     expect((err as Error).message).toContain('"account"');
+  });
+});
+
+describe("RoutingAdapter transaction lookup", () => {
+  const hash = `0x${"ef".repeat(32)}`;
+  const found = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+  const looking = (label: string): EventAdapter => ({
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    getTransactionEvents: async () => ({ ...found, vmStatus: label }),
+  });
+
+  it("routes by the descriptor's kind, and to default without a descriptor", async () => {
+    const router = new RoutingAdapter({ module: looking("module"), default: looking("default") });
+    const moduleDescriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    expect((await router.getTransactionEvents(hash, moduleDescriptor))!.vmStatus).toBe("module");
+    expect((await router.getTransactionEvents(hash))!.vmStatus).toBe("default");
+  });
+
+  it("refuses when no route serves the lookup", async () => {
+    const bare: EventAdapter = { fetchEvents: async () => ({ events: [], hasMore: false }) };
+    await expect(new RoutingAdapter({ module: looking("module") }).getTransactionEvents(hash)).rejects.toBeInstanceOf(
+      StreamdError,
+    );
+    await expect(
+      new RoutingAdapter({ module: bare }).getTransactionEvents(hash, { kind: "module", eventType: "0x1::t::A" }),
+    ).rejects.toThrow("does not look up transactions");
+  });
+});
+
+describe("RoutingAdapter simulation", () => {
+  const simulation = { transaction: { rawTransaction: {} } } as unknown as TransactionSimulation;
+  const simulated = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+  const seen: unknown[] = [];
+  const simulating = (label: string): EventAdapter => ({
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    simulateTransactionEvents: async (...args) => (seen.push(args), { ...simulated, vmStatus: label }),
+  });
+
+  it("routes by the descriptor's kind, and to default without a descriptor", async () => {
+    const router = new RoutingAdapter({ account: simulating("account"), default: simulating("default") });
+    const accountDescriptor: EventDescriptor = { kind: "account", accountAddress: "0x1" };
+    expect((await router.simulateTransactionEvents(simulation, accountDescriptor)).vmStatus).toBe("account");
+    expect(seen[0]).toEqual([simulation, accountDescriptor]);
+    expect((await router.simulateTransactionEvents(simulation)).vmStatus).toBe("default");
+  });
+
+  it("refuses when no route serves the simulation", async () => {
+    const bare: EventAdapter = { fetchEvents: async () => ({ events: [], hasMore: false }) };
+    await expect(
+      new RoutingAdapter({ module: simulating("module") }).simulateTransactionEvents(simulation),
+    ).rejects.toBeInstanceOf(StreamdError);
+    await expect(
+      new RoutingAdapter({ module: bare }).simulateTransactionEvents(simulation, { kind: "module", eventType: "0x1::t::A" }),
+    ).rejects.toThrow("does not simulate transactions");
+  });
+});
+
+describe("RoutingAdapter view", () => {
+  const request = { function: "0x1::coin::balance" as const, functionArguments: ["0xa"] };
+  const viewing = (label: string): EventAdapter => ({
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    view: vi.fn(async () => [label]),
+  });
+
+  it("routes by descriptor kind, else to the default, and forwards every argument", async () => {
+    const module = viewing("module");
+    const fallback = viewing("default");
+    const router = new RoutingAdapter({ module, default: fallback });
+    const descriptor = { kind: "module" as const, eventType: "0x1::a::B" as const };
+    expect(await router.view(request, 7n, descriptor)).toEqual(["module"]);
+    expect(module.view).toHaveBeenCalledWith(request, 7n, descriptor);
+    expect(await router.view(request, 7n)).toEqual(["default"]);
+  });
+
+  it("refuses when no adapter runs views or none is routable", async () => {
+    const plain = new MemoryAdapter();
+    const descriptor = { kind: "module" as const, eventType: "0x1::a::B" as const };
+    await expect(new RoutingAdapter({ module: plain }).view(request, 1n, descriptor)).rejects.toThrow(
+      'descriptor kind "module" does not run views',
+    );
+    await expect(new RoutingAdapter({ module: plain }).view(request, 1n)).rejects.toThrow(
+      "needs a descriptor or a default adapter",
+    );
+    await expect(new RoutingAdapter({ default: plain }).view(request, 1n)).rejects.toThrow(
+      "The default adapter does not run views",
+    );
   });
 });

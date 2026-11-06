@@ -1,13 +1,19 @@
 import { Aptos } from "@aptos-labs/ts-sdk";
+import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type {
   BatchCallback,
   EventAdapter,
   EventCallback,
   EventDescriptor,
   EventFilter,
+  EventsOfOptions,
   ListenerDefaults,
   ListenerOptions,
   OnceOptions,
+  PreviewEventsOptions,
+  ReduceOptions,
+  Reducer,
+  Reduction,
   StreamdConfig,
   StreamdEvent,
   Subscription,
@@ -27,6 +33,8 @@ import { RequestLimiter } from "./limiter.js";
 import { CursorManager } from "./cursor.js";
 import { fieldDecoder } from "./decode.js";
 import { SharedFetches } from "./shared.js";
+import { startReduction, type ReduceHost } from "./reduce.js";
+import { eventsOf, previewEvents } from "./transaction.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -127,6 +135,8 @@ export class StreamdClient {
   private readonly listeners = new Map<string, Listener>();
   /** Open streams, so destroy() can end their loops rather than strand them. */
   private readonly streams = new Set<() => void>();
+  /** What `reduce()` needs, built once. */
+  private readonly reduceHost: ReduceHost;
 
   constructor(config: StreamdConfig) {
     this.defaults = resolveDefaults(config);
@@ -135,6 +145,13 @@ export class StreamdClient {
     this.adapter = resolveAdapter(config);
     this.shared = new SharedFetches(this.adapter);
     this.query = new EventQuery(this.adapter, this.limiter);
+    this.reduceHost = {
+      query: this.query,
+      defaults: this.defaults,
+      onError: this.onError,
+      subscribe: (d, callback, options) => this.subscribe(d, callback, options),
+      track: (stop) => (this.streams.add(stop), () => void this.streams.delete(stop)),
+    };
   }
 
   /**
@@ -340,10 +357,33 @@ export class StreamdClient {
   }
 
   /**
-   * Query historical events matching a descriptor and filter.
+   * Keep a value reduced over a descriptor's events: fold the history from the
+   * start position (`fromVersion`, `fromTime` or `fromBlock`; as for
+   * `getEvents` when omitted) into `initial`, then fold each live event as it arrives, each
+   * exactly once. Read the current state as `value`; `ready` resolves once
+   * the history is folded. A reducer throw stops the reduction, as folding
+   * past a lost event would leave `value` wrong. Like `once()` and `stream()`,
+   * it is not a listener for `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  reduce<S, TData = unknown>(
+    descriptor: EventDescriptor<TData>,
+    reducer: Reducer<S, TData>,
+    initial: S,
+    options?: ReduceOptions<S, TData>,
+  ): Reduction<S> {
+    return startReduction(this.reduceHost, descriptor, reducer, initial, options);
+  }
+
+  /**
+   * Query historical events matching a descriptor and filter. Pass an array of
+   * descriptors, of any kinds, to get their events merged into one history in
+   * `(version, eventIndex)` order, each event once. Each descriptor is walked
+   * separately (`maxPages` caps each walk); several Move types on one `module`
+   * descriptor stay the cheaper single scan, and the one that works with
+   * `onCursor`, which a merge rejects, as it does `offset`.
    */
   async getEvents<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
   ): Promise<StreamdEvent<TData>[]> {
     return this.query.getEvents<TData>(descriptor, filter);
@@ -353,7 +393,7 @@ export class StreamdClient {
    * Async iterator for paginating through large historical result sets.
    */
   getEventPages<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
     pageSize?: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
@@ -365,11 +405,62 @@ export class StreamdClient {
    * options. Leaving the loop early fetches nothing further.
    */
   iterateEvents<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
     pageSize?: number,
   ): AsyncGenerator<StreamdEvent<TData>, void, unknown> {
     return this.query.iterateEvents<TData>(descriptor, filter, pageSize);
+  }
+
+  /**
+   * Wait for the transaction with this hash to be committed and resolve with
+   * its events in transaction order, narrowed by `descriptor` when given, then
+   * `decode` and `where`. A `handle` descriptor must name its handle by
+   * `creationNumber`. Looks the transaction up every `pollInterval` (the
+   * client-wide default, at least 100ms here) through
+   * `EventAdapter.getTransactionEvents`.
+   *
+   * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
+   * transaction failed, as its events were discarded on chain; with
+   * `StreamdTimeoutError` when it is not committed within `timeout`; with
+   * `signal.reason` on abort; and at once with any lookup error.
+   */
+  async eventsOf<TData = unknown>(
+    transactionHash: string,
+    descriptor?: EventDescriptor<TData>,
+    options: EventsOfOptions = {},
+  ): Promise<StreamdEvent<TData>[]> {
+    const badTimeout = checkTimeout(options.timeout);
+    if (badTimeout !== undefined) throw badTimeout;
+    const events = await eventsOf(
+      this.adapter,
+      this.limiter,
+      this.defaults.pollInterval!,
+      transactionHash,
+      descriptor,
+      options,
+    );
+    return events as StreamdEvent<TData>[];
+  }
+
+  /**
+   * Simulate a built, unsigned `transaction` (from
+   * `aptos.transaction.build.simple`) and resolve with the events it would
+   * emit if it ran now, narrowed like `eventsOf`. Nothing is signed or
+   * submitted. The events carry the simulated `version` and no
+   * `transactionHash`: neither is the one the transaction will commit under.
+   * Goes through `EventAdapter.simulateTransactionEvents`.
+   *
+   * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
+   * simulation fails, and with any simulation error as it is.
+   */
+  async previewEvents<TData = unknown>(
+    transaction: SimpleTransaction,
+    descriptor?: EventDescriptor<TData>,
+    options: PreviewEventsOptions = {},
+  ): Promise<StreamdEvent<TData>[]> {
+    const events = await previewEvents(this.adapter, this.limiter, transaction, descriptor, options);
+    return events as StreamdEvent<TData>[];
   }
 
   /**

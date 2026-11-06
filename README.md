@@ -77,7 +77,10 @@ the poller fetches again immediately instead of waiting for the next interval,
 deduplicating seen `(version, eventIndex)` pairs across a sliding window of
 `dedupWindow` events (default `1000`, or `0` to disable client-side
 deduplication). On errors it backs off exponentially up to `maxBackoff` ms
-(default `60000`), and stops after `maxErrors` failures in a row. Invalid
+(default `60000`), and stops after `maxErrors` failures in a row. When the
+adapter's error carries a server's `Retry-After` hint (see below), it waits
+that long instead, still capped at `maxBackoff` and still counted as a
+failure. Invalid
 input, such as a malformed address or cursor, stops it at once, since retrying
 cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
 a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
@@ -220,6 +223,42 @@ or the adapter gave no cursor. Bound a backfill you mean to follow with `fromVer
 `fromVersion: toVersion + 1n`. Like a subscription's cursor, it only works with the same
 descriptor and the same client's adapter.
 
+### Live derived state
+
+`reduce()` keeps a value current: it folds the history into a starting value, then folds
+each live event as it arrives, with every event folded exactly once across the seam.
+
+```ts
+const volume = streamd.reduce(
+  swaps, // a defineEvent<{ amount: bigint }> descriptor types `e.data`
+  (total, e) => total + e.data.amount,
+  0n,
+  {
+    fromVersion: -100_000n,
+    decode: ["amount"],
+    onChange: (total) => render(total), // after each live event
+  },
+);
+render(await volume.ready); // the backfilled total, once following has started
+volume.value; // always the latest total
+volume.unsubscribe(); // or `using volume = streamd.reduce(...)`
+```
+
+The reducer is synchronous and should return a new state rather than mutate the old one.
+History options (`fromVersion`, `fromTime`, `fromBlock`, `maxPages`, `retries`) shape the
+backfill, listener options (`pollInterval`, `batchSize`, `maxErrors` and the rest) the
+following, and `where` and `decode` (or the client's `defaults.decode`) apply to both.
+Options that would leave no exact point to follow from, such as `limit`, `toVersion` or
+`orderBy`, are refused.
+
+A throwing reducer stops the reduction, since folding past a lost event would leave the
+value wrong: the error goes to `onError` (or the client's), `ready` rejects if the backfill
+was still running, and `value` keeps the last good state. A failed backfill does the same.
+Live polling errors behave as they do for `on()`, and `active` turns `false` once polling
+gives up. `signal`, `unsubscribe()` and `destroy()` stop it at any stage without calling
+`onError`. `ready` never surfaces as an unhandled rejection, so ignoring it is safe. Like
+`once()` and `stream()`, a reduction is not counted by `listenerCount()`.
+
 ### Start relative to the head
 
 ```ts
@@ -308,6 +347,61 @@ const event = await streamd.once(
 The promise rejects with `StreamdTimeoutError` if `timeout` elapses first, if
 polling gives up after `maxErrors`, or straight away on invalid input.
 
+### Events from a submitted transaction
+
+```ts
+const { hash } = await aptos.signAndSubmitTransaction({ signer, transaction });
+const deposits = await streamd.eventsOf(
+  hash,
+  { kind: "module", eventType: "0x1::fungible_asset::Deposit" }, // optional
+  { decode: ["amount"], timeout: 30_000 }, // optional
+);
+```
+
+`eventsOf()` looks the transaction up every `pollInterval` (the client-wide default, but at
+least 100ms) until
+it is committed, then resolves with its events in transaction order, each shaped like any
+other event, `version`, `transactionHash`, `sender` and `timestamp` included. A descriptor,
+`decode` and `where` narrow them as they narrow a query. A `module` descriptor matches by
+type, an `account` one by the transaction's sender, and a `handle` one only by
+`creationNumber`, since an event carries its handle's guid rather than the struct and
+field holding it (`listEventHandles` reports each guid).
+
+A transaction that failed rejects with `StreamdTransactionError`, whose `vmStatus` says
+why: the chain discards a failed transaction's events, so there is nothing to return. One
+not committed within `timeout` (default 20 seconds) rejects with `StreamdTimeoutError`, an
+abort with `signal.reason`, and a failed lookup at once with its error. The adapter is not
+told about a timeout or abort, so a lookup already in flight runs to completion and holds
+its `maxConcurrentRequests` slot until then. The hash must be
+`0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which
+`FullnodeScanAdapter` and `MemoryAdapter` have and the wrapping adapters pass through.
+
+### Preview a transaction's events before signing
+
+```ts
+const transaction = await aptos.transaction.build.simple({ sender, data });
+const deposits = await streamd.previewEvents(
+  transaction,
+  { kind: "module", eventType: "0x1::fungible_asset::Deposit" }, // optional
+  { signerPublicKey: account.publicKey, decode: ["amount"] }, // optional
+);
+```
+
+`previewEvents()` simulates a built, unsigned transaction on the fullnode and resolves with
+the events it would emit if it ran now, narrowed exactly as `eventsOf()` narrows them.
+Nothing is signed or submitted, and the simulation commits nothing. The events are
+previews, not history: `version` is the one the node simulated at, and `transactionHash`
+is unset, since an unsigned transaction's hash is not the one it will commit under. Pass
+`signerPublicKey` to have the node check the sender's auth key; without it that check is
+skipped. Only single-signer transactions are accepted, a fee-payer one included.
+
+A simulation that fails rejects with `StreamdTransactionError`, whose `vmStatus` says why
+and whose `transactionHash` is undefined. On `FullnodeScanAdapter` a failed request
+rejects with a `StreamdNetworkError` that carries neither the transaction nor the SDK
+error holding it. It needs an adapter with `simulateTransactionEvents`, which
+`FullnodeScanAdapter` has. The wrapping adapters pass it through, never cached or recorded,
+since a simulation answers for the chain's state at that moment.
+
 ### Query history
 
 ```ts
@@ -359,6 +453,56 @@ A failed page is retried up to `retries` times, waiting 1s, 2s, 4s and so on (ca
 60s) between attempts, then the query rejects with the last error. Only network failures
 are retried: any other `StreamdError` means the request itself is wrong and rejects at once.
 `signal` cancels a wait.
+
+A source that sends `Retry-After` on a 429 or 503 is listened to: a `StreamdNetworkError`
+whose `retryAfter` is set (in ms) replaces the backoff for that wait, capped at 60s here
+and at `maxBackoff` for listeners. A custom adapter sets it from the response header:
+
+```ts
+import { StreamdNetworkError, parseRetryAfter } from "streamd";
+
+if (!res.ok) {
+  throw new StreamdNetworkError(
+    `HTTP ${res.status}`,
+    res.status,
+    undefined,
+    parseRetryAfter(res.headers.get("retry-after")),
+  );
+}
+```
+
+`parseRetryAfter` reads both delta-seconds and HTTP-date values, and returns `undefined`
+for a missing or malformed one, which falls back to normal backoff. The default
+`FullnodeScanAdapter` never sets it: the Aptos SDK drops response headers from its errors,
+and the public fullnodes send no `Retry-After` today.
+
+### Query several descriptors at once
+
+Pass an array of descriptors, of any kinds, to read their events as one history:
+
+```ts
+const activity = await streamd.getEvents(
+  [
+    { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
+    { kind: "account", accountAddress: "0xcafe" },
+  ],
+  { fromVersion: -10_000n, toVersion: "head", limit: 100 },
+);
+```
+
+Each descriptor is walked on its own and the results are merged in ascending
+`(version, eventIndex)` order, or newest first with `orderBy: "desc"`. An event two
+descriptors both select comes back once. `limit` counts the merged result after `where`;
+`maxPages` caps each descriptor's walk. A head, block or time bound is read once and shared,
+so every walk covers the same versions, while `"earliest"` is resolved per descriptor. Only
+one page per descriptor is held at a time. `getEventPages` and `iterateEvents` take arrays
+too. `onCursor` and `offset` are refused, since one cursor cannot resume several walks.
+
+For several Move types, one `module` descriptor with a list of `eventType`s is cheaper: one
+scan, one cursor, and it works with `on()` too. Some sources report a handle event's
+sequence number as its `eventIndex`, so merging handle events with others is deterministic
+but does not reflect position within a transaction. Typed descriptors with different
+payloads take an explicit type argument, such as `getEvents<Deposit | Withdraw>([...])`.
 
 ### Query by block range
 
@@ -413,7 +557,8 @@ const streamd = new StreamdClient({ aptos, maxConcurrentRequests: 4 });
 At most that many adapter calls run at once across every subscription and query on the
 client; the rest wait their turn in order. `fetchEvents`, the `getHeadVersion` read behind
 a negative `fromVersion`, the `getEarliestVersion` read behind `"earliest"`, and the
-`getBlock` and `getBlockHeights` lookups behind `fromBlock`/`toBlock` and `fromTime` all count. The unit is one adapter call, not one HTTP request:
+`getBlock` and `getBlockHeights` lookups behind `fromBlock`/`toBlock` and `fromTime`, and
+the lookups behind `eventsOf()` and the simulations behind `previewEvents()` all count. The unit is one adapter call, not one HTTP request:
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
 dropped without reaching the adapter. Omit the option for no limit.
@@ -526,6 +671,42 @@ are listed, since the struct and field form cannot address one nested inside a
 struct field. A nested handle is still readable by creation number, taken from
 the `guid` in the resource data.
 
+### Check a module descriptor
+
+A misspelled event type is not an error to the module scan: it just never
+matches. `checkDescriptor(aptos, descriptor)` reads the module ABI for each
+type in a `module` descriptor and says whether the struct is there:
+
+```ts
+import { Aptos } from "@aptos-labs/ts-sdk";
+import { checkDescriptor } from "streamd";
+
+const check = await checkDescriptor(new Aptos(), {
+  kind: "module",
+  eventType: ["0x1::fungible_asset::Deposit", "0x1::fungible_asset::Withdrawal"],
+});
+// { ok: false, types: [
+//   { eventType: "0x1::fungible_asset::Deposit", status: "event" },
+//   { eventType: "0x1::fungible_asset::Withdrawal", status: "missing-struct" } ] }
+if (!check.ok) throw new Error(JSON.stringify(check.types));
+```
+
+Each type gets one status:
+
+| Status | Meaning |
+| --- | --- |
+| `event` | The struct declares `#[event]`. |
+| `legacy` | No `#[event]`, but it has `drop` and `store`, so a legacy `EventHandle` can emit it. |
+| `not-event` | The struct lacks `drop` or `store`, so no event can carry it. |
+| `missing-module` | No such module is published at that address. |
+| `missing-struct` | The module exists but declares no such struct. |
+
+`ok` is true when every type is `event` or `legacy`. A generic type is checked
+by its outer struct only; its type arguments are not looked up. It makes one
+request per distinct module, accepts `module` descriptors only, and throws
+`StreamdError` for malformed input before any request, or
+`StreamdNetworkError` when the node fails.
+
 ### Typed events
 
 `defineEvent<T>(eventType)` returns a `module` descriptor that carries its
@@ -568,6 +749,54 @@ values. An event without the field is left alone. A named field holding
 anything other than an unsigned decimal string is an error: a subscription
 reports it through `onError` and skips the event, and a query rejects.
 
+### State at the event's version
+
+`withState` reads a view function at each event's own `version` and attaches
+its return values as `event.state`: state as it stood once the emitting
+transaction had run, such as the balance a withdrawal left behind:
+
+```ts
+const Withdraw = defineEvent<{ store: string; amount: bigint }>(
+  "0x1::fungible_asset::Withdraw",
+);
+
+client.on(Withdraw, (event) => console.log(event.data.amount, event.state), {
+  decode: ["amount"],
+  withState: (event) => ({
+    function: "0x1::fungible_asset::balance",
+    typeArguments: ["0x1::fungible_asset::FungibleStore"],
+    // `withState`, like `where`, sees an untyped event.
+    functionArguments: [(event.data as { store: string }).store],
+  }),
+});
+```
+
+Return `undefined` to deliver an event without state. Arguments are JSON Move
+values, with `bigint` sent as a decimal string, and `event.state` is the
+`unknown[]` the view returned. It works on `on`, `onBatch`, `once`, `stream`,
+`getEvents`, `iterateEvents` and `getEventPages`, after `decode` and `where`, so
+predicates cannot see `state` and filtered-out events cost nothing. On queries
+it runs after `limit` and `orderBy` too, and a merged query reads it through
+its first descriptor.
+
+Each delivered event costs one view request, made in order and counted by
+`maxConcurrentRequests`. The anonymous fullnode rate limit is a few hundred
+requests per five minutes, so a busy event type needs an API key or a
+narrow `where`. On `FullnodeScanAdapter`, a view that aborts (400) is refused as
+invalid input, since it fails the same way every time. A version the node has
+pruned fails as a `StreamdNetworkError` (status 410), so `FallbackAdapter` can
+answer it from another node; with no such node, a subscription stops after
+`maxErrors` consecutive failed polls.
+
+A query rejects when the builder throws, returns an invalid request, or the
+view fails (after its `retries`). A subscription reports a throwing builder or
+an invalid request through `onError` and skips that event. A view that fails
+with a network error fails the poll instead, so the event is delivered with its
+state once a retry succeeds; one refused as invalid input stops the
+subscription, as an invalid fetch does. Return `undefined` for events whose
+view would abort. The adapter needs `view`, which `FullnodeScanAdapter` implements as
+one JSON `/view` request at the event's version.
+
 ### Serialise events
 
 JSON has no `bigint`, so `JSON.stringify` throws on a `StreamdEvent`. Use
@@ -581,7 +810,8 @@ const back = parseEvent(text, { decode: ["amount"] });
 back.version; // bigint again
 ```
 
-`version`, `sequenceNumber` and `timestamp` always come back as `bigint`.
+`version`, `sequenceNumber` and `timestamp` always come back as `bigint`;
+`state` comes back as written.
 Inside `data`, every `bigint` is written as a decimal string, and only the
 top-level fields named in `decode` are turned back into `bigint`, by the same
 rule as the `decode` option; deeper ones stay strings. Malformed input throws
@@ -672,14 +902,25 @@ An adapter has one required method, `fetchEvents(descriptor, options)`, returnin
 `{ events, nextCursor, hasMore }`, an optional `getHeadVersion(descriptor)` that
 a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` that
 `fromVersion: "earliest"` needs, an optional `getBlock(descriptor, height)` that
-`fromBlock`/`toBlock` need, and an optional `getBlockHeights(descriptor)` that `fromTime`
-needs alongside `getBlock`. See the `EventAdapter` type for the full contract.
+`fromBlock`/`toBlock` need, an optional `getBlockHeights(descriptor)` that `fromTime`
+needs alongside `getBlock`, and an optional `getTransactionEvents(hash, descriptor?)` that
+`eventsOf()` needs, returning `{ version, success, vmStatus, events }` or `undefined` while
+the transaction is not committed, and an optional
+`simulateTransactionEvents({ transaction, signerPublicKey? }, descriptor?)` that
+`previewEvents()` needs, returning the same shape for a simulation. See the `EventAdapter` type for the full contract.
+
+A page may also carry `throughVersion`, the highest ledger version the source has
+finished examining: resuming from `nextCursor` returns nothing at or below it, so an
+empty page still says how far the scan got. `FullnodeScanAdapter` and `MemoryAdapter` set
+it whenever they examined something, and the wrapping adapters pass it through. A full
+handle page reports one version below its last event, since the next page may hold more
+events from that transaction. An account walk only claims the account's own transactions.
 
 To check a custom adapter against that contract, run `checkAdapter` from any
 test runner or a plain script. It walks a few pages (`maxPages`, default 3),
 then makes two more fetches and one call to each optional method present, and
 reports a result per rule (`page-shape`, `order`, `cursor-advance`,
-`cursor-precedence`, `foreign-cursor`, `head-version`, ...) instead of
+`through-version`, `cursor-precedence`, `foreign-cursor`, `head-version`, ...) instead of
 throwing. It only reads, but against a real source those reads are network
 calls:
 
@@ -764,6 +1005,39 @@ on pages that cannot change; leave it unset when unsure. `RoutingAdapter` and
 `withHooks` pass the flag through, `FallbackAdapter` keeps it only on pages
 from its first source, and `MemoryAdapter` never sets it.
 
+To capture a real session once and replay it offline, wrap an adapter with
+`recordingAdapter`. Every call that succeeds for one of the three descriptor
+kinds is kept, `fetchEvents` and the optional `getHeadVersion`,
+`getEarliestVersion`, `getBlock`, `getBlockHeights` and `getTransactionEvents` (by
+hash), and `JSON.stringify(recorder)` gives the recording.
+`replayAdapter` takes that object or its JSON text and answers the same
+requests with no network:
+
+```ts
+import { readFile, writeFile } from "node:fs/promises";
+import { FullnodeScanAdapter, StreamdClient, recordingAdapter, replayAdapter } from "streamd";
+
+const recorder = recordingAdapter(new FullnodeScanAdapter(aptos));
+await new StreamdClient({ adapter: recorder }).getEvents(descriptor, { fromVersion: 3_000_000_000n });
+await writeFile("events.recording.json", JSON.stringify(recorder));
+
+// later, offline
+const adapter = replayAdapter(await readFile("events.recording.json", "utf8"));
+const events = await new StreamdClient({ adapter }).getEvents(descriptor, { fromVersion: 3_000_000_000n });
+```
+
+Requests match on the descriptor and every `FetchOptions` field, as
+`CachingAdapter` keys them, so replay the same calls with the same options.
+Identical requests get their recorded results in the order they were issued,
+then the last one again, so a replayed `on()` sees what the recorded one saw.
+Any other request rejects with a plain `StreamdError` (not a
+`StreamdNetworkError`), and failures are never recorded, so a replayed
+subscription stops once it asks for a page the recording never saw. Events
+are stored as `serializeEvent` writes them, so a `bigint` inside `data` comes
+back as a decimal string; fullnode data has none.
+The library writes no files itself. A malformed recording throws a
+`StreamdError` when `replayAdapter` reads it.
+
 For offline unit tests, pass `MemoryAdapter` with a list of events (`aptos` is
 optional when a custom `adapter` is supplied):
 
@@ -825,6 +1099,45 @@ Polling errors are reported on stderr and tailing continues until the subscripti
 up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes
 (as when piped into `head`); `1` when the subscription stopped on an error; `2` for invalid
 arguments; `130` on a second Ctrl-C.
+
+### Forward events to a webhook
+
+`streamd forward` follows the same descriptors as `tail` and POSTs each batch of matching
+events (up to 25) to a webhook. The body is a JSON array of the objects `tail` prints, with
+`content-type: application/json`.
+
+```sh
+streamd forward --to https://hooks.example.com/aptos \
+  --header "Authorization: Bearer $HOOK_TOKEN" \
+  --cursor-file deposits.cursor 0x1::coin::DepositEvent
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--to <url>` | webhook URL, `http` or `https` (required) |
+| `--cursor-file <path>` | where the position is saved (default `streamd-forward.cursor`) |
+| `--retries <n>` | retries per batch after the first attempt (default `5`) |
+| `--timeout <ms>` | per-request timeout (default `10000`) |
+| `--header 'Name: value'` | extra request header, repeatable |
+
+`--network`, `--node-url`, `--from-version` and `--poll-interval` work as for `tail`.
+
+Delivery is at least once. The next page is not fetched until the webhook answers, and the
+cursor file is written (to a temporary file, then renamed over it) only after a `2xx`, so a
+restart resumes after the last acknowledged batch and may resend the one in flight. An
+existing cursor file wins over `--from-version`, and only works with the descriptor and
+node that wrote it.
+
+Network errors, timeouts, `408`, `429` and `5xx` are retried with exponential backoff from
+1s, capped at 60s; a `Retry-After` on `429` or `503` replaces the backoff for that wait.
+Any other status, redirects included, fails at once. The webhook receives only the body,
+the content type and your `--header` values, and neither the URL nor header values are
+printed.
+
+Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST without moving the
+cursor; `1` when a batch fails past its retries, the subscription stops on an error, or the
+cursor file cannot be read or written; `2` for invalid arguments. Run it under a supervisor
+that restarts on `1`.
 
 ## Development
 

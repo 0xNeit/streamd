@@ -58,6 +58,18 @@ export class RequestLimiter {
       view.getBlockHeights = (descriptor) =>
         this.run(() => adapter.getBlockHeights!(descriptor), cancelled);
     }
+    if (adapter.getTransactionEvents !== undefined) {
+      view.getTransactionEvents = (hash, descriptor) =>
+        this.run(() => adapter.getTransactionEvents!(hash, descriptor), cancelled);
+    }
+    if (adapter.simulateTransactionEvents !== undefined) {
+      view.simulateTransactionEvents = (simulation, descriptor) =>
+        this.run(() => adapter.simulateTransactionEvents!(simulation, descriptor), cancelled);
+    }
+    if (adapter.view !== undefined) {
+      view.view = (request, ledgerVersion, descriptor) =>
+        this.run(() => adapter.view!(request, ledgerVersion, descriptor), cancelled);
+    }
     return view;
   }
 

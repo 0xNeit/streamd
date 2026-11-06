@@ -5,7 +5,7 @@ import type {
   FetchOptions,
 } from "../types.js";
 import { StreamdError } from "../errors.js";
-import { descriptorKey } from "../utils.js";
+import { fetchKey } from "../utils.js";
 import { requireAdapter } from "./validate.js";
 
 const DEFAULT_MAX_ENTRIES = 1000;
@@ -13,15 +13,6 @@ const DEFAULT_MAX_ENTRIES = 1000;
 export interface CachingAdapterOptions {
   /** Pages kept before the least recently used is dropped (default: 1000). */
   maxEntries?: number;
-}
-
-function optionsKey(options: FetchOptions): string {
-  const fields = Object.entries(options)
-    .filter(([, value]) => value !== undefined)
-    .sort(([a], [b]) => a.localeCompare(b));
-  return JSON.stringify(fields, (_key, value: unknown) =>
-    typeof value === "bigint" ? `${value}n` : value,
-  );
 }
 
 function copy(page: EventPage): EventPage {
@@ -32,8 +23,10 @@ function copy(page: EventPage): EventPage {
  * Wraps `adapter` and reuses the pages it marks `final`, so re-reading settled
  * history skips the source. Every other page, and every failure, passes
  * through unstored. A cached page keeps being served after the source prunes
- * that history. `getHeadVersion`, `getEarliestVersion`, `getBlock` and
- * `getBlockHeights` pass through uncached, only when the wrapped adapter has them.
+ * that history. `getHeadVersion`, `getEarliestVersion`, `getBlock`,
+ * `getBlockHeights`, `getTransactionEvents`, `simulateTransactionEvents` and
+ * `view` pass through uncached, only when the wrapped adapter has them.
+ * (A view at a past version never changes, so it could be cached; it is not.)
  */
 export class CachingAdapter implements EventAdapter {
   private readonly source: EventAdapter;
@@ -45,6 +38,9 @@ export class CachingAdapter implements EventAdapter {
   getEarliestVersion?: EventAdapter["getEarliestVersion"];
   getBlock?: EventAdapter["getBlock"];
   getBlockHeights?: EventAdapter["getBlockHeights"];
+  getTransactionEvents?: EventAdapter["getTransactionEvents"];
+  simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
+  view?: EventAdapter["view"];
 
   constructor(adapter: EventAdapter, options: CachingAdapterOptions = {}) {
     this.source = requireAdapter(adapter, "CachingAdapter");
@@ -69,16 +65,27 @@ export class CachingAdapter implements EventAdapter {
     if (source.getBlockHeights !== undefined) {
       this.getBlockHeights = (descriptor) => source.getBlockHeights!(descriptor);
     }
+    if (source.getTransactionEvents !== undefined) {
+      this.getTransactionEvents = (hash, descriptor) =>
+        source.getTransactionEvents!(hash, descriptor);
+    }
+    if (source.simulateTransactionEvents !== undefined) {
+      this.simulateTransactionEvents = (simulation, descriptor) =>
+        source.simulateTransactionEvents!(simulation, descriptor);
+    }
+    if (source.view !== undefined) {
+      this.view = (request, ledgerVersion, descriptor) =>
+        source.view!(request, ledgerVersion, descriptor);
+    }
   }
 
   async fetchEvents(
     descriptor: EventDescriptor,
     options: FetchOptions = {},
   ): Promise<EventPage> {
-    const selector = descriptorKey(descriptor);
-    if (selector === undefined) return this.source.fetchEvents(descriptor, options);
+    const key = fetchKey(descriptor, options);
+    if (key === undefined) return this.source.fetchEvents(descriptor, options);
 
-    const key = `${selector}|${optionsKey(options)}`;
     const cached = this.pages.get(key);
     if (cached !== undefined) {
       this.pages.delete(key);

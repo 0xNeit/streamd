@@ -72,6 +72,23 @@ describe("defineEvent", () => {
     client.destroy();
   });
 
+  it("types a merged list by its shared payload, or an explicit union", async () => {
+    interface Withdraw {
+      to: string;
+    }
+    const withdraw = defineEvent<Withdraw>("0x1::coin::WithdrawEvent");
+    const client = new StreamdClient({ adapter: new MemoryAdapter([ev(1)]) });
+
+    const same = await client.getEvents([deposit, deposit]);
+    const one: Equals<typeof same, StreamdEvent<Deposit>[]> = true;
+    expect(one).toBe(true);
+
+    const mixed = await client.getEvents<Deposit | Withdraw>([deposit, withdraw]);
+    const union: Equals<typeof mixed, StreamdEvent<Deposit | Withdraw>[]> = true;
+    expect(union).toBe(true);
+    expect(mixed).toHaveLength(1);
+  });
+
   it("leaves plain descriptors as before", async () => {
     const client = new StreamdClient({ adapter: new MemoryAdapter([ev(1)]) });
     const plain: EventDescriptor = { kind: "module", eventType: "0x1::coin::DepositEvent" };

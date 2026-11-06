@@ -9,7 +9,9 @@ import { isAbsoluteVersion, raceAbort, resolveFromVersion, sleep } from "./utils
 import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
-import { StreamdError, StreamdNetworkError } from "./errors.js";
+import { StreamdError, StreamdNetworkError, retryAfterHint } from "./errors.js";
+import { mergeEvents, validateMerge } from "./merge.js";
+import { buildStateRequest, readState, validateWithState } from "./state.js";
 
 const DEFAULT_PAGE_SIZE = 25;
 const RETRY_BASE_DELAY = 1000;
@@ -74,7 +76,8 @@ function blockAt(
 /**
  * Runs `call` until it succeeds or `retries` extra attempts are spent. A
  * `StreamdError` that is not a network failure is the caller's input, which
- * fails the same way every time, so it is never retried.
+ * fails the same way every time, so it is never retried. A Retry-After hint
+ * replaces the exponential wait, under the same cap.
  */
 async function withRetries<T>(
   call: () => Promise<T>,
@@ -88,10 +91,45 @@ async function withRetries<T>(
       const invalidInput =
         err instanceof StreamdError && !(err instanceof StreamdNetworkError);
       if (attempt >= retries || invalidInput || signal?.aborted) throw err;
-      await sleep(Math.min(RETRY_BASE_DELAY * 2 ** attempt, RETRY_MAX_DELAY), signal);
+      const delay = retryAfterHint(err) ?? RETRY_BASE_DELAY * 2 ** attempt;
+      await sleep(Math.min(delay, RETRY_MAX_DELAY), signal);
     }
   }
 }
+
+/**
+ * The range's start and end as absolute versions, reading the adapter once
+ * for whichever bound is relative, `"earliest"`, `"head"`, a block or a time.
+ */
+async function resolveBounds(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  filter: EventFilter,
+): Promise<{ fromVersion: bigint | undefined; toVersion: bigint | undefined }> {
+  const { fromBlock, toBlock, fromTime, retries = 0, signal } = filter;
+  const head =
+    filter.toVersion === "head"
+      ? await withRetries(() => headVersion(adapter, descriptor), retries, signal)
+      : undefined;
+  const start = (): Promise<bigint | undefined> =>
+    fromTime !== undefined
+      ? resolveFromTime(adapter, descriptor, fromTime, () => signal?.aborted === true)
+      : fromBlock !== undefined
+        ? blockAt(adapter, descriptor, fromBlock).then((b) => b.firstVersion)
+        : resolveFromVersion(adapter, descriptor, filter.fromVersion, head);
+  const fromVersion = await withRetries(start, retries, signal);
+  const toVersion =
+    toBlock !== undefined
+      ? (await withRetries(() => blockAt(adapter, descriptor, toBlock), retries, signal))
+          .lastVersion
+      : filter.toVersion === "head"
+        ? head
+        : filter.toVersion;
+  return { fromVersion, toVersion };
+}
+
+/** One descriptor, or several whose events are merged into one history. */
+type Descriptors = EventDescriptor | readonly EventDescriptor[];
 
 /**
  * Historical event querying: `getEvents` and its paged form `getEventPages`.
@@ -103,7 +141,7 @@ export class EventQuery {
   ) {}
 
   async getEvents<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: Descriptors,
     filter: EventFilter = {},
   ): Promise<StreamdEvent<TData>[]> {
     const collected: StreamdEvent<TData>[] = [];
@@ -119,11 +157,48 @@ export class EventQuery {
    * Pages are chained by the adapter's cursor rather than a numeric offset,
    * so regions containing no matching events are skipped over instead of
    * terminating the walk early.
+   *
+   * An array of descriptors walks each one and merges their events in
+   * ascending `(version, eventIndex)` order (reversed for `"desc"`), an event
+   * selected by more than one returned once.
+   *
+   * `withState` is applied last, to the pages as returned; a merge reads it
+   * through its first descriptor, as it does its shared bounds.
    */
   async *getEventPages<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: Descriptors,
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
+  ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
+    const { withState, ...rest } = filter;
+    const { retries = 0, signal } = rest;
+    validateWithState(withState);
+    const pages = this.pages<TData>(descriptor, rest, pageSize);
+    if (withState === undefined) return yield* pages;
+    const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
+    const first = Array.isArray(descriptor)
+      ? (descriptor as readonly EventDescriptor[])[0]!
+      : (descriptor as EventDescriptor);
+    for await (const page of pages) {
+      const withStates: StreamdEvent[] = [];
+      for (const event of page as StreamdEvent[]) {
+        if (signal?.aborted) throw signal.reason;
+        // Built outside the retries: a throw from the caller's builder is not worth retrying.
+        const request = buildStateRequest(withState, event);
+        withStates.push(
+          request === undefined
+            ? event
+            : await withRetries(() => readState(adapter, first, event, request), retries, signal),
+        );
+      }
+      yield withStates as StreamdEvent<TData>[];
+    }
+  }
+
+  private async *pages<TData>(
+    descriptor: Descriptors,
+    filter: EventFilter,
+    pageSize: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
     const { orderBy, onCursor, ...rest } = filter;
     if (orderBy !== undefined && orderBy !== "asc" && orderBy !== "desc") {
@@ -133,8 +208,14 @@ export class EventQuery {
     validateToVersion(rest.toVersion);
     validateBlockRange(rest);
     validateFromTime(rest);
+    const merged = Array.isArray(descriptor) ? (descriptor as readonly EventDescriptor[]) : undefined;
+    if (merged !== undefined) validateMerge(merged, filter);
+    const ascending = (f: EventFilter) =>
+      merged !== undefined
+        ? this.mergedPages<TData>(merged, f, pageSize)
+        : this.ascendingPages<TData>(descriptor as EventDescriptor, f, pageSize);
     if (orderBy !== "desc") {
-      const end = yield* this.ascendingPages<TData>(descriptor, rest, pageSize);
+      const end = yield* ascending(rest);
       onCursor?.(end);
       return;
     }
@@ -147,7 +228,7 @@ export class EventQuery {
       return;
     }
     let latest: StreamdEvent<TData>[] = [];
-    const walk = this.ascendingPages<TData>(descriptor, { ...rest, limit: undefined }, pageSize);
+    const walk = ascending({ ...rest, limit: undefined });
     let step = await walk.next();
     for (; !step.done; step = await walk.next()) {
       latest.push(...step.value);
@@ -165,7 +246,7 @@ export class EventQuery {
    * `signal` is checked before each event rather than only between pages.
    */
   async *iterateEvents<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: Descriptors,
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>, void, unknown> {
@@ -175,6 +256,62 @@ export class EventQuery {
         yield event;
       }
     }
+  }
+
+  /**
+   * One ascending walk per descriptor, merged, in pages of `pageSize`. Each
+   * walk gets `limit` too: no descriptor supplies more than `limit` of the
+   * first `limit` merged events. `maxPages` therefore caps each walk.
+   */
+  private async *mergedPages<TData>(
+    descriptors: readonly EventDescriptor[],
+    filter: EventFilter,
+    pageSize: number,
+  ): AsyncGenerator<StreamdEvent<TData>[], undefined, unknown> {
+    if (filter.limit !== undefined && filter.limit <= 0) return undefined;
+    const shared = await this.sharedBounds(descriptors[0]!, filter);
+    const walks = descriptors.map((d) => this.ascendingPages<TData>(d, shared, pageSize));
+    let page: StreamdEvent<TData>[] = [];
+    for await (const event of mergeEvents(walks, filter.limit)) {
+      page.push(event);
+      if (page.length < pageSize) continue;
+      yield page;
+      page = [];
+    }
+    if (page.length > 0) yield page;
+    return undefined;
+  }
+
+  /**
+   * `filter` with its head, block and time bounds read once, against the
+   * first descriptor, so every walk of a merge covers the same versions.
+   * `"earliest"` is left for each walk, since sources prune differently.
+   */
+  private async sharedBounds(
+    descriptor: EventDescriptor,
+    filter: EventFilter,
+  ): Promise<EventFilter> {
+    const earliest = filter.fromVersion === "earliest";
+    const shared =
+      filter.toVersion === "head" ||
+      filter.fromBlock !== undefined ||
+      filter.toBlock !== undefined ||
+      filter.fromTime !== undefined ||
+      (!earliest && !isAbsoluteVersion(filter.fromVersion));
+    if (!shared) return filter;
+    const adapter = this.limiter.wrap(this.source, () => filter.signal?.aborted === true);
+    const bounds = await resolveBounds(adapter, descriptor, {
+      ...filter,
+      fromVersion: earliest ? undefined : filter.fromVersion,
+    });
+    return {
+      ...filter,
+      fromBlock: undefined,
+      toBlock: undefined,
+      fromTime: undefined,
+      fromVersion: earliest ? "earliest" : bounds.fromVersion,
+      toVersion: bounds.toVersion,
+    };
   }
 
   private async *ascendingPages<TData>(
@@ -224,23 +361,7 @@ export class EventQuery {
       // Only a relative, earliest, head, time or block bound awaits, so an
       // absolute range fetches synchronously.
       if (!resolved) {
-        const head =
-          filter.toVersion === "head"
-            ? await withRetries(() => headVersion(adapter, descriptor), retries, signal)
-            : undefined;
-        toVersion ??= head;
-        const start = (): Promise<bigint | undefined> =>
-          fromTime !== undefined
-            ? resolveFromTime(adapter, descriptor, fromTime, () => signal?.aborted === true)
-            : fromBlock !== undefined
-              ? blockAt(adapter, descriptor, fromBlock).then((b) => b.firstVersion)
-              : resolveFromVersion(adapter, descriptor, filter.fromVersion, head);
-        fromVersion = await withRetries(start, retries, signal);
-        if (toBlock !== undefined) {
-          toVersion = (
-            await withRetries(() => blockAt(adapter, descriptor, toBlock), retries, signal)
-          ).lastVersion;
-        }
+        ({ fromVersion, toVersion } = await resolveBounds(adapter, descriptor, filter));
         resolved = true;
       }
 

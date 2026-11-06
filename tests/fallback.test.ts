@@ -11,6 +11,7 @@ import type {
   EventDescriptor,
   FetchOptions,
   StreamdEvent,
+  TransactionSimulation,
 } from "../src/types.js";
 
 const PING = "0x1::test::Ping";
@@ -381,5 +382,94 @@ describe("FallbackAdapter blocks", () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  });
+});
+
+describe("FallbackAdapter scan progress", () => {
+  it("keeps throughVersion from whichever source answered", async () => {
+    const primary: EventAdapter = {
+      fetchEvents: async () => {
+        throw new StreamdNetworkError("down");
+      },
+    };
+    const backup: EventAdapter = {
+      fetchEvents: async () => ({ events: [ev(4)], hasMore: false, throughVersion: 9n }),
+    };
+    const page = await new FallbackAdapter([primary, backup]).fetchEvents(moduleDesc, {});
+    expect(page.throughVersion).toBe(9n);
+  });
+});
+
+describe("FallbackAdapter transaction lookup", () => {
+  const hash = `0x${"ef".repeat(32)}`;
+  const found = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+  const bare: EventAdapter = { fetchEvents: async () => ({ events: [], hasMore: false }) };
+
+  it("skips sources without it and falls back past a network failure", async () => {
+    const down: EventAdapter = {
+      ...bare,
+      getTransactionEvents: vi.fn(async () => {
+        throw new StreamdNetworkError("down", 503);
+      }),
+    };
+    const up: EventAdapter = { ...bare, getTransactionEvents: vi.fn(async () => found) };
+    const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    expect(await new FallbackAdapter([bare, down, up]).getTransactionEvents(hash, descriptor)).toBe(found);
+    expect(down.getTransactionEvents).toHaveBeenCalledTimes(1);
+    expect(up.getTransactionEvents).toHaveBeenCalledWith(hash, descriptor);
+  });
+
+  it("refuses when no source looks transactions up", async () => {
+    await expect(new FallbackAdapter([bare]).getTransactionEvents(hash)).rejects.toBeInstanceOf(StreamdError);
+  });
+});
+
+describe("FallbackAdapter simulation", () => {
+  const simulation = { transaction: { rawTransaction: {} } } as unknown as TransactionSimulation;
+  const simulated = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+  const bare: EventAdapter = { fetchEvents: async () => ({ events: [], hasMore: false }) };
+
+  it("skips sources without it and falls back past a network failure", async () => {
+    const down: EventAdapter = {
+      ...bare,
+      simulateTransactionEvents: vi.fn(async () => {
+        throw new StreamdNetworkError("down", 503);
+      }),
+    };
+    const up: EventAdapter = { ...bare, simulateTransactionEvents: vi.fn(async () => simulated) };
+    const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    expect(await new FallbackAdapter([bare, down, up]).simulateTransactionEvents(simulation, descriptor)).toBe(simulated);
+    expect(down.simulateTransactionEvents).toHaveBeenCalledTimes(1);
+    expect(up.simulateTransactionEvents).toHaveBeenCalledWith(simulation, descriptor);
+  });
+
+  it("refuses when no source simulates transactions", async () => {
+    await expect(new FallbackAdapter([bare]).simulateTransactionEvents(simulation)).rejects.toBeInstanceOf(StreamdError);
+  });
+});
+
+describe("FallbackAdapter view", () => {
+  const request = { function: "0x1::coin::balance" as const };
+
+  it("falls back on a network error to the next source that runs views", async () => {
+    const down: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      view: async () => {
+        throw new StreamdNetworkError("down", 503);
+      },
+    };
+    const up: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      view: vi.fn(async () => ["ok"]),
+    };
+    const adapter = new FallbackAdapter([down, new MemoryAdapter(), up]);
+    expect(await adapter.view(request, 3n)).toEqual(["ok"]);
+    expect(up.view).toHaveBeenCalledWith(request, 3n, undefined);
+  });
+
+  it("refuses when no source runs views", async () => {
+    await expect(new FallbackAdapter([new MemoryAdapter()]).view(request, 1n)).rejects.toThrow(
+      "No FallbackAdapter source runs views",
+    );
   });
 });

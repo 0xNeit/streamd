@@ -110,3 +110,20 @@ describe("public surface", () => {
     expect(entry.parseEvent).toBe(parseEvent);
   });
 });
+
+describe("serializeEvent state", () => {
+  it("round-trips state and refuses one that is not an array", () => {
+    const event: StreamdEvent = {
+      type: "0x1::a::B",
+      data: {},
+      version: 1n,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+      state: ["10", { inner: 2n }],
+    };
+    expect(parseEvent(serializeEvent(event)).state).toEqual(["10", { inner: "2" }]);
+    expect("state" in parseEvent(serializeEvent({ ...event, state: undefined }))).toBe(false);
+    const bad = serializeEvent(event).replace('"state":["10",{"inner":"2"}]', '"state":"10"');
+    expect(() => parseEvent(bad)).toThrow('"state" must be an array');
+  });
+});

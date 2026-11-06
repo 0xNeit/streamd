@@ -4,7 +4,7 @@ import type { EventPredicate, StreamdEvent } from "./types.js";
 
 const HEX_ADDRESS = /^0x[0-9a-fA-F]{1,64}$/;
 const ARRAY_INDEX = /^(0|[1-9]\d*)$/;
-const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFAULT_MAX_DEPTH = 8;
 const MISSING: unique symbol = Symbol("missing");
 

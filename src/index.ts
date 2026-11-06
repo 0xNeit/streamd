@@ -4,6 +4,7 @@ export { FallbackAdapter } from "./adapters/fallback.js";
 export { FullnodeScanAdapter } from "./adapters/fullnode.js";
 export { withHooks } from "./adapters/hooks.js";
 export { MemoryAdapter } from "./adapters/memory.js";
+export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
 export { RoutingAdapter } from "./adapters/routing.js";
 export { EventPoller } from "./poller.js";
 export { EventQuery } from "./query.js";
@@ -11,12 +12,15 @@ export { CursorManager, eventId } from "./cursor.js";
 export { checkAdapter } from "./conformance.js";
 export { defineEvent } from "./define.js";
 export { listEventHandles } from "./handles.js";
+export { checkDescriptor } from "./preflight.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
 export {
   StreamdError,
   StreamdNetworkError,
   StreamdPollingError,
   StreamdTimeoutError,
+  StreamdTransactionError,
+  parseRetryAfter,
 } from "./errors.js";
 
 export {
@@ -44,8 +48,19 @@ export type {
   AdapterRequest,
   AdapterResponse,
 } from "./adapters/hooks.js";
+export type {
+  RecordedCall,
+  RecordedMethod,
+  Recording,
+  RecordingAdapter,
+} from "./adapters/recording.js";
 export type { RoutingAdapterRoutes } from "./adapters/routing.js";
 export type { EventHandleInfo } from "./handles.js";
+export type {
+  DescriptorCheck,
+  EventTypeCheck,
+  EventTypeStatus,
+} from "./preflight.js";
 export type { ParseEventOptions } from "./serialize.js";
 export type {
   FieldPath,
@@ -66,6 +81,7 @@ export type {
   EventGuid,
   EventPage,
   EventPredicate,
+  EventsOfOptions,
   FetchOptions,
   HandleEventDescriptor,
   ListenerDefaults,
@@ -73,9 +89,17 @@ export type {
   ModuleEventDescriptor,
   MoveEventType,
   OnceOptions,
+  PreviewEventsOptions,
+  ReduceOptions,
+  Reducer,
+  Reduction,
   StreamdConfig,
   StreamdEvent,
   Subscription,
   SubscriptionOptions,
+  StateRequestBuilder,
   SubscriptionStatus,
+  TransactionEvents,
+  TransactionSimulation,
+  ViewRequest,
 } from "./types.js";
