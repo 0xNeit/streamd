@@ -60,8 +60,8 @@ export class EventPoller {
   /** Bumped by start(), so a poll left over from an earlier run can tell. */
   private generation = 0;
   /**
-   * The page still being delivered, if any. A restart's first poll waits for
-   * it, so a new run never delivers alongside a handler from the old one.
+   * The fetch or page delivery still running, if any. A restart's first poll
+   * waits for it, so a new run never fetches or delivers alongside the old one.
    */
   private delivering: Promise<void> = Promise.resolve();
   private readonly position: CursorManager;
@@ -229,12 +229,19 @@ export class EventPoller {
         this.fromTime = undefined;
         if (!this.isCurrent(gen)) return;
       }
-      const page = await adapter.fetchEvents(this.descriptor, {
+      const fetching = adapter.fetchEvents(this.descriptor, {
         cursor: this.position.token,
         fromVersion,
         limit: this.batchSize,
         orderBy: "asc",
       });
+      // The request runs on after a pause or stop, so a restart waits for it
+      // rather than sending a second one beside it.
+      this.delivering = fetching.then(
+        () => {},
+        () => {},
+      );
+      const page = await fetching;
       // A fetch that resolves after stop(), or after stop() and start(), must
       // not touch the cursor or the error budget the live run resumes with.
       if (!this.isCurrent(gen)) return;

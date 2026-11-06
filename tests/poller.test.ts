@@ -1756,6 +1756,30 @@ describe("EventPoller pause and resume", () => {
     expect(poller.status.consecutiveErrors).toBe(0);
   });
 
+  it("never has two fetches in flight when paused and resumed during one", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const fetchEvents = vi.fn(async () => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 200));
+      inFlight--;
+      return page([], 1);
+    });
+    const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), { pollInterval: 1000 });
+    poller.start();
+    await advanceTimersByTimeAsync(10);
+    for (let i = 0; i < 5; i++) {
+      poller.pause();
+      poller.resume();
+      await advanceTimersByTimeAsync(10);
+    }
+    await advanceTimersByTimeAsync(500);
+    expect(peak).toBe(1);
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+
+    poller.stop();
+  });
+
   it("carries consecutiveErrors across a pause and retries at once on resume", async () => {
     const fetchEvents = vi
       .fn()

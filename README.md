@@ -122,8 +122,9 @@ sub.resume();  // poll again at once, from the same cursor
 
 Pausing keeps the cursor, the dedup window, and the error count, so `resume()` picks up
 with the page it held and skips events already delivered. A handler already running when
-you pause finishes, the rest of its page waits for `resume()`, and a fetch in flight is
-discarded. While paused, `active` (and `sub.status.active`) is `false`. `unsubscribe()`,
+you pause finishes, the rest of its page waits for `resume()`, and a fetch in flight runs
+to completion with its result discarded: `resume()` waits for it rather than sending a
+second request. While paused, `active` (and `sub.status.active`) is `false`. `unsubscribe()`,
 `destroy()`, or the `signal` aborting still ends a paused subscription, and `resume()` never
 revives one that has ended, including after `maxErrors`.
 
