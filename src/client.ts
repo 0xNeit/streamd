@@ -20,6 +20,7 @@ import {
   StreamdTimeoutError,
 } from "./errors.js";
 import { generateId, onAbort } from "./utils.js";
+import { normalizeAddress } from "./filter.js";
 import { eventStream } from "./stream.js";
 import { RequestLimiter } from "./limiter.js";
 
@@ -42,6 +43,42 @@ function resolveLimiter(max: number | undefined): RequestLimiter {
   return new RequestLimiter(max);
 }
 
+function typeSet(types: unknown): unknown[] {
+  return Array.isArray(types) ? [...new Set(types)].sort() : [types];
+}
+
+/**
+ * Value key for listener lookup: equal for descriptors that select the same
+ * events, undefined for anything that is not one of the three kinds.
+ */
+function descriptorKey(d: EventDescriptor | undefined): string | undefined {
+  switch (d?.kind) {
+    case "module":
+      return JSON.stringify(["module", typeSet(d.eventType)]);
+    case "handle":
+      return JSON.stringify([
+        "handle",
+        normalizeAddress(d.accountAddress) ?? d.accountAddress,
+        d.eventHandleStruct,
+        d.fieldName,
+      ]);
+    case "account":
+      return JSON.stringify([
+        "account",
+        normalizeAddress(d.accountAddress) ?? d.accountAddress,
+        d.eventTypes === undefined ? null : typeSet(d.eventTypes),
+      ]);
+    default:
+      return undefined;
+  }
+}
+
+/** An `on()` or `onBatch()` subscription, as `off()` and friends see it. */
+interface Listener {
+  key: string | undefined;
+  callback: unknown;
+}
+
 function resolveAdapter(config: StreamdConfig): EventAdapter {
   if (config.adapter !== undefined) return config.adapter;
   if (config.aptos === undefined) {
@@ -62,6 +99,8 @@ export class StreamdClient {
   /** Shared by every poller and query, so the cap holds client-wide. */
   private readonly limiter: RequestLimiter;
   private readonly subscriptions = new Map<string, EventPoller>();
+  /** The `on()`/`onBatch()` subset of `subscriptions`; `once()` and streams own theirs. */
+  private readonly listeners = new Map<string, Listener>();
   /** Open streams, so destroy() can end their loops rather than strand them. */
   private readonly streams = new Set<() => void>();
 
@@ -87,7 +126,7 @@ export class StreamdClient {
     callback: EventCallback<TData>,
     options?: ListenerOptions,
   ): Subscription {
-    return this.subscribe(descriptor, callback as EventCallback, options);
+    return this.subscribe(descriptor, callback as EventCallback, options, callback);
   }
 
   /**
@@ -99,18 +138,25 @@ export class StreamdClient {
     callback: BatchCallback<TData>,
     options?: ListenerOptions,
   ): Subscription {
-    return this.subscribe(descriptor, { batch: callback as BatchCallback }, options);
+    return this.subscribe(
+      descriptor,
+      { batch: callback as BatchCallback },
+      options,
+      callback,
+    );
   }
 
   private subscribe(
     descriptor: EventDescriptor,
     delivery: Delivery,
     options?: ListenerOptions,
+    listener?: unknown,
   ): Subscription {
     const id = generateId();
     let detach = () => {};
     const forget = () => {
       this.subscriptions.delete(id);
+      this.listeners.delete(id);
       detach();
     };
     const poller = new EventPoller(
@@ -134,6 +180,9 @@ export class StreamdClient {
     // An already-aborted signal leaves the poller stopped: nothing to track.
     if (poller.active) {
       this.subscriptions.set(id, poller);
+      if (listener !== undefined) {
+        this.listeners.set(id, { key: descriptorKey(descriptor), callback: listener });
+      }
       detach = onAbort(options?.signal, forget);
     }
 
@@ -185,9 +234,9 @@ export class StreamdClient {
         sub.unsubscribe();
       };
       const fail = (reason: unknown) => (close(), reject(reason));
-      const sub = this.on<TData>(
+      const sub = this.subscribe(
         descriptor,
-        (event) => (close(), resolve(event)),
+        ((event: StreamdEvent<TData>) => (close(), resolve(event))) as EventCallback,
         {
           ...options,
           signal: undefined,
@@ -225,7 +274,7 @@ export class StreamdClient {
     const close = () => void stream.return?.();
     const stream = eventStream<TData>(
       (callback, onError) => {
-        const sub = this.on<TData>(descriptor, callback, {
+        const sub = this.subscribe(descriptor, callback as EventCallback, {
           ...options,
           signal: undefined,
           onError: (err) => {
@@ -261,6 +310,21 @@ export class StreamdClient {
     pageSize?: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
     return this.query.getEventPages<TData>(descriptor, filter, pageSize);
+  }
+
+  /**
+   * How many `on()`/`onBatch()` subscriptions are live (paused included), on
+   * `descriptor` or in total. `once()` and `stream()` are not counted.
+   */
+  listenerCount(descriptor?: EventDescriptor): number {
+    return this.matching(descriptor).length;
+  }
+
+  private matching(descriptor?: EventDescriptor): Listener[] {
+    const all = [...this.listeners.values()];
+    if (descriptor === undefined) return all;
+    const key = descriptorKey(descriptor);
+    return key === undefined ? [] : all.filter((l) => l.key === key);
   }
 
   /**
