@@ -294,8 +294,32 @@ const recent = await client.getEvents(Deposit, { fromVersion: -1000n });
 ```
 
 The type is your claim about the decoded JSON, not a runtime check: `u64`
-values still arrive as strings. At runtime the descriptor is the same plain
-object you would write by hand.
+values still arrive as strings unless you name them in `decode` (below), in
+which case describe them as `bigint`. At runtime the descriptor is the same
+plain object you would write by hand.
+
+### Decode integers
+
+Move `u64`, `u128` and `u256` values arrive as decimal strings. Name the
+top-level `data` fields you want as `bigint`:
+
+```ts
+const Deposit = defineEvent<{ store: string; amount: bigint }>(
+  "0x1::fungible_asset::Deposit",
+);
+
+client.on(Deposit, (event) => console.log(event.data.amount + 1n), {
+  decode: ["amount"],
+  where: whereField("amount", 1_000_000n),
+});
+const big = await client.getEvents(Deposit, { decode: ["amount"], limit: 10 });
+```
+
+`decode` works on `on`, `onBatch`, `once`, `stream`, `getEvents` and
+`getEventPages`, and runs before `where`, so predicates see the decoded
+values. An event without the field is left alone. A named field holding
+anything other than an unsigned decimal string is an error: a subscription
+reports it through `onError` and skips the event, and a query rejects.
 
 ## Filtering
 
