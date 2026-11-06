@@ -38,6 +38,20 @@ export interface HandleEventDescriptor {
   accountAddress: string;
   eventHandleStruct: string;
   fieldName: string;
+  creationNumber?: never;
+}
+
+/**
+ * Legacy EventHandle event, identified by the handle's guid: the account that
+ * created the handle and its creation number (`EventGuid`). Reaches handles
+ * the struct and field form cannot, such as one nested inside a struct field.
+ */
+export interface CreationNumberEventDescriptor {
+  kind: "handle";
+  accountAddress: string;
+  creationNumber: bigint;
+  eventHandleStruct?: never;
+  fieldName?: never;
 }
 
 /**
@@ -60,6 +74,7 @@ export interface AccountEventDescriptor {
 export type EventDescriptor<TData = unknown> =
   | ModuleEventDescriptor<TData>
   | HandleEventDescriptor
+  | CreationNumberEventDescriptor
   | AccountEventDescriptor;
 
 // ---- Parsed event ----

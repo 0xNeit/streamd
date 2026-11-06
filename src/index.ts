@@ -58,6 +58,7 @@ export type {
   BatchCallback,
   BlockHeights,
   BlockInfo,
+  CreationNumberEventDescriptor,
   EventAdapter,
   EventCallback,
   EventDescriptor,

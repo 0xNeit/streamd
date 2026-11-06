@@ -3,6 +3,7 @@ import type {
   AccountEventDescriptor,
   BlockHeights,
   BlockInfo,
+  CreationNumberEventDescriptor,
   EventAdapter,
   EventDescriptor,
   EventGuid,
@@ -15,6 +16,7 @@ import type {
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import {
   DEFAULT_LIMIT,
+  handlePath,
   moduleTypeFilter,
   parseCursor,
   requireAddress,
@@ -383,10 +385,11 @@ export class FullnodeScanAdapter implements EventAdapter {
 
   /**
    * Handle events paginate by sequence number, so the cursor is a sequence
-   * number rather than a ledger version.
+   * number rather than a ledger version. Both descriptor forms read the same
+   * stream, by struct and field or by creation number.
    */
   private async fetchHandleEvents(
-    descriptor: HandleEventDescriptor,
+    descriptor: HandleEventDescriptor | CreationNumberEventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage> {
     const limit = options.limit ?? DEFAULT_LIMIT;
@@ -397,8 +400,7 @@ export class FullnodeScanAdapter implements EventAdapter {
         ? parseCursor(options.cursor)
         : BigInt(options.offset ?? 0);
 
-    // The address lands in the URL path, so it is validated before use.
-    const address = requireAddress(descriptor.accountAddress);
+    const path = handlePath(descriptor);
 
     // Through the SDK, not bare fetch, so the config's headers and API key apply.
     const { data: raw } = await getAptosFullNode<
@@ -407,10 +409,7 @@ export class FullnodeScanAdapter implements EventAdapter {
     >({
       aptosConfig: this.aptos.config,
       originMethod: "fetchHandleEvents",
-      path:
-        `accounts/${address}/events/` +
-        `${encodeURIComponent(descriptor.eventHandleStruct)}/` +
-        `${encodeURIComponent(descriptor.fieldName)}`,
+      path,
       params: { start: start.toString(), limit },
     });
 

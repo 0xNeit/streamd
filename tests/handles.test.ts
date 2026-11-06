@@ -74,7 +74,7 @@ function serve(data: unknown) {
 }
 
 describe("listEventHandles", () => {
-  it("returns a handle descriptor and count for each top-level EventHandle field", async () => {
+  it("returns a handle descriptor, count and guid for each top-level EventHandle field", async () => {
     const { aptos } = serve(resources);
     expect(await listEventHandles(aptos, ADDR)).toEqual([
       {
@@ -85,6 +85,7 @@ describe("listEventHandles", () => {
           fieldName: "coin_register_events",
         },
         count: 15n,
+        guid: { creationNumber: 0n, accountAddress: ADDR },
       },
       {
         descriptor: {
@@ -94,6 +95,7 @@ describe("listEventHandles", () => {
           fieldName: "key_rotation_events",
         },
         count: 0n,
+        guid: { creationNumber: 1n, accountAddress: ADDR },
       },
       {
         descriptor: {
@@ -103,6 +105,7 @@ describe("listEventHandles", () => {
           fieldName: "deposit_events",
         },
         count: 7n,
+        guid: { creationNumber: 2n, accountAddress: ADDR },
       },
     ]);
   });

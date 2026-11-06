@@ -380,6 +380,69 @@ describe("FullnodeScanAdapter handle events", () => {
   });
 });
 
+const CREATION_PATH = `accounts/0x${"0".repeat(63)}1/events/7`;
+const creationDesc: EventDescriptor = { kind: "handle", accountAddress: "0x1", creationNumber: 7n };
+
+describe("FullnodeScanAdapter handle events by creation number", () => {
+  const serve = (events: ReturnType<typeof handleEvent>[]) =>
+    (path: string, params: Record<string, unknown>): Reply => {
+      if (path !== CREATION_PATH) throw new Error(`unexpected path ${path}`);
+      const start = Number(params.start ?? 0);
+      return { data: events.slice(start, start + Number(params.limit ?? 25)) };
+    };
+  const events = [handleEvent(0, 3), handleEvent(1, 7), handleEvent(2, 9)];
+
+  it("reads the creation-number endpoint and pages like the field form", async () => {
+    const { aptos, calls } = fakeNode(serve(events), {
+      API_KEY: "secret",
+      HEADERS: { "x-team": "streamd" },
+    });
+    const adapter = new FullnodeScanAdapter(aptos);
+    const first = await adapter.fetchEvents(creationDesc, { limit: 2 });
+    const second = await adapter.fetchEvents(creationDesc, { cursor: first.nextCursor!, limit: 2 });
+
+    expect(calls.map((c) => [c.path, c.params.start, c.params.limit])).toEqual([
+      [CREATION_PATH, "0", 2],
+      [CREATION_PATH, "2", 2],
+    ]);
+    expect(calls[0]?.headers["x-team"]).toBe("streamd");
+    expect(calls[0]?.headers.Authorization).toBe("Bearer secret");
+    expect(first).toMatchObject({ nextCursor: "2", hasMore: true, final: true });
+    expect(first.events.map((e) => [e.version, e.eventIndex])).toEqual([[3n, 0], [7n, 1]]);
+    expect(second.events.map((e) => e.version)).toEqual([9n]);
+    expect(second.hasMore).toBe(false);
+    expect(second.final).toBeUndefined();
+  });
+
+  const bad: [string, unknown][] = [
+    ["both forms", { ...handleDesc, creationNumber: 7n }],
+    ["a negative creationNumber", { ...creationDesc, creationNumber: -1n }],
+    ["a number creationNumber", { ...creationDesc, creationNumber: 7 }],
+    ["a string creationNumber", { ...creationDesc, creationNumber: "7" }],
+    ["an over-u64 creationNumber", { ...creationDesc, creationNumber: 2n ** 64n }],
+    ["no form at all", { kind: "handle", accountAddress: "0x1" }],
+    ["an empty fieldName", { ...handleDesc, fieldName: "" }],
+  ];
+  for (const [name, descriptor] of bad) {
+    it(`refuses ${name} as input, before any request`, async () => {
+      const { aptos, calls } = fakeNode(serve(events));
+      const err = await new FullnodeScanAdapter(aptos)
+        .fetchEvents(descriptor as EventDescriptor, {})
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+      expect(calls).toHaveLength(0);
+    });
+  }
+
+  it("accepts the largest u64 creation number", async () => {
+    const max = 2n ** 64n - 1n;
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    await new FullnodeScanAdapter(aptos).fetchEvents({ ...creationDesc, creationNumber: max }, {});
+    expect(calls[0]?.path).toBe(`accounts/0x${"0".repeat(63)}1/events/${max}`);
+  });
+});
+
 describe("FullnodeScanAdapter guids", () => {
   const ZERO = { creation_number: "0", account_address: "0x0" };
   const legacy = { creation_number: "3", account_address: "0x1" };

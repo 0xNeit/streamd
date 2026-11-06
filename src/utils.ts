@@ -112,13 +112,12 @@ export function descriptorKey(d: EventDescriptor | undefined): string | undefine
   switch (d?.kind) {
     case "module":
       return JSON.stringify(["module", typeSet(d.eventType)]);
-    case "handle":
-      return JSON.stringify([
-        "handle",
-        normalizeAddress(d.accountAddress) ?? d.accountAddress,
-        d.eventHandleStruct,
-        d.fieldName,
-      ]);
+    case "handle": {
+      const address = normalizeAddress(d.accountAddress) ?? d.accountAddress;
+      return d.creationNumber !== undefined
+        ? JSON.stringify(["handle", address, String(d.creationNumber)])
+        : JSON.stringify(["handle", address, d.eventHandleStruct, d.fieldName]);
+    }
     case "account":
       return JSON.stringify([
         "account",

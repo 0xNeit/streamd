@@ -1,8 +1,14 @@
 import { StreamdError } from "../errors.js";
 import { normalizeAddress } from "../filter.js";
-import type { EventAdapter, ModuleEventDescriptor } from "../types.js";
+import type {
+  CreationNumberEventDescriptor,
+  EventAdapter,
+  HandleEventDescriptor,
+  ModuleEventDescriptor,
+} from "../types.js";
 
 export const DEFAULT_LIMIT = 25;
+const U64_MAX = 2n ** 64n - 1n;
 const MOVE_EVENT_TYPE = /^[^:\s]+::[^:\s]+::[^:\s<>]+(?:<.+>)?$/;
 
 /**
@@ -31,6 +37,46 @@ export function validateOffset(offset: number | undefined): void {
   ) {
     throw new StreamdError(`Not a valid offset: ${offset}`);
   }
+}
+
+/**
+ * The fullnode path for a `handle` descriptor's events, in either form, after
+ * checking that it names exactly one. Every part lands in the URL path.
+ */
+export function handlePath(
+  descriptor: HandleEventDescriptor | CreationNumberEventDescriptor,
+): string {
+  const address = requireAddress(descriptor.accountAddress);
+  const { creationNumber, eventHandleStruct, fieldName } = descriptor as Partial<
+    HandleEventDescriptor & { creationNumber: unknown }
+  >;
+  if (creationNumber !== undefined) {
+    if (eventHandleStruct !== undefined || fieldName !== undefined) {
+      throw new StreamdError(
+        "A handle descriptor takes creationNumber or eventHandleStruct and fieldName, not both",
+      );
+    }
+    if (typeof creationNumber !== "bigint" || creationNumber < 0n || creationNumber > U64_MAX) {
+      throw new StreamdError(
+        `Not a valid creationNumber: ${String(creationNumber)} (expected a u64 bigint)`,
+      );
+    }
+    return `accounts/${address}/events/${creationNumber}`;
+  }
+  if (
+    typeof eventHandleStruct !== "string" ||
+    eventHandleStruct === "" ||
+    typeof fieldName !== "string" ||
+    fieldName === ""
+  ) {
+    throw new StreamdError(
+      "A handle descriptor needs eventHandleStruct and fieldName, or creationNumber",
+    );
+  }
+  return (
+    `accounts/${address}/events/` +
+    `${encodeURIComponent(eventHandleStruct)}/${encodeURIComponent(fieldName)}`
+  );
 }
 
 export function requireEventType(value: unknown): string {
