@@ -11,6 +11,7 @@ import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
 import { StreamdError, StreamdNetworkError, retryAfterHint } from "./errors.js";
 import { mergeEvents, validateMerge } from "./merge.js";
+import { buildStateRequest, readState, validateWithState } from "./state.js";
 
 const DEFAULT_PAGE_SIZE = 25;
 const RETRY_BASE_DELAY = 1000;
@@ -160,11 +161,44 @@ export class EventQuery {
    * An array of descriptors walks each one and merges their events in
    * ascending `(version, eventIndex)` order (reversed for `"desc"`), an event
    * selected by more than one returned once.
+   *
+   * `withState` is applied last, to the pages as returned; a merge reads it
+   * through its first descriptor, as it does its shared bounds.
    */
   async *getEventPages<TData = unknown>(
     descriptor: Descriptors,
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
+  ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
+    const { withState, ...rest } = filter;
+    const { retries = 0, signal } = rest;
+    validateWithState(withState);
+    const pages = this.pages<TData>(descriptor, rest, pageSize);
+    if (withState === undefined) return yield* pages;
+    const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
+    const first = Array.isArray(descriptor)
+      ? (descriptor as readonly EventDescriptor[])[0]!
+      : (descriptor as EventDescriptor);
+    for await (const page of pages) {
+      const withStates: StreamdEvent[] = [];
+      for (const event of page as StreamdEvent[]) {
+        if (signal?.aborted) throw signal.reason;
+        // Built outside the retries: a throw from the caller's builder is not worth retrying.
+        const request = buildStateRequest(withState, event);
+        withStates.push(
+          request === undefined
+            ? event
+            : await withRetries(() => readState(adapter, first, event, request), retries, signal),
+        );
+      }
+      yield withStates as StreamdEvent<TData>[];
+    }
+  }
+
+  private async *pages<TData>(
+    descriptor: Descriptors,
+    filter: EventFilter,
+    pageSize: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
     const { orderBy, onCursor, ...rest } = filter;
     if (orderBy !== undefined && orderBy !== "asc" && orderBy !== "desc") {

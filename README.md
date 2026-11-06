@@ -749,6 +749,54 @@ values. An event without the field is left alone. A named field holding
 anything other than an unsigned decimal string is an error: a subscription
 reports it through `onError` and skips the event, and a query rejects.
 
+### State at the event's version
+
+`withState` reads a view function at each event's own `version` and attaches
+its return values as `event.state`: state as it stood once the emitting
+transaction had run, such as the balance a withdrawal left behind:
+
+```ts
+const Withdraw = defineEvent<{ store: string; amount: bigint }>(
+  "0x1::fungible_asset::Withdraw",
+);
+
+client.on(Withdraw, (event) => console.log(event.data.amount, event.state), {
+  decode: ["amount"],
+  withState: (event) => ({
+    function: "0x1::fungible_asset::balance",
+    typeArguments: ["0x1::fungible_asset::FungibleStore"],
+    // `withState`, like `where`, sees an untyped event.
+    functionArguments: [(event.data as { store: string }).store],
+  }),
+});
+```
+
+Return `undefined` to deliver an event without state. Arguments are JSON Move
+values, with `bigint` sent as a decimal string, and `event.state` is the
+`unknown[]` the view returned. It works on `on`, `onBatch`, `once`, `stream`,
+`getEvents`, `iterateEvents` and `getEventPages`, after `decode` and `where`, so
+predicates cannot see `state` and filtered-out events cost nothing. On queries
+it runs after `limit` and `orderBy` too, and a merged query reads it through
+its first descriptor.
+
+Each delivered event costs one view request, made in order and counted by
+`maxConcurrentRequests`. The anonymous fullnode rate limit is a few hundred
+requests per five minutes, so a busy event type needs an API key or a
+narrow `where`. On `FullnodeScanAdapter`, a view that aborts (400) is refused as
+invalid input, since it fails the same way every time. A version the node has
+pruned fails as a `StreamdNetworkError` (status 410), so `FallbackAdapter` can
+answer it from another node; with no such node, a subscription stops after
+`maxErrors` consecutive failed polls.
+
+A query rejects when the builder throws, returns an invalid request, or the
+view fails (after its `retries`). A subscription reports a throwing builder or
+an invalid request through `onError` and skips that event. A view that fails
+with a network error fails the poll instead, so the event is delivered with its
+state once a retry succeeds; one refused as invalid input stops the
+subscription, as an invalid fetch does. Return `undefined` for events whose
+view would abort. The adapter needs `view`, which `FullnodeScanAdapter` implements as
+one JSON `/view` request at the event's version.
+
 ### Serialise events
 
 JSON has no `bigint`, so `JSON.stringify` throws on a `StreamdEvent`. Use
@@ -762,7 +810,8 @@ const back = parseEvent(text, { decode: ["amount"] });
 back.version; // bigint again
 ```
 
-`version`, `sequenceNumber` and `timestamp` always come back as `bigint`.
+`version`, `sequenceNumber` and `timestamp` always come back as `bigint`;
+`state` comes back as written.
 Inside `data`, every `bigint` is written as a decimal string, and only the
 top-level fields named in `decode` are turned back into `bigint`, by the same
 rule as the `decode` option; deeper ones stay strings. Malformed input throws

@@ -7,6 +7,7 @@ import type {
   FetchOptions,
   TransactionEvents,
   TransactionSimulation,
+  ViewRequest,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import { requireAdapter } from "./validate.js";
@@ -133,5 +134,16 @@ export class FallbackAdapter implements EventAdapter {
     return tryInOrder(reporting, (adapter) =>
       adapter.simulateTransactionEvents!(simulation, descriptor),
     );
+  }
+
+  /** From the first adapter that runs views, with the same fallback rules. */
+  async view(
+    request: ViewRequest,
+    ledgerVersion: bigint,
+    descriptor?: EventDescriptor,
+  ): Promise<unknown[]> {
+    const reporting = this.adapters.filter((a) => a.view !== undefined);
+    if (reporting.length === 0) throw new StreamdError("No FallbackAdapter source runs views");
+    return tryInOrder(reporting, (adapter) => adapter.view!(request, ledgerVersion, descriptor));
   }
 }

@@ -14,6 +14,7 @@ import type {
   StreamdEvent,
   TransactionEvents,
   TransactionSimulation,
+  ViewRequest,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import {
@@ -22,8 +23,10 @@ import {
   moduleTypeFilter,
   parseCursor,
   requireAddress,
+  requireLedgerVersion,
   requireSimulation,
   requireTransactionHash,
+  requireViewRequest,
   validateOffset,
 } from "./validate.js";
 
@@ -288,6 +291,42 @@ export class FullnodeScanAdapter implements EventAdapter {
       throw malformed;
     }
     return { version, success: txn.success, vmStatus: String(txn.vm_status ?? ""), events };
+  }
+
+  /**
+   * Runs the view function at `ledgerVersion`, whatever the descriptor: one
+   * JSON POST to `/view`, so no module ABI is fetched first. An aborting view
+   * (400) fails the same way every time, so it is a plain `StreamdError`; any
+   * other failure is a `StreamdNetworkError`, a pruned version included (410),
+   * since another node may still serve it, as `FallbackAdapter` relies on. Either
+   * keeps the SDK's message and status but not its `cause`, which holds the
+   * request and client config; the message still names the node URL.
+   */
+  async view(request: ViewRequest, ledgerVersion: bigint): Promise<unknown[]> {
+    const { function: fn, typeArguments = [], functionArguments = [] } = requireViewRequest(request);
+    const version = requireLedgerVersion(ledgerVersion);
+    let args: never[];
+    try {
+      // JSON has no bigint; Move takes u64 and wider as decimal strings.
+      args = JSON.parse(
+        JSON.stringify(functionArguments, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v)),
+      ) as never[];
+    } catch {
+      throw new StreamdError(`functionArguments for ${fn} must be JSON-serialisable`);
+    }
+    try {
+      return await this.aptos.viewJson({
+        payload: { function: fn, typeArguments: [...typeArguments] as never[], functionArguments: args },
+        options: { ledgerVersion: version },
+      });
+    } catch (err) {
+      const status = (err as { status?: unknown } | null)?.status;
+      const message = `Fullnode view ${fn} at version ${version} failed: ${
+        err instanceof Error ? err.message : "unknown error"
+      }`;
+      if (status === 400) throw new StreamdError(message);
+      throw new StreamdNetworkError(message, typeof status === "number" ? status : undefined);
+    }
   }
 
   private dispatch(

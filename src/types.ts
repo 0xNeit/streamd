@@ -127,7 +127,32 @@ export interface StreamdEvent<TData = unknown> {
    * none.
    */
   guid?: EventGuid;
+  /**
+   * What the `withState` view function returned at this event's `version`,
+   * that is, as state stood once the emitting transaction had run. Set only
+   * when `withState` built a request for this event.
+   */
+  state?: unknown[];
 }
+
+/**
+ * A view function call, as `withState` builds it and `EventAdapter.view`
+ * takes it. Arguments are JSON Move values as the fullnode's `/view` takes
+ * them: u64 and wider as decimal strings (a `bigint` is sent as one),
+ * addresses as hex strings.
+ */
+export interface ViewRequest {
+  /** `${address}::${module}::${function}`, e.g. `"0x1::coin::balance"`. */
+  function: `${string}::${string}::${string}`;
+  typeArguments?: readonly string[];
+  functionArguments?: readonly unknown[];
+}
+
+/**
+ * Builds the view request whose result becomes `event.state`, or `undefined`
+ * to deliver the event without state. Runs after `decode` and `where`.
+ */
+export type StateRequestBuilder = (event: StreamdEvent) => ViewRequest | undefined;
 
 /** An `EventHandle`'s on-chain id: the account that created it and its creation number. */
 export interface EventGuid {
@@ -199,6 +224,15 @@ export interface EventFilter {
    * one holding anything else rejects the query with a `StreamdError`.
    */
   decode?: readonly string[];
+  /**
+   * Attach `state` to each returned event: the view function this builds,
+   * read at the event's `version` through `EventAdapter.view`. Runs after
+   * `where`, `limit` and `orderBy`, so only returned events cost a call: one
+   * request each, in order, through `maxConcurrentRequests` and with
+   * `retries`. A throw, an invalid request or a failed view rejects the query.
+   * On `FullnodeScanAdapter` an aborting view is not retried.
+   */
+  withState?: StateRequestBuilder;
   /**
    * Stop after this many adapter pages, even if `limit` is unmet. Unbounded
    * when omitted. Use it to put a ceiling on a filtered walk.
@@ -277,6 +311,7 @@ export interface FetchOptions
     | "toBlock"
     | "where"
     | "decode"
+    | "withState"
     | "maxPages"
     | "retries"
     | "signal"
@@ -386,6 +421,18 @@ export interface ListenerOptions {
    * without counting toward `maxErrors`.
    */
   decode?: readonly string[];
+  /**
+   * Attach `state` to each delivered event: the view function this builds,
+   * read at the event's `version` through `EventAdapter.view`, after `where`.
+   * One request per delivered event, in order, through
+   * `maxConcurrentRequests`. A throw or an invalid request skips the event
+   * and goes to `onError` without counting toward `maxErrors`. A failed view
+   * fails the poll: events before it on the page are delivered, and the next
+   * poll retries from it (with `dedupWindow: 0`, redelivering those before).
+   * A view refused as invalid input, such as an aborting view on
+   * `FullnodeScanAdapter`, stops the subscription at once.
+   */
+  withState?: StateRequestBuilder;
   /**
    * Receives polling failures and errors thrown by `where` or the callback,
    * overriding `StreamdConfig.onError` for this subscription. A throw from it
@@ -517,7 +564,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, and the `simulateTransactionEvents` calls behind `previewEvents`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, the `simulateTransactionEvents` calls behind `previewEvents`, and the `view` calls behind `withState`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
@@ -687,6 +734,16 @@ export interface EventAdapter {
     simulation: TransactionSimulation,
     descriptor?: EventDescriptor,
   ): Promise<TransactionEvents>;
+  /**
+   * The return values of the view function `request` names, read at
+   * `ledgerVersion`: state as of the end of that transaction. `descriptor` is
+   * for routing only. Optional; `withState` needs it.
+   */
+  view?(
+    request: ViewRequest,
+    ledgerVersion: bigint,
+    descriptor?: EventDescriptor,
+  ): Promise<unknown[]>;
 }
 
 /** A built, unsigned transaction to simulate, as `EventAdapter.simulateTransactionEvents` takes it. */

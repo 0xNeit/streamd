@@ -229,3 +229,18 @@ describe("CachingAdapter simulation", () => {
     ).toBeUndefined();
   });
 });
+
+describe("CachingAdapter view", () => {
+  it("passes view through uncached, only when the source has it", async () => {
+    let calls = 0;
+    const source = Object.assign(new MemoryAdapter(), {
+      view: async (_r: unknown, version: bigint) => (calls++, [String(version)]),
+    });
+    const cached = new CachingAdapter(source);
+    const request = { function: "0x1::coin::balance" as const };
+    expect(await cached.view!(request, 4n)).toEqual(["4"]);
+    expect(await cached.view!(request, 4n)).toEqual(["4"]);
+    expect(calls).toBe(2);
+    expect(new CachingAdapter(new MemoryAdapter()).view).toBeUndefined();
+  });
+});

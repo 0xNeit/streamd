@@ -159,3 +159,15 @@ describe("SharedFetches", () => {
     expect(s.calls).toHaveLength(2);
   });
 });
+
+describe("SharedFetches view", () => {
+  it("passes view through to the adapter", async () => {
+    const adapter: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      view: async (_r, version) => [String(version)],
+    };
+    expect(await new SharedFetches(adapter).view(1000).view!({ function: "0x1::coin::balance" }, 5n)).toEqual([
+      "5",
+    ]);
+  });
+});

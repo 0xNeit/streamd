@@ -352,3 +352,35 @@ describe("RoutingAdapter simulation", () => {
     ).rejects.toThrow("does not simulate transactions");
   });
 });
+
+describe("RoutingAdapter view", () => {
+  const request = { function: "0x1::coin::balance" as const, functionArguments: ["0xa"] };
+  const viewing = (label: string): EventAdapter => ({
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    view: vi.fn(async () => [label]),
+  });
+
+  it("routes by descriptor kind, else to the default, and forwards every argument", async () => {
+    const module = viewing("module");
+    const fallback = viewing("default");
+    const router = new RoutingAdapter({ module, default: fallback });
+    const descriptor = { kind: "module" as const, eventType: "0x1::a::B" as const };
+    expect(await router.view(request, 7n, descriptor)).toEqual(["module"]);
+    expect(module.view).toHaveBeenCalledWith(request, 7n, descriptor);
+    expect(await router.view(request, 7n)).toEqual(["default"]);
+  });
+
+  it("refuses when no adapter runs views or none is routable", async () => {
+    const plain = new MemoryAdapter();
+    const descriptor = { kind: "module" as const, eventType: "0x1::a::B" as const };
+    await expect(new RoutingAdapter({ module: plain }).view(request, 1n, descriptor)).rejects.toThrow(
+      'descriptor kind "module" does not run views',
+    );
+    await expect(new RoutingAdapter({ module: plain }).view(request, 1n)).rejects.toThrow(
+      "needs a descriptor or a default adapter",
+    );
+    await expect(new RoutingAdapter({ default: plain }).view(request, 1n)).rejects.toThrow(
+      "The default adapter does not run views",
+    );
+  });
+});

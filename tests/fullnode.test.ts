@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { Account, Aptos, AptosConfig, Network, parseTypeTag } from "@aptos-labs/ts-sdk";
 import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
+import { FallbackAdapter } from "../src/adapters/fallback.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import type { EventDescriptor } from "../src/types.js";
 
@@ -1035,5 +1036,129 @@ describe("FullnodeScanAdapter simulation", () => {
     expect(bad).toBeInstanceOf(StreamdNetworkError);
     expect((bad as StreamdNetworkError).statusCode).toBe(400);
     expect((bad as StreamdNetworkError).cause).toBeUndefined();
+  });
+});
+
+describe("FullnodeScanAdapter view", () => {
+  const BALANCE = "0x1::coin::balance";
+
+  it("POSTs one JSON view at the ledger version and returns its values", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: ["1500"] }));
+    const state = await new FullnodeScanAdapter(aptos).view(
+      {
+        function: BALANCE,
+        typeArguments: ["0x1::aptos_coin::AptosCoin"],
+        functionArguments: ["0xa", 7n, [1n, 2n]],
+      },
+      42n,
+    );
+    expect(state).toEqual(["1500"]);
+    expect(calls.map((c) => [c.method, c.path, c.params.ledger_version])).toEqual([
+      ["POST", "view", 42n],
+    ]);
+    expect(calls[0]!.body).toEqual({
+      function: BALANCE,
+      type_arguments: ["0x1::aptos_coin::AptosCoin"],
+      arguments: ["0xa", "7", ["1", "2"]],
+    });
+  });
+
+  it("sends empty type arguments and arguments when omitted", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    await new FullnodeScanAdapter(aptos).view({ function: "0x1::block::get_epoch_interval_secs" }, 0n);
+    expect(calls[0]!.body).toEqual({
+      function: "0x1::block::get_epoch_interval_secs",
+      type_arguments: [],
+      arguments: [],
+    });
+  });
+
+  it("refuses malformed requests and versions before any request", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    const bad: [unknown, unknown][] = [
+      [null, 1n],
+      [{ function: "coin::balance" }, 1n],
+      [{ function: "0x1::coin" }, 1n],
+      [{ function: "0xzz::coin::balance" }, 1n],
+      [{ function: `0x${"1".repeat(65)}::m::f` }, 1n],
+      [{ function: BALANCE, typeArguments: [1] }, 1n],
+      [{ function: "0x1::coin::balance/../x" }, 1n],
+      [{ function: 7 }, 1n],
+      [{ function: BALANCE, typeArguments: "0x1::aptos_coin::AptosCoin" }, 1n],
+      [{ function: BALANCE, typeArguments: [""] }, 1n],
+      [{ function: BALANCE, functionArguments: "0xa" }, 1n],
+      [{ function: BALANCE }, -1n],
+      [{ function: BALANCE }, 2n ** 64n],
+      [{ function: BALANCE }, 1],
+    ];
+    for (const [request, version] of bad) {
+      const err = await adapter.view(request as never, version as never).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+    expect(calls).toHaveLength(0);
+  });
+
+  it("never echoes arguments and shows only the start of a bad function id", async () => {
+    const { aptos } = fakeNode(() => ({ data: [] }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    const long = await adapter.view({ function: `0x1::${"m".repeat(200)}` } as never, 1n).catch((e: Error) => e);
+    expect((long as Error).message.length).toBeLessThan(200);
+    const args = await adapter
+      .view({ function: BALANCE, functionArguments: "secret-arg" } as never, 1n)
+      .catch((e: Error) => e);
+    expect((args as Error).message).not.toContain("secret-arg");
+  });
+
+  it("refuses an aborting view as invalid input, with no cause", async () => {
+    const { aptos } = fakeNode(() => ({ status: 400, data: { message: "nope" } }));
+    const err = await new FullnodeScanAdapter(aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdError).cause).toBeUndefined();
+    expect((err as Error).message).toContain(`${BALANCE} at version 5`);
+  });
+
+  it("rejects a pruned version and other node errors as network errors with status and no cause", async () => {
+    for (const status of [410, 503]) {
+      const { aptos } = fakeNode(() => ({ status, data: { message: "down" } }));
+      const err = await new FullnodeScanAdapter(aptos).view({ function: BALANCE }, 5n).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdNetworkError);
+      expect((err as StreamdNetworkError).statusCode).toBe(status);
+      expect((err as StreamdNetworkError).cause).toBeUndefined();
+    }
+  });
+
+  it("lets FallbackAdapter answer a pruned view from another node", async () => {
+    const pruned = fakeNode(() => ({ status: 410, data: { message: "pruned" } }));
+    const archive = fakeNode(() => ({ data: ["7"] }));
+    const adapter = new FallbackAdapter([
+      new FullnodeScanAdapter(pruned.aptos),
+      new FullnodeScanAdapter(archive.aptos),
+    ]);
+    expect(await adapter.view({ function: BALANCE }, 5n)).toEqual(["7"]);
+  });
+
+  it("sends the values it checked and refuses unserialisable arguments", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    let reads = 0;
+    const shifty = {
+      get function() {
+        return reads++ === 0 ? BALANCE : "0x1::other::thing";
+      },
+    };
+    await adapter.view(shifty as never, 1n);
+    expect((calls[0]!.body as { function: string }).function).toBe(BALANCE);
+    const circular: unknown[] = [];
+    circular.push(circular);
+    const err = await adapter.view({ function: BALANCE, functionArguments: circular }, 1n).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("JSON-serialisable");
+    expect(calls).toHaveLength(1);
   });
 });

@@ -236,3 +236,19 @@ describe("withHooks simulation", () => {
     expect(withHooks({ fetchEvents: async () => PAGE }, hooks).simulateTransactionEvents).toBeUndefined();
   });
 });
+
+describe("withHooks view", () => {
+  it("passes view through unhooked, only when the source has it", async () => {
+    const calls: unknown[] = [];
+    const source = Object.assign(new MemoryAdapter(), {
+      view: async (...args: unknown[]) => (calls.push(args), ["1"]),
+    });
+    const requests: unknown[] = [];
+    const wrapped = withHooks(source, { onRequest: (r) => void requests.push(r) });
+    const request = { function: "0x1::coin::balance" as const };
+    expect(await wrapped.view!(request, 4n)).toEqual(["1"]);
+    expect(calls).toEqual([[request, 4n, undefined]]);
+    expect(requests).toHaveLength(0);
+    expect(withHooks(new MemoryAdapter(), {}).view).toBeUndefined();
+  });
+});

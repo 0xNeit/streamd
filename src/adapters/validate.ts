@@ -6,6 +6,7 @@ import type {
   HandleEventDescriptor,
   ModuleEventDescriptor,
   TransactionSimulation,
+  ViewRequest,
 } from "../types.js";
 
 export const DEFAULT_LIMIT = 25;
@@ -54,6 +55,42 @@ export function requireSimulation(value: unknown): TransactionSimulation {
     throw new StreamdError("signerPublicKey must be a PublicKey");
   }
   return value as TransactionSimulation;
+}
+
+const VIEW_FUNCTION = /^0x[0-9a-fA-F]{1,64}::[A-Za-z_][A-Za-z0-9_]*::[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * A view request with a well-formed function id and argument lists. Refusals
+ * show at most the start of the function id, never the arguments.
+ */
+export function requireViewRequest(value: unknown): ViewRequest {
+  if (!isObject(value)) throw new StreamdError("A view request must be an object");
+  const { function: fn, typeArguments, functionArguments } = value;
+  if (typeof fn !== "string" || !VIEW_FUNCTION.test(fn)) {
+    const shown = typeof fn === "string" ? JSON.stringify(fn.slice(0, 80)) : typeof fn;
+    throw new StreamdError(`Not a valid view function id (address::module::function): ${shown}`);
+  }
+  if (
+    typeArguments !== undefined &&
+    (!Array.isArray(typeArguments) || typeArguments.some((t) => typeof t !== "string" || t === ""))
+  ) {
+    throw new StreamdError(`typeArguments for ${fn} must be an array of non-empty strings`);
+  }
+  if (functionArguments !== undefined && !Array.isArray(functionArguments)) {
+    throw new StreamdError(`functionArguments for ${fn} must be an array`);
+  }
+  // A fresh object, so a getter cannot answer the check and the request differently.
+  const checked: ViewRequest = { function: fn as ViewRequest["function"] };
+  if (typeArguments !== undefined) checked.typeArguments = [...(typeArguments as string[])];
+  if (functionArguments !== undefined) checked.functionArguments = [...functionArguments];
+  return checked;
+}
+
+export function requireLedgerVersion(value: unknown): bigint {
+  if (typeof value !== "bigint" || value < 0n || value > U64_MAX) {
+    throw new StreamdError(`Not a valid ledger version: ${String(value)} (expected a u64 bigint)`);
+  }
+  return value;
 }
 
 export function parseCursor(cursor: string): bigint {

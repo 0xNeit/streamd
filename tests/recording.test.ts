@@ -446,3 +446,47 @@ describe("recordingAdapter simulation", () => {
       .toBeUndefined();
   });
 });
+
+describe("recordingAdapter view", () => {
+  const request = { function: "0x1::coin::balance" as const, functionArguments: ["0xa", 7n] };
+
+  it("records views by request and version, and replays them offline", async () => {
+    let calls = 0;
+    const source = Object.assign(new MemoryAdapter(), {
+      view: async (_r: unknown, version: bigint) => (calls++, [{ value: String(version) }]),
+    });
+    const recorder = recordingAdapter(source);
+    expect(await recorder.view!(request, 3n)).toEqual([{ value: "3" }]);
+    await recorder.view!(request, 4n);
+    const replay = replayAdapter(JSON.stringify(recorder));
+    expect(calls).toBe(2);
+    const replayed = await replay.view!({ ...request, functionArguments: ["0xa", "7"] }, 3n);
+    expect(replayed).toEqual([{ value: "3" }]);
+    (replayed[0] as { value: string }).value = "changed";
+    expect(await replay.view!(request, 3n)).toEqual([{ value: "3" }]);
+    expect(await replay.view!(request, 4n)).toEqual([{ value: "4" }]);
+    await expect(replay.view!(request, 5n)).rejects.toThrow("No recorded view call");
+    await expect(replay.view!({ ...request, typeArguments: ["0x1::a::B"] }, 3n)).rejects.toThrow(
+      "No recorded view call",
+    );
+    expect(replayAdapter(recordingAdapter(new MemoryAdapter()).toJSON()).view).toBeUndefined();
+  });
+
+  it("refuses a recorded view whose result is not an array", () => {
+    const bad = { format: "streamd-recording", version: 1, calls: [{ method: "view", key: "k", result: {} }] };
+    expect(() => replayAdapter(bad as never)).toThrow("expected an array");
+  });
+
+  it("serves withState offline from a recording", async () => {
+    const event: StreamdEvent = { type: "0x1::a::B", data: {}, version: 9n, sequenceNumber: 0n, eventIndex: 0 };
+    const source = Object.assign(new MemoryAdapter([event]), {
+      view: async (_r: unknown, version: bigint) => [String(version)],
+    });
+    const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::a::B" };
+    const options = { fromVersion: 0n, withState: () => request };
+    const recorder = recordingAdapter(source);
+    await new StreamdClient({ adapter: recorder }).getEvents(descriptor, options);
+    const offline = new StreamdClient({ adapter: replayAdapter(JSON.stringify(recorder)) });
+    expect((await offline.getEvents(descriptor, options))[0]!.state).toEqual(["9"]);
+  });
+});
