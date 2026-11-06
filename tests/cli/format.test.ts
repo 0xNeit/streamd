@@ -16,12 +16,16 @@ function ev(overrides: Partial<StreamdEvent> = {}): StreamdEvent {
 describe("formatEvent", () => {
   it("serialises bigint fields as decimal strings in a fixed order", () => {
     const line = formatEvent(
-      ev({ transactionHash: "0xabc", timestamp: 1_700_000_000_000_000n }),
+      ev({
+        transactionHash: "0xabc",
+        timestamp: 1_700_000_000_000_000n,
+        sender: "0x1",
+      }),
     );
     expect(line).toBe(
       '{"type":"0x1::coin::DepositEvent","data":{"amount":"100"},"version":"42",' +
         '"sequenceNumber":"7","eventIndex":1,"transactionHash":"0xabc",' +
-        '"timestamp":"1700000000000000"}',
+        '"timestamp":"1700000000000000","sender":"0x1"}',
     );
   });
 
