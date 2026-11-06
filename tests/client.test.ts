@@ -1615,6 +1615,29 @@ describe("StreamdClient earliest start", () => {
   });
 });
 
+describe("StreamdClient block range", () => {
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+  it("getEvents() with fromBlock and toBlock returns only that range, through the limiter", async () => {
+    const memory = new MemoryAdapter([5, 10, 15, 20, 25].map((v) => makeEvent(v)));
+    // One block per ten versions: block n is versions 10n..10n+9.
+    const getBlock = vi.fn(async (_d: unknown, height: bigint) => ({
+      height,
+      firstVersion: height * 10n,
+      lastVersion: height * 10n + 9n,
+      timestamp: 0n,
+    }));
+    const client = new StreamdClient({
+      adapter: { fetchEvents: (d, o) => memory.fetchEvents(d, o), getBlock },
+      maxConcurrentRequests: 1,
+    });
+
+    const events = await client.getEvents(descriptor, { fromBlock: 1n, toBlock: 1n });
+    expect(events.map((e) => e.version)).toEqual([10n, 15n]);
+    expect(getBlock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("StreamdClient latest-first queries", () => {
   it("getEvents() with orderBy desc returns the most recent events across pages", async () => {
     const versions = Array.from({ length: 60 }, (_, i) => makeEvent(i + 1));

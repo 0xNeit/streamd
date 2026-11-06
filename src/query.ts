@@ -1,4 +1,5 @@
 import type {
+  BlockInfo,
   EventAdapter,
   EventDescriptor,
   EventFilter,
@@ -20,6 +21,38 @@ function validateRetries(retries: number | undefined): void {
       `Invalid retries: ${String(retries)} (expected a non-negative integer)`,
     );
   }
+}
+
+/** Rejects block bounds that are malformed, empty, or clash with a version bound. */
+function validateBlockRange(filter: EventFilter): void {
+  const { fromBlock, toBlock } = filter;
+  for (const [name, value] of [["fromBlock", fromBlock], ["toBlock", toBlock]] as const) {
+    if (value !== undefined && (typeof value !== "bigint" || value < 0n)) {
+      throw new StreamdError(
+        `Invalid ${name}: ${String(value)} (expected a non-negative bigint)`,
+      );
+    }
+  }
+  if (fromBlock !== undefined && filter.fromVersion !== undefined) {
+    throw new StreamdError("Set fromBlock or fromVersion, not both");
+  }
+  if (toBlock !== undefined && filter.toVersion !== undefined) {
+    throw new StreamdError("Set toBlock or toVersion, not both");
+  }
+  if (fromBlock !== undefined && toBlock !== undefined && fromBlock > toBlock) {
+    throw new StreamdError(`fromBlock ${fromBlock} is after toBlock ${toBlock}`);
+  }
+}
+
+function blockAt(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  height: bigint,
+): Promise<BlockInfo> {
+  if (adapter.getBlock === undefined) {
+    throw new StreamdError("fromBlock and toBlock need an adapter that implements getBlock");
+  }
+  return adapter.getBlock(descriptor, height);
 }
 
 /**
@@ -81,6 +114,7 @@ export class EventQuery {
       throw new StreamdError('orderBy must be "asc" or "desc"');
     }
     validateRetries(rest.retries);
+    validateBlockRange(rest);
     if (orderBy !== "desc") {
       yield* this.ascendingPages<TData>(descriptor, rest, pageSize);
       return;
@@ -123,8 +157,16 @@ export class EventQuery {
     filter: EventFilter,
     pageSize: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    const { where, decode: fields, maxPages, retries = 0, signal, ...adapterFilter } =
-      filter;
+    const {
+      where,
+      decode: fields,
+      maxPages,
+      retries = 0,
+      signal,
+      fromBlock,
+      toBlock,
+      ...adapterFilter
+    } = filter;
     const decode = fieldDecoder(fields);
     const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
     const limit = filter.limit;
@@ -132,7 +174,9 @@ export class EventQuery {
     let fromVersion = isAbsoluteVersion(filter.fromVersion)
       ? filter.fromVersion
       : undefined;
-    let resolved = isAbsoluteVersion(filter.fromVersion);
+    let toVersion = filter.toVersion;
+    let resolved =
+      isAbsoluteVersion(filter.fromVersion) && fromBlock === undefined && toBlock === undefined;
     let fetched = 0;
     let pages = 0;
 
@@ -145,14 +189,23 @@ export class EventQuery {
         limit !== undefined ? Math.min(pageSize, limit - fetched) : pageSize;
       if (batchLimit <= 0) break;
 
-      // Only a relative or earliest start awaits, so an absolute one fetches
-      // synchronously.
+      // Only a relative, earliest or block bound awaits, so an absolute range
+      // fetches synchronously.
       if (!resolved) {
-        fromVersion = await withRetries(
-          () => resolveFromVersion(adapter, descriptor, filter.fromVersion),
-          retries,
-          signal,
-        );
+        fromVersion =
+          fromBlock === undefined
+            ? await withRetries(
+                () => resolveFromVersion(adapter, descriptor, filter.fromVersion),
+                retries,
+                signal,
+              )
+            : (await withRetries(() => blockAt(adapter, descriptor, fromBlock), retries, signal))
+                .firstVersion;
+        if (toBlock !== undefined) {
+          toVersion = (
+            await withRetries(() => blockAt(adapter, descriptor, toBlock), retries, signal)
+          ).lastVersion;
+        }
         resolved = true;
       }
 
@@ -163,6 +216,7 @@ export class EventQuery {
           // The cursor carries position after the first page; fromVersion and
           // offset only seed the initial request.
           fromVersion: cursor === undefined ? fromVersion : undefined,
+          toVersion,
           offset: cursor === undefined ? filter.offset : undefined,
           cursor,
           limit: batchLimit,

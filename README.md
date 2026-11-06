@@ -262,6 +262,25 @@ A failed page is retried up to `retries` times, waiting 1s, 2s, 4s and so on (ca
 are retried: any other `StreamdError` means the request itself is wrong and rejects at once.
 `signal` cancels a wait.
 
+### Query by block range
+
+```ts
+const inBlocks = await streamd.getEvents(descriptor, {
+  fromBlock: 1_141_400_000n,
+  toBlock: 1_141_400_010n,
+});
+```
+
+`fromBlock` and `toBlock` bound a query by block height, both inclusive: the query runs
+from the first version of `fromBlock` to the last version of `toBlock`. Each is looked up
+once, from the adapter's `getBlock`, before the first page, and `retries` covers the
+lookups too. Either may be used alone, alongside the other side's version bound
+(`fromBlock` with `toVersion`, or `fromVersion` with `toBlock`). Setting both `fromBlock`
+and `fromVersion`, or both `toBlock` and `toVersion`, is rejected as invalid input, as is a
+negative height or a `fromBlock` above `toBlock`. `orderBy: "desc"` and `iterateEvents`
+work over the resulting range. `FullnodeScanAdapter` reads blocks from the fullnode, so a
+pruned block fails with a `StreamdNetworkError` (status 410). Listeners take versions only.
+
 > [!NOTE]
 > Renamed in 0.x: `getLogs` is now `getEvents` and `getLogsIterator` is now
 > `getEventPages`. Arguments and results are unchanged.
@@ -295,7 +314,8 @@ const streamd = new StreamdClient({ aptos, maxConcurrentRequests: 4 });
 
 At most that many adapter calls run at once across every subscription and query on the
 client; the rest wait their turn in order. `fetchEvents`, the `getHeadVersion` read behind
-a negative `fromVersion`, and the `getEarliestVersion` read behind `"earliest"` all count. The unit is one adapter call, not one HTTP request:
+a negative `fromVersion`, the `getEarliestVersion` read behind `"earliest"`, and the
+`getBlock` lookups behind `fromBlock`/`toBlock` all count. The unit is one adapter call, not one HTTP request:
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
 dropped without reaching the adapter. Omit the option for no limit.
@@ -493,8 +513,9 @@ const streamd = new StreamdClient({ aptos, adapter: myIndexAdapter });
 
 An adapter has one required method, `fetchEvents(descriptor, options)`, returning
 `{ events, nextCursor, hasMore }`, an optional `getHeadVersion(descriptor)` that
-a negative `fromVersion` needs, and an optional `getEarliestVersion(descriptor)` that
-`fromVersion: "earliest"` needs. See the `EventAdapter` type for the full contract.
+a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` that
+`fromVersion: "earliest"` needs, and an optional `getBlock(descriptor, height)` that
+`fromBlock`/`toBlock` need. See the `EventAdapter` type for the full contract.
 
 Combine sources with `RoutingAdapter` (by descriptor `kind`, with an optional
 `default` for the rest) and `FallbackAdapter` (try sources in order on each
@@ -525,8 +546,8 @@ To log or time requests, wrap any adapter with `withHooks`. `onRequest` runs
 before each `fetchEvents` call and `onResponse` after it settles, with the
 `page` or the `error` and `durationMs` for the source call alone (time spent
 waiting on `maxConcurrentRequests` is not included). Hooks are synchronous; one
-that throws fails that fetch. `getHeadVersion` and `getEarliestVersion` pass through
-unhooked:
+that throws fails that fetch. `getHeadVersion`, `getEarliestVersion` and `getBlock` pass
+through unhooked:
 
 ```ts
 import { FullnodeScanAdapter, StreamdClient, withHooks } from "streamd";

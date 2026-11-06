@@ -127,6 +127,16 @@ export interface EventFilter {
   fromVersion?: bigint | "earliest";
   /** End at this version (inclusive) */
   toVersion?: bigint;
+  /**
+   * Start at the first version of this block height (inclusive), read once
+   * from `EventAdapter.getBlock`. Cannot be combined with `fromVersion`.
+   */
+  fromBlock?: bigint;
+  /**
+   * End at the last version of this block height (inclusive), read once from
+   * `EventAdapter.getBlock`. Cannot be combined with `toVersion`.
+   */
+  toBlock?: bigint;
   /** Maximum events to return, counted *after* `where` is applied */
   limit?: number;
   /** Offset for pagination */
@@ -180,7 +190,14 @@ export interface EventFilter {
 export interface FetchOptions
   extends Omit<
     EventFilter,
-    "fromVersion" | "where" | "decode" | "maxPages" | "retries" | "signal"
+    | "fromVersion"
+    | "fromBlock"
+    | "toBlock"
+    | "where"
+    | "decode"
+    | "maxPages"
+    | "retries"
+    | "signal"
   > {
   /** Start from this version (inclusive); always absolute by the time an adapter sees it. */
   fromVersion?: bigint;
