@@ -1,4 +1,4 @@
-import type { EventAdapter, EventDescriptor } from "./types.js";
+import type { EventAdapter, EventDescriptor, FetchOptions } from "./types.js";
 import { StreamdError } from "./errors.js";
 import { normalizeAddress } from "./filter.js";
 
@@ -127,4 +127,20 @@ export function descriptorKey(d: EventDescriptor | undefined): string | undefine
     default:
       return undefined;
   }
+}
+
+/**
+ * Value key for one `fetchEvents` request: equal for the same descriptor and
+ * the same defined options in any order, undefined when `d` is not a descriptor.
+ */
+export function fetchKey(d: EventDescriptor, options: FetchOptions): string | undefined {
+  const selector = descriptorKey(d);
+  if (selector === undefined) return undefined;
+  const fields = Object.entries(options)
+    .filter(([, value]) => value !== undefined)
+    .sort(([a], [b]) => a.localeCompare(b));
+  const encoded = JSON.stringify(fields, (_key, value: unknown) =>
+    typeof value === "bigint" ? `${value}n` : value,
+  );
+  return `${selector}|${encoded}`;
 }

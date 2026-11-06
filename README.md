@@ -824,6 +824,39 @@ on pages that cannot change; leave it unset when unsure. `RoutingAdapter` and
 `withHooks` pass the flag through, `FallbackAdapter` keeps it only on pages
 from its first source, and `MemoryAdapter` never sets it.
 
+To capture a real session once and replay it offline, wrap an adapter with
+`recordingAdapter`. Every call that succeeds for one of the three descriptor
+kinds is kept, `fetchEvents` and the optional `getHeadVersion`,
+`getEarliestVersion`, `getBlock` and `getBlockHeights`, and
+`JSON.stringify(recorder)` gives the recording.
+`replayAdapter` takes that object or its JSON text and answers the same
+requests with no network:
+
+```ts
+import { readFile, writeFile } from "node:fs/promises";
+import { FullnodeScanAdapter, StreamdClient, recordingAdapter, replayAdapter } from "streamd";
+
+const recorder = recordingAdapter(new FullnodeScanAdapter(aptos));
+await new StreamdClient({ adapter: recorder }).getEvents(descriptor, { fromVersion: 3_000_000_000n });
+await writeFile("events.recording.json", JSON.stringify(recorder));
+
+// later, offline
+const adapter = replayAdapter(await readFile("events.recording.json", "utf8"));
+const events = await new StreamdClient({ adapter }).getEvents(descriptor, { fromVersion: 3_000_000_000n });
+```
+
+Requests match on the descriptor and every `FetchOptions` field, as
+`CachingAdapter` keys them, so replay the same calls with the same options.
+Identical requests get their recorded results in the order they were issued,
+then the last one again, so a replayed `on()` sees what the recorded one saw.
+Any other request rejects with a plain `StreamdError` (not a
+`StreamdNetworkError`), and failures are never recorded, so a replayed
+subscription stops once it asks for a page the recording never saw. Events
+are stored as `serializeEvent` writes them, so a `bigint` inside `data` comes
+back as a decimal string; fullnode data has none.
+The library writes no files itself. A malformed recording throws a
+`StreamdError` when `replayAdapter` reads it.
+
 For offline unit tests, pass `MemoryAdapter` with a list of events (`aptos` is
 optional when a custom `adapter` is supplied):
 

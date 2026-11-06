@@ -4,6 +4,7 @@ export { FallbackAdapter } from "./adapters/fallback.js";
 export { FullnodeScanAdapter } from "./adapters/fullnode.js";
 export { withHooks } from "./adapters/hooks.js";
 export { MemoryAdapter } from "./adapters/memory.js";
+export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
 export { RoutingAdapter } from "./adapters/routing.js";
 export { EventPoller } from "./poller.js";
 export { EventQuery } from "./query.js";
@@ -45,6 +46,12 @@ export type {
   AdapterRequest,
   AdapterResponse,
 } from "./adapters/hooks.js";
+export type {
+  RecordedCall,
+  RecordedMethod,
+  Recording,
+  RecordingAdapter,
+} from "./adapters/recording.js";
 export type { RoutingAdapterRoutes } from "./adapters/routing.js";
 export type { EventHandleInfo } from "./handles.js";
 export type { ParseEventOptions } from "./serialize.js";
