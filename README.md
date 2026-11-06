@@ -247,6 +247,23 @@ a module-event scan on `FullnodeScanAdapter` may make several requests per call.
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
 dropped without reaching the adapter. Omit the option for no limit.
 
+### Manage listeners
+
+```ts
+streamd.on(descriptor, handle);
+streamd.listenerCount(descriptor);   // 1
+streamd.off(descriptor, handle);     // stop that one listener
+streamd.removeAllListeners();        // stop every on() and onBatch() subscription
+```
+
+As in ethers, these work by descriptor and callback, so you need not keep every
+`Subscription`. Descriptors match by value: `"T"` and `["T"]` are the same module
+descriptor, list order does not matter, and `0x1` equals its long form. `off(descriptor,
+callback)` stops the earliest matching subscription; without a callback it stops all on that
+descriptor, as `removeAllListeners(descriptor)` does. `listenerCount()` counts paused
+subscriptions but not ended ones. `once()` and `stream()` are not listeners here: they end
+with their promise or loop, or `destroy()`.
+
 ### Clean up
 
 ```ts
