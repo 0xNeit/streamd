@@ -1080,6 +1080,8 @@ describe("FullnodeScanAdapter view", () => {
       [{ function: "coin::balance" }, 1n],
       [{ function: "0x1::coin" }, 1n],
       [{ function: "0xzz::coin::balance" }, 1n],
+      [{ function: `0x${"1".repeat(65)}::m::f` }, 1n],
+      [{ function: BALANCE, typeArguments: [1] }, 1n],
       [{ function: "0x1::coin::balance/../x" }, 1n],
       [{ function: 7 }, 1n],
       [{ function: BALANCE, typeArguments: "0x1::aptos_coin::AptosCoin" }, 1n],
@@ -1108,14 +1110,44 @@ describe("FullnodeScanAdapter view", () => {
     expect((args as Error).message).not.toContain("secret-arg");
   });
 
-  it("rejects a pruned version with status 410 and no cause", async () => {
-    const { aptos } = fakeNode(() => ({ status: 410, data: { message: "Ledger version pruned" } }));
-    const err = await new FullnodeScanAdapter(aptos)
-      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
-      .catch((e: unknown) => e);
+  it("refuses a pruned version or an aborting view as invalid input, with no cause", async () => {
+    for (const status of [410, 400]) {
+      const { aptos } = fakeNode(() => ({ status, data: { message: "nope" } }));
+      const err = await new FullnodeScanAdapter(aptos)
+        .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+      expect((err as StreamdError).cause).toBeUndefined();
+      expect((err as Error).message).toContain(`${BALANCE} at version 5`);
+    }
+  });
+
+  it("rejects other node errors as network errors with status and no cause", async () => {
+    const { aptos } = fakeNode(() => ({ status: 503, data: { message: "down" } }));
+    const err = await new FullnodeScanAdapter(aptos).view({ function: BALANCE }, 5n).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdNetworkError);
-    expect((err as StreamdNetworkError).statusCode).toBe(410);
+    expect((err as StreamdNetworkError).statusCode).toBe(503);
     expect((err as StreamdNetworkError).cause).toBeUndefined();
-    expect((err as Error).message).toContain(`${BALANCE} at version 5`);
+  });
+
+  it("sends the values it checked and refuses unserialisable arguments", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    let reads = 0;
+    const shifty = {
+      get function() {
+        return reads++ === 0 ? BALANCE : "0x1::other::thing";
+      },
+    };
+    await adapter.view(shifty as never, 1n);
+    expect((calls[0]!.body as { function: string }).function).toBe(BALANCE);
+    const circular: unknown[] = [];
+    circular.push(circular);
+    const err = await adapter.view({ function: BALANCE, functionArguments: circular }, 1n).catch((e: Error) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("JSON-serialisable");
+    expect(calls).toHaveLength(1);
   });
 });

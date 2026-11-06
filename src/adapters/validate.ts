@@ -79,7 +79,11 @@ export function requireViewRequest(value: unknown): ViewRequest {
   if (functionArguments !== undefined && !Array.isArray(functionArguments)) {
     throw new StreamdError(`functionArguments for ${fn} must be an array`);
   }
-  return value as unknown as ViewRequest;
+  // A fresh object, so a getter cannot answer the check and the request differently.
+  const checked: ViewRequest = { function: fn as ViewRequest["function"] };
+  if (typeArguments !== undefined) checked.typeArguments = [...(typeArguments as string[])];
+  if (functionArguments !== undefined) checked.functionArguments = [...functionArguments];
+  return checked;
 }
 
 export function requireLedgerVersion(value: unknown): bigint {

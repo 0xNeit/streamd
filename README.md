@@ -765,7 +765,8 @@ client.on(Withdraw, (event) => console.log(event.data.amount, event.state), {
   withState: (event) => ({
     function: "0x1::fungible_asset::balance",
     typeArguments: ["0x1::fungible_asset::FungibleStore"],
-    functionArguments: [event.data.store],
+    // `withState`, like `where`, sees an untyped event.
+    functionArguments: [(event.data as { store: string }).store],
   }),
 });
 ```
@@ -781,14 +782,17 @@ its first descriptor.
 Each delivered event costs one view request, made in order and counted by
 `maxConcurrentRequests`. The anonymous fullnode rate limit is a few hundred
 requests per five minutes, so a busy event type needs an API key or a
-narrow `where`. A version the node has pruned fails with status 410, and a view
-that aborts with 400.
+narrow `where`. On `FullnodeScanAdapter`, a version the node has pruned (410) or
+a view that aborts (400) is refused as invalid input, since it fails the same
+way every time.
 
 A query rejects when the builder throws, returns an invalid request, or the
 view fails (after its `retries`). A subscription reports a throwing builder or
-an invalid request through `onError` and skips that event; a failed view fails
-the poll instead, so the event is delivered with its state once a retry
-succeeds. The adapter needs `view`, which `FullnodeScanAdapter` implements as
+an invalid request through `onError` and skips that event. A view that fails
+with a network error fails the poll instead, so the event is delivered with its
+state once a retry succeeds; one refused as invalid input stops the
+subscription, as an invalid fetch does. Return `undefined` for events whose
+view would abort. The adapter needs `view`, which `FullnodeScanAdapter` implements as
 one JSON `/view` request at the event's version.
 
 ### Serialise events

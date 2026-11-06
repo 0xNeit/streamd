@@ -315,3 +315,63 @@ describe("withState on listeners", () => {
     );
   });
 });
+
+describe("withState edge cases", () => {
+  it("does not retry a throwing builder on queries", async () => {
+    const { adapter } = viewing([ev(1)]);
+    let built = 0;
+    const boom = new Error("builder bug");
+    const err = await new StreamdClient({ adapter })
+      .getEvents(pings, {
+        fromVersion: 0n,
+        retries: 2,
+        withState: () => {
+          built++;
+          throw boom;
+        },
+      })
+      .catch((e: unknown) => e);
+    expect(err).toBe(boom);
+    expect(built).toBe(1);
+  });
+
+  it("stops a subscription at once on a view refused as invalid input", async () => {
+    const { adapter, calls } = viewing([ev(1)], () => {
+      throw new StreamdError("pruned");
+    });
+    const errors: Error[] = [];
+    const sub = new StreamdClient({ adapter }).on(pings, () => {}, {
+      fromVersion: 0n,
+      pollInterval: 1,
+      onError: (err) => errors.push(err),
+      withState: balanceOf,
+    });
+    await until(() => errors.length === 1);
+    expect(sub.active).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
+  for (const mode of ["on", "onBatch"] as const) {
+    it(`delivers nothing through ${mode} once unsubscribed during a view`, async () => {
+      let release!: () => void;
+      let started = false;
+      const { adapter } = viewing([ev(1)], async (c) => {
+        started = true;
+        await new Promise<void>((r) => (release = r));
+        return [String(c.version)];
+      });
+      const client = new StreamdClient({ adapter });
+      const seen: unknown[] = [];
+      const opts = { fromVersion: 0n, pollInterval: 5, withState: balanceOf };
+      const sub =
+        mode === "on"
+          ? client.on(pings, (e) => void seen.push(e), opts)
+          : client.onBatch(pings, (es) => void seen.push(es), opts);
+      await until(() => started);
+      sub.unsubscribe();
+      release();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(seen).toHaveLength(0);
+    });
+  }
+});

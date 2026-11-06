@@ -466,6 +466,9 @@ describe("recordingAdapter view", () => {
     expect(await replay.view!(request, 3n)).toEqual([{ value: "3" }]);
     expect(await replay.view!(request, 4n)).toEqual([{ value: "4" }]);
     await expect(replay.view!(request, 5n)).rejects.toThrow("No recorded view call");
+    await expect(replay.view!({ ...request, typeArguments: ["0x1::a::B"] }, 3n)).rejects.toThrow(
+      "No recorded view call",
+    );
     expect(replayAdapter(recordingAdapter(new MemoryAdapter()).toJSON()).view).toBeUndefined();
   });
 

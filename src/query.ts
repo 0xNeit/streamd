@@ -170,9 +170,10 @@ export class EventQuery {
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    const { withState, retries = 0, signal } = filter;
+    const { withState, ...rest } = filter;
+    const { retries = 0, signal } = rest;
     validateWithState(withState);
-    const pages = this.pages<TData>(descriptor, filter, pageSize);
+    const pages = this.pages<TData>(descriptor, rest, pageSize);
     if (withState === undefined) return yield* pages;
     const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
     const first = Array.isArray(descriptor)
@@ -321,7 +322,6 @@ export class EventQuery {
     const {
       where,
       decode: fields,
-      withState: _withState,
       maxPages,
       retries = 0,
       signal,
