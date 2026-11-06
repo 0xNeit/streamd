@@ -93,3 +93,11 @@ describe("serializeEvent / parseEvent", () => {
     ).toThrow(StreamdError);
   });
 });
+
+describe("public surface", () => {
+  it("exports serializeEvent and parseEvent from the package entry", async () => {
+    const entry = await import("../src/index.js");
+    expect(entry.serializeEvent).toBe(serializeEvent);
+    expect(entry.parseEvent).toBe(parseEvent);
+  });
+});
