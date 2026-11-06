@@ -2,7 +2,8 @@ import { once } from "node:events";
 import { AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { StreamdClient } from "../client.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
-import type { ParsedCommand, TailOptions } from "./args.js";
+import type { ForwardOptions, ParsedCommand, SourceOptions, TailOptions } from "./args.js";
+import { runForward } from "./forward.js";
 import { runTail } from "./tail.js";
 
 const NETWORKS = {
@@ -21,22 +22,41 @@ function parse(argv: string[]): ParsedCommand | undefined {
   }
 }
 
-async function tail(options: TailOptions): Promise<number> {
+/** A client for `options` and a signal that the first SIGINT or a SIGTERM aborts. */
+function setup(options: SourceOptions): { client: StreamdClient; controller: AbortController } {
   const controller = new AbortController();
+  // The first SIGINT stops cleanly; a second one means stop now.
+  process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
+  process.once("SIGTERM", () => controller.abort());
+  const client = new StreamdClient({
+    aptos: new AptosConfig({ network: NETWORKS[options.network], fullnode: options.nodeUrl }),
+  });
+  return { client, controller };
+}
+
+async function forward(options: ForwardOptions): Promise<number> {
+  const { client, controller } = setup(options);
+  try {
+    return await runForward(options, {
+      client,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+  } finally {
+    client.destroy();
+  }
+}
+
+async function tail(options: TailOptions): Promise<number> {
+  const { client, controller } = setup(options);
   const { signal } = controller;
   let stdoutError: Error | undefined;
-  // The first SIGINT stops cleanly; a second one means stop now.
-  process.on("SIGINT", () => (signal.aborted ? process.exit(130) : controller.abort()));
-  process.once("SIGTERM", () => controller.abort());
   // A closed pipe (EPIPE, as when piped into `head`) ends the tail quietly.
   process.stdout.on("error", (err: NodeJS.ErrnoException) => {
     if (err.code !== "EPIPE") stdoutError ??= err;
     controller.abort();
   });
 
-  const client = new StreamdClient({
-    aptos: new AptosConfig({ network: NETWORKS[options.network], fullnode: options.nodeUrl }),
-  });
   try {
     const code = await runTail(options, {
       client,
@@ -61,7 +81,7 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return 0;
   }
-  return tail(parsed.options);
+  return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 
 // Exit explicitly once stdout has flushed, so an in-flight request does not

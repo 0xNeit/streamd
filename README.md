@@ -1051,6 +1051,45 @@ up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when s
 (as when piped into `head`); `1` when the subscription stopped on an error; `2` for invalid
 arguments; `130` on a second Ctrl-C.
 
+### Forward events to a webhook
+
+`streamd forward` follows the same descriptors as `tail` and POSTs each batch of matching
+events (up to 25) to a webhook. The body is a JSON array of the objects `tail` prints, with
+`content-type: application/json`.
+
+```sh
+streamd forward --to https://hooks.example.com/aptos \
+  --header "Authorization: Bearer $HOOK_TOKEN" \
+  --cursor-file deposits.cursor 0x1::coin::DepositEvent
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--to <url>` | webhook URL, `http` or `https` (required) |
+| `--cursor-file <path>` | where the position is saved (default `streamd-forward.cursor`) |
+| `--retries <n>` | retries per batch after the first attempt (default `5`) |
+| `--timeout <ms>` | per-request timeout (default `10000`) |
+| `--header 'Name: value'` | extra request header, repeatable |
+
+`--network`, `--node-url`, `--from-version` and `--poll-interval` work as for `tail`.
+
+Delivery is at least once. The next page is not fetched until the webhook answers, and the
+cursor file is written (to a temporary file, then renamed over it) only after a `2xx`, so a
+restart resumes after the last acknowledged batch and may resend the one in flight. An
+existing cursor file wins over `--from-version`, and only works with the descriptor and
+node that wrote it.
+
+Network errors, timeouts, `408`, `429` and `5xx` are retried with exponential backoff from
+1s, capped at 60s; a `Retry-After` on `429` or `503` replaces the backoff for that wait.
+Any other status, redirects included, fails at once. The webhook receives only the body,
+the content type and your `--header` values, and neither the URL nor header values are
+printed.
+
+Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST without moving the
+cursor; `1` when a batch fails past its retries, the subscription stops on an error, or the
+cursor file cannot be read or written; `2` for invalid arguments. Run it under a supervisor
+that restarts on `1`.
+
 ## Development
 
 ```sh
