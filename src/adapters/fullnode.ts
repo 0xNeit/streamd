@@ -69,6 +69,18 @@ function toStreamdEvents(
   return out;
 }
 
+function toStreamdError(err: unknown, what: string): StreamdError {
+  if (err instanceof StreamdError) return err;
+  const status = (err as { status?: unknown } | null)?.status;
+  return new StreamdNetworkError(
+    `Fullnode request for ${what} failed: ${
+      err instanceof Error ? err.message : String(err)
+    }`,
+    typeof status === "number" ? status : undefined,
+    err,
+  );
+}
+
 export interface FullnodeScanAdapterOptions {
   /** Transactions per underlying REST call (default: 100). */
   scanBatch?: number;
@@ -124,15 +136,16 @@ export class FullnodeScanAdapter implements EventAdapter {
       validateOffset(options.offset);
       return await this.dispatch(descriptor, options);
     } catch (err) {
-      if (err instanceof StreamdError) throw err;
-      const status = (err as { status?: unknown } | null)?.status;
-      throw new StreamdNetworkError(
-        `Fullnode request for ${descriptor.kind} events failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-        typeof status === "number" ? status : undefined,
-        err,
-      );
+      throw toStreamdError(err, `${descriptor.kind} events`);
+    }
+  }
+
+  /** The fullnode's ledger version, whatever the descriptor. */
+  async getHeadVersion(): Promise<bigint> {
+    try {
+      return await this.ledgerVersion();
+    } catch (err) {
+      throw toStreamdError(err, "ledger version");
     }
   }
 

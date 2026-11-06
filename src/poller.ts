@@ -1,4 +1,5 @@
 import type {
+  BatchCallback,
   EventAdapter,
   EventCallback,
   EventDescriptor,
@@ -14,6 +15,9 @@ import {
   StreamdPollingError,
 } from "./errors.js";
 import { CursorManager } from "./cursor.js";
+import { resolveFromVersion } from "./utils.js";
+import { RequestLimiter } from "./limiter.js";
+import { fieldDecoder } from "./decode.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
 const DEFAULT_BATCH_SIZE = 25;
@@ -36,6 +40,9 @@ function resolveMaxBackoff(maxBackoff: number | undefined): number {
   return maxBackoff;
 }
 
+/** One event at a time, or `{ batch }` for each page's new events in one call. */
+export type Delivery = EventCallback | { batch: BatchCallback };
+
 export class EventPoller {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private consecutiveErrors = 0;
@@ -44,6 +51,7 @@ export class EventPoller {
   private currentInterval: number;
   private _active = false;
   private _paused = false;
+  private caughtUp = false;
   /** Bumped by start(), so a poll left over from an earlier run can tell. */
   private generation = 0;
   /**
@@ -52,30 +60,40 @@ export class EventPoller {
    */
   private delivering: Promise<void> = Promise.resolve();
   private readonly position: CursorManager;
+  private readonly callback?: EventCallback;
+  private readonly onBatch?: BatchCallback;
 
   private readonly pollInterval: number;
   private readonly batchSize: number;
   private readonly maxErrors: number;
   private readonly maxBackoff: number;
-  private readonly fromVersion?: bigint;
+  /** Absolute once the first poll has resolved a relative start. */
+  private fromVersion?: bigint;
   private readonly where?: EventPredicate;
+  private readonly decode?: (event: StreamdEvent) => StreamdEvent;
   private readonly onError?: (error: Error) => void;
+  private readonly onCaughtUp?: () => void;
   private readonly signal?: AbortSignal;
   private readonly abort = () => this.stop();
 
   constructor(
     private readonly adapter: EventAdapter,
     private readonly descriptor: EventDescriptor,
-    private readonly callback: EventCallback,
+    delivery: Delivery,
     options: ListenerOptions = {},
+    private readonly limiter = new RequestLimiter(),
   ) {
+    if (typeof delivery === "function") this.callback = delivery;
+    else this.onBatch = delivery.batch;
     this.pollInterval = options.pollInterval ?? DEFAULT_POLL_INTERVAL;
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.maxErrors = options.maxErrors ?? DEFAULT_MAX_ERRORS;
     this.maxBackoff = resolveMaxBackoff(options.maxBackoff);
     this.fromVersion = options.fromVersion;
     this.where = options.where;
+    this.decode = fieldDecoder(options.decode);
     this.onError = options.onError;
+    this.onCaughtUp = options.onCaughtUp;
     this.signal = options.signal;
     this.currentInterval = this.pollInterval;
     this.position = new CursorManager(options.cursor, options.dedupWindow);
@@ -172,10 +190,20 @@ export class EventPoller {
 
   private async poll(): Promise<void> {
     const gen = this.generation;
+    // A call still queued once this run has ended is dropped unstarted.
+    const adapter = this.limiter.wrap(this.adapter, () => !this.isCurrent(gen));
     try {
       await this.delivering;
       if (!this.isCurrent(gen)) return;
-      const page = await this.adapter.fetchEvents(this.descriptor, {
+      if (this.position.token === undefined) {
+        this.fromVersion = await resolveFromVersion(
+          adapter,
+          this.descriptor,
+          this.fromVersion,
+        );
+        if (!this.isCurrent(gen)) return;
+      }
+      const page = await adapter.fetchEvents(this.descriptor, {
         // Once we have a cursor it supersedes fromVersion, which only seeds
         // the very first poll.
         cursor: this.position.token,
@@ -197,11 +225,24 @@ export class EventPoller {
       this.consecutiveErrors = 0;
       this.currentInterval = this.pollInterval;
       this.lastSuccessAt = Date.now();
+      if (!page.hasMore) this.signalCaughtUp();
+      // onCaughtUp or its error handler may have stopped or paused the poller.
+      if (!this.isCurrent(gen)) return;
 
       // Catch-up mode: the adapter says more is waiting, so don't idle.
       this.schedulePoll(page.hasMore ? 0 : this.pollInterval);
     } catch (err) {
       this.handlePollError(err, gen);
+    }
+  }
+
+  private signalCaughtUp(): void {
+    if (this.caughtUp || this.onCaughtUp === undefined) return;
+    this.caughtUp = true;
+    try {
+      this.onCaughtUp();
+    } catch (err) {
+      this.report(new StreamdError("onCaughtUp threw", err));
     }
   }
 
@@ -239,29 +280,43 @@ export class EventPoller {
   }
 
   private async processPage(page: EventPage, gen: number): Promise<void> {
-    for (const event of page.events) {
+    const batch: StreamdEvent[] = [];
+    for (const raw of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
-      if (this.position.hasSeen(event)) continue;
+      if (this.position.hasSeen(raw)) continue;
       // Mark before filtering: a rejected event has still been processed, and
       // marking it keeps overlapping pages from re-testing it.
-      this.position.mark(event);
-      if (this.lastVersion === undefined || event.version > this.lastVersion) {
-        this.lastVersion = event.version;
+      this.position.mark(raw);
+      if (this.lastVersion === undefined || raw.version > this.lastVersion) {
+        this.lastVersion = raw.version;
       }
+      let event = raw;
       // A predicate or handler bug is the caller's, not the source's: report
       // it without counting toward maxErrors or abandoning the rest of the page.
       try {
+        if (this.decode !== undefined) event = this.decode(raw);
         if (this.where !== undefined && !this.where(event)) continue;
-        const result: unknown = this.callback(event);
+        if (this.onBatch !== undefined) {
+          batch.push(event);
+          continue;
+        }
         // Awaited one event at a time, so a slow handler holds back the rest
         // of the page and the next poll rather than piling up work.
+        const result: unknown = this.callback!(event);
         if (isThenable(result)) await result;
       } catch (err) {
-        // Reported while any run is live or paused: the handler is the same
-        // one, and this path touches neither the cursor nor the error budget.
-        if (this._active || this._paused) this.report(callbackError(event, err));
+        this.reportHandlerError(callbackError(event, err));
         if (!this.isCurrent(gen)) return;
+      }
+    }
+
+    if (batch.length > 0 && this.isCurrent(gen)) {
+      try {
+        const result: unknown = this.onBatch!(batch);
+        if (isThenable(result)) await result;
+      } catch (err) {
+        this.reportHandlerError(batchError(batch, err));
       }
     }
 
@@ -276,6 +331,14 @@ export class EventPoller {
       this.position.token = page.nextCursor;
     }
   }
+
+  /**
+   * Reported while any run is live or paused: the handler is the same one,
+   * and this path touches neither the cursor nor the error budget.
+   */
+  private reportHandlerError(error: StreamdError): void {
+    if (this._active || this._paused) this.report(error);
+  }
 }
 
 function isThenable(value: unknown): value is PromiseLike<unknown> {
@@ -289,6 +352,15 @@ function isThenable(value: unknown): value is PromiseLike<unknown> {
 function callbackError(event: StreamdEvent, cause: unknown): StreamdError {
   return new StreamdError(
     `Event filter or callback threw for ${event.version}:${event.eventIndex}`,
+    cause,
+  );
+}
+
+function batchError(events: StreamdEvent[], cause: unknown): StreamdError {
+  const first = events[0]!;
+  const last = events[events.length - 1]!;
+  return new StreamdError(
+    `Batch callback threw for ${events.length} events from ${first.version}:${first.eventIndex} to ${last.version}:${last.eventIndex}`,
     cause,
   );
 }

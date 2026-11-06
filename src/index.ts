@@ -6,6 +6,7 @@ export { RoutingAdapter } from "./adapters/routing.js";
 export { EventPoller } from "./poller.js";
 export { EventQuery } from "./query.js";
 export { CursorManager } from "./cursor.js";
+export { defineEvent } from "./define.js";
 export {
   StreamdError,
   StreamdNetworkError,
@@ -18,6 +19,7 @@ export {
   involvesAddress,
   normalizeAddress,
   not,
+  ofModule,
   ofType,
   some,
   whereField,
@@ -33,6 +35,7 @@ export type {
 
 export type {
   AccountEventDescriptor,
+  BatchCallback,
   EventAdapter,
   EventCallback,
   EventDescriptor,

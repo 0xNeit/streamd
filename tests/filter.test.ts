@@ -5,6 +5,7 @@ import {
   involvesAddress,
   normalizeAddress,
   not,
+  ofModule,
   ofType,
   some,
   whereField,
@@ -202,6 +203,66 @@ describe("whereField", () => {
       undefined as unknown as string,
     ]) {
       expect(() => whereField("owner", badValue)).toThrow(StreamdError);
+    }
+  });
+});
+
+describe("ofModule", () => {
+  const POOL = `0x${"ab".repeat(32)}`;
+
+  it("matches every struct in the module, generics included", () => {
+    const predicate = ofModule("0x1::coin");
+    expect(predicate(ev({}, "0x1::coin::CoinDeposit"))).toBe(true);
+    expect(
+      predicate(ev({}, "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>")),
+    ).toBe(true);
+  });
+
+  it("ignores the module when it only appears inside generics", () => {
+    const predicate = ofModule("0x1::coin");
+    expect(predicate(ev({}, "0x1::account::X<0x1::coin::C>"))).toBe(false);
+  });
+
+  it("treats short and long address spellings as the same", () => {
+    expect(ofModule("0x1::coin")(ev({}, `${LONG_ONE}::coin::C`))).toBe(true);
+    expect(ofModule(`${LONG_ONE}::coin`)(ev({}, "0x1::coin::C"))).toBe(true);
+  });
+
+  it("does not match another address, a prefixed module, or a different case", () => {
+    const predicate = ofModule("0x1::coin");
+    expect(predicate(ev({}, "0x2::coin::C"))).toBe(false);
+    expect(predicate(ev({}, "0x1::coin_v2::C"))).toBe(false);
+    expect(predicate(ev({}, "0x1::Coin::C"))).toBe(false);
+  });
+
+  it("matches any of several modules, and nothing when given none", () => {
+    const predicate = ofModule("0x1::coin", `${POOL}::pool`);
+    expect(predicate(ev({}, "0x1::coin::C"))).toBe(true);
+    expect(predicate(ev({}, `${POOL}::pool::Swap`))).toBe(true);
+    expect(predicate(ev({}, "0x1::account::A"))).toBe(false);
+    expect(ofModule()(ev({}, "0x1::coin::C"))).toBe(false);
+  });
+
+  it("returns false for malformed event types", () => {
+    const predicate = ofModule("0x1::coin");
+    for (const type of ["", "0x1::coin", "coin::C::D", "0xZZ::coin::C"]) {
+      expect(predicate(ev({}, type))).toBe(false);
+    }
+  });
+
+  it("rejects arguments that are not address::module", () => {
+    for (const bad of [
+      "",
+      "0x1",
+      "coin",
+      "0xZZ::coin",
+      "0x1::coin::C",
+      "0x1::",
+      "0x1::1coin",
+      "0x1::co-in",
+      42 as unknown as string,
+    ]) {
+      expect(() => ofModule(bad)).toThrow(StreamdError);
     }
   });
 });

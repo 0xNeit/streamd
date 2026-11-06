@@ -1,5 +1,6 @@
 import { Aptos } from "@aptos-labs/ts-sdk";
 import type {
+  BatchCallback,
   EventAdapter,
   EventCallback,
   EventDescriptor,
@@ -11,7 +12,7 @@ import type {
   Subscription,
 } from "./types.js";
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
-import { EventPoller } from "./poller.js";
+import { EventPoller, type Delivery } from "./poller.js";
 import { EventQuery } from "./query.js";
 import {
   StreamdError,
@@ -19,7 +20,9 @@ import {
   StreamdTimeoutError,
 } from "./errors.js";
 import { generateId, onAbort } from "./utils.js";
+import { normalizeAddress } from "./filter.js";
 import { eventStream } from "./stream.js";
+import { RequestLimiter } from "./limiter.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -28,6 +31,53 @@ function checkTimeout(ms: number | undefined): StreamdError | undefined {
     return undefined;
   }
   return new StreamdError(`Invalid timeout: ${String(ms)} (expected 0..${MAX_TIMEOUT}ms)`);
+}
+
+function resolveLimiter(max: number | undefined): RequestLimiter {
+  if (max === undefined) return new RequestLimiter();
+  if (!Number.isInteger(max) || max < 1) {
+    throw new StreamdError(
+      `Invalid maxConcurrentRequests: ${String(max)} (expected a positive integer)`,
+    );
+  }
+  return new RequestLimiter(max);
+}
+
+function typeSet(types: unknown): unknown[] {
+  return Array.isArray(types) ? [...new Set(types)].sort() : [types];
+}
+
+/**
+ * Value key for listener lookup: equal for descriptors that select the same
+ * events, undefined for anything that is not one of the three kinds.
+ */
+function descriptorKey(d: EventDescriptor | undefined): string | undefined {
+  switch (d?.kind) {
+    case "module":
+      return JSON.stringify(["module", typeSet(d.eventType)]);
+    case "handle":
+      return JSON.stringify([
+        "handle",
+        normalizeAddress(d.accountAddress) ?? d.accountAddress,
+        d.eventHandleStruct,
+        d.fieldName,
+      ]);
+    case "account":
+      return JSON.stringify([
+        "account",
+        normalizeAddress(d.accountAddress) ?? d.accountAddress,
+        d.eventTypes === undefined ? null : typeSet(d.eventTypes),
+      ]);
+    default:
+      return undefined;
+  }
+}
+
+/** An `on()` or `onBatch()` subscription, as `off()` and friends see it. */
+interface Listener {
+  key: string | undefined;
+  callback: unknown;
+  stop: () => void;
 }
 
 function resolveAdapter(config: StreamdConfig): EventAdapter {
@@ -47,15 +97,20 @@ export class StreamdClient {
   private readonly onError?: (error: Error) => void;
   private readonly adapter: EventAdapter;
   private readonly query: EventQuery;
-  private readonly subscriptions = new Map<string, EventPoller>();
+  /** Shared by every poller and query, so the cap holds client-wide. */
+  private readonly limiter: RequestLimiter;
+  private readonly subscriptions = new Map<string, { poller: EventPoller; stop: () => void }>();
+  /** The `on()`/`onBatch()` subset of `subscriptions`; `once()` and streams own theirs. */
+  private readonly listeners = new Map<string, Listener>();
   /** Open streams, so destroy() can end their loops rather than strand them. */
   private readonly streams = new Set<() => void>();
 
   constructor(config: StreamdConfig) {
     this.defaultPollInterval = config.defaultPollInterval ?? 1000;
     this.onError = config.onError;
+    this.limiter = resolveLimiter(config.maxConcurrentRequests);
     this.adapter = resolveAdapter(config);
-    this.query = new EventQuery(this.adapter);
+    this.query = new EventQuery(this.adapter, this.limiter);
   }
 
   /**
@@ -68,20 +123,47 @@ export class StreamdClient {
    * types from a single scan.
    */
   on<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: EventDescriptor<TData>,
     callback: EventCallback<TData>,
     options?: ListenerOptions,
+  ): Subscription {
+    return this.subscribe(descriptor, callback as EventCallback, options, callback);
+  }
+
+  /**
+   * Like `on()`, but each poll's new events arrive together in one
+   * `callback(events)` call, at most `batchSize` of them.
+   */
+  onBatch<TData = unknown>(
+    descriptor: EventDescriptor<TData>,
+    callback: BatchCallback<TData>,
+    options?: ListenerOptions,
+  ): Subscription {
+    return this.subscribe(
+      descriptor,
+      { batch: callback as BatchCallback },
+      options,
+      callback,
+    );
+  }
+
+  private subscribe(
+    descriptor: EventDescriptor,
+    delivery: Delivery,
+    options?: ListenerOptions,
+    listener?: unknown,
   ): Subscription {
     const id = generateId();
     let detach = () => {};
     const forget = () => {
       this.subscriptions.delete(id);
+      this.listeners.delete(id);
       detach();
     };
     const poller = new EventPoller(
       this.adapter,
       descriptor,
-      callback as EventCallback,
+      delivery,
       {
         pollInterval: this.defaultPollInterval,
         ...options,
@@ -92,12 +174,17 @@ export class StreamdClient {
           (options?.onError ?? this.onError)?.(err);
         },
       },
+      this.limiter,
     );
 
     poller.start();
     // An already-aborted signal leaves the poller stopped: nothing to track.
     if (poller.active) {
-      this.subscriptions.set(id, poller);
+      const stop = () => (poller.stop(), forget());
+      this.subscriptions.set(id, { poller, stop });
+      if (listener !== undefined) {
+        this.listeners.set(id, { key: descriptorKey(descriptor), callback: listener, stop });
+      }
       detach = onAbort(options?.signal, forget);
     }
 
@@ -133,7 +220,7 @@ export class StreamdClient {
    * the first error thrown by `where`, even if a later event would have matched.
    */
   once<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: EventDescriptor<TData>,
     options?: OnceOptions,
   ): Promise<StreamdEvent<TData>> {
     const badTimeout = checkTimeout(options?.timeout);
@@ -149,9 +236,9 @@ export class StreamdClient {
         sub.unsubscribe();
       };
       const fail = (reason: unknown) => (close(), reject(reason));
-      const sub = this.on<TData>(
+      const sub = this.subscribe(
         descriptor,
-        (event) => (close(), resolve(event)),
+        ((event: StreamdEvent<TData>) => (close(), resolve(event))) as EventCallback,
         {
           ...options,
           signal: undefined,
@@ -182,14 +269,14 @@ export class StreamdClient {
    * aborts. Other errors go to `options.onError`.
    */
   stream<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: EventDescriptor<TData>,
     options?: ListenerOptions,
   ): AsyncIterableIterator<StreamdEvent<TData>> {
     // Registered only once the stream subscribes, so an unused stream costs nothing.
     const close = () => void stream.return?.();
     const stream = eventStream<TData>(
       (callback, onError) => {
-        const sub = this.on<TData>(descriptor, callback, {
+        const sub = this.subscribe(descriptor, callback as EventCallback, {
           ...options,
           signal: undefined,
           onError: (err) => {
@@ -210,7 +297,7 @@ export class StreamdClient {
    * Query historical events matching a descriptor and filter.
    */
   async getEvents<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: EventDescriptor<TData>,
     filter?: EventFilter,
   ): Promise<StreamdEvent<TData>[]> {
     return this.query.getEvents<TData>(descriptor, filter);
@@ -220,11 +307,50 @@ export class StreamdClient {
    * Async iterator for paginating through large historical result sets.
    */
   getEventPages<TData = unknown>(
-    descriptor: EventDescriptor,
+    descriptor: EventDescriptor<TData>,
     filter?: EventFilter,
     pageSize?: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
     return this.query.getEventPages<TData>(descriptor, filter, pageSize);
+  }
+
+  /**
+   * Stop the earliest `on()`/`onBatch()` subscription on `descriptor` whose
+   * callback is `callback`, or all of them on `descriptor` when it is omitted.
+   */
+  off<TData = unknown>(
+    descriptor: EventDescriptor<TData>,
+    callback?: EventCallback<TData> | BatchCallback<TData>,
+  ): this {
+    // A missing descriptor must not fall through to removing everything.
+    if (descriptorKey(descriptor) === undefined) return this;
+    if (callback === undefined) return this.removeAllListeners(descriptor);
+    this.matching(descriptor).find((l) => l.callback === callback)?.stop();
+    return this;
+  }
+
+  /**
+   * Stop every `on()`/`onBatch()` subscription, or those on `descriptor`.
+   * `once()` and `stream()` keep running; `destroy()` ends those too.
+   */
+  removeAllListeners(descriptor?: EventDescriptor): this {
+    for (const l of this.matching(descriptor)) l.stop();
+    return this;
+  }
+
+  /**
+   * How many `on()`/`onBatch()` subscriptions are live (paused included), on
+   * `descriptor` or in total. `once()` and `stream()` are not counted.
+   */
+  listenerCount(descriptor?: EventDescriptor): number {
+    return this.matching(descriptor).length;
+  }
+
+  private matching(descriptor?: EventDescriptor): Listener[] {
+    const all = [...this.listeners.values()];
+    if (descriptor === undefined) return all;
+    const key = descriptorKey(descriptor);
+    return key === undefined ? [] : all.filter((l) => l.key === key);
   }
 
   /**
@@ -234,9 +360,6 @@ export class StreamdClient {
    */
   destroy(): void {
     for (const close of [...this.streams]) close();
-    for (const [id, poller] of this.subscriptions) {
-      poller.stop();
-      this.subscriptions.delete(id);
-    }
+    for (const { stop } of [...this.subscriptions.values()]) stop();
   }
 }

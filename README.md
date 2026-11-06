@@ -97,6 +97,36 @@ discarded. While paused, `active` (and `sub.status.active`) is `false`. `unsubsc
 `destroy()`, or the `signal` aborting still ends a paused subscription, and `resume()` never
 revives one that has ended, including after `maxErrors`.
 
+### Caught-up signal
+
+```ts
+streamd.on(descriptor, handle, {
+  fromVersion: 3_000_000_000n,
+  onCaughtUp: () => console.log("backfill done, now live"),
+});
+```
+
+`onCaughtUp` is called once, the first time a poll delivers its whole page and the adapter
+reports nothing more waiting. Started from history, that is after the backfill; started at
+the head, after the first successful poll. It is not called again, even after a pause and
+resume. A throw from it goes to `onError` without counting toward `maxErrors`. `once()` and
+`stream()` accept it too.
+
+### Batch delivery
+
+```ts
+const sub = streamd.onBatch(descriptor, async (events) => {
+  await db.insertMany(events); // one write per poll
+}, { batchSize: 100 });
+```
+
+`onBatch` takes the same options as `on()` and returns the same `Subscription`, but calls
+your handler once per poll with that page's new events that pass `where`, in order, at most
+`batchSize` of them. A page with nothing new is skipped rather than delivered as `[]`. The
+handler is awaited before the cursor moves past the page, so a crash or a stop mid-batch
+redelivers the whole page on resume. A throw or rejection goes to `onError` without counting
+toward `maxErrors`, and polling moves on to the next page.
+
 ### Iterate live events
 
 ```ts
@@ -132,6 +162,23 @@ adapter that produced it, and it wins over `fromVersion`. It moves only once eve
 on a page has settled, and the dedup window is not saved, so events from the page in
 flight when the process stopped arrive again after a restart: make your handler
 idempotent on `(version, eventIndex)`.
+
+### Start relative to the head
+
+```ts
+// the last 10,000 versions, then live
+streamd.on(descriptor, handle, { fromVersion: -10_000n });
+
+// history from 1,000 versions back
+const recent = await streamd.getEvents(descriptor, { fromVersion: -1_000n });
+```
+
+A negative `fromVersion` counts back from the chain head, as a negative block tag does in
+ethers: `-10_000n` starts at `head - 10_000`, and never below version 0. The head is read
+once, from the adapter's `getHeadVersion`, when the subscription first polls or the query
+fetches its first page; a `cursor` still wins and skips that read. `once()`, `stream()`
+and `onBatch()` accept it too. An adapter without `getHeadVersion` is rejected as invalid
+input.
 
 ### Wait for one event
 
@@ -187,6 +234,36 @@ Aborting `on()` unsubscribes quietly without calling `onError`. Aborting
 paging and rejects with `signal.reason`. An already-aborted signal never
 fetches.
 
+### Limit concurrent requests
+
+```ts
+const streamd = new StreamdClient({ aptos, maxConcurrentRequests: 4 });
+```
+
+At most that many adapter calls run at once across every subscription and query on the
+client; the rest wait their turn in order. Both `fetchEvents` and the `getHeadVersion` read
+behind a negative `fromVersion` count. The unit is one adapter call, not one HTTP request:
+a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
+still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
+dropped without reaching the adapter. Omit the option for no limit.
+
+### Manage listeners
+
+```ts
+streamd.on(descriptor, handle);
+streamd.listenerCount(descriptor);   // 1
+streamd.off(descriptor, handle);     // stop that one listener
+streamd.removeAllListeners();        // stop every on() and onBatch() subscription
+```
+
+As in ethers, these work by descriptor and callback, so you need not keep every
+`Subscription`. Descriptors match by value: `"T"` and `["T"]` are the same module
+descriptor, list order does not matter, and `0x1` equals its long form. `off(descriptor,
+callback)` stops the earliest matching subscription; without a callback it stops all on that
+descriptor, as `removeAllListeners(descriptor)` does. `listenerCount()` counts paused
+subscriptions but not ended ones. `once()` and `stream()` are not listeners here: they end
+with their promise or loop, or `destroy()`.
+
 ### Clean up
 
 ```ts
@@ -219,13 +296,55 @@ transaction is in hand (`module` and `account` descriptors on
 come from an endpoint that omits the surrounding transaction, so both fields
 are `undefined` there (and `timestamp` is `undefined` on genesis transactions).
 
+### Typed events
+
+`defineEvent<T>(eventType)` returns a `module` descriptor that carries its
+payload type, so every client method infers `event.data` from it:
+
+```ts
+import { defineEvent } from "streamd";
+
+const Deposit = defineEvent<{ amount: string }>("0x1::coin::DepositEvent");
+
+client.on(Deposit, (event) => console.log(event.data.amount));
+const recent = await client.getEvents(Deposit, { fromVersion: -1000n });
+```
+
+The type is your claim about the decoded JSON, not a runtime check: `u64`
+values still arrive as strings unless you name them in `decode` (below), in
+which case describe them as `bigint`. At runtime the descriptor is the same
+plain object you would write by hand.
+
+### Decode integers
+
+Move `u64`, `u128` and `u256` values arrive as decimal strings. Name the
+top-level `data` fields you want as `bigint`:
+
+```ts
+const Deposit = defineEvent<{ store: string; amount: bigint }>(
+  "0x1::fungible_asset::Deposit",
+);
+
+client.on(Deposit, (event) => console.log(event.data.amount + 1n), {
+  decode: ["amount"],
+  where: whereField("amount", 1_000_000n),
+});
+const big = await client.getEvents(Deposit, { decode: ["amount"], limit: 10 });
+```
+
+`decode` works on `on`, `onBatch`, `once`, `stream`, `getEvents` and
+`getEventPages`, and runs before `where`, so predicates see the decoded
+values. An event without the field is left alone. A named field holding
+anything other than an unsigned decimal string is an error: a subscription
+reports it through `onError` and skips the event, and a query rejects.
+
 ## Filtering
 
 Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, ofType, every, some, not } from "streamd";
+import { involvesAddress, whereField, ofType, ofModule, every, some, not } from "streamd";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -242,6 +361,10 @@ streamd.on(
   payload mentions the address anywhere. `0x1` and `0x000…01` count as the
   same address.
 - `ofType(...types)` matches exact event types.
+- `ofModule(...modules)` matches every event declared in a module, written
+  `address::module` (`ofModule("0x1::coin")` matches `0x1::coin::CoinDeposit`
+  and `0x1::coin::CoinStore<...>`). `0x1` and `0x000...01` count as the same
+  address.
 - `every(...predicates)`, `some(...predicates)`, and `not(predicate)` combine
   and negate filters.
 - Any `(event) => boolean` function works too.
@@ -268,9 +391,9 @@ self-hosted processor or third-party indexer) and pass it in:
 const streamd = new StreamdClient({ aptos, adapter: myIndexAdapter });
 ```
 
-An adapter has one method, `fetchEvents(descriptor, options)`, returning
-`{ events, nextCursor, hasMore }`. See the `EventAdapter` type for the full
-contract.
+An adapter has one required method, `fetchEvents(descriptor, options)`, returning
+`{ events, nextCursor, hasMore }`, and an optional `getHeadVersion(descriptor)` that
+a negative `fromVersion` needs. See the `EventAdapter` type for the full contract.
 
 Combine sources with `RoutingAdapter` (by descriptor `kind`, with an optional
 `default` for the rest) and `FallbackAdapter` (try sources in order on each

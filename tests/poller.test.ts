@@ -1677,3 +1677,447 @@ describe("EventPoller pause and resume", () => {
     poller.stop();
   });
 });
+
+describe("EventPoller onCaughtUp", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("fires once after the backlog is delivered, not before", async () => {
+    const order: string[] = [];
+    const adapter = createMockAdapter([
+      page([makeEvent(1)], 1, true),
+      page([makeEvent(2)], 2, false),
+    ]);
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      (e) => void order.push(`event ${e.version}`),
+      { pollInterval: 1000, onCaughtUp: () => void order.push("caught up") },
+    );
+    poller.start();
+
+    await advanceTimersByTimeAsync(0);
+    expect(order).toEqual(["event 1"]);
+    await advanceTimersByTimeAsync(1);
+    expect(order).toEqual(["event 1", "event 2", "caught up"]);
+    expect(poller.cursor).toBe("2");
+
+    await advanceTimersByTimeAsync(3000);
+    expect(mocked(adapter.fetchEvents).mock.calls.length).toBeGreaterThanOrEqual(4);
+    expect(order.filter((o) => o === "caught up")).toHaveLength(1);
+    poller.stop();
+  });
+
+  it("is not called for a failed poll", async () => {
+    const onCaughtUp = vi.fn();
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async () => {
+        throw new StreamdNetworkError("down");
+      }),
+    };
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      onCaughtUp,
+      onError: vi.fn(),
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+    expect(onCaughtUp).not.toHaveBeenCalled();
+    poller.stop();
+  });
+
+  it("reports a throw through onError and keeps polling", async () => {
+    const onError = vi.fn();
+    const adapter = createMockAdapter([page([], 1)]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      pollInterval: 1000,
+      onError,
+      onCaughtUp: () => {
+        throw new Error("boom");
+      },
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    const err = mocked(onError).mock.calls[0]![0] as StreamdError;
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdPollingError);
+    expect((err.cause as Error).message).toBe("boom");
+    expect(poller.status.consecutiveErrors).toBe(0);
+
+    await advanceTimersByTimeAsync(1000);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+    expect(poller.active).toBe(true);
+    poller.stop();
+  });
+
+  it("schedules no further poll when it stops the poller", async () => {
+    const adapter = createMockAdapter([page([], 1)]);
+    const poller: EventPoller = new EventPoller(adapter, descriptor, vi.fn(), {
+      pollInterval: 1000,
+      onCaughtUp: () => poller.stop(),
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(2000);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+    expect(poller.active).toBe(false);
+  });
+
+  it("fires after resume when a pause came before it", async () => {
+    const onCaughtUp = vi.fn();
+    const adapter = createMockAdapter([
+      page([makeEvent(1)], 1, true),
+      page([makeEvent(2)], 2, false),
+    ]);
+    const poller: EventPoller = new EventPoller(
+      adapter,
+      descriptor,
+      (e) => {
+        if (e.version === 1n) poller.pause();
+      },
+      { pollInterval: 1000, onCaughtUp },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.paused).toBe(true);
+    expect(onCaughtUp).not.toHaveBeenCalled();
+
+    poller.resume();
+    await advanceTimersByTimeAsync(0);
+    expect(onCaughtUp).toHaveBeenCalledTimes(1);
+
+    poller.pause();
+    poller.resume();
+    await advanceTimersByTimeAsync(2000);
+    expect(onCaughtUp).toHaveBeenCalledTimes(1);
+    poller.stop();
+  });
+});
+
+describe("EventPoller batch delivery", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>((res) => (resolve = res));
+    return { promise, resolve };
+  }
+
+  const versions = (events: StreamdEvent[]) => events.map((e) => Number(e.version));
+
+  it("delivers each page's new, filtered events in one call, in order", async () => {
+    const adapter = createMockAdapter([
+      page([makeEvent(1), makeEvent(2), makeEvent(3)], 3, true),
+      page([makeEvent(3), makeEvent(4), makeEvent(5)], 5),
+    ]);
+    const batch = vi.fn((_: StreamdEvent[]) => {});
+    const poller = new EventPoller(adapter, descriptor, { batch }, {
+      pollInterval: 1000,
+      where: (e) => e.version !== 2n,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(1);
+
+    expect(batch.mock.calls.map(([events]) => versions(events))).toEqual([
+      [1, 3],
+      [4, 5],
+    ]);
+    expect(poller.cursor).toBe("5");
+    expect(poller.status.lastVersion).toBe(5n);
+    poller.stop();
+  });
+
+  it("skips the call for a page with nothing new but still advances", async () => {
+    const adapter = createMockAdapter([
+      page([makeEvent(1)], 1, true),
+      page([makeEvent(1)], 2, true),
+      page([], 3),
+    ]);
+    const batch = vi.fn((_: StreamdEvent[]) => {});
+    const poller = new EventPoller(adapter, descriptor, { batch }, { pollInterval: 1000 });
+    poller.start();
+    await advanceTimersByTimeAsync(2);
+
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(3);
+    expect(batch).toHaveBeenCalledTimes(1);
+    expect(poller.cursor).toBe("3");
+    poller.stop();
+  });
+
+  it("holds the cursor and the next poll until the batch settles", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 2)]);
+    const pending = deferred();
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      { batch: () => pending.promise },
+      { pollInterval: 100, cursor: "0" },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(300);
+    expect(poller.cursor).toBe("0");
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+
+    pending.resolve();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.cursor).toBe("2");
+    await advanceTimersByTimeAsync(100);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+    poller.stop();
+  });
+
+  it("reports a rejected batch without spending the error budget", async () => {
+    const onError = vi.fn();
+    const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 2)]);
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      { batch: async () => Promise.reject(new Error("boom")) },
+      { pollInterval: 1000, onError },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    const err = mocked(onError).mock.calls[0]![0] as StreamdError;
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdPollingError);
+    expect(err.message).toBe("Batch callback threw for 2 events from 1:0 to 2:0");
+    expect((err.cause as Error).message).toBe("boom");
+    expect(poller.status.consecutiveErrors).toBe(0);
+    expect(poller.cursor).toBe("2");
+
+    await advanceTimersByTimeAsync(1000);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+    poller.stop();
+  });
+
+  it("drops only the event whose where predicate throws", async () => {
+    const onError = vi.fn();
+    const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2), makeEvent(3)], 3)]);
+    const batch = vi.fn((_: StreamdEvent[]) => {});
+    const poller = new EventPoller(adapter, descriptor, { batch }, {
+      onError,
+      where: (e) => {
+        if (e.version === 2n) throw new Error("bad");
+        return true;
+      },
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(versions(batch.mock.calls[0]![0])).toEqual([1, 3]);
+    poller.stop();
+  });
+
+  it("leaves the cursor alone when stopped during a pending batch", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1)], 2)]);
+    const pending = deferred();
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      { batch: () => pending.promise },
+      { pollInterval: 100, cursor: "1" },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    poller.stop();
+    pending.resolve();
+    await advanceTimersByTimeAsync(0);
+
+    expect(poller.cursor).toBe("1");
+  });
+});
+
+describe("EventPoller relative start", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function headAdapter(head: bigint, pages: EventPage[] = []) {
+    const adapter = createMockAdapter(pages);
+    adapter.getHeadVersion = vi.fn(async () => head);
+    return adapter;
+  }
+
+  const firstFrom = (adapter: EventAdapter) =>
+    mocked(adapter.fetchEvents).mock.calls[0]?.[1]?.fromVersion;
+
+  it("starts a negative fromVersion that many versions before the head", async () => {
+    const adapter = headAdapter(10n);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { fromVersion: -2n });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    poller.stop();
+
+    expect(firstFrom(adapter)).toBe(8n);
+    expect(adapter.getHeadVersion).toHaveBeenCalledWith(descriptor);
+  });
+
+  it("clamps at version 0", async () => {
+    const adapter = headAdapter(3n);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { fromVersion: -50n });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    poller.stop();
+
+    expect(firstFrom(adapter)).toBe(0n);
+  });
+
+  it("reads no head for a non-negative fromVersion or a cursor", async () => {
+    for (const options of [{ fromVersion: 4n }, { fromVersion: -2n, cursor: "7" }, {}]) {
+      const adapter = headAdapter(10n);
+      const poller = new EventPoller(adapter, descriptor, vi.fn(), options);
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+      poller.stop();
+
+      expect(adapter.getHeadVersion).not.toHaveBeenCalled();
+      expect(firstFrom(adapter)).toBe(options.cursor ? undefined : options.fromVersion);
+    }
+  });
+
+  it("stops as invalid input when the adapter cannot report a head", async () => {
+    const adapter = createMockAdapter([]);
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      fromVersion: -2n,
+      onError,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(poller.active).toBe(false);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledTimes(1);
+    const err = onError.mock.calls[0]![0] as StreamdPollingError;
+    expect(err).toBeInstanceOf(StreamdPollingError);
+    expect(err.message).toContain("getHeadVersion");
+  });
+
+  it("retries a head read that failed on the network", async () => {
+    const adapter = headAdapter(10n);
+    mocked(adapter.getHeadVersion!).mockRejectedValueOnce(
+      new StreamdNetworkError("503", 503),
+    );
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      fromVersion: -2n,
+      pollInterval: 100,
+      onError,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(poller.active).toBe(true);
+
+    await advanceTimersByTimeAsync(200);
+    poller.stop();
+    expect(adapter.getHeadVersion).toHaveBeenCalledTimes(2);
+    expect(firstFrom(adapter)).toBe(8n);
+  });
+
+  it("reuses the resolved start when the fetch after it fails", async () => {
+    const adapter = headAdapter(10n);
+    mocked(adapter.fetchEvents).mockRejectedValueOnce(
+      new StreamdNetworkError("503", 503),
+    );
+    mocked(adapter.getHeadVersion!).mockResolvedValueOnce(10n).mockResolvedValue(99n);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      fromVersion: -2n,
+      pollInterval: 100,
+      onError: () => {},
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(200);
+    poller.stop();
+
+    const froms = mocked(adapter.fetchEvents).mock.calls.map((c) => c[1].fromVersion);
+    expect(froms.slice(0, 2)).toEqual([8n, 8n]);
+    expect(adapter.getHeadVersion).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("EventPoller decode", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function amountEvent(version: number, amount: unknown): StreamdEvent {
+    return { ...makeEvent(version), data: { amount } };
+  }
+
+  it("delivers decoded data, and where sees the same decoded event", async () => {
+    const seen: unknown[] = [];
+    const tested: unknown[] = [];
+    const source = amountEvent(1, "18446744073709551615");
+    const adapter = createMockAdapter([page([source, amountEvent(2, "3")], 2)]);
+    const poller = new EventPoller(adapter, descriptor, (e) => void seen.push(e.data), {
+      decode: ["amount"],
+      where: (e) => {
+        tested.push((e.data as { amount: unknown }).amount);
+        return (e.data as { amount: bigint }).amount > 5n;
+      },
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(tested).toEqual([18446744073709551615n, 3n]);
+    expect(seen).toEqual([{ amount: 18446744073709551615n }]);
+    expect(source.data).toEqual({ amount: "18446744073709551615" });
+    poller.stop();
+  });
+
+  it("reports an undecodable event through onError, skips it, and keeps polling", async () => {
+    const seen: bigint[] = [];
+    const onError = vi.fn();
+    const adapter = createMockAdapter([
+      page([amountEvent(1, "not a number"), amountEvent(2, "4")], 2),
+    ]);
+    const poller = new EventPoller(adapter, descriptor, (e) => void seen.push(e.version), {
+      decode: ["amount"],
+      onError,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(seen).toEqual([2n]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    const reported = onError.mock.calls[0]![0] as StreamdError;
+    expect(reported).toBeInstanceOf(StreamdError);
+    expect(reported).not.toBeInstanceOf(StreamdPollingError);
+    expect((reported.cause as Error).message).toMatch(/"amount" of 1:0/);
+    expect(poller.status.consecutiveErrors).toBe(0);
+    expect(poller.cursor).toBe("2");
+    expect(poller.active).toBe(true);
+    poller.stop();
+  });
+
+  it("rejects an invalid decode option at construction", () => {
+    expect(
+      () => new EventPoller(createMockAdapter([]), descriptor, vi.fn(), { decode: [""] }),
+    ).toThrow(StreamdError);
+  });
+});

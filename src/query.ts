@@ -4,7 +4,9 @@ import type {
   EventFilter,
   StreamdEvent,
 } from "./types.js";
-import { raceAbort } from "./utils.js";
+import { raceAbort, resolveFromVersion } from "./utils.js";
+import { RequestLimiter } from "./limiter.js";
+import { fieldDecoder } from "./decode.js";
 
 const DEFAULT_PAGE_SIZE = 25;
 
@@ -12,7 +14,10 @@ const DEFAULT_PAGE_SIZE = 25;
  * Historical event querying: `getEvents` and its paged form `getEventPages`.
  */
 export class EventQuery {
-  constructor(private readonly adapter: EventAdapter) {}
+  constructor(
+    private readonly source: EventAdapter,
+    private readonly limiter = new RequestLimiter(),
+  ) {}
 
   async getEvents<TData = unknown>(
     descriptor: EventDescriptor,
@@ -37,9 +42,12 @@ export class EventQuery {
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    const { where, maxPages, signal, ...adapterFilter } = filter;
+    const { where, decode: fields, maxPages, signal, ...adapterFilter } = filter;
+    const decode = fieldDecoder(fields);
+    const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
     const limit = filter.limit;
     let cursor: string | undefined;
+    let fromVersion = filter.fromVersion;
     let fetched = 0;
     let pages = 0;
 
@@ -52,12 +60,20 @@ export class EventQuery {
         limit !== undefined ? Math.min(pageSize, limit - fetched) : pageSize;
       if (batchLimit <= 0) break;
 
+      // Only a relative start awaits, so an absolute one fetches synchronously.
+      if (fromVersion !== undefined && fromVersion < 0n) {
+        fromVersion = await raceAbort(
+          resolveFromVersion(adapter, descriptor, filter.fromVersion),
+          signal,
+        );
+      }
+
       const page = await raceAbort(
-        this.adapter.fetchEvents(descriptor, {
+        adapter.fetchEvents(descriptor, {
           ...adapterFilter,
           // The cursor carries position after the first page; fromVersion and
           // offset only seed the initial request.
-          fromVersion: cursor === undefined ? filter.fromVersion : undefined,
+          fromVersion: cursor === undefined ? fromVersion : undefined,
           offset: cursor === undefined ? filter.offset : undefined,
           cursor,
           limit: batchLimit,
@@ -70,8 +86,9 @@ export class EventQuery {
       // and cannot be pushed down to a remote source. `limit` counts what
       // survives it, so a restrictive predicate keeps paging rather than
       // returning short.
-      const matched =
-        where === undefined ? page.events : page.events.filter(where);
+      const decoded =
+        decode === undefined ? page.events : page.events.map(decode);
+      const matched = where === undefined ? decoded : decoded.filter(where);
 
       // Adapters may overshoot `limit` — a single transaction can emit several
       // matching events, and the scan adapter keeps them rather than dropping

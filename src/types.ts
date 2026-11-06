@@ -5,9 +5,21 @@ import type { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
 /** Move struct tag identifying a module event: `${address}::${module}::${struct}` */
 export type MoveEventType = `${string}::${string}::${string}`;
 
-/** Modern module event: one `${address}::${module}::${struct}` or a list of them */
-export interface ModuleEventDescriptor {
+declare const eventData: unique symbol;
+
+/**
+ * Modern module event: one `${address}::${module}::${struct}` or a list of
+ * them. `TData` is the payload type `defineEvent` attaches, so client methods
+ * infer `event.data` from the descriptor.
+ */
+export interface ModuleEventDescriptor<TData = unknown> {
   kind: "module";
+  /**
+   * Type-only carrier for `TData`; never present at runtime. A method
+   * signature so it compares bivariantly: a plain `EventDescriptor` still
+   * accepts an explicit type argument, while unrelated payload types clash.
+   */
+  [eventData]?(data: TData): void;
   /**
    * One Move event type or a non-empty list of them (e.g.
    * `"0x1::coin::WithdrawEvent"` or
@@ -42,8 +54,8 @@ export interface AccountEventDescriptor {
   eventTypes?: string[];
 }
 
-export type EventDescriptor =
-  | ModuleEventDescriptor
+export type EventDescriptor<TData = unknown> =
+  | ModuleEventDescriptor<TData>
   | HandleEventDescriptor
   | AccountEventDescriptor;
 
@@ -93,12 +105,16 @@ export interface StreamdEvent<TData = unknown> {
  *
  * Used for anything the chain APIs can't filter on, most importantly fields
  * or addresses inside a module event's `data`. See `whereField`,
- * `involvesAddress`, `ofType`, `every`, `some`, and `not`.
+ * `involvesAddress`, `ofType`, `ofModule`, `every`, `some`, and `not`.
  */
 export type EventPredicate = (event: StreamdEvent) => boolean;
 
 export interface EventFilter {
-  /** Start from this version (inclusive) */
+  /**
+   * Start from this version (inclusive). Negative counts back from the head,
+   * read once from `EventAdapter.getHeadVersion`: `-1000n` starts 1000
+   * versions before it, clamped at 0.
+   */
   fromVersion?: bigint;
   /** End at this version (inclusive) */
   toVersion?: bigint;
@@ -115,6 +131,12 @@ export interface EventFilter {
    * Pair it with `maxPages` when you would rather cap the work than wait.
    */
   where?: EventPredicate;
+  /**
+   * Top-level `data` fields whose decimal strings (u64, u128, u256) become
+   * `bigint`, before `where` runs. An event without the field is left as is;
+   * one holding anything else rejects the query with a `StreamdError`.
+   */
+  decode?: readonly string[];
   /**
    * Stop after this many adapter pages, even if `limit` is unmet. Unbounded
    * when omitted. Use it to put a ceiling on a filtered walk.
@@ -134,7 +156,7 @@ export interface EventFilter {
  * pushed down to a remote data source. Query and poller apply them to results.
  */
 export interface FetchOptions
-  extends Omit<EventFilter, "where" | "maxPages" | "signal"> {
+  extends Omit<EventFilter, "where" | "decode" | "maxPages" | "signal"> {
   orderBy?: "asc" | "desc";
   /**
    * Opaque resume token returned by this adapter's previous page. When
@@ -166,7 +188,11 @@ export interface ListenerOptions {
   pollInterval?: number;
   /** Maximum events to deliver per poll (default: 25) */
   batchSize?: number;
-  /** Start from this version; undefined = chain head */
+  /**
+   * Start from this version; undefined = chain head. Negative counts back from
+   * the head, read once on the first poll from `EventAdapter.getHeadVersion`:
+   * `-1000n` starts 1000 versions before it, clamped at 0.
+   */
   fromVersion?: bigint;
   /**
    * Resume from a token a previous subscription reported as `cursor`. It wins
@@ -197,12 +223,25 @@ export interface ListenerOptions {
    */
   where?: EventPredicate;
   /**
+   * Top-level `data` fields whose decimal strings (u64, u128, u256) become
+   * `bigint`, before `where` runs. An event without the field is left as is;
+   * one holding anything else is skipped and reported through `onError`,
+   * without counting toward `maxErrors`.
+   */
+  decode?: readonly string[];
+  /**
    * Receives polling failures and errors thrown by `where` or the callback,
    * overriding `StreamdConfig.onError` for this subscription. A throw from it
    * does not stop polling: it is rethrown on a microtask and surfaces as an
    * uncaught error.
    */
   onError?: (error: Error) => void;
+  /**
+   * Called once, the first time a poll delivers its whole page and the adapter
+   * reports nothing more waiting (`hasMore: false`). Not awaited; a throw goes
+   * to `onError` and does not count toward `maxErrors`.
+   */
+  onCaughtUp?: () => void;
   /**
    * Aborting stops the subscription as `unsubscribe()` does, without calling
    * `onError`. Already aborted, it never polls. `once()` and `stream()` also
@@ -246,6 +285,12 @@ export interface StreamdConfig {
    * docs for the contract).
    */
   adapter?: EventAdapter;
+  /**
+   * Most adapter calls (`fetchEvents` and `getHeadVersion`) this client has in
+   * flight at once, across all subscriptions and queries; a positive integer.
+   * Further calls wait in order. Omit for no limit.
+   */
+  maxConcurrentRequests?: number;
 }
 
 // ---- Subscription handle ----
@@ -324,6 +369,16 @@ export type EventCallback<TData = unknown> = (
   event: StreamdEvent<TData>,
 ) => void;
 
+/**
+ * Called once per poll with that page's new events that pass `where`, in
+ * order; never with an empty array. Otherwise as `EventCallback`: a returned
+ * promise is awaited before the cursor moves past the page, and a throw or
+ * rejection goes to `onError` without counting toward `maxErrors`.
+ */
+export type BatchCallback<TData = unknown> = (
+  events: StreamdEvent<TData>[],
+) => void;
+
 // ---- Adapter interface ----
 
 /**
@@ -350,4 +405,9 @@ export interface EventAdapter {
     descriptor: EventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage>;
+  /**
+   * The latest version this source can serve for `descriptor`. Optional; a
+   * negative `fromVersion` (relative to the head) needs it.
+   */
+  getHeadVersion?(descriptor: EventDescriptor): Promise<bigint>;
 }

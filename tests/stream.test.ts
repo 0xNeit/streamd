@@ -148,8 +148,8 @@ describe("StreamdClient.stream", () => {
 
     // The poller is parked on this event's handler until it is released.
     type Parked = { cursor?: string; delivering: Promise<void> };
-    const poller = [
-      ...(c as unknown as { subscriptions: Map<string, Parked> }).subscriptions.values(),
+    const { poller } = [
+      ...(c as unknown as { subscriptions: Map<string, { poller: Parked }> }).subscriptions.values(),
     ][0]!;
     let settled = false;
     void poller.delivering.then(() => (settled = true));
