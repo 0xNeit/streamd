@@ -47,6 +47,7 @@ const sub = streamd.on(
     maxErrors: 10,       // consecutive failures before stopping (default 10)
     maxBackoff: 60_000,  // max backoff delay in ms on failures (default 60000)
     dedupWindow: 1000,   // seen-event dedup window size, 0 to disable (default 1000)
+    id: "deposits",      // sub.id; generated when omitted
     onError: (err) => console.error(err),
   },
 );
@@ -81,6 +82,12 @@ input, such as a malformed address or cursor, stops it at once, since retrying
 cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
 a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
 its own `onError`.
+
+`id` names the subscription for your logs and maps; `on()` and `onBatch()` take it. It must
+be a non-empty string that no live subscription on the same client holds, or the call throws
+`StreamdError` before anything polls. The name is free again once the subscription ends:
+`unsubscribe()`, disposal, `off()`, its `signal` aborting, polling giving up, or `destroy()`.
+It cannot be a client-wide default.
 
 ### Client-wide listener defaults
 
