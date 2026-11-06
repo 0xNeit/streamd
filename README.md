@@ -347,6 +347,32 @@ const event = await streamd.once(
 The promise rejects with `StreamdTimeoutError` if `timeout` elapses first, if
 polling gives up after `maxErrors`, or straight away on invalid input.
 
+### Events from a submitted transaction
+
+```ts
+const { hash } = await aptos.signAndSubmitTransaction({ signer, transaction });
+const deposits = await streamd.eventsOf(
+  hash,
+  { kind: "module", eventType: "0x1::fungible_asset::Deposit" }, // optional
+  { decode: ["amount"], timeout: 30_000 }, // optional
+);
+```
+
+`eventsOf()` looks the transaction up every `pollInterval` (the client-wide default) until
+it is committed, then resolves with its events in transaction order, each shaped like any
+other event, `version`, `transactionHash`, `sender` and `timestamp` included. A descriptor,
+`decode` and `where` narrow them as they narrow a query. A `module` descriptor matches by
+type, an `account` one by the transaction's sender, and a `handle` one only by
+`creationNumber`, since an event carries its handle's guid rather than the struct and
+field holding it (`listEventHandles` reports each guid).
+
+A transaction that failed rejects with `StreamdTransactionError`, whose `vmStatus` says
+why: the chain discards a failed transaction's events, so there is nothing to return. One
+not committed within `timeout` (default 20 seconds) rejects with `StreamdTimeoutError`, an
+abort with `signal.reason`, and a failed lookup at once with its error. The hash must be
+`0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which
+`FullnodeScanAdapter` and `MemoryAdapter` have and the wrapping adapters pass through.
+
 ### Query history
 
 ```ts
@@ -502,7 +528,8 @@ const streamd = new StreamdClient({ aptos, maxConcurrentRequests: 4 });
 At most that many adapter calls run at once across every subscription and query on the
 client; the rest wait their turn in order. `fetchEvents`, the `getHeadVersion` read behind
 a negative `fromVersion`, the `getEarliestVersion` read behind `"earliest"`, and the
-`getBlock` and `getBlockHeights` lookups behind `fromBlock`/`toBlock` and `fromTime` all count. The unit is one adapter call, not one HTTP request:
+`getBlock` and `getBlockHeights` lookups behind `fromBlock`/`toBlock` and `fromTime`, and
+the lookups behind `eventsOf()` all count. The unit is one adapter call, not one HTTP request:
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
 dropped without reaching the adapter. Omit the option for no limit.
@@ -797,8 +824,10 @@ An adapter has one required method, `fetchEvents(descriptor, options)`, returnin
 `{ events, nextCursor, hasMore }`, an optional `getHeadVersion(descriptor)` that
 a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` that
 `fromVersion: "earliest"` needs, an optional `getBlock(descriptor, height)` that
-`fromBlock`/`toBlock` need, and an optional `getBlockHeights(descriptor)` that `fromTime`
-needs alongside `getBlock`. See the `EventAdapter` type for the full contract.
+`fromBlock`/`toBlock` need, an optional `getBlockHeights(descriptor)` that `fromTime`
+needs alongside `getBlock`, and an optional `getTransactionEvents(hash, descriptor?)` that
+`eventsOf()` needs, returning `{ version, success, vmStatus, events }` or `undefined` while
+the transaction is not committed. See the `EventAdapter` type for the full contract.
 
 A page may also carry `throughVersion`, the highest ledger version the source has
 finished examining: resuming from `nextCursor` returns nothing at or below it, so an
@@ -899,8 +928,8 @@ from its first source, and `MemoryAdapter` never sets it.
 To capture a real session once and replay it offline, wrap an adapter with
 `recordingAdapter`. Every call that succeeds for one of the three descriptor
 kinds is kept, `fetchEvents` and the optional `getHeadVersion`,
-`getEarliestVersion`, `getBlock` and `getBlockHeights`, and
-`JSON.stringify(recorder)` gives the recording.
+`getEarliestVersion`, `getBlock`, `getBlockHeights` and `getTransactionEvents` (by
+hash), and `JSON.stringify(recorder)` gives the recording.
 `replayAdapter` takes that object or its JSON text and answers the same
 requests with no network:
 
