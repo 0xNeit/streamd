@@ -5,6 +5,7 @@ import type {
   StreamdEvent,
 } from "./types.js";
 import { raceAbort, resolveFromVersion } from "./utils.js";
+import { RequestLimiter } from "./limiter.js";
 
 const DEFAULT_PAGE_SIZE = 25;
 
@@ -12,7 +13,10 @@ const DEFAULT_PAGE_SIZE = 25;
  * Historical event querying: `getEvents` and its paged form `getEventPages`.
  */
 export class EventQuery {
-  constructor(private readonly adapter: EventAdapter) {}
+  constructor(
+    private readonly source: EventAdapter,
+    private readonly limiter = new RequestLimiter(),
+  ) {}
 
   async getEvents<TData = unknown>(
     descriptor: EventDescriptor,
@@ -38,6 +42,7 @@ export class EventQuery {
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
     const { where, maxPages, signal, ...adapterFilter } = filter;
+    const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
     const limit = filter.limit;
     let cursor: string | undefined;
     let fromVersion = filter.fromVersion;
@@ -56,13 +61,13 @@ export class EventQuery {
       // Only a relative start awaits, so an absolute one fetches synchronously.
       if (fromVersion !== undefined && fromVersion < 0n) {
         fromVersion = await raceAbort(
-          resolveFromVersion(this.adapter, descriptor, filter.fromVersion),
+          resolveFromVersion(adapter, descriptor, filter.fromVersion),
           signal,
         );
       }
 
       const page = await raceAbort(
-        this.adapter.fetchEvents(descriptor, {
+        adapter.fetchEvents(descriptor, {
           ...adapterFilter,
           // The cursor carries position after the first page; fromVersion and
           // offset only seed the initial request.

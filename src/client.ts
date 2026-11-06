@@ -21,6 +21,7 @@ import {
 } from "./errors.js";
 import { generateId, onAbort } from "./utils.js";
 import { eventStream } from "./stream.js";
+import { RequestLimiter } from "./limiter.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -29,6 +30,16 @@ function checkTimeout(ms: number | undefined): StreamdError | undefined {
     return undefined;
   }
   return new StreamdError(`Invalid timeout: ${String(ms)} (expected 0..${MAX_TIMEOUT}ms)`);
+}
+
+function resolveLimiter(max: number | undefined): RequestLimiter {
+  if (max === undefined) return new RequestLimiter();
+  if (!Number.isInteger(max) || max < 1) {
+    throw new StreamdError(
+      `Invalid maxConcurrentRequests: ${String(max)} (expected a positive integer)`,
+    );
+  }
+  return new RequestLimiter(max);
 }
 
 function resolveAdapter(config: StreamdConfig): EventAdapter {
@@ -48,6 +59,8 @@ export class StreamdClient {
   private readonly onError?: (error: Error) => void;
   private readonly adapter: EventAdapter;
   private readonly query: EventQuery;
+  /** Shared by every poller and query, so the cap holds client-wide. */
+  private readonly limiter: RequestLimiter;
   private readonly subscriptions = new Map<string, EventPoller>();
   /** Open streams, so destroy() can end their loops rather than strand them. */
   private readonly streams = new Set<() => void>();
@@ -55,8 +68,9 @@ export class StreamdClient {
   constructor(config: StreamdConfig) {
     this.defaultPollInterval = config.defaultPollInterval ?? 1000;
     this.onError = config.onError;
+    this.limiter = resolveLimiter(config.maxConcurrentRequests);
     this.adapter = resolveAdapter(config);
-    this.query = new EventQuery(this.adapter);
+    this.query = new EventQuery(this.adapter, this.limiter);
   }
 
   /**
@@ -113,6 +127,7 @@ export class StreamdClient {
           (options?.onError ?? this.onError)?.(err);
         },
       },
+      this.limiter,
     );
 
     poller.start();
