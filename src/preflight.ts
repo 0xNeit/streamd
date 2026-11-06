@@ -1,6 +1,7 @@
 import { getAptosFullNode } from "@aptos-labs/ts-sdk";
 import type { Aptos, MoveModuleBytecode } from "@aptos-labs/ts-sdk";
 import { StreamdError } from "./errors.js";
+import { MOVE_IDENTIFIER } from "./filter.js";
 import type { ModuleEventDescriptor } from "./types.js";
 import { toStreamdError } from "./adapters/fullnode.js";
 import { requireAddress, requireEventType } from "./adapters/validate.js";
@@ -10,6 +11,8 @@ import { requireAddress, requireEventType } from "./adapters/validate.js";
  * - `legacy`: no `#[event]`, but `drop` and `store`, so a legacy `EventHandle`
  *   can emit it and the module scan still sees it.
  * - `not-event`: lacks `drop` or `store`, so no event can carry it.
+ * - `missing-module`: no such module is published at the address.
+ * - `missing-struct`: the module declares no such struct.
  */
 export type EventTypeStatus =
   | "event"
@@ -30,8 +33,6 @@ export interface DescriptorCheck {
   types: EventTypeCheck[];
 }
 
-const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-
 interface StructRef {
   eventType: string;
   address: string;
@@ -42,7 +43,7 @@ interface StructRef {
 function parseType(value: unknown): StructRef {
   const eventType = requireEventType(value);
   const [address = "", module = "", struct = ""] = eventType.split("<", 1)[0]!.split("::");
-  if (!IDENTIFIER.test(module) || !IDENTIFIER.test(struct)) {
+  if (!MOVE_IDENTIFIER.test(module) || !MOVE_IDENTIFIER.test(struct)) {
     throw new StreamdError(`Not a valid Move event type: ${eventType}`);
   }
   return { eventType, address: requireAddress(address), module, struct };
@@ -50,10 +51,13 @@ function parseType(value: unknown): StructRef {
 
 function statusOf(module: MoveModuleBytecode | undefined, struct: string): EventTypeStatus {
   if (module === undefined) return "missing-module";
-  const found = module.abi!.structs.find((s) => s.name === struct);
+  const found = module.abi!.structs.find((s) => s?.name === struct);
   if (found === undefined) return "missing-struct";
+  const abilities: unknown = found.abilities;
+  if (typeof found.is_event !== "boolean" || !Array.isArray(abilities)) {
+    throw new StreamdError(`Fullnode returned a malformed ABI for struct ${struct}`);
+  }
   if (found.is_event) return "event";
-  const abilities: readonly string[] = found.abilities;
   return abilities.includes("drop") && abilities.includes("store") ? "legacy" : "not-event";
 }
 

@@ -49,6 +49,8 @@ const coinModule = {
       struct("CoinDeposit", true, ["drop", "store"]),
       struct("DepositEvent", false, ["drop", "store"]),
       struct("CoinStore", false, ["key"]),
+      struct("OnlyStore", false, ["store"]),
+      struct("OnlyDrop", false, ["drop"]),
     ],
   },
 };
@@ -74,6 +76,8 @@ describe("checkDescriptor", () => {
         "0x1::coin::CoinDeposit",
         "0x1::coin::DepositEvent",
         "0x1::coin::CoinStore",
+        "0x1::coin::OnlyStore",
+        "0x1::coin::OnlyDrop",
         "0x1::coin::Nope",
         "0x1::nope::Thing",
         "0x1::coin::CoinDeposit",
@@ -85,6 +89,8 @@ describe("checkDescriptor", () => {
         { eventType: "0x1::coin::CoinDeposit", status: "event" },
         { eventType: "0x1::coin::DepositEvent", status: "legacy" },
         { eventType: "0x1::coin::CoinStore", status: "not-event" },
+        { eventType: "0x1::coin::OnlyStore", status: "not-event" },
+        { eventType: "0x1::coin::OnlyDrop", status: "not-event" },
         { eventType: "0x1::coin::Nope", status: "missing-struct" },
         { eventType: "0x1::nope::Thing", status: "missing-module" },
       ],
@@ -147,6 +153,19 @@ describe("checkDescriptor", () => {
     const err = await checkDescriptor(aptos, mod("0x1::coin::CoinDeposit")).catch((e) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  });
+
+  it("rejects malformed ABI struct entries as StreamdError", async () => {
+    const bad = [
+      [null, struct("CoinDeposit", "yes" as never, ["drop", "store"])],
+      [{ ...struct("CoinDeposit", false, []), abilities: "drop store" }],
+    ];
+    for (const structs of bad) {
+      const { aptos } = fakeNode(() => ({ data: { ...coinModule, abi: { ...coinModule.abi, structs } } }));
+      const err = await checkDescriptor(aptos, mod("0x1::coin::CoinDeposit")).catch((e) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
   });
 
   it("does not answer one node's check from another's", async () => {
