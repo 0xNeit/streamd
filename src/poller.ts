@@ -17,6 +17,7 @@ import {
 import { CursorManager } from "./cursor.js";
 import { resolveFromVersion } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
+import { fieldDecoder } from "./decode.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
 const DEFAULT_BATCH_SIZE = 25;
@@ -69,6 +70,7 @@ export class EventPoller {
   /** Absolute once the first poll has resolved a relative start. */
   private fromVersion?: bigint;
   private readonly where?: EventPredicate;
+  private readonly decode?: (event: StreamdEvent) => StreamdEvent;
   private readonly onError?: (error: Error) => void;
   private readonly onCaughtUp?: () => void;
   private readonly signal?: AbortSignal;
@@ -89,6 +91,7 @@ export class EventPoller {
     this.maxBackoff = resolveMaxBackoff(options.maxBackoff);
     this.fromVersion = options.fromVersion;
     this.where = options.where;
+    this.decode = fieldDecoder(options.decode);
     this.onError = options.onError;
     this.onCaughtUp = options.onCaughtUp;
     this.signal = options.signal;
@@ -278,19 +281,21 @@ export class EventPoller {
 
   private async processPage(page: EventPage, gen: number): Promise<void> {
     const batch: StreamdEvent[] = [];
-    for (const event of page.events) {
+    for (const raw of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
-      if (this.position.hasSeen(event)) continue;
+      if (this.position.hasSeen(raw)) continue;
       // Mark before filtering: a rejected event has still been processed, and
       // marking it keeps overlapping pages from re-testing it.
-      this.position.mark(event);
-      if (this.lastVersion === undefined || event.version > this.lastVersion) {
-        this.lastVersion = event.version;
+      this.position.mark(raw);
+      if (this.lastVersion === undefined || raw.version > this.lastVersion) {
+        this.lastVersion = raw.version;
       }
+      let event = raw;
       // A predicate or handler bug is the caller's, not the source's: report
       // it without counting toward maxErrors or abandoning the rest of the page.
       try {
+        if (this.decode !== undefined) event = this.decode(raw);
         if (this.where !== undefined && !this.where(event)) continue;
         if (this.onBatch !== undefined) {
           batch.push(event);

@@ -1622,3 +1622,28 @@ describe("maxConcurrentRequests", () => {
     }
   });
 });
+
+describe("StreamdClient decode", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("delivers named integer fields as bigint through on()", async () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+    const source = { ...makeEvent(10), data: { amount: "1000", store: "0x1" } };
+    const client = new StreamdClient({ adapter: new MemoryAdapter([source]) });
+    const seen: unknown[] = [];
+    client.on(descriptor, (e) => void seen.push(e.data), {
+      fromVersion: 0n,
+      decode: ["amount"],
+    });
+    await advanceTimersByTimeAsync(0);
+
+    expect(seen).toEqual([{ amount: 1000n, store: "0x1" }]);
+    client.destroy();
+  });
+});
