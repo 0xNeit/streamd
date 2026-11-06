@@ -703,11 +703,18 @@ a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` tha
 `fromBlock`/`toBlock` need, and an optional `getBlockHeights(descriptor)` that `fromTime`
 needs alongside `getBlock`. See the `EventAdapter` type for the full contract.
 
+A page may also carry `throughVersion`, the highest ledger version the source has
+finished examining: resuming from `nextCursor` returns nothing at or below it, so an
+empty page still says how far the scan got. `FullnodeScanAdapter` and `MemoryAdapter` set
+it whenever they examined something, and the wrapping adapters pass it through. A full
+handle page reports one version below its last event, since the next page may hold more
+events from that transaction. An account walk only claims the account's own transactions.
+
 To check a custom adapter against that contract, run `checkAdapter` from any
 test runner or a plain script. It walks a few pages (`maxPages`, default 3),
 then makes two more fetches and one call to each optional method present, and
 reports a result per rule (`page-shape`, `order`, `cursor-advance`,
-`cursor-precedence`, `foreign-cursor`, `head-version`, ...) instead of
+`through-version`, `cursor-precedence`, `foreign-cursor`, `head-version`, ...) instead of
 throwing. It only reads, but against a real source those reads are network
 calls:
 

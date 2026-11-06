@@ -29,7 +29,14 @@ function failed(report: AdapterCheckReport): string[] {
   return report.results.filter((r) => r.status === "fail").map((r) => r.name);
 }
 
-const WALK_RULES: string[] = ["fetch", "page-shape", "from-version", "order", "cursor-advance"];
+const WALK_RULES: string[] = [
+  "fetch",
+  "page-shape",
+  "from-version",
+  "order",
+  "cursor-advance",
+  "through-version",
+];
 
 function walkFailures(report: AdapterCheckReport): string[] {
   return failed(report).filter((name) => WALK_RULES.includes(name));
@@ -65,6 +72,7 @@ describe("checkAdapter walk", () => {
       "from-version": "pass",
       order: "pass",
       "cursor-advance": "pass",
+      "through-version": "pass",
       "cursor-precedence": "pass",
       "foreign-cursor": "pass",
       "head-version": "pass",
@@ -193,6 +201,33 @@ describe("checkAdapter walk", () => {
     const report = await checkAdapter(stalled, desc);
     expect(failed(report)).toEqual(["cursor-advance"]);
     expect(report.pagesFetched).toBe(2);
+  });
+
+  it("skips through-version when no page sets it", async () => {
+    const report = await checkAdapter(scripted([{ events: [ev(1)], hasMore: false }]), desc);
+    expect(statuses(report)["through-version"]).toBe("skip");
+  });
+
+  it("fails through-version when it falls or a later event is not above it", async () => {
+    const falling = scripted([
+      { events: [ev(1)], nextCursor: "a", hasMore: true, throughVersion: 5n },
+      { events: [], nextCursor: "b", hasMore: false, throughVersion: 4n },
+    ]);
+    expect(failed(await checkAdapter(falling, desc))).toEqual(["through-version"]);
+    const early = scripted([
+      { events: [ev(1)], nextCursor: "a", hasMore: true, throughVersion: 5n },
+      { events: [ev(5)], nextCursor: "b", hasMore: false },
+    ]);
+    const report = await checkAdapter(early, desc);
+    expect(failed(report)).toEqual(["through-version"]);
+    expect(report.results.find((r) => r.name === "through-version")?.message).toContain("5:0");
+  });
+
+  it("fails page-shape on a throughVersion that is not a non-negative bigint", async () => {
+    for (const throughVersion of [3, -1n]) {
+      const report = await checkAdapter(scripted([{ events: [], hasMore: false, throughVersion }]), desc);
+      expect(failed(report)).toEqual(["page-shape"]);
+    }
   });
 
   it("rejects a non-adapter with StreamdError", async () => {
