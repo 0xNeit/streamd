@@ -1,0 +1,210 @@
+import { describe, it, expect } from "bun:test";
+import { StreamdClient } from "../src/client.js";
+import { MemoryAdapter } from "../src/adapters/memory.js";
+import { StreamdError, StreamdNetworkError } from "../src/errors.js";
+import type {
+  EventAdapter,
+  EventDescriptor,
+  StreamdEvent,
+  ViewRequest,
+} from "../src/types.js";
+
+const PING = "0x1::test::Ping";
+const PONG = "0x1::test::Pong";
+const BALANCE = "0x1::coin::balance";
+const pings: EventDescriptor = { kind: "module", eventType: PING };
+const pongs: EventDescriptor = { kind: "module", eventType: PONG };
+
+function ev(version: number, type = PING): StreamdEvent {
+  return { type, data: { amount: String(version * 10) }, version: BigInt(version), sequenceNumber: 0n, eventIndex: 0 };
+}
+
+interface ViewCall {
+  request: ViewRequest;
+  version: bigint;
+  descriptor: EventDescriptor | undefined;
+}
+
+/** A `MemoryAdapter` whose `view` answers `[version as a string]`, or runs `answer`. */
+function viewing(
+  events: StreamdEvent[],
+  answer: (call: ViewCall, n: number) => unknown = (c) => [String(c.version)],
+) {
+  const calls: ViewCall[] = [];
+  const adapter: EventAdapter = new MemoryAdapter(events);
+  adapter.view = async (request, version, descriptor) => {
+    const call = { request, version, descriptor };
+    calls.push(call);
+    return answer(call, calls.length) as unknown[];
+  };
+  return { adapter, calls };
+}
+
+const balanceOf = (event: StreamdEvent): ViewRequest => ({
+  function: BALANCE,
+  typeArguments: ["0x1::aptos_coin::AptosCoin"],
+  functionArguments: [(event.data as { amount: unknown }).amount],
+});
+
+describe("withState on queries", () => {
+  it("attaches the view result read at each event's version", async () => {
+    const { adapter, calls } = viewing([ev(1), ev(2)]);
+    const events = await new StreamdClient({ adapter }).getEvents(pings, {
+      fromVersion: 0n,
+      withState: balanceOf,
+    });
+    expect(events.map((e) => e.state)).toEqual([["1"], ["2"]]);
+    expect(calls.map((c) => [c.version, c.request.functionArguments, c.descriptor])).toEqual([
+      [1n, ["10"], pings],
+      [2n, ["20"], pings],
+    ]);
+  });
+
+  it("runs after decode, so decoded fields reach the request", async () => {
+    const { adapter, calls } = viewing([ev(1)]);
+    await new StreamdClient({ adapter }).getEvents(pings, {
+      fromVersion: 0n,
+      decode: ["amount"],
+      withState: balanceOf,
+    });
+    expect(calls[0]!.request.functionArguments).toEqual([10n]);
+  });
+
+  it("delivers an event without state when the builder returns undefined", async () => {
+    const { adapter, calls } = viewing([ev(1), ev(2)]);
+    const events = await new StreamdClient({ adapter }).getEvents(pings, {
+      fromVersion: 0n,
+      withState: (e) => (e.version === 1n ? undefined : balanceOf(e)),
+    });
+    expect("state" in events[0]!).toBe(false);
+    expect(events[1]!.state).toEqual(["2"]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("calls only for events that pass where, limit and orderBy", async () => {
+    const { adapter, calls } = viewing([ev(1), ev(2), ev(3), ev(4), ev(5)]);
+    const client = new StreamdClient({ adapter });
+    await client.getEvents(pings, {
+      fromVersion: 0n,
+      where: (e) => e.version % 2n === 1n,
+      limit: 2,
+      withState: balanceOf,
+    });
+    expect(calls.map((c) => c.version)).toEqual([1n, 3n]);
+    calls.length = 0;
+    const latest = await client.getEvents(pings, {
+      fromVersion: 0n,
+      orderBy: "desc",
+      limit: 2,
+      withState: balanceOf,
+    });
+    expect(latest.map((e) => e.state)).toEqual([["5"], ["4"]]);
+    expect(calls.map((c) => c.version)).toEqual([5n, 4n]);
+  });
+
+  it("does not change the adapter's events", async () => {
+    const events = [ev(1)];
+    const { adapter } = viewing(events);
+    await new StreamdClient({ adapter }).getEvents(pings, { fromVersion: 0n, withState: balanceOf });
+    expect("state" in events[0]!).toBe(false);
+  });
+
+  it("routes a merge's view calls by its first descriptor", async () => {
+    const { adapter, calls } = viewing([ev(1, PING), ev(2, PONG)]);
+    const events = await new StreamdClient({ adapter }).getEvents([pongs, pings], {
+      fromVersion: 0n,
+      withState: balanceOf,
+    });
+    expect(events.map((e) => [e.type, e.state])).toEqual([
+      [PING, ["1"]],
+      [PONG, ["2"]],
+    ]);
+    expect(calls.map((c) => c.descriptor)).toEqual([pongs, pongs]);
+  });
+
+  it("works through getEventPages and iterateEvents", async () => {
+    const { adapter } = viewing([ev(1), ev(2), ev(3)]);
+    const client = new StreamdClient({ adapter });
+    const pages: unknown[][] = [];
+    for await (const page of client.getEventPages(pings, { fromVersion: 0n, withState: balanceOf }, 2)) {
+      pages.push(page.map((e) => e.state));
+    }
+    expect(pages).toEqual([[["1"], ["2"]], [["3"]]]);
+    const states: unknown[] = [];
+    for await (const e of client.iterateEvents(pings, { fromVersion: 0n, withState: balanceOf })) {
+      states.push(e.state);
+    }
+    expect(states).toEqual([["1"], ["2"], ["3"]]);
+  });
+
+  it("retries a failed view with the query's retries", async () => {
+    const { adapter, calls } = viewing([ev(1)], (c, n) => {
+      if (n === 1) throw new StreamdNetworkError("flaky", 503, undefined, 0);
+      return [String(c.version)];
+    });
+    const events = await new StreamdClient({ adapter }).getEvents(pings, {
+      fromVersion: 0n,
+      retries: 1,
+      withState: balanceOf,
+    });
+    expect(events[0]!.state).toEqual(["1"]);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("rejects on a builder throw, an invalid request, a failed or malformed view", async () => {
+    const boom = new Error("builder bug");
+    const cases: [ReturnType<typeof viewing>, (e: StreamdEvent) => ViewRequest | undefined, unknown][] = [
+      [viewing([ev(1)]), () => { throw boom; }, boom],
+      [viewing([ev(1)]), () => ({ function: "nope" }) as never, StreamdError],
+      [viewing([ev(1)], () => { throw new StreamdNetworkError("gone", 410); }), balanceOf, StreamdNetworkError],
+      [viewing([ev(1)], () => ({ not: "an array" })), balanceOf, StreamdError],
+    ];
+    for (const [{ adapter, calls }, withState, expected] of cases) {
+      const err = await new StreamdClient({ adapter })
+        .getEvents(pings, { fromVersion: 0n, withState })
+        .catch((e: unknown) => e);
+      if (expected === boom) expect(err).toBe(boom);
+      else expect(err).toBeInstanceOf(expected as typeof StreamdError);
+      if (withState !== balanceOf) expect(calls).toHaveLength(0);
+    }
+  });
+
+  it("refuses a non-function withState and an adapter without view", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter([ev(1)]) });
+    const notFn = await client
+      .getEvents(pings, { withState: "0x1::coin::balance" as never })
+      .catch((e: Error) => e);
+    expect((notFn as Error).message).toContain("withState must be a function");
+    const noView = await client
+      .getEvents(pings, { fromVersion: 0n, withState: balanceOf })
+      .catch((e: Error) => e);
+    expect(noView).toBeInstanceOf(StreamdError);
+    expect((noView as Error).message).toContain("implements view");
+  });
+
+  it("keeps withState out of the adapter's fetch options", async () => {
+    const { adapter } = viewing([ev(1)]);
+    const seen: object[] = [];
+    const fetch = adapter.fetchEvents.bind(adapter);
+    adapter.fetchEvents = (d, options) => (seen.push(options), fetch(d, options));
+    await new StreamdClient({ adapter }).getEvents(pings, { fromVersion: 0n, withState: balanceOf });
+    expect(seen.every((o) => !("withState" in o))).toBe(true);
+  });
+
+  it("goes through maxConcurrentRequests", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const { adapter } = viewing([ev(1), ev(2)], async (c) => {
+      most = Math.max(most, ++inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return [String(c.version)];
+    });
+    const client = new StreamdClient({ adapter, maxConcurrentRequests: 1 });
+    await Promise.all([
+      client.getEvents(pings, { fromVersion: 0n, withState: balanceOf }),
+      client.getEvents(pings, { fromVersion: 0n, withState: balanceOf }),
+    ]);
+    expect(most).toBe(1);
+  });
+});

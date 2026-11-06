@@ -225,6 +225,15 @@ export interface EventFilter {
    */
   decode?: readonly string[];
   /**
+   * Attach `state` to each returned event: the view function this builds,
+   * read at the event's `version` through `EventAdapter.view`. Runs after
+   * `where`, `limit` and `orderBy`, so only returned events cost a call: one
+   * request each, in order, through `maxConcurrentRequests` and with
+   * `retries`. A throw, an invalid request or a failed view rejects the query;
+   * a version the source has pruned fails like any other view.
+   */
+  withState?: StateRequestBuilder;
+  /**
    * Stop after this many adapter pages, even if `limit` is unmet. Unbounded
    * when omitted. Use it to put a ceiling on a filtered walk.
    */
@@ -302,6 +311,7 @@ export interface FetchOptions
     | "toBlock"
     | "where"
     | "decode"
+    | "withState"
     | "maxPages"
     | "retries"
     | "signal"
@@ -542,7 +552,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, and the `simulateTransactionEvents` calls behind `previewEvents`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, the `simulateTransactionEvents` calls behind `previewEvents`, and the `view` calls behind `withState`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
