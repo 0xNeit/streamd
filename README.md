@@ -77,7 +77,10 @@ the poller fetches again immediately instead of waiting for the next interval,
 deduplicating seen `(version, eventIndex)` pairs across a sliding window of
 `dedupWindow` events (default `1000`, or `0` to disable client-side
 deduplication). On errors it backs off exponentially up to `maxBackoff` ms
-(default `60000`), and stops after `maxErrors` failures in a row. Invalid
+(default `60000`), and stops after `maxErrors` failures in a row. When the
+adapter's error carries a server's `Retry-After` hint (see below), it waits
+that long instead, still capped at `maxBackoff` and still counted as a
+failure. Invalid
 input, such as a malformed address or cursor, stops it at once, since retrying
 cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
 a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
@@ -359,6 +362,28 @@ A failed page is retried up to `retries` times, waiting 1s, 2s, 4s and so on (ca
 60s) between attempts, then the query rejects with the last error. Only network failures
 are retried: any other `StreamdError` means the request itself is wrong and rejects at once.
 `signal` cancels a wait.
+
+A source that sends `Retry-After` on a 429 or 503 is listened to: a `StreamdNetworkError`
+whose `retryAfter` is set (in ms) replaces the backoff for that wait, capped at 60s here
+and at `maxBackoff` for listeners. A custom adapter sets it from the response header:
+
+```ts
+import { StreamdNetworkError, parseRetryAfter } from "streamd";
+
+if (!res.ok) {
+  throw new StreamdNetworkError(
+    `HTTP ${res.status}`,
+    res.status,
+    undefined,
+    parseRetryAfter(res.headers.get("retry-after")),
+  );
+}
+```
+
+`parseRetryAfter` reads both delta-seconds and HTTP-date values, and returns `undefined`
+for a missing or malformed one, which falls back to normal backoff. The default
+`FullnodeScanAdapter` never sets it: the Aptos SDK drops response headers from its errors,
+and the public fullnodes send no `Retry-After` today.
 
 ### Query several descriptors at once
 

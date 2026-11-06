@@ -831,6 +831,44 @@ describe("EventQuery retries", () => {
     expect(fetchEvents).toHaveBeenCalledTimes(1);
   });
 
+  it("waits a Retry-After hint instead of the backoff, capped at 60s", async () => {
+    const limited = (ms: number) => new StreamdNetworkError("rate limited", 429, undefined, ms);
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockRejectedValueOnce(limited(300))
+      .mockRejectedValueOnce(limited(600_000))
+      .mockResolvedValueOnce(page([1], "2", false));
+    const start = Date.now();
+    const result = new EventQuery({ fetchEvents }).getEvents(descriptor, { retries: 2 });
+    await advanceTimersByTimeAsync(310);
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+    expect(vi.getTimerCount()).toBe(1);
+    await advanceTimersToNextTimerAsync();
+
+    expect((await result).map((e) => e.version)).toEqual([1n]);
+    // 300ms hinted, then the 600s hint held to 60s, against 1s and 2s unhinted.
+    expect(Date.now() - start).toBeGreaterThanOrEqual(60_300);
+    expect(Date.now() - start).toBeLessThan(61_000);
+  });
+
+  it("rejects with the signal reason when aborted during a hinted wait", async () => {
+    const controller = new AbortController();
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockRejectedValue(new StreamdNetworkError("rate limited", 429, undefined, 30_000));
+    const result = new EventQuery({ fetchEvents }).getEvents(descriptor, {
+      retries: 5,
+      signal: controller.signal,
+    });
+    await advanceTimersByTimeAsync(10);
+    const reason = new Error("stop");
+    controller.abort(reason);
+
+    await expect(result).rejects.toBe(reason);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects an invalid retries value without fetching", async () => {
     const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>();
     for (const retries of [-1, 1.5, NaN, Infinity]) {
