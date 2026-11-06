@@ -4,7 +4,7 @@ import type {
   EventFilter,
   StreamdEvent,
 } from "./types.js";
-import { raceAbort, resolveFromVersion, sleep } from "./utils.js";
+import { isAbsoluteVersion, raceAbort, resolveFromVersion, sleep } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
@@ -112,7 +112,10 @@ export class EventQuery {
     const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
     const limit = filter.limit;
     let cursor: string | undefined;
-    let fromVersion = filter.fromVersion;
+    let fromVersion = isAbsoluteVersion(filter.fromVersion)
+      ? filter.fromVersion
+      : undefined;
+    let resolved = isAbsoluteVersion(filter.fromVersion);
     let fetched = 0;
     let pages = 0;
 
@@ -125,13 +128,15 @@ export class EventQuery {
         limit !== undefined ? Math.min(pageSize, limit - fetched) : pageSize;
       if (batchLimit <= 0) break;
 
-      // Only a relative start awaits, so an absolute one fetches synchronously.
-      if (fromVersion !== undefined && fromVersion < 0n) {
+      // Only a relative or earliest start awaits, so an absolute one fetches
+      // synchronously.
+      if (!resolved) {
         fromVersion = await withRetries(
           () => resolveFromVersion(adapter, descriptor, filter.fromVersion),
           retries,
           signal,
         );
+        resolved = true;
       }
 
       const page = await withRetries(

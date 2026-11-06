@@ -67,8 +67,8 @@ export class EventPoller {
   private readonly batchSize: number;
   private readonly maxErrors: number;
   private readonly maxBackoff: number;
-  /** Absolute once the first poll has resolved a relative start. */
-  private fromVersion?: bigint;
+  /** Absolute once the first poll has resolved a relative or earliest start. */
+  private fromVersion?: bigint | "earliest";
   private readonly where?: EventPredicate;
   private readonly decode?: (event: StreamdEvent) => StreamdEvent;
   private readonly onError?: (error: Error) => void;
@@ -195,20 +195,21 @@ export class EventPoller {
     try {
       await this.delivering;
       if (!this.isCurrent(gen)) return;
+      // Once we have a cursor it supersedes fromVersion, which only seeds
+      // the very first poll.
+      let fromVersion: bigint | undefined;
       if (this.position.token === undefined) {
-        this.fromVersion = await resolveFromVersion(
+        fromVersion = await resolveFromVersion(
           adapter,
           this.descriptor,
           this.fromVersion,
         );
+        this.fromVersion = fromVersion;
         if (!this.isCurrent(gen)) return;
       }
       const page = await adapter.fetchEvents(this.descriptor, {
-        // Once we have a cursor it supersedes fromVersion, which only seeds
-        // the very first poll.
         cursor: this.position.token,
-        fromVersion:
-          this.position.token === undefined ? this.fromVersion : undefined,
+        fromVersion,
         limit: this.batchSize,
         orderBy: "asc",
       });

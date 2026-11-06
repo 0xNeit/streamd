@@ -156,6 +156,61 @@ describe("EventQuery relative start", () => {
   });
 });
 
+describe("EventQuery earliest start", () => {
+  function adapter(earliest: bigint) {
+    return {
+      fetchEvents: vi.fn<EventAdapter["fetchEvents"]>(async () => ({
+        events: [],
+        nextCursor: "1",
+        hasMore: false,
+      })),
+      getEarliestVersion: vi.fn(async () => earliest),
+    };
+  }
+
+  it("seeds the first request from the adapter's earliest version", async () => {
+    const source = adapter(5n);
+    await new EventQuery(source).getEvents(descriptor, { fromVersion: "earliest" });
+
+    expect(source.getEarliestVersion).toHaveBeenCalledWith(descriptor);
+    expect(source.fetchEvents.mock.calls[0]![1].fromVersion).toBe(5n);
+  });
+
+  it("rejects when the adapter cannot report an earliest version", async () => {
+    const { fetchEvents } = adapter(5n);
+    await expect(
+      new EventQuery({ fetchEvents }).getEvents(descriptor, { fromVersion: "earliest" }),
+    ).rejects.toThrow("getEarliestVersion");
+    expect(fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("rejects a fromVersion that is neither a bigint nor earliest", async () => {
+    const source = adapter(5n);
+    const err = await new EventQuery(source)
+      .getEvents(descriptor, { fromVersion: "latest" as unknown as bigint })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdError);
+    expect((err as Error).message).toContain("Invalid fromVersion");
+    expect(source.fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("rejects with the signal's reason when aborted during the read", async () => {
+    const source = adapter(5n);
+    const controller = new AbortController();
+    source.getEarliestVersion.mockImplementation(() => new Promise(() => {}));
+    const pending = new EventQuery(source).getEvents(descriptor, {
+      fromVersion: "earliest",
+      signal: controller.signal,
+    });
+    const reason = new Error("stop");
+    controller.abort(reason);
+
+    await expect(pending).rejects.toBe(reason);
+    expect(source.fetchEvents).not.toHaveBeenCalled();
+  });
+});
+
 describe("EventQuery decode", () => {
   function amountEvent(version: number, amount: unknown) {
     return { ...event(version), data: { amount } };
@@ -380,6 +435,21 @@ describe("EventQuery retries", () => {
     await drain(result);
     expect(getHeadVersion).toHaveBeenCalledTimes(2);
     expect(fetchEvents.mock.calls[0]![1].fromVersion).toBe(8n);
+  });
+
+  it("retries a failed earliest read", async () => {
+    const getEarliestVersion = vi.fn<() => Promise<bigint>>()
+      .mockRejectedValueOnce(down())
+      .mockResolvedValueOnce(5n);
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>().mockResolvedValue(page([], "6", false));
+    const result = new EventQuery({ fetchEvents, getEarliestVersion }).getEvents(descriptor, {
+      fromVersion: "earliest",
+      retries: 1,
+    });
+
+    await drain(result);
+    expect(getEarliestVersion).toHaveBeenCalledTimes(2);
+    expect(fetchEvents.mock.calls[0]![1].fromVersion).toBe(5n);
   });
 
   it("retries a failed middle page of a descending walk", async () => {
