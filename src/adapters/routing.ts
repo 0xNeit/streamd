@@ -5,6 +5,7 @@ import type {
   EventDescriptor,
   EventPage,
   FetchOptions,
+  TransactionEvents,
 } from "../types.js";
 import { StreamdError } from "../errors.js";
 import { requireAdapter } from "./validate.js";
@@ -117,6 +118,28 @@ export class RoutingAdapter implements EventAdapter {
       );
     }
     return adapter.getBlockHeights(descriptor);
+  }
+
+  /** From the adapter for `descriptor`'s kind, or the `default` adapter without one. */
+  async getTransactionEvents(
+    transactionHash: string,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents | undefined> {
+    const adapter =
+      descriptor === undefined ? this.defaultAdapter : this.selectAdapter(descriptor);
+    if (adapter === undefined) {
+      throw new StreamdError(
+        "RoutingAdapter needs a descriptor or a default adapter to look up a transaction",
+      );
+    }
+    if (adapter.getTransactionEvents === undefined) {
+      throw new StreamdError(
+        descriptor === undefined
+          ? "The default adapter does not look up transactions"
+          : `The adapter for descriptor kind "${descriptor.kind}" does not look up transactions`,
+      );
+    }
+    return adapter.getTransactionEvents(transactionHash, descriptor);
   }
 
   private selectAdapter(descriptor: EventDescriptor): EventAdapter {

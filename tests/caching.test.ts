@@ -181,3 +181,24 @@ describe("CachingAdapter", () => {
     }
   });
 });
+
+describe("CachingAdapter transaction lookup", () => {
+  const hash = `0x${"ef".repeat(32)}`;
+  const event: StreamdEvent = {
+    type: "0x1::t::A",
+    data: {},
+    version: 2n,
+    sequenceNumber: 0n,
+    eventIndex: 0,
+    transactionHash: hash,
+  };
+
+  it("passes getTransactionEvents through, only when the source has it", async () => {
+    expect((await new CachingAdapter(new MemoryAdapter([event])).getTransactionEvents!(hash))!.events).toEqual([
+      event,
+    ]);
+    expect(
+      new CachingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).getTransactionEvents,
+    ).toBeUndefined();
+  });
+});

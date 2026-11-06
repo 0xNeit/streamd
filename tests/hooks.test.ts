@@ -197,3 +197,17 @@ describe("withHooks", () => {
     ).toThrow(StreamdError);
   });
 });
+
+describe("withHooks transaction lookup", () => {
+  const hash = `0x${"ef".repeat(32)}`;
+  const found = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+
+  it("passes getTransactionEvents through unhooked, only when the source has it", async () => {
+    let hooked = 0;
+    const hooks = { onRequest: () => void hooked++ };
+    const wrapped = withHooks({ fetchEvents: async () => PAGE, getTransactionEvents: async () => found }, hooks);
+    expect(await wrapped.getTransactionEvents!(hash)).toBe(found);
+    expect(hooked).toBe(0);
+    expect(withHooks({ fetchEvents: async () => PAGE }, hooks).getTransactionEvents).toBeUndefined();
+  });
+});

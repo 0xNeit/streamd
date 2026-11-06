@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { StreamdClient } from "../src/client.js";
+import { MemoryAdapter } from "../src/adapters/memory.js";
 import {
   StreamdError,
   StreamdNetworkError,
@@ -211,5 +212,10 @@ describe("eventsOf", () => {
     const c = client(adapter, { maxConcurrentRequests: 1 });
     await Promise.all([c.eventsOf(HASH), c.eventsOf(HASH), c.eventsOf(HASH)]);
     expect(peak).toBe(1);
+  });
+
+  it("works offline over a MemoryAdapter", async () => {
+    const c = client(new MemoryAdapter(EVENTS));
+    expect((await c.eventsOf(HASH, { kind: "module", eventType: PONG })).map((e) => e.eventIndex)).toEqual([1]);
   });
 });

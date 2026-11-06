@@ -297,3 +297,29 @@ describe("RoutingAdapter blocks", () => {
     expect((err as Error).message).toContain('"account"');
   });
 });
+
+describe("RoutingAdapter transaction lookup", () => {
+  const hash = `0x${"ef".repeat(32)}`;
+  const found = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+  const looking = (label: string): EventAdapter => ({
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    getTransactionEvents: async () => ({ ...found, vmStatus: label }),
+  });
+
+  it("routes by the descriptor's kind, and to default without a descriptor", async () => {
+    const router = new RoutingAdapter({ module: looking("module"), default: looking("default") });
+    const moduleDescriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    expect((await router.getTransactionEvents(hash, moduleDescriptor))!.vmStatus).toBe("module");
+    expect((await router.getTransactionEvents(hash))!.vmStatus).toBe("default");
+  });
+
+  it("refuses when no route serves the lookup", async () => {
+    const bare: EventAdapter = { fetchEvents: async () => ({ events: [], hasMore: false }) };
+    await expect(new RoutingAdapter({ module: looking("module") }).getTransactionEvents(hash)).rejects.toBeInstanceOf(
+      StreamdError,
+    );
+    await expect(
+      new RoutingAdapter({ module: bare }).getTransactionEvents(hash, { kind: "module", eventType: "0x1::t::A" }),
+    ).rejects.toThrow("does not look up transactions");
+  });
+});
