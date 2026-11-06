@@ -12,6 +12,7 @@ import type {
   HandleEventDescriptor,
   ModuleEventDescriptor,
   StreamdEvent,
+  TransactionEvents,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import {
@@ -20,6 +21,7 @@ import {
   moduleTypeFilter,
   parseCursor,
   requireAddress,
+  requireTransactionHash,
   validateOffset,
 } from "./validate.js";
 
@@ -36,6 +38,8 @@ interface TransactionWithEvents {
   timestamp?: string;
   sender?: string;
   type: string;
+  success?: unknown;
+  vm_status?: unknown;
   events?: RawEvent[];
 }
 
@@ -211,6 +215,41 @@ export class FullnodeScanAdapter implements EventAdapter {
       };
     } catch (err) {
       throw toStreamdError(err, `block ${height}`);
+    }
+  }
+
+  /**
+   * Every event of the transaction with this hash, mapped as the scan maps
+   * them; `undefined` while the node reports it unknown (404) or pending.
+   */
+  async getTransactionEvents(transactionHash: string): Promise<TransactionEvents | undefined> {
+    try {
+      const hash = requireTransactionHash(transactionHash);
+      let txn: TransactionWithEvents;
+      try {
+        txn = (await this.aptos.getTransactionByHash({
+          transactionHash: hash,
+        })) as unknown as TransactionWithEvents;
+      } catch (err) {
+        if ((err as { status?: unknown } | null)?.status === 404) return undefined;
+        throw err;
+      }
+      if (txn.type === "pending_transaction") return undefined;
+      if (typeof txn.hash === "string" && txn.hash.toLowerCase() !== hash.toLowerCase()) {
+        throw new StreamdError(`Fullnode answered ${hash} with a different transaction`);
+      }
+      if (!/^\d+$/.test(String(txn.version)) || typeof txn.success !== "boolean") {
+        throw new StreamdError(`Fullnode returned a malformed transaction for ${hash}`);
+      }
+      const version = BigInt(txn.version!);
+      return {
+        version,
+        success: txn.success,
+        vmStatus: String(txn.vm_status ?? ""),
+        events: toStreamdEvents(txn, version, () => true),
+      };
+    } catch (err) {
+      throw toStreamdError(err, "transaction by hash");
     }
   }
 

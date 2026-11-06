@@ -398,3 +398,27 @@ describe("FallbackAdapter scan progress", () => {
     expect(page.throughVersion).toBe(9n);
   });
 });
+
+describe("FallbackAdapter transaction lookup", () => {
+  const hash = `0x${"ef".repeat(32)}`;
+  const found = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+  const bare: EventAdapter = { fetchEvents: async () => ({ events: [], hasMore: false }) };
+
+  it("skips sources without it and falls back past a network failure", async () => {
+    const down: EventAdapter = {
+      ...bare,
+      getTransactionEvents: vi.fn(async () => {
+        throw new StreamdNetworkError("down", 503);
+      }),
+    };
+    const up: EventAdapter = { ...bare, getTransactionEvents: vi.fn(async () => found) };
+    const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    expect(await new FallbackAdapter([bare, down, up]).getTransactionEvents(hash, descriptor)).toBe(found);
+    expect(down.getTransactionEvents).toHaveBeenCalledTimes(1);
+    expect(up.getTransactionEvents).toHaveBeenCalledWith(hash, descriptor);
+  });
+
+  it("refuses when no source looks transactions up", async () => {
+    await expect(new FallbackAdapter([bare]).getTransactionEvents(hash)).rejects.toBeInstanceOf(StreamdError);
+  });
+});

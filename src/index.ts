@@ -19,6 +19,7 @@ export {
   StreamdNetworkError,
   StreamdPollingError,
   StreamdTimeoutError,
+  StreamdTransactionError,
   parseRetryAfter,
 } from "./errors.js";
 
@@ -80,6 +81,7 @@ export type {
   EventGuid,
   EventPage,
   EventPredicate,
+  EventsOfOptions,
   FetchOptions,
   HandleEventDescriptor,
   ListenerDefaults,
@@ -95,4 +97,5 @@ export type {
   Subscription,
   SubscriptionOptions,
   SubscriptionStatus,
+  TransactionEvents,
 } from "./types.js";

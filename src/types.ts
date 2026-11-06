@@ -236,6 +236,21 @@ export interface EventFilter {
   onCursor?: (cursor: string | undefined) => void;
 }
 
+/** Options for `StreamdClient.eventsOf`. */
+export interface EventsOfOptions {
+  /** Keep only events satisfying this predicate, after `decode`. */
+  where?: EventPredicate;
+  /** Top-level `data` fields turned from decimal strings into `bigint`, as `EventFilter.decode`. */
+  decode?: readonly string[];
+  /**
+   * How long to wait for the transaction to be committed, in ms (default
+   * 20000), before rejecting with `StreamdTimeoutError`.
+   */
+  timeout?: number;
+  /** Aborting rejects with the signal's `reason` and stops looking. */
+  signal?: AbortSignal;
+}
+
 /**
  * What an adapter receives on each fetch.
  *
@@ -492,7 +507,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, and the `getTransactionEvents` lookups behind `eventsOf`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
@@ -640,6 +655,27 @@ export interface EventAdapter {
    * `descriptor`. Optional; `fromTime` needs it, together with `getBlock`.
    */
   getBlockHeights?(descriptor: EventDescriptor): Promise<BlockHeights>;
+  /**
+   * Every event of the committed transaction with this hash, in transaction
+   * order, or `undefined` while the source does not have it committed (unknown
+   * or still pending). One lookup, no waiting. `descriptor` is the caller's,
+   * when given, for routing only: return the events unfiltered. Optional;
+   * `StreamdClient.eventsOf` needs it.
+   */
+  getTransactionEvents?(
+    transactionHash: string,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents | undefined>;
+}
+
+/** A committed transaction's events, as `EventAdapter.getTransactionEvents` reports them. */
+export interface TransactionEvents {
+  version: bigint;
+  /** False when the transaction aborted; the chain then keeps only its fee statement event. */
+  success: boolean;
+  /** The VM's verdict, such as `"Executed successfully"` or the abort it hit. */
+  vmStatus: string;
+  events: StreamdEvent[];
 }
 
 /** Block heights an adapter can serve, both inclusive, as `EventAdapter.getBlockHeights` reports them. */

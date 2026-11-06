@@ -5,6 +5,7 @@ import type {
   EventDescriptor,
   EventPage,
   FetchOptions,
+  TransactionEvents,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import { requireAdapter } from "./validate.js";
@@ -103,5 +104,19 @@ export class FallbackAdapter implements EventAdapter {
       throw new StreamdError("No FallbackAdapter source reports block heights");
     }
     return tryInOrder(reporting, (adapter) => adapter.getBlockHeights!(descriptor));
+  }
+
+  /** From the first adapter that looks transactions up, with the same fallback rules. */
+  async getTransactionEvents(
+    transactionHash: string,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents | undefined> {
+    const reporting = this.adapters.filter((a) => a.getTransactionEvents !== undefined);
+    if (reporting.length === 0) {
+      throw new StreamdError("No FallbackAdapter source looks up transactions");
+    }
+    return tryInOrder(reporting, (adapter) =>
+      adapter.getTransactionEvents!(transactionHash, descriptor),
+    );
   }
 }

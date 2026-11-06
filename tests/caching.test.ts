@@ -181,3 +181,30 @@ describe("CachingAdapter", () => {
     }
   });
 });
+
+describe("CachingAdapter transaction lookup", () => {
+  const hash = `0x${"ef".repeat(32)}`;
+  const event: StreamdEvent = {
+    type: "0x1::t::A",
+    data: {},
+    version: 2n,
+    sequenceNumber: 0n,
+    eventIndex: 0,
+    transactionHash: hash,
+  };
+
+  it("passes getTransactionEvents through, only when the source has it", async () => {
+    const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    const seen: unknown[] = [];
+    const source = new MemoryAdapter([event]);
+    const lookup = source.getTransactionEvents.bind(source);
+    source.getTransactionEvents = (...args) => (seen.push(args), lookup(...args));
+    expect((await new CachingAdapter(source).getTransactionEvents!(hash, descriptor))!.events).toEqual([
+      event,
+    ]);
+    expect(seen).toEqual([[hash, descriptor]]);
+    expect(
+      new CachingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).getTransactionEvents,
+    ).toBeUndefined();
+  });
+});

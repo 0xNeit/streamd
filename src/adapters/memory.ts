@@ -4,6 +4,7 @@ import type {
   EventPage,
   FetchOptions,
   StreamdEvent,
+  TransactionEvents,
 } from "../types.js";
 import { StreamdError } from "../errors.js";
 import {
@@ -12,6 +13,7 @@ import {
   moduleTypeFilter,
   parseCursor,
   requireAddress,
+  requireTransactionHash,
   validateOffset,
 } from "./validate.js";
 
@@ -73,6 +75,17 @@ export class MemoryAdapter implements EventAdapter {
   /** The lowest seeded version, or `0n` when empty. */
   async getEarliestVersion(): Promise<bigint> {
     return this.events[0]?.version ?? 0n;
+  }
+
+  /**
+   * The seeded events carrying this `transactionHash`, as one successful
+   * transaction at their version, or `undefined` when none do.
+   */
+  async getTransactionEvents(transactionHash: string): Promise<TransactionEvents | undefined> {
+    const hash = requireTransactionHash(transactionHash).toLowerCase();
+    const events = this.events.filter((e) => e.transactionHash?.toLowerCase() === hash);
+    if (events.length === 0) return undefined;
+    return { version: events[0]!.version, success: true, vmStatus: "Executed successfully", events };
   }
 
   async fetchEvents(

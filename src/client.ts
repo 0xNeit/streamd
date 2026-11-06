@@ -5,6 +5,7 @@ import type {
   EventCallback,
   EventDescriptor,
   EventFilter,
+  EventsOfOptions,
   ListenerDefaults,
   ListenerOptions,
   OnceOptions,
@@ -31,6 +32,7 @@ import { CursorManager } from "./cursor.js";
 import { fieldDecoder } from "./decode.js";
 import { SharedFetches } from "./shared.js";
 import { startReduction, type ReduceHost } from "./reduce.js";
+import { eventsOf } from "./transaction.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -406,6 +408,37 @@ export class StreamdClient {
     pageSize?: number,
   ): AsyncGenerator<StreamdEvent<TData>, void, unknown> {
     return this.query.iterateEvents<TData>(descriptor, filter, pageSize);
+  }
+
+  /**
+   * Wait for the transaction with this hash to be committed and resolve with
+   * its events in transaction order, narrowed by `descriptor` when given, then
+   * `decode` and `where`. A `handle` descriptor must name its handle by
+   * `creationNumber`. Looks the transaction up every `pollInterval` (the
+   * client-wide default, at least 100ms here) through
+   * `EventAdapter.getTransactionEvents`.
+   *
+   * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
+   * transaction failed, as its events were discarded on chain; with
+   * `StreamdTimeoutError` when it is not committed within `timeout`; with
+   * `signal.reason` on abort; and at once with any lookup error.
+   */
+  async eventsOf<TData = unknown>(
+    transactionHash: string,
+    descriptor?: EventDescriptor<TData>,
+    options: EventsOfOptions = {},
+  ): Promise<StreamdEvent<TData>[]> {
+    const badTimeout = checkTimeout(options.timeout);
+    if (badTimeout !== undefined) throw badTimeout;
+    const events = await eventsOf(
+      this.adapter,
+      this.limiter,
+      this.defaults.pollInterval!,
+      transactionHash,
+      descriptor,
+      options,
+    );
+    return events as StreamdEvent<TData>[];
   }
 
   /**

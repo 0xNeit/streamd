@@ -795,3 +795,99 @@ describe("FullnodeScanAdapter blocks", () => {
     expect((err as StreamdNetworkError).statusCode).toBe(410);
   });
 });
+
+describe("FullnodeScanAdapter transaction lookup", () => {
+  const HASH = `0x${"ab".repeat(32)}`;
+  const SENDER = "0xcafe";
+  const committed = {
+    type: "user_transaction",
+    version: "77",
+    hash: HASH,
+    sender: SENDER,
+    timestamp: "1700000000000000",
+    success: true,
+    vm_status: "Executed successfully",
+    events: [
+      { type: TYPE, data: { n: "1" }, sequence_number: "0", guid: { creation_number: "0", account_address: "0x0" } },
+      { type: OTHER, data: { n: "2" }, sequence_number: "4", guid: { creation_number: "3", account_address: SENDER } },
+    ],
+  };
+
+  it("maps a committed transaction's events as the scan does", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: committed }));
+    const found = await new FullnodeScanAdapter(aptos).getTransactionEvents(HASH);
+
+    expect(calls[0]!.path).toBe(`transactions/by_hash/${HASH}`);
+    expect(found).toEqual({
+      version: 77n,
+      success: true,
+      vmStatus: "Executed successfully",
+      events: [
+        { type: TYPE, data: { n: "1" }, version: 77n, sequenceNumber: 0n, eventIndex: 0, transactionHash: HASH, sender: SENDER, timestamp: 1700000000000000n },
+        {
+          type: OTHER,
+          data: { n: "2" },
+          version: 77n,
+          sequenceNumber: 4n,
+          eventIndex: 1,
+          transactionHash: HASH,
+          sender: SENDER,
+          timestamp: 1700000000000000n,
+          guid: { creationNumber: 3n, accountAddress: SENDER },
+        },
+      ],
+    });
+  });
+
+  it("reports a failed transaction with its vm status", async () => {
+    const { aptos } = fakeNode(() => ({
+      data: { ...committed, success: false, vm_status: "Move abort: 0x1", events: [] },
+    }));
+    const found = await new FullnodeScanAdapter(aptos).getTransactionEvents(HASH);
+    expect(found).toEqual({ version: 77n, success: false, vmStatus: "Move abort: 0x1", events: [] });
+    const { vm_status: _, ...silent } = committed;
+    const quiet = fakeNode(() => ({ data: silent }));
+    expect((await new FullnodeScanAdapter(quiet.aptos).getTransactionEvents(HASH))!.vmStatus).toBe("");
+  });
+
+  it("gives undefined for an unknown or pending transaction", async () => {
+    const unknown = fakeNode(() => ({
+      status: 404,
+      data: { error_code: "transaction_not_found", message: "not found" },
+    }));
+    expect(await new FullnodeScanAdapter(unknown.aptos).getTransactionEvents(HASH)).toBeUndefined();
+    const pending = fakeNode(() => ({ data: { type: "pending_transaction", hash: HASH } }));
+    expect(await new FullnodeScanAdapter(pending.aptos).getTransactionEvents(HASH)).toBeUndefined();
+  });
+
+  it("refuses a malformed hash before any request", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: committed }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    for (const bad of ["0x1234", `${"ab".repeat(32)}`, `0x${"ab".repeat(31)}/../`, `0x${"zz".repeat(32)}`, `../0x${"ab".repeat(32)}`, Object.create(null)]) {
+      const err = await adapter.getTransactionEvents(bad as string).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+    expect(calls).toHaveLength(0);
+    const long = await adapter.getTransactionEvents(`0x${"a".repeat(5000)}`).catch((e: Error) => e);
+    expect((long as Error).message.length).toBeLessThan(150);
+  });
+
+  it("rejects a server error as StreamdNetworkError and a malformed reply as StreamdError", async () => {
+    const down = fakeNode(() => ({ status: 500, data: { message: "boom" } }));
+    const err = await new FullnodeScanAdapter(down.aptos).getTransactionEvents(HASH).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(500);
+
+    for (const reply of [
+      { ...committed, success: "yes" },
+      { ...committed, version: "abc" },
+      { ...committed, hash: `0x${"cd".repeat(32)}` },
+    ]) {
+      const odd = fakeNode(() => ({ data: reply }));
+      const bad = await new FullnodeScanAdapter(odd.aptos).getTransactionEvents(HASH).catch((e: unknown) => e);
+      expect(bad).toBeInstanceOf(StreamdError);
+      expect(bad).not.toBeInstanceOf(StreamdNetworkError);
+    }
+  });
+});
