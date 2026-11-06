@@ -1756,6 +1756,22 @@ describe("EventPoller pause and resume", () => {
     expect(poller.status.consecutiveErrors).toBe(0);
   });
 
+  it("cancels the pending poll timer, so an immediate resume runs one polling loop", async () => {
+    const adapter = createMockAdapter([]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { pollInterval: 100 });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+
+    poller.pause();
+    poller.resume();
+    await advanceTimersByTimeAsync(1000);
+    // The first poll, the resume's immediate poll, then one per interval.
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(12);
+
+    poller.stop();
+  });
+
   it("never has two fetches in flight when paused and resumed during one", async () => {
     let inFlight = 0;
     let peak = 0;
