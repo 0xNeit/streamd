@@ -236,6 +236,21 @@ export interface EventFilter {
   onCursor?: (cursor: string | undefined) => void;
 }
 
+/** Options for `StreamdClient.eventsOf`. */
+export interface EventsOfOptions {
+  /** Keep only events satisfying this predicate, after `decode`. */
+  where?: EventPredicate;
+  /** Top-level `data` fields turned from decimal strings into `bigint`, as `EventFilter.decode`. */
+  decode?: readonly string[];
+  /**
+   * How long to wait for the transaction to be committed, in ms (default
+   * 20000), before rejecting with `StreamdTimeoutError`.
+   */
+  timeout?: number;
+  /** Aborting rejects with the signal's `reason` and stops looking. */
+  signal?: AbortSignal;
+}
+
 /**
  * What an adapter receives on each fetch.
  *
