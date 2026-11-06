@@ -248,7 +248,8 @@ export class StreamdClient {
 
   private claimId(id: unknown): string {
     if (typeof id !== "string" || id === "") {
-      throw new StreamdError(`Invalid id: ${String(id)} (expected a non-empty string)`);
+      const shown = typeof id === "string" ? '""' : String(id);
+      throw new StreamdError(`Invalid id: ${shown} (expected a non-empty string)`);
     }
     if (this.subscriptions.has(id)) {
       throw new StreamdError(`Subscription id already in use on this client: ${id}`);

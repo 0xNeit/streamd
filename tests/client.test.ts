@@ -2523,6 +2523,7 @@ describe("caller-supplied subscription ids", () => {
   it("refuses an empty or non-string id", () => {
     const client = new StreamdClient({ adapter: adapterOf([]) });
     expect(() => client.on(descriptor, () => {}, { id: "" })).toThrow(StreamdError);
+    expect(() => client.on(descriptor, () => {}, { id: "" })).toThrow('Invalid id: ""');
     expect(() =>
       client.on(descriptor, () => {}, { id: 7 as unknown as string }),
     ).toThrow(/Invalid id: 7/);
