@@ -1,3 +1,6 @@
+// Kept in the emitted declarations so consumers whose `lib` predates
+// explicit resource management still have `Symbol.dispose` (TypeScript 5.2+).
+/// <reference lib="esnext.disposable" preserve="true" />
 import type { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
 
 // ---- Event identification ----
