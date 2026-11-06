@@ -394,6 +394,19 @@ with their promise or loop, or `destroy()`.
 streamd.destroy(); // stops every active subscription
 ```
 
+Subscriptions and the client are `Disposable`, so `using` cleans up at scope exit:
+
+```ts
+{
+  using sub = streamd.on(descriptor, (event) => console.log(event));
+  // ...
+} // sub.unsubscribe() runs here
+```
+
+Disposing is `unsubscribe()` (or `destroy()` for the client) and is safe to repeat. `using`
+needs a runtime with `Symbol.dispose` (Node 18.18+, 20.4+, Bun) or a polyfill, and
+TypeScript 5.2+; the type declarations pull in the `esnext.disposable` lib themselves.
+
 ## Choosing events
 
 Every call takes an event descriptor:

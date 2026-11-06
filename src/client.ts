@@ -29,6 +29,12 @@ import { SharedFetches } from "./shared.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
+// Runtimes without explicit resource management lack `Symbol.dispose`. The
+// registry key is the one core-js polyfills it with, so `using` still finds
+// the method when such a polyfill loads after this module.
+const DISPOSE: typeof Symbol.dispose =
+  Symbol.dispose ?? (Symbol.for("Symbol.dispose") as typeof Symbol.dispose);
+
 function checkTimeout(ms: number | undefined): StreamdError | undefined {
   if (ms === undefined || (typeof ms === "number" && ms >= 0 && ms <= MAX_TIMEOUT)) {
     return undefined;
@@ -209,6 +215,10 @@ export class StreamdClient {
       detach = onAbort(options?.signal, forget);
     }
 
+    const unsubscribe = () => {
+      poller.stop();
+      forget();
+    };
     return {
       id,
       get active() {
@@ -225,10 +235,8 @@ export class StreamdClient {
       },
       pause: () => poller.pause(),
       resume: () => poller.resume(),
-      unsubscribe: () => {
-        poller.stop();
-        forget();
-      },
+      unsubscribe,
+      [DISPOSE]: unsubscribe,
     };
   }
 
@@ -395,5 +403,10 @@ export class StreamdClient {
     for (const close of [...this.streams]) close();
     for (const { stop } of [...this.subscriptions.values()]) stop();
     this.shared.clear();
+  }
+
+  /** `destroy()`, so `using client = new StreamdClient(...)` cleans up at scope exit. */
+  [DISPOSE](): void {
+    this.destroy();
   }
 }

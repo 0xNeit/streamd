@@ -1,3 +1,6 @@
+// Kept in the emitted declarations so consumers whose `lib` predates
+// explicit resource management still have `Symbol.dispose` (TypeScript 5.2+).
+/// <reference lib="esnext.disposable" preserve="true" />
 import type { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
 
 // ---- Event identification ----
@@ -413,6 +416,8 @@ export interface Subscription {
   id: string;
   /** Stop listening and clean up */
   unsubscribe(): void;
+  /** `unsubscribe()`, so `using sub = client.on(...)` stops it at scope exit. */
+  [Symbol.dispose](): void;
   /**
    * Stop polling without ending the subscription; `resume()` carries on from
    * the same cursor and dedup window. No-op unless active.
