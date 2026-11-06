@@ -1,4 +1,5 @@
 import type {
+  BlockHeights,
   BlockInfo,
   EventAdapter,
   EventDescriptor,
@@ -106,6 +107,16 @@ export class RoutingAdapter implements EventAdapter {
       );
     }
     return adapter.getBlock(descriptor, height);
+  }
+
+  async getBlockHeights(descriptor: EventDescriptor): Promise<BlockHeights> {
+    const adapter = this.selectAdapter(descriptor);
+    if (adapter.getBlockHeights === undefined) {
+      throw new StreamdError(
+        `The adapter for descriptor kind "${descriptor.kind}" does not report block heights`,
+      );
+    }
+    return adapter.getBlockHeights(descriptor);
   }
 
   private selectAdapter(descriptor: EventDescriptor): EventAdapter {

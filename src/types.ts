@@ -338,7 +338,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
@@ -472,6 +472,17 @@ export interface EventAdapter {
    * `fromBlock`/`toBlock` on a query need it.
    */
   getBlock?(descriptor: EventDescriptor, height: bigint): Promise<BlockInfo>;
+  /**
+   * The oldest and newest block heights this source can serve for
+   * `descriptor`. Optional; `fromTime` needs it, together with `getBlock`.
+   */
+  getBlockHeights?(descriptor: EventDescriptor): Promise<BlockHeights>;
+}
+
+/** Block heights an adapter can serve, both inclusive, as `EventAdapter.getBlockHeights` reports them. */
+export interface BlockHeights {
+  oldest: bigint;
+  newest: bigint;
 }
 
 /** A block's position in the ledger, as `EventAdapter.getBlock` reports it. */

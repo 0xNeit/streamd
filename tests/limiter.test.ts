@@ -186,5 +186,33 @@ describe("RequestLimiter", () => {
       fetchEvents: async () => ({ events: [], hasMore: false }),
     });
     expect(view.getBlock).toBeUndefined();
+    expect(view.getBlockHeights).toBeUndefined();
+  });
+
+  it("wrap queues getBlockHeights behind the limit", async () => {
+    const limiter = new RequestLimiter(1);
+    const calls: string[] = [];
+    let release = () => {};
+    const page: EventPage = { events: [], hasMore: false };
+    const desc = { kind: "module", eventType: "0x1::a::B" } as const;
+    const inner: EventAdapter = {
+      fetchEvents: () => {
+        calls.push("fetch");
+        return new Promise((r) => (release = () => r(page)));
+      },
+      async getBlockHeights(descriptor) {
+        calls.push(`heights ${descriptor.kind}`);
+        return { oldest: 1n, newest: 2n };
+      },
+    };
+    const view = limiter.wrap(inner);
+    const fetched = view.fetchEvents(desc, {});
+    const heights = view.getBlockHeights!(desc);
+    await flush();
+    expect(calls).toEqual(["fetch"]);
+    release();
+    await fetched;
+    expect(await heights).toEqual({ oldest: 1n, newest: 2n });
+    expect(calls).toEqual(["fetch", "heights module"]);
   });
 });

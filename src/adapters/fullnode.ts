@@ -1,6 +1,7 @@
 import { getAptosFullNode, type Aptos } from "@aptos-labs/ts-sdk";
 import type {
   AccountEventDescriptor,
+  BlockHeights,
   BlockInfo,
   EventAdapter,
   EventDescriptor,
@@ -159,6 +160,16 @@ export class FullnodeScanAdapter implements EventAdapter {
       return BigInt(info.oldest_ledger_version);
     } catch (err) {
       throw toStreamdError(err, "oldest ledger version");
+    }
+  }
+
+  /** The fullnode's oldest unpruned and newest block heights, whatever the descriptor. */
+  async getBlockHeights(): Promise<BlockHeights> {
+    try {
+      const info = await this.aptos.getLedgerInfo();
+      return { oldest: BigInt(info.oldest_block_height), newest: BigInt(info.block_height) };
+    } catch (err) {
+      throw toStreamdError(err, "block heights");
     }
   }
 

@@ -1,4 +1,5 @@
 import type {
+  BlockHeights,
   BlockInfo,
   EventAdapter,
   EventDescriptor,
@@ -91,5 +92,14 @@ export class FallbackAdapter implements EventAdapter {
       throw new StreamdError("No FallbackAdapter source reports blocks");
     }
     return tryInOrder(reporting, (adapter) => adapter.getBlock!(descriptor, height));
+  }
+
+  /** From the first adapter that reports block heights, with the same fallback rules. */
+  async getBlockHeights(descriptor: EventDescriptor): Promise<BlockHeights> {
+    const reporting = this.adapters.filter((a) => a.getBlockHeights !== undefined);
+    if (reporting.length === 0) {
+      throw new StreamdError("No FallbackAdapter source reports block heights");
+    }
+    return tryInOrder(reporting, (adapter) => adapter.getBlockHeights!(descriptor));
   }
 }

@@ -324,6 +324,36 @@ describe("FallbackAdapter earliest version", () => {
   });
 });
 
+describe("FallbackAdapter block heights", () => {
+  const heights = { oldest: 3n, newest: 9n };
+  const bare: EventAdapter = {
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+  };
+
+  it("skips adapters without block heights and falls back on a network error", async () => {
+    const down: EventAdapter = {
+      ...bare,
+      getBlockHeights: vi.fn(async () => {
+        throw new StreamdNetworkError("429", 429);
+      }),
+    };
+    const up: EventAdapter = { ...bare, getBlockHeights: vi.fn(async () => heights) };
+    const fallback = new FallbackAdapter([bare, down, up]);
+
+    expect(await fallback.getBlockHeights(moduleDesc)).toBe(heights);
+    expect(down.getBlockHeights).toHaveBeenCalledTimes(1);
+    expect(up.getBlockHeights).toHaveBeenCalledWith(moduleDesc);
+  });
+
+  it("throws StreamdError when no adapter reports block heights", async () => {
+    const err = await new FallbackAdapter([bare])
+      .getBlockHeights(moduleDesc)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  });
+});
+
 describe("FallbackAdapter blocks", () => {
   const block = { height: 5n, firstVersion: 10n, lastVersion: 12n, timestamp: 1n };
   const bare: EventAdapter = {
