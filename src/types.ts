@@ -278,9 +278,10 @@ export interface ListenerOptions {
    */
   fromTime?: bigint;
   /**
-   * Resume from a token a previous subscription reported as `cursor`. It wins
-   * over `fromVersion` and `fromTime`, and is only meaningful with the same descriptor and
-   * adapter that produced it.
+   * Resume from a token a previous subscription reported as `cursor`, or one a
+   * query passed to `EventFilter.onCursor`. It wins over `fromVersion` and
+   * `fromTime`, and is only meaningful with the same descriptor and adapter
+   * that produced it.
    */
   cursor?: string;
   /**

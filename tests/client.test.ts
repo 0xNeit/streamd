@@ -2439,3 +2439,68 @@ describe("disposal", () => {
     expect(b.active).toBe(false);
   });
 });
+
+describe("backfill, then follow", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+  /** Serves a growing list in `limit`-sized pages; the cursor is the next unread index. */
+  function growing(events: StreamdEvent[]): EventAdapter {
+    return {
+      fetchEvents: async (_d, options) => {
+        const from = Number(options.cursor ?? 0);
+        const page = events.slice(from, from + (options.limit ?? 25));
+        const next = from + page.length;
+        return { events: page, nextCursor: String(next), hasMore: next < events.length };
+      },
+    };
+  }
+
+  it("resumes on() from the query's end cursor with no gap and no repeat", async () => {
+    const events = [1, 2, 3, 4, 5].map((v) => makeEvent(v));
+    const client = new StreamdClient({ adapter: growing(events) });
+    let cursor: string | undefined;
+    const history = await client.getEvents(descriptor, { onCursor: (c) => (cursor = c) });
+    events.push(makeEvent(6), makeEvent(6, 1), makeEvent(7));
+
+    const live: string[] = [];
+    const sub = client.on(descriptor, (e) => live.push(`${e.version}:${e.eventIndex}`), {
+      cursor,
+    });
+    await advanceTimersByTimeAsync(0);
+    sub.unsubscribe();
+
+    expect(cursor).toBe("5");
+    expect(history.map((e) => e.version)).toEqual([1n, 2n, 3n, 4n, 5n]);
+    expect(live).toEqual(["6:0", "6:1", "7:0"]);
+  });
+
+  it("follows a filtered paged backfill with onBatch", async () => {
+    const events = [1, 2, 3, 4, 5].map((v) => makeEvent(v));
+    const client = new StreamdClient({ adapter: growing(events) });
+    const where = (e: StreamdEvent) => e.version % 2n === 0n;
+    let cursor: string | undefined;
+    const history: bigint[] = [];
+    for await (const page of client.getEventPages(
+      descriptor,
+      { where, onCursor: (c) => (cursor = c) },
+      2,
+    )) {
+      history.push(...page.map((e) => e.version));
+    }
+    events.push(makeEvent(6), makeEvent(7), makeEvent(8));
+
+    const live: bigint[][] = [];
+    const sub = client.onBatch(descriptor, (b) => live.push(b.map((e) => e.version)), {
+      cursor,
+      where,
+    });
+    await advanceTimersByTimeAsync(0);
+    sub.unsubscribe();
+
+    expect(history).toEqual([2n, 4n]);
+    expect(live).toEqual([[6n, 8n]]);
+  });
+});
