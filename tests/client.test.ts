@@ -1937,6 +1937,21 @@ describe("listener management", () => {
     client.destroy();
   });
 
+  it("keys a handle by creation number apart from its struct and field form", () => {
+    const client = quiet();
+    client.on({ kind: "handle", accountAddress: "0x1", creationNumber: 7n }, () => {});
+    client.on(
+      { kind: "handle", accountAddress: "0x1", eventHandleStruct: "0x1::a::S", fieldName: "7" },
+      () => {},
+    );
+
+    const long = `0x${"0".repeat(63)}1`;
+    expect(client.listenerCount({ kind: "handle", accountAddress: long, creationNumber: 7n })).toBe(1);
+    expect(client.listenerCount({ kind: "handle", accountAddress: "0x1", creationNumber: 8n })).toBe(0);
+    expect(client.listenerCount({ kind: "handle", accountAddress: "0x2", creationNumber: 7n })).toBe(0);
+    client.destroy();
+  });
+
   it("counts paused subscriptions and drops ended ones", async () => {
     const failing: EventAdapter = {
       fetchEvents: vi.fn(async () => {

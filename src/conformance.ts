@@ -119,6 +119,12 @@ function eventShapeError(value: unknown): string | undefined {
   if (e.timestamp !== undefined && typeof e.timestamp !== "bigint") {
     return "timestamp is not a bigint";
   }
+  if (e.guid !== undefined) {
+    const guid = e.guid as Record<string, unknown> | null;
+    if (typeof guid?.creationNumber !== "bigint" || typeof guid.accountAddress !== "string") {
+      return "guid is not { creationNumber: bigint, accountAddress: string }";
+    }
+  }
   return undefined;
 }
 

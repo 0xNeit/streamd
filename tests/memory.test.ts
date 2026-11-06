@@ -122,6 +122,12 @@ describe("MemoryAdapter", () => {
 
     const handlePage = await adapter.fetchEvents(handleDesc);
     expect(handlePage.events.map((e) => e.version)).toEqual([1n, 2n, 3n]);
+    const byCreation = await adapter.fetchEvents({
+      kind: "handle",
+      accountAddress: "0x1",
+      creationNumber: 4n,
+    });
+    expect(byCreation.events.map((e) => e.version)).toEqual([1n, 2n, 3n]);
   });
 
   it("pages by cursor across same-version events and sets hasMore accurately", async () => {
@@ -286,6 +292,12 @@ describe("MemoryAdapter", () => {
   describe("invalid input rejection", () => {
     const badInput: [string, EventDescriptor, Record<string, unknown>][] = [
       ["handle address", { ...handleDesc, accountAddress: "nope" }, {}],
+      [
+        "handle with both forms",
+        { ...handleDesc, creationNumber: 1n } as unknown as EventDescriptor,
+        {},
+      ],
+      ["negative creationNumber", { kind: "handle", accountAddress: "0x1", creationNumber: -1n }, {}],
       ["account address", { ...accountDesc, accountAddress: "nope" }, {}],
       ["empty module eventType array", { kind: "module", eventType: [] }, {}],
       [

@@ -1,5 +1,5 @@
 import type { Aptos } from "@aptos-labs/ts-sdk";
-import type { HandleEventDescriptor } from "./types.js";
+import type { EventGuid, HandleEventDescriptor } from "./types.js";
 import { toStreamdError } from "./adapters/fullnode.js";
 import { requireAddress } from "./adapters/validate.js";
 
@@ -7,9 +7,14 @@ export interface EventHandleInfo {
   descriptor: HandleEventDescriptor;
   /** Events emitted on the handle so far, from its `counter`. */
   count: bigint;
+  /**
+   * The handle's guid, for a `CreationNumberEventDescriptor`. Its address is as
+   * the node reports it; compare with `StreamdEvent.guid` through `normalizeAddress`.
+   */
+  guid: EventGuid;
 }
 
-function handleCounter(value: unknown): string | undefined {
+function handleParts(value: unknown): { counter: string; guid: EventGuid } | undefined {
   const v = value as {
     counter?: unknown;
     guid?: { id?: { addr?: unknown; creation_num?: unknown } };
@@ -18,8 +23,12 @@ function handleCounter(value: unknown): string | undefined {
   return typeof v?.counter === "string" &&
     /^\d+$/.test(v.counter) &&
     typeof id?.addr === "string" &&
-    typeof id.creation_num === "string"
-    ? v.counter
+    typeof id.creation_num === "string" &&
+    /^\d+$/.test(id.creation_num)
+    ? {
+        counter: v.counter,
+        guid: { creationNumber: BigInt(id.creation_num), accountAddress: id.addr },
+      }
     : undefined;
 }
 
@@ -27,9 +36,9 @@ function handleCounter(value: unknown): string | undefined {
  * Every `EventHandle` stored directly on a field of one of the account's
  * resources, as a `handle` descriptor ready for `on()` or `getEvents()`.
  *
- * Handles nested inside a struct field are skipped: the fullnode's handle
- * events endpoint only addresses top-level fields, so no descriptor could
- * read them.
+ * Handles nested inside a struct field are skipped: the struct and field
+ * form only addresses top-level fields. A nested handle is still readable by
+ * creation number, from its guid in the resource data.
  */
 export async function listEventHandles(
   aptos: Aptos,
@@ -45,8 +54,8 @@ export async function listEventHandles(
   const out: EventHandleInfo[] = [];
   for (const resource of resources) {
     for (const [fieldName, value] of Object.entries(resource.data ?? {})) {
-      const counter = handleCounter(value);
-      if (counter === undefined) continue;
+      const parts = handleParts(value);
+      if (parts === undefined) continue;
       out.push({
         descriptor: {
           kind: "handle",
@@ -54,7 +63,8 @@ export async function listEventHandles(
           eventHandleStruct: resource.type,
           fieldName,
         },
-        count: BigInt(counter),
+        count: BigInt(parts.counter),
+        guid: parts.guid,
       });
     }
   }

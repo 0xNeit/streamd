@@ -3,8 +3,10 @@ import type {
   AccountEventDescriptor,
   BlockHeights,
   BlockInfo,
+  CreationNumberEventDescriptor,
   EventAdapter,
   EventDescriptor,
+  EventGuid,
   EventPage,
   FetchOptions,
   HandleEventDescriptor,
@@ -14,6 +16,7 @@ import type {
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import {
   DEFAULT_LIMIT,
+  handlePath,
   moduleTypeFilter,
   parseCursor,
   requireAddress,
@@ -45,6 +48,24 @@ const DEFAULT_SCAN_BATCH = 100;
  */
 const DEFAULT_MAX_SCAN = 1000;
 
+/**
+ * The raw guid, unless it is missing, malformed, or the zero guid module
+ * events report. A bad guid drops only the field, never the page.
+ */
+function toGuid(raw: RawEvent): EventGuid | undefined {
+  const guid = raw.guid;
+  if (
+    guid === undefined ||
+    !/^\d+$/.test(String(guid.creation_number)) ||
+    !/^0x[0-9a-fA-F]+$/.test(String(guid.account_address))
+  ) {
+    return undefined;
+  }
+  const creationNumber = BigInt(guid.creation_number);
+  if (creationNumber === 0n && BigInt(guid.account_address) === 0n) return undefined;
+  return { creationNumber, accountAddress: guid.account_address };
+}
+
 /** Events of one transaction whose type passes `keep`, indexed by position in it. */
 function toStreamdEvents(
   txn: TransactionWithEvents,
@@ -64,6 +85,8 @@ function toStreamdEvents(
     };
     if (txn.hash !== undefined) item.transactionHash = txn.hash;
     if (txn.sender !== undefined) item.sender = txn.sender;
+    const guid = toGuid(event);
+    if (guid !== undefined) item.guid = guid;
     if (txn.timestamp !== undefined) {
       timestamp ??= BigInt(txn.timestamp);
       item.timestamp = timestamp;
@@ -371,10 +394,11 @@ export class FullnodeScanAdapter implements EventAdapter {
 
   /**
    * Handle events paginate by sequence number, so the cursor is a sequence
-   * number rather than a ledger version.
+   * number rather than a ledger version. Both descriptor forms read the same
+   * stream, by struct and field or by creation number.
    */
   private async fetchHandleEvents(
-    descriptor: HandleEventDescriptor,
+    descriptor: HandleEventDescriptor | CreationNumberEventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage> {
     const limit = options.limit ?? DEFAULT_LIMIT;
@@ -385,8 +409,7 @@ export class FullnodeScanAdapter implements EventAdapter {
         ? parseCursor(options.cursor)
         : BigInt(options.offset ?? 0);
 
-    // The address lands in the URL path, so it is validated before use.
-    const address = requireAddress(descriptor.accountAddress);
+    const path = handlePath(descriptor);
 
     // Through the SDK, not bare fetch, so the config's headers and API key apply.
     const { data: raw } = await getAptosFullNode<
@@ -395,23 +418,25 @@ export class FullnodeScanAdapter implements EventAdapter {
     >({
       aptosConfig: this.aptos.config,
       originMethod: "fetchHandleEvents",
-      path:
-        `accounts/${address}/events/` +
-        `${encodeURIComponent(descriptor.eventHandleStruct)}/` +
-        `${encodeURIComponent(descriptor.fieldName)}`,
+      path,
       params: { start: start.toString(), limit },
     });
 
     // This endpoint does not say where an event sits in its transaction, and a
     // page position restarts at 0 every page. The handle's sequence number is
     // unique and stable, so it stands in as the index.
-    let events: StreamdEvent[] = raw.map((e) => ({
-      type: e.type,
-      data: e.data,
-      version: BigInt(e.version),
-      sequenceNumber: BigInt(e.sequence_number),
-      eventIndex: Number(e.sequence_number),
-    }));
+    let events: StreamdEvent[] = raw.map((e) => {
+      const event: StreamdEvent = {
+        type: e.type,
+        data: e.data,
+        version: BigInt(e.version),
+        sequenceNumber: BigInt(e.sequence_number),
+        eventIndex: Number(e.sequence_number),
+      };
+      const guid = toGuid(e);
+      if (guid !== undefined) event.guid = guid;
+      return event;
+    });
 
     if (options.fromVersion !== undefined) {
       events = events.filter((e) => e.version >= options.fromVersion!);

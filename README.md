@@ -472,12 +472,18 @@ Every call takes an event descriptor:
 | `kind` | Matches | Example |
 |---|---|---|
 | `module` | Module events of one or more Move types | `{ kind: "module", eventType: "0x1::coin::WithdrawEvent" }` or `{ kind: "module", eventType: ["0x1::fungible_asset::Withdraw", "0x1::fungible_asset::Deposit"] }` |
-| `handle` | A legacy `EventHandle` on an account | `{ kind: "handle", accountAddress, eventHandleStruct, fieldName }` |
+| `handle` | A legacy `EventHandle` on an account | `{ kind: "handle", accountAddress, eventHandleStruct, fieldName }` or, by its guid, `{ kind: "handle", accountAddress, creationNumber: 3n }` |
 | `account` | Events from transactions an account **sent** | `{ kind: "account", accountAddress, eventTypes?: [...] }` |
 
 When `module.eventType` is an array of Move types, `FullnodeScanAdapter` serves
 all of them in a single transaction scan per page, delivering matches in
 `(version, eventIndex)` order.
+
+A `handle` descriptor takes one form or the other, never both. The creation-number
+form names the handle by its guid, so `accountAddress` is the account that created
+the handle, and `creationNumber` is a `bigint` up to `u64::MAX`. It reads the same
+events as the struct and field form, through the fullnode's
+`/accounts/{address}/events/{creation_number}` endpoint.
 
 `account` only sees transactions the account signed. If someone else's
 transaction deposits into the account, that event belongs to the sender's
@@ -493,18 +499,22 @@ an endpoint that omits the surrounding transaction, so all three are
 `undefined` there. `timestamp` is `undefined` on genesis transactions, and
 `sender` on system transactions such as block metadata, which no account signs.
 
+Events emitted through a legacy `EventHandle` also carry `guid`
+(`{ creationNumber: bigint, accountAddress: string }`), on every descriptor kind.
+Module events have no handle, so `guid` is `undefined` on them.
+
 ### Discover event handles
 
 `listEventHandles(aptos, address)` reads an account's resources and returns
 each `EventHandle` it finds as a ready-to-use `handle` descriptor, with the
-number of events emitted on it so far:
+number of events emitted on it so far and its guid:
 
 ```ts
 import { Aptos } from "@aptos-labs/ts-sdk";
 import { listEventHandles } from "streamd";
 
 const handles = await listEventHandles(new Aptos(), "0x1");
-// [{ descriptor: { kind: "handle", accountAddress, eventHandleStruct: "0x1::block::BlockResource", fieldName: "new_block_events" }, count: 1165098930n }, ...]
+// [{ descriptor: { kind: "handle", accountAddress, eventHandleStruct: "0x1::block::BlockResource", fieldName: "new_block_events" }, count: 1165098930n, guid: { creationNumber: 3n, accountAddress: "0x1" } }, ...]
 
 const blocks = handles.find((h) => h.descriptor.fieldName === "new_block_events");
 if (blocks) client.on(blocks.descriptor, (event) => console.log(event.data));
@@ -512,8 +522,9 @@ if (blocks) client.on(blocks.descriptor, (event) => console.log(event.data));
 
 It takes an `Aptos` instance rather than living on the client, because a
 client may run on any adapter. Only handles stored directly on a resource field
-are listed: the fullnode's handle endpoint cannot address one nested inside a
-struct field, so those are skipped.
+are listed, since the struct and field form cannot address one nested inside a
+struct field. A nested handle is still readable by creation number, taken from
+the `guid` in the resource data.
 
 ### Typed events
 

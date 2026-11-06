@@ -38,6 +38,20 @@ export interface HandleEventDescriptor {
   accountAddress: string;
   eventHandleStruct: string;
   fieldName: string;
+  creationNumber?: never;
+}
+
+/**
+ * Legacy EventHandle event, identified by the handle's guid: the account that
+ * created the handle and its creation number (`EventGuid`). Reaches handles
+ * the struct and field form cannot, such as one nested inside a struct field.
+ */
+export interface CreationNumberEventDescriptor {
+  kind: "handle";
+  accountAddress: string;
+  creationNumber: bigint;
+  eventHandleStruct?: never;
+  fieldName?: never;
 }
 
 /**
@@ -60,6 +74,7 @@ export interface AccountEventDescriptor {
 export type EventDescriptor<TData = unknown> =
   | ModuleEventDescriptor<TData>
   | HandleEventDescriptor
+  | CreationNumberEventDescriptor
   | AccountEventDescriptor;
 
 // ---- Parsed event ----
@@ -106,6 +121,19 @@ export interface StreamdEvent<TData = unknown> {
    * Omitted on `handle` events and on system transactions.
    */
   sender?: string;
+  /**
+   * The `EventHandle` that emitted this event, when the source reports one.
+   * Module events report the zero guid, which names no handle, so they carry
+   * none.
+   */
+  guid?: EventGuid;
+}
+
+/** An `EventHandle`'s on-chain id: the account that created it and its creation number. */
+export interface EventGuid {
+  creationNumber: bigint;
+  /** As the source reports it, not normalized. */
+  accountAddress: string;
 }
 
 // ---- Filters ----

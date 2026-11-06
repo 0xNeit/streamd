@@ -26,6 +26,7 @@ describe("serializeEvent / parseEvent", () => {
       transactionHash: "0xabc",
       timestamp: 1_700_000_000_000_000n,
       sender: "0x1",
+      guid: { creationNumber: 2n ** 64n - 1n, accountAddress: "0x1" },
     });
     const parsed = parseEvent(serializeEvent(event), { decode: ["amount"] });
     expect(parsed).toEqual(event);
@@ -39,6 +40,7 @@ describe("serializeEvent / parseEvent", () => {
     expect(Object.keys(parsed)).not.toContain("timestamp");
     expect(Object.keys(parsed)).not.toContain("transactionHash");
     expect(Object.keys(parsed)).not.toContain("sender");
+    expect(Object.keys(parsed)).not.toContain("guid");
   });
 
   it("leaves data bigints as strings unless named, and nested ones always", () => {
@@ -79,6 +81,10 @@ describe("serializeEvent / parseEvent", () => {
     ["a numeric transactionHash", line({ transactionHash: 1 }), '"transactionHash"'],
     ["a hex timestamp", line({ timestamp: "0x10" }), '"timestamp"'],
     ["a numeric sender", line({ sender: 1 }), '"sender"'],
+    ["a string guid", line({ guid: "0x1" }), '"guid"'],
+    ["a null guid", line({ guid: null }), '"guid"'],
+    ["a guid without accountAddress", line({ guid: { creationNumber: "1" } }), '"guid"'],
+    ["a numeric guid creationNumber", line({ guid: { creationNumber: 1, accountAddress: "0x1" } }), '"creationNumber"'],
   ])("rejects %s", (_name, text, field) => {
     expect(() => parseEvent(text)).toThrow(StreamdError);
     expect(() => parseEvent(text)).toThrow(field);

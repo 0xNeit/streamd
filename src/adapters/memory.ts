@@ -8,6 +8,7 @@ import type {
 import { StreamdError } from "../errors.js";
 import {
   DEFAULT_LIMIT,
+  handlePath,
   moduleTypeFilter,
   parseCursor,
   requireAddress,
@@ -33,7 +34,7 @@ function descriptorFilter(
       return (type) => types.has(type);
     }
     case "handle":
-      requireAddress(descriptor.accountAddress);
+      handlePath(descriptor);
       return () => true;
     default: {
       const unknown: never = descriptor;
