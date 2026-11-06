@@ -42,16 +42,52 @@ export function raceAbort<T>(
   });
 }
 
+/** Resolves after `ms`, or rejects with `signal.reason` as soon as it aborts. */
+export function sleep(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  if (signal?.aborted) return Promise.reject(signal.reason);
+  return new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      detach();
+      resolve();
+    }, ms);
+    const detach = onAbort(signal, () => {
+      clearTimeout(timer);
+      reject(signal!.reason);
+    });
+  });
+}
+
+/** True when `fromVersion` needs no adapter read to become a start position. */
+export function isAbsoluteVersion(
+  fromVersion: bigint | "earliest" | undefined,
+): fromVersion is bigint | undefined {
+  return fromVersion === undefined || (typeof fromVersion === "bigint" && fromVersion >= 0n);
+}
+
 /**
  * A negative `fromVersion` counts back from the adapter's head, as ethers
- * reads a negative block tag; other values pass through without a head read.
+ * reads a negative block tag, and `"earliest"` reads the adapter's oldest
+ * servable version; other values pass through without a read.
  */
 export async function resolveFromVersion(
   adapter: EventAdapter,
   descriptor: EventDescriptor,
-  fromVersion: bigint | undefined,
+  fromVersion: bigint | "earliest" | undefined,
 ): Promise<bigint | undefined> {
-  if (fromVersion === undefined || fromVersion >= 0n) return fromVersion;
+  if (isAbsoluteVersion(fromVersion)) return fromVersion;
+  if (fromVersion === "earliest") {
+    if (adapter.getEarliestVersion === undefined) {
+      throw new StreamdError(
+        'fromVersion "earliest" needs an adapter that implements getEarliestVersion',
+      );
+    }
+    return adapter.getEarliestVersion(descriptor);
+  }
+  if (typeof fromVersion !== "bigint") {
+    throw new StreamdError(
+      `Invalid fromVersion: ${String(fromVersion)} (expected a bigint or "earliest")`,
+    );
+  }
   if (adapter.getHeadVersion === undefined) {
     throw new StreamdError(
       "A negative fromVersion needs an adapter that implements getHeadVersion",

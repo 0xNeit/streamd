@@ -7,10 +7,11 @@ import {
 } from "./timers.js";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { FallbackAdapter } from "../src/adapters/fallback.js";
+import { withHooks } from "../src/adapters/hooks.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { RoutingAdapter } from "../src/adapters/routing.js";
 import { StreamdClient } from "../src/client.js";
-import { every, involvesAddress, not, whereField } from "../src/filter.js";
+import { every, fromSender, involvesAddress, not, whereField } from "../src/filter.js";
 import type {
   EventAdapter,
   EventDescriptor,
@@ -189,6 +190,30 @@ describe("StreamdClient", () => {
     expect(events).toHaveLength(1);
     expect(events[0].version).toBe(25n);
     expect(adapter.fetchEvents).toHaveBeenCalledTimes(3);
+
+    client.destroy();
+  });
+
+  it("getEvents through withHooks reports each page fetch once, and keeps relative starts working", async () => {
+    const requests: unknown[] = [];
+    const responses: number[] = [];
+    const adapter = withHooks(
+      new MemoryAdapter(Array.from({ length: 30 }, (_, i) => makeEvent(i + 1))),
+      {
+        onRequest: (request) => requests.push(request.options.cursor),
+        onResponse: (response) => responses.push(response.page!.events.length),
+      },
+    );
+    const client = new StreamdClient({ adapter });
+    const desc = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    const events = await client.getEvents(desc);
+    expect(events).toHaveLength(30);
+    expect(requests).toHaveLength(2);
+    expect(responses).toEqual([25, 5]);
+
+    const recent = await client.getEvents(desc, { fromVersion: -2n });
+    expect(recent.map((e) => e.version)).toEqual([28n, 29n, 30n]);
 
     client.destroy();
   });
@@ -775,6 +800,26 @@ describe("StreamdClient", () => {
     sub.unsubscribe();
 
     expect(live).toEqual([{ hash: "0xabc123", ts: 1700000010000000n }]);
+    client.destroy();
+  });
+
+  it("filters a backlog by transaction sender with fromSender", async () => {
+    const alice = "0x" + "0".repeat(63) + "a";
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([
+        { ...makeEvent(1), sender: alice },
+        { ...makeEvent(2), sender: "0xb" },
+        makeEvent(3),
+        { ...makeEvent(4), sender: alice },
+      ]),
+    });
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    const events = await client.getEvents(descriptor, {
+      fromVersion: 0n,
+      where: fromSender("0xa"),
+    });
+    expect(events.map((e) => e.version)).toEqual([1n, 4n]);
     client.destroy();
   });
 
@@ -1534,6 +1579,126 @@ describe("StreamdClient relative start", () => {
   });
 });
 
+describe("StreamdClient earliest start", () => {
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+  const versions = [5, 8, 9, 10].map((v) => makeEvent(v));
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("on() with fromVersion earliest delivers from the oldest available version", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter(versions) });
+    const seen: bigint[] = [];
+    client.on(descriptor, (e) => void seen.push(e.version), { fromVersion: "earliest" });
+    await advanceTimersByTimeAsync(0);
+    client.destroy();
+
+    expect(seen).toEqual([5n, 8n, 9n, 10n]);
+  });
+
+  it("getEvents() with fromVersion earliest reads from the oldest version, in either order", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter(versions) });
+    const asc = await client.getEvents(descriptor, { fromVersion: "earliest", limit: 2 });
+    const desc = await client.getEvents(descriptor, {
+      fromVersion: "earliest",
+      orderBy: "desc",
+      limit: 2,
+    });
+
+    expect(asc.map((e) => e.version)).toEqual([5n, 8n]);
+    expect(desc.map((e) => e.version)).toEqual([10n, 9n]);
+  });
+});
+
+describe("StreamdClient block range", () => {
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+  it("getEvents() with fromBlock and toBlock returns only that range, through the limiter", async () => {
+    const memory = new MemoryAdapter([5, 10, 15, 20, 25].map((v) => makeEvent(v)));
+    // One block per ten versions: block n is versions 10n..10n+9.
+    const getBlock = vi.fn(async (_d: unknown, height: bigint) => ({
+      height,
+      firstVersion: height * 10n,
+      lastVersion: height * 10n + 9n,
+      timestamp: 0n,
+    }));
+    const client = new StreamdClient({
+      adapter: { fetchEvents: (d, o) => memory.fetchEvents(d, o), getBlock },
+      maxConcurrentRequests: 1,
+    });
+
+    const events = await client.getEvents(descriptor, { fromBlock: 1n, toBlock: 1n });
+    expect(events.map((e) => e.version)).toEqual([10n, 15n]);
+    expect(getBlock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("StreamdClient latest-first queries", () => {
+  it("getEvents() with orderBy desc returns the most recent events across pages", async () => {
+    const versions = Array.from({ length: 60 }, (_, i) => makeEvent(i + 1));
+    const client = new StreamdClient({ adapter: new MemoryAdapter(versions) });
+    const events = await client.getEvents(
+      { kind: "module", eventType: "0x1::test::Event" },
+      { orderBy: "desc", limit: 3, fromVersion: -50n },
+    );
+
+    expect(events.map((e) => e.version)).toEqual([60n, 59n, 58n]);
+  });
+});
+
+describe("StreamdClient query retries", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+  it("getEvents() with retries recovers from a failed page", async () => {
+    const memory = new MemoryAdapter(Array.from({ length: 30 }, (_, i) => makeEvent(i + 1)));
+    let failures = 1;
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) =>
+        o.cursor !== undefined && failures-- > 0
+          ? Promise.reject(new StreamdNetworkError("node down", 503))
+          : memory.fetchEvents(d, o),
+    };
+    const client = new StreamdClient({ adapter });
+    const query = client.getEvents(descriptor, { retries: 1 });
+    await advanceTimersByTimeAsync(1010);
+
+    expect((await query).map((e) => e.version)).toEqual(
+      Array.from({ length: 30 }, (_, i) => BigInt(i + 1)),
+    );
+  });
+
+  it("a query waiting to retry does not hold a maxConcurrentRequests slot", async () => {
+    const calls: string[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: async (d) => {
+        const type = (d as ModuleEventDescriptor).eventType as string;
+        calls.push(type);
+        if (type.endsWith("Flaky") && calls.length === 1) {
+          throw new StreamdNetworkError("node down", 503);
+        }
+        return { events: [], nextCursor: "c", hasMore: false };
+      },
+    };
+    const client = new StreamdClient({ adapter, maxConcurrentRequests: 1 });
+    const flaky = client.getEvents({ kind: "module", eventType: "0x1::test::Flaky" }, { retries: 1 });
+    await advanceTimersByTimeAsync(0);
+    await client.getEvents(descriptor);
+
+    expect(calls).toEqual(["0x1::test::Flaky", "0x1::test::Event"]);
+    await advanceTimersByTimeAsync(1010);
+    expect(await flaky).toEqual([]);
+    expect(calls.length).toBe(3);
+  });
+});
+
 describe("maxConcurrentRequests", () => {
   const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
 
@@ -1862,5 +2027,29 @@ describe("off and removeAllListeners", () => {
 
     // One listener is the poller's, the other the client's.
     expect(remove).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("iterateEvents", () => {
+  it("yields single events, and two interleaved loops share a one-request cap", async () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+    const events = [1, 2, 3, 4, 5].map((v) => makeEvent(v));
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter(events),
+      maxConcurrentRequests: 1,
+    });
+    const a = client.iterateEvents(descriptor, { fromVersion: 2n }, 2);
+    const b = client.iterateEvents(descriptor, { orderBy: "desc", limit: 3 }, 2);
+    const seenA: bigint[] = [];
+    const seenB: bigint[] = [];
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = await Promise.all([a.next(), b.next()]);
+      if (!x.done) seenA.push(x.value.version);
+      if (!y.done) seenB.push(y.value.version);
+    }
+
+    expect(seenA).toEqual([2n, 3n, 4n, 5n]);
+    expect(seenB).toEqual([5n, 4n, 3n]);
+    expect((await a.next()).done).toBe(true);
   });
 });

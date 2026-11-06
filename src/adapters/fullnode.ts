@@ -1,6 +1,7 @@
 import { getAptosFullNode, type Aptos } from "@aptos-labs/ts-sdk";
 import type {
   AccountEventDescriptor,
+  BlockInfo,
   EventAdapter,
   EventDescriptor,
   EventPage,
@@ -29,6 +30,7 @@ interface TransactionWithEvents {
   version?: string;
   hash?: string;
   timestamp?: string;
+  sender?: string;
   type: string;
   events?: RawEvent[];
 }
@@ -60,6 +62,7 @@ function toStreamdEvents(
       eventIndex,
     };
     if (txn.hash !== undefined) item.transactionHash = txn.hash;
+    if (txn.sender !== undefined) item.sender = txn.sender;
     if (txn.timestamp !== undefined) {
       timestamp ??= BigInt(txn.timestamp);
       item.timestamp = timestamp;
@@ -69,7 +72,7 @@ function toStreamdEvents(
   return out;
 }
 
-function toStreamdError(err: unknown, what: string): StreamdError {
+export function toStreamdError(err: unknown, what: string): StreamdError {
   if (err instanceof StreamdError) return err;
   const status = (err as { status?: unknown } | null)?.status;
   return new StreamdNetworkError(
@@ -146,6 +149,34 @@ export class FullnodeScanAdapter implements EventAdapter {
       return await this.ledgerVersion();
     } catch (err) {
       throw toStreamdError(err, "ledger version");
+    }
+  }
+
+  /** The fullnode's oldest unpruned ledger version, whatever the descriptor. */
+  async getEarliestVersion(): Promise<bigint> {
+    try {
+      const info = await this.aptos.getLedgerInfo();
+      return BigInt(info.oldest_ledger_version);
+    } catch (err) {
+      throw toStreamdError(err, "oldest ledger version");
+    }
+  }
+
+  /** The block at `height`, whatever the descriptor; a pruned block fails with status 410. */
+  async getBlock(_descriptor: EventDescriptor, height: bigint): Promise<BlockInfo> {
+    try {
+      const block = await this.aptos.getBlockByHeight({
+        blockHeight: height,
+        options: { withTransactions: false },
+      });
+      return {
+        height: BigInt(block.block_height),
+        firstVersion: BigInt(block.first_version),
+        lastVersion: BigInt(block.last_version),
+        timestamp: BigInt(block.block_timestamp),
+      };
+    } catch (err) {
+      throw toStreamdError(err, `block ${height}`);
     }
   }
 

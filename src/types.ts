@@ -96,6 +96,13 @@ export interface StreamdEvent<TData = unknown> {
    * transactions.
    */
   timestamp?: bigint;
+  /**
+   * Address that signed the emitting transaction, as the source reports it,
+   * when the source had the transaction in hand and it names one (user
+   * transactions on the `module` and `account` paths of `FullnodeScanAdapter`).
+   * Omitted on `handle` events and on system transactions.
+   */
+  sender?: string;
 }
 
 // ---- Filters ----
@@ -113,11 +120,23 @@ export interface EventFilter {
   /**
    * Start from this version (inclusive). Negative counts back from the head,
    * read once from `EventAdapter.getHeadVersion`: `-1000n` starts 1000
-   * versions before it, clamped at 0.
+   * versions before it, clamped at 0. `"earliest"` starts at the oldest
+   * version the source still serves, read once from
+   * `EventAdapter.getEarliestVersion`.
    */
-  fromVersion?: bigint;
+  fromVersion?: bigint | "earliest";
   /** End at this version (inclusive) */
   toVersion?: bigint;
+  /**
+   * Start at the first version of this block height (inclusive), read once
+   * from `EventAdapter.getBlock`. Cannot be combined with `fromVersion`.
+   */
+  fromBlock?: bigint;
+  /**
+   * End at the last version of this block height (inclusive), read once from
+   * `EventAdapter.getBlock`. Cannot be combined with `toVersion`.
+   */
+  toBlock?: bigint;
   /** Maximum events to return, counted *after* `where` is applied */
   limit?: number;
   /** Offset for pagination */
@@ -143,6 +162,19 @@ export interface EventFilter {
    */
   maxPages?: number;
   /**
+   * `"desc"` returns the last `limit` matches of the range, newest first.
+   * Adapters only page forward, so the whole range is still walked: bound it
+   * with `fromVersion` (a negative one works) or `maxPages`.
+   */
+  orderBy?: "asc" | "desc";
+  /**
+   * Retry a failed adapter call up to this many times (default 0), waiting
+   * 1s, 2s, 4s... (capped at 60s) between attempts. Only failures worth
+   * retrying are: a `StreamdError` that is not a `StreamdNetworkError` rejects
+   * at once. The query rejects with the last attempt's error.
+   */
+  retries?: number;
+  /**
    * Aborting rejects `getEvents()` or the pending/next `getEventPages()` page
    * with the signal's `reason` and stops fetching further pages.
    */
@@ -156,7 +188,19 @@ export interface EventFilter {
  * pushed down to a remote data source. Query and poller apply them to results.
  */
 export interface FetchOptions
-  extends Omit<EventFilter, "where" | "decode" | "maxPages" | "signal"> {
+  extends Omit<
+    EventFilter,
+    | "fromVersion"
+    | "fromBlock"
+    | "toBlock"
+    | "where"
+    | "decode"
+    | "maxPages"
+    | "retries"
+    | "signal"
+  > {
+  /** Start from this version (inclusive); always absolute by the time an adapter sees it. */
+  fromVersion?: bigint;
   orderBy?: "asc" | "desc";
   /**
    * Opaque resume token returned by this adapter's previous page. When
@@ -191,9 +235,11 @@ export interface ListenerOptions {
   /**
    * Start from this version; undefined = chain head. Negative counts back from
    * the head, read once on the first poll from `EventAdapter.getHeadVersion`:
-   * `-1000n` starts 1000 versions before it, clamped at 0.
+   * `-1000n` starts 1000 versions before it, clamped at 0. `"earliest"` starts
+   * at the oldest version the source still serves, read once on the first
+   * poll from `EventAdapter.getEarliestVersion`.
    */
-  fromVersion?: bigint;
+  fromVersion?: bigint | "earliest";
   /**
    * Resume from a token a previous subscription reported as `cursor`. It wins
    * over `fromVersion`, and is only meaningful with the same descriptor and
@@ -286,7 +332,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents` and `getHeadVersion`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
@@ -410,4 +456,25 @@ export interface EventAdapter {
    * negative `fromVersion` (relative to the head) needs it.
    */
   getHeadVersion?(descriptor: EventDescriptor): Promise<bigint>;
+  /**
+   * The oldest version this source can still serve for `descriptor`, below
+   * which history is pruned. Optional; `fromVersion: "earliest"` needs it.
+   */
+  getEarliestVersion?(descriptor: EventDescriptor): Promise<bigint>;
+  /**
+   * The block at `height` on the chain serving `descriptor`. Optional;
+   * `fromBlock`/`toBlock` on a query need it.
+   */
+  getBlock?(descriptor: EventDescriptor, height: bigint): Promise<BlockInfo>;
+}
+
+/** A block's position in the ledger, as `EventAdapter.getBlock` reports it. */
+export interface BlockInfo {
+  height: bigint;
+  /** First transaction version in the block (inclusive). */
+  firstVersion: bigint;
+  /** Last transaction version in the block (inclusive). */
+  lastVersion: bigint;
+  /** Block time in microseconds since the Unix epoch. */
+  timestamp: bigint;
 }

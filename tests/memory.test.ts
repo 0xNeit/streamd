@@ -356,3 +356,14 @@ describe("MemoryAdapter head version", () => {
     expect(await new MemoryAdapter().getHeadVersion()).toBe(0n);
   });
 });
+
+describe("MemoryAdapter earliest version", () => {
+  it("reports the lowest seeded version", async () => {
+    const adapter = new MemoryAdapter([ev(7), ev(3), ev(5)]);
+    expect(await adapter.getEarliestVersion()).toBe(3n);
+  });
+
+  it("reports 0n when empty", async () => {
+    expect(await new MemoryAdapter().getEarliestVersion()).toBe(0n);
+  });
+});

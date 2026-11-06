@@ -46,6 +46,14 @@ export class RequestLimiter {
       view.getHeadVersion = (descriptor) =>
         this.run(() => adapter.getHeadVersion!(descriptor), cancelled);
     }
+    if (adapter.getEarliestVersion !== undefined) {
+      view.getEarliestVersion = (descriptor) =>
+        this.run(() => adapter.getEarliestVersion!(descriptor), cancelled);
+    }
+    if (adapter.getBlock !== undefined) {
+      view.getBlock = (descriptor, height) =>
+        this.run(() => adapter.getBlock!(descriptor, height), cancelled);
+    }
     return view;
   }
 

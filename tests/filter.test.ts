@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { StreamdError } from "../src/errors.js";
 import {
   every,
+  fromSender,
   involvesAddress,
   normalizeAddress,
   not,
@@ -264,6 +265,32 @@ describe("ofModule", () => {
     ]) {
       expect(() => ofModule(bad)).toThrow(StreamdError);
     }
+  });
+});
+
+describe("fromSender", () => {
+  const withSender = (sender: unknown): StreamdEvent =>
+    ({ ...ev({}), sender }) as StreamdEvent;
+
+  it("matches the sender in either address spelling", () => {
+    expect(fromSender("0x1")(withSender(LONG_ONE))).toBe(true);
+    expect(fromSender(LONG_ONE)(withSender("0x1"))).toBe(true);
+  });
+
+  it("does not match another sender, a missing one, or a non-address", () => {
+    const predicate = fromSender("0x1");
+    expect(predicate(withSender("0x2"))).toBe(false);
+    expect(predicate(ev({}))).toBe(false);
+    expect(predicate(withSender("hello"))).toBe(false);
+    expect(predicate(withSender(1))).toBe(false);
+  });
+
+  it("ignores addresses that appear only in the payload", () => {
+    expect(fromSender("0x1")(ev({ owner: "0x1" }))).toBe(false);
+  });
+
+  it("rejects an invalid address", () => {
+    expect(() => fromSender("not-an-address")).toThrow(TypeError);
   });
 });
 

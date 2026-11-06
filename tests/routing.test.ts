@@ -225,3 +225,51 @@ describe("RoutingAdapter head version", () => {
     expect((err as Error).message).toContain('"account"');
   });
 });
+
+describe("RoutingAdapter earliest version", () => {
+  it("asks the adapter routed for the descriptor's kind", async () => {
+    const router = new RoutingAdapter({
+      module: new MemoryAdapter([ev(9), ev(12)]),
+      default: new MemoryAdapter([ev(4), ev(6)]),
+    });
+
+    expect(await router.getEarliestVersion(moduleDesc)).toBe(9n);
+    expect(await router.getEarliestVersion(handleDesc)).toBe(4n);
+  });
+
+  it("throws StreamdError when the routed adapter cannot report one", async () => {
+    const bare: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+    };
+    const router = new RoutingAdapter({ account: bare });
+
+    const err = await router.getEarliestVersion(accountDesc).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain('"account"');
+  });
+});
+
+describe("RoutingAdapter blocks", () => {
+  const block = { height: 5n, firstVersion: 10n, lastVersion: 12n, timestamp: 1n };
+  const bare: EventAdapter = {
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+  };
+
+  it("asks the adapter routed for the descriptor's kind", async () => {
+    const withBlocks: EventAdapter = { ...bare, getBlock: vi.fn(async () => block) };
+    const router = new RoutingAdapter({ module: withBlocks, default: bare });
+
+    expect(await router.getBlock(moduleDesc, 5n)).toBe(block);
+    expect(withBlocks.getBlock).toHaveBeenCalledWith(moduleDesc, 5n);
+  });
+
+  it("throws StreamdError when the routed adapter cannot report blocks", async () => {
+    const router = new RoutingAdapter({ account: bare });
+
+    const err = await router.getBlock(accountDesc, 5n).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain('"account"');
+  });
+});

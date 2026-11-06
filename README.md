@@ -180,6 +180,24 @@ fetches its first page; a `cursor` still wins and skips that read. `once()`, `st
 and `onBatch()` accept it too. An adapter without `getHeadVersion` is rejected as invalid
 input.
 
+### Start at the earliest available version
+
+```ts
+// everything the fullnode still holds, then live
+streamd.on(descriptor, handle, { fromVersion: "earliest" });
+
+const all = await streamd.getEvents(descriptor, { fromVersion: "earliest", maxPages: 100 });
+```
+
+`fromVersion: "earliest"` starts at the oldest version the source can still serve. On
+`FullnodeScanAdapter` that is the ledger's `oldest_ledger_version`: history below it is
+pruned. It is read once, from the adapter's `getEarliestVersion`, at the same point a
+relative start reads the head, and a `cursor` still wins and skips the read. `once()`,
+`stream()` and `onBatch()` accept it too. An adapter without `getEarliestVersion` is
+rejected as invalid input, and so is any `fromVersion` that is neither a `bigint` nor
+`"earliest"`. A module-event scan from the earliest version walks every transaction since,
+so bound a query with `limit` or `maxPages`.
+
 ### Wait for one event
 
 ```ts
@@ -207,7 +225,61 @@ const events = await streamd.getEvents(
 for await (const page of streamd.getEventPages(descriptor, { limit: 1000 }, 100)) {
   handle(page);
 }
+
+// Or one event at a time
+for await (const event of streamd.iterateEvents(descriptor, { fromVersion: 1_000_000n })) {
+  handle(event);
+  if (done) break; // nothing further is fetched
+}
 ```
+
+`iterateEvents` takes the same arguments as `getEventPages` and yields the same events,
+one per step. A page is fetched only once the previous one is used up, and leaving the loop
+stops the walk. Aborting `signal` rejects the next event, even mid-page.
+
+For the most recent events first, pass `orderBy: "desc"`:
+
+```ts
+const latest = await streamd.getEvents(descriptor, {
+  fromVersion: -100_000n,
+  orderBy: "desc",
+  limit: 10,
+});
+```
+
+This returns the last `limit` matches of the range, newest first. Adapters only page
+forward, so the whole range is still walked: bound it with `fromVersion` or `maxPages`.
+`getEventPages` yields the same events in `pageSize` chunks once the walk ends.
+
+To ride out a flaky node, pass `retries`:
+
+```ts
+const events = await streamd.getEvents(descriptor, { fromVersion: 1_000_000n, retries: 3 });
+```
+
+A failed page is retried up to `retries` times, waiting 1s, 2s, 4s and so on (capped at
+60s) between attempts, then the query rejects with the last error. Only network failures
+are retried: any other `StreamdError` means the request itself is wrong and rejects at once.
+`signal` cancels a wait.
+
+### Query by block range
+
+```ts
+const inBlocks = await streamd.getEvents(descriptor, {
+  fromBlock: 1_141_400_000n,
+  toBlock: 1_141_400_010n,
+});
+```
+
+`fromBlock` and `toBlock` bound a query by block height, both inclusive: the query runs
+from the first version of `fromBlock` to the last version of `toBlock`. Each is looked up
+once, from the adapter's `getBlock`, before the first page, and `retries` covers the
+lookups too. Either may be used alone, alongside the other side's version bound
+(`fromBlock` with `toVersion`, or `fromVersion` with `toBlock`). Setting both `fromBlock`
+and `fromVersion`, or both `toBlock` and `toVersion`, is rejected as invalid input, as is a
+negative height or a `fromBlock` above `toBlock`. `orderBy: "desc"` and `iterateEvents`
+work over the resulting range. `FullnodeScanAdapter` reads blocks from the fullnode, so a
+pruned block fails with a `StreamdNetworkError` (status 410). Listeners take versions only.
 
 > [!NOTE]
 > Renamed in 0.x: `getLogs` is now `getEvents` and `getLogsIterator` is now
@@ -230,7 +302,7 @@ controller.abort();
 ```
 
 Aborting `on()` unsubscribes quietly without calling `onError`. Aborting
-`once()`, `stream()`, `getEvents()` or `getEventPages()` stops polling or
+`once()`, `stream()`, `getEvents()`, `getEventPages()` or `iterateEvents()` stops polling or
 paging and rejects with `signal.reason`. An already-aborted signal never
 fetches.
 
@@ -241,8 +313,9 @@ const streamd = new StreamdClient({ aptos, maxConcurrentRequests: 4 });
 ```
 
 At most that many adapter calls run at once across every subscription and query on the
-client; the rest wait their turn in order. Both `fetchEvents` and the `getHeadVersion` read
-behind a negative `fromVersion` count. The unit is one adapter call, not one HTTP request:
+client; the rest wait their turn in order. `fetchEvents`, the `getHeadVersion` read behind
+a negative `fromVersion`, the `getEarliestVersion` read behind `"earliest"`, and the
+`getBlock` lookups behind `fromBlock`/`toBlock` all count. The unit is one adapter call, not one HTTP request:
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
 dropped without reaching the adapter. Omit the option for no limit.
@@ -291,10 +364,34 @@ transaction and won't appear.
 Each delivered `StreamdEvent` carries `type`, `data`, `version` (`bigint`),
 `sequenceNumber` (`bigint`), and `eventIndex` (`number`). Where the source
 transaction is in hand (`module` and `account` descriptors on
-`FullnodeScanAdapter`), events also carry `transactionHash` (`string`) and
-`timestamp` (`bigint`, microseconds since the Unix epoch). `handle` events
-come from an endpoint that omits the surrounding transaction, so both fields
-are `undefined` there (and `timestamp` is `undefined` on genesis transactions).
+`FullnodeScanAdapter`), events also carry `transactionHash` (`string`),
+`timestamp` (`bigint`, microseconds since the Unix epoch), and `sender`
+(`string`, the address that signed the transaction). `handle` events come from
+an endpoint that omits the surrounding transaction, so all three are
+`undefined` there. `timestamp` is `undefined` on genesis transactions, and
+`sender` on system transactions such as block metadata, which no account signs.
+
+### Discover event handles
+
+`listEventHandles(aptos, address)` reads an account's resources and returns
+each `EventHandle` it finds as a ready-to-use `handle` descriptor, with the
+number of events emitted on it so far:
+
+```ts
+import { Aptos } from "@aptos-labs/ts-sdk";
+import { listEventHandles } from "streamd";
+
+const handles = await listEventHandles(new Aptos(), "0x1");
+// [{ descriptor: { kind: "handle", accountAddress, eventHandleStruct: "0x1::block::BlockResource", fieldName: "new_block_events" }, count: 1165098930n }, ...]
+
+const blocks = handles.find((h) => h.descriptor.fieldName === "new_block_events");
+if (blocks) client.on(blocks.descriptor, (event) => console.log(event.data));
+```
+
+It takes an `Aptos` instance rather than living on the client, because a
+client may run on any adapter. Only handles stored directly on a resource field
+are listed: the fullnode's handle endpoint cannot address one nested inside a
+struct field, so those are skipped.
 
 ### Typed events
 
@@ -332,11 +429,30 @@ client.on(Deposit, (event) => console.log(event.data.amount + 1n), {
 const big = await client.getEvents(Deposit, { decode: ["amount"], limit: 10 });
 ```
 
-`decode` works on `on`, `onBatch`, `once`, `stream`, `getEvents` and
+`decode` works on `on`, `onBatch`, `once`, `stream`, `getEvents`, `iterateEvents` and
 `getEventPages`, and runs before `where`, so predicates see the decoded
 values. An event without the field is left alone. A named field holding
 anything other than an unsigned decimal string is an error: a subscription
 reports it through `onError` and skips the event, and a query rejects.
+
+### Serialise events
+
+JSON has no `bigint`, so `JSON.stringify` throws on a `StreamdEvent`. Use
+`serializeEvent` and `parseEvent` to store or send events and read them back:
+
+```ts
+import { parseEvent, serializeEvent } from "streamd";
+
+const text = serializeEvent(event); // one line, the same format as `streamd tail`
+const back = parseEvent(text, { decode: ["amount"] });
+back.version; // bigint again
+```
+
+`version`, `sequenceNumber` and `timestamp` always come back as `bigint`.
+Inside `data`, every `bigint` is written as a decimal string, and only the
+top-level fields named in `decode` are turned back into `bigint`, by the same
+rule as the `decode` option; deeper ones stay strings. Malformed input throws
+a `StreamdError`.
 
 ## Filtering
 
@@ -344,7 +460,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, ofType, ofModule, every, some, not } from "streamd";
+import { involvesAddress, whereField, ofType, ofModule, fromSender, every, some, not } from "streamd";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -365,6 +481,10 @@ streamd.on(
   `address::module` (`ofModule("0x1::coin")` matches `0x1::coin::CoinDeposit`
   and `0x1::coin::CoinStore<...>`). `0x1` and `0x000...01` count as the same
   address.
+- `fromSender(address)` matches events whose transaction `address` signed, so
+  it narrows a `module` subscription to one wallet's own transactions. It
+  needs `sender` on the event; events without one never match. `0x1` and
+  `0x000...01` count as the same address.
 - `every(...predicates)`, `some(...predicates)`, and `not(predicate)` combine
   and negate filters.
 - Any `(event) => boolean` function works too.
@@ -392,8 +512,33 @@ const streamd = new StreamdClient({ aptos, adapter: myIndexAdapter });
 ```
 
 An adapter has one required method, `fetchEvents(descriptor, options)`, returning
-`{ events, nextCursor, hasMore }`, and an optional `getHeadVersion(descriptor)` that
-a negative `fromVersion` needs. See the `EventAdapter` type for the full contract.
+`{ events, nextCursor, hasMore }`, an optional `getHeadVersion(descriptor)` that
+a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` that
+`fromVersion: "earliest"` needs, and an optional `getBlock(descriptor, height)` that
+`fromBlock`/`toBlock` need. See the `EventAdapter` type for the full contract.
+
+To check a custom adapter against that contract, run `checkAdapter` from any
+test runner or a plain script. It walks a few pages (`maxPages`, default 3),
+then makes two more fetches and one call to each optional method present, and
+reports a result per rule (`page-shape`, `order`, `cursor-advance`,
+`cursor-precedence`, `foreign-cursor`, `head-version`, ...) instead of
+throwing. It only reads, but against a real source those reads are network
+calls:
+
+```ts
+import { checkAdapter } from "streamd";
+
+const report = await checkAdapter(
+  myIndexAdapter,
+  { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
+  { fromVersion: 1_000_000n, blockHeight: 500_000n },
+);
+if (!report.ok) console.table(report.results.filter((r) => r.status === "fail"));
+```
+
+`fromVersion` is where the walk starts (omit it to start where the adapter
+does, usually the head), and `blockHeight` lets it check `getBlock`; a rule
+whose method or input is missing is `skip`.
 
 Combine sources with `RoutingAdapter` (by descriptor `kind`, with an optional
 `default` for the rest) and `FallbackAdapter` (try sources in order on each
@@ -416,6 +561,25 @@ const streamd = new StreamdClient({
   adapter: new RoutingAdapter({
     module: myModuleIndexAdapter,
     default: fullnode,
+  }),
+});
+```
+
+To log or time requests, wrap any adapter with `withHooks`. `onRequest` runs
+before each `fetchEvents` call and `onResponse` after it settles, with the
+`page` or the `error` and `durationMs` for the source call alone (time spent
+waiting on `maxConcurrentRequests` is not included). Hooks are synchronous; one
+that throws fails that fetch. `getHeadVersion`, `getEarliestVersion` and `getBlock` pass
+through unhooked:
+
+```ts
+import { FullnodeScanAdapter, StreamdClient, withHooks } from "streamd";
+
+const streamd = new StreamdClient({
+  adapter: withHooks(new FullnodeScanAdapter(aptos), {
+    onRequest: ({ descriptor }) => console.log("fetch", descriptor.kind),
+    onResponse: ({ durationMs, page }) =>
+      console.log(page ? `${page.events.length} events` : "failed", durationMs),
   }),
 });
 ```
@@ -467,11 +631,11 @@ streamd tail --account 0x1 --handle "0x1::coin::CoinStore<0x1::aptos_coin::Aptos
 | `-h`, `--help` | show usage |
 
 Each line carries `type`, `data`, `version`, `sequenceNumber`, `eventIndex`, and, when
-the source has them, `transactionHash` and `timestamp`. Every `bigint`, including any inside
+the source has them, `transactionHash`, `timestamp` and `sender`. Every `bigint`, including any inside
 `data`, is printed as a decimal string:
 
 ```json
-{"type":"0x1::transaction_fee::FeeStatement","data":{"total_charge_gas_units":"7"},"version":"2817350001","sequenceNumber":"0","eventIndex":3,"transactionHash":"0x5c...","timestamp":"1730000000000000"}
+{"type":"0x1::transaction_fee::FeeStatement","data":{"total_charge_gas_units":"7"},"version":"2817350001","sequenceNumber":"0","eventIndex":3,"transactionHash":"0x5c...","timestamp":"1730000000000000","sender":"0x9f..."}
 ```
 
 To pick up where a run stopped, pass the last printed `version` plus one as

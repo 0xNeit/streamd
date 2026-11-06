@@ -1,14 +1,81 @@
 import type {
+  BlockInfo,
   EventAdapter,
   EventDescriptor,
   EventFilter,
   StreamdEvent,
 } from "./types.js";
-import { raceAbort, resolveFromVersion } from "./utils.js";
+import { isAbsoluteVersion, raceAbort, resolveFromVersion, sleep } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
+import { StreamdError, StreamdNetworkError } from "./errors.js";
 
 const DEFAULT_PAGE_SIZE = 25;
+const RETRY_BASE_DELAY = 1000;
+const RETRY_MAX_DELAY = 60_000;
+
+function validateRetries(retries: number | undefined): void {
+  if (retries === undefined) return;
+  if (!Number.isSafeInteger(retries) || retries < 0) {
+    throw new StreamdError(
+      `Invalid retries: ${String(retries)} (expected a non-negative integer)`,
+    );
+  }
+}
+
+/** Rejects block bounds that are malformed, empty, or clash with a version bound. */
+function validateBlockRange(filter: EventFilter): void {
+  const { fromBlock, toBlock } = filter;
+  for (const [name, value] of [["fromBlock", fromBlock], ["toBlock", toBlock]] as const) {
+    if (value !== undefined && (typeof value !== "bigint" || value < 0n)) {
+      throw new StreamdError(
+        `Invalid ${name}: ${String(value)} (expected a non-negative bigint)`,
+      );
+    }
+  }
+  if (fromBlock !== undefined && filter.fromVersion !== undefined) {
+    throw new StreamdError("Set fromBlock or fromVersion, not both");
+  }
+  if (toBlock !== undefined && filter.toVersion !== undefined) {
+    throw new StreamdError("Set toBlock or toVersion, not both");
+  }
+  if (fromBlock !== undefined && toBlock !== undefined && fromBlock > toBlock) {
+    throw new StreamdError(`fromBlock ${fromBlock} is after toBlock ${toBlock}`);
+  }
+}
+
+function blockAt(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  height: bigint,
+): Promise<BlockInfo> {
+  if (adapter.getBlock === undefined) {
+    throw new StreamdError("fromBlock and toBlock need an adapter that implements getBlock");
+  }
+  return adapter.getBlock(descriptor, height);
+}
+
+/**
+ * Runs `call` until it succeeds or `retries` extra attempts are spent. A
+ * `StreamdError` that is not a network failure is the caller's input, which
+ * fails the same way every time, so it is never retried.
+ */
+async function withRetries<T>(
+  call: () => Promise<T>,
+  retries: number,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await raceAbort(call(), signal);
+    } catch (err) {
+      const invalidInput =
+        err instanceof StreamdError && !(err instanceof StreamdNetworkError);
+      if (attempt >= retries || invalidInput || signal?.aborted) throw err;
+      await sleep(Math.min(RETRY_BASE_DELAY * 2 ** attempt, RETRY_MAX_DELAY), signal);
+    }
+  }
+}
 
 /**
  * Historical event querying: `getEvents` and its paged form `getEventPages`.
@@ -42,12 +109,74 @@ export class EventQuery {
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    const { where, decode: fields, maxPages, signal, ...adapterFilter } = filter;
+    const { orderBy, ...rest } = filter;
+    if (orderBy !== undefined && orderBy !== "asc" && orderBy !== "desc") {
+      throw new StreamdError('orderBy must be "asc" or "desc"');
+    }
+    validateRetries(rest.retries);
+    validateBlockRange(rest);
+    if (orderBy !== "desc") {
+      yield* this.ascendingPages<TData>(descriptor, rest, pageSize);
+      return;
+    }
+
+    // Adapters only page forward, so walk the whole range and keep the tail.
+    const limit = rest.limit;
+    if (limit !== undefined && limit <= 0) return;
+    let latest: StreamdEvent<TData>[] = [];
+    const walk = { ...rest, limit: undefined };
+    for await (const page of this.ascendingPages<TData>(descriptor, walk, pageSize)) {
+      latest.push(...page);
+      if (limit !== undefined && latest.length > limit) latest = latest.slice(-limit);
+    }
+    latest.reverse();
+    for (let i = 0; i < latest.length; i += pageSize) {
+      yield latest.slice(i, i + pageSize);
+    }
+  }
+
+  /**
+   * `getEventPages` one event at a time. Pages are buffered as fetched, so
+   * `signal` is checked before each event rather than only between pages.
+   */
+  async *iterateEvents<TData = unknown>(
+    descriptor: EventDescriptor,
+    filter: EventFilter = {},
+    pageSize = DEFAULT_PAGE_SIZE,
+  ): AsyncGenerator<StreamdEvent<TData>, void, unknown> {
+    for await (const page of this.getEventPages<TData>(descriptor, filter, pageSize)) {
+      for (const event of page) {
+        if (filter.signal?.aborted) throw filter.signal.reason;
+        yield event;
+      }
+    }
+  }
+
+  private async *ascendingPages<TData>(
+    descriptor: EventDescriptor,
+    filter: EventFilter,
+    pageSize: number,
+  ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
+    const {
+      where,
+      decode: fields,
+      maxPages,
+      retries = 0,
+      signal,
+      fromBlock,
+      toBlock,
+      ...adapterFilter
+    } = filter;
     const decode = fieldDecoder(fields);
     const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
     const limit = filter.limit;
     let cursor: string | undefined;
-    let fromVersion = filter.fromVersion;
+    let fromVersion = isAbsoluteVersion(filter.fromVersion)
+      ? filter.fromVersion
+      : undefined;
+    let toVersion = filter.toVersion;
+    let resolved =
+      isAbsoluteVersion(filter.fromVersion) && fromBlock === undefined && toBlock === undefined;
     let fetched = 0;
     let pages = 0;
 
@@ -60,25 +189,40 @@ export class EventQuery {
         limit !== undefined ? Math.min(pageSize, limit - fetched) : pageSize;
       if (batchLimit <= 0) break;
 
-      // Only a relative start awaits, so an absolute one fetches synchronously.
-      if (fromVersion !== undefined && fromVersion < 0n) {
-        fromVersion = await raceAbort(
-          resolveFromVersion(adapter, descriptor, filter.fromVersion),
-          signal,
-        );
+      // Only a relative, earliest or block bound awaits, so an absolute range
+      // fetches synchronously.
+      if (!resolved) {
+        fromVersion =
+          fromBlock === undefined
+            ? await withRetries(
+                () => resolveFromVersion(adapter, descriptor, filter.fromVersion),
+                retries,
+                signal,
+              )
+            : (await withRetries(() => blockAt(adapter, descriptor, fromBlock), retries, signal))
+                .firstVersion;
+        if (toBlock !== undefined) {
+          toVersion = (
+            await withRetries(() => blockAt(adapter, descriptor, toBlock), retries, signal)
+          ).lastVersion;
+        }
+        resolved = true;
       }
 
-      const page = await raceAbort(
-        adapter.fetchEvents(descriptor, {
+      const page = await withRetries(
+        () =>
+          adapter.fetchEvents(descriptor, {
           ...adapterFilter,
           // The cursor carries position after the first page; fromVersion and
           // offset only seed the initial request.
           fromVersion: cursor === undefined ? fromVersion : undefined,
+          toVersion,
           offset: cursor === undefined ? filter.offset : undefined,
           cursor,
           limit: batchLimit,
           orderBy: "asc",
         }),
+        retries,
         signal,
       );
 
