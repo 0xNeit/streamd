@@ -99,7 +99,7 @@ export class StreamdClient {
   private readonly query: EventQuery;
   /** Shared by every poller and query, so the cap holds client-wide. */
   private readonly limiter: RequestLimiter;
-  private readonly subscriptions = new Map<string, EventPoller>();
+  private readonly subscriptions = new Map<string, { poller: EventPoller; stop: () => void }>();
   /** The `on()`/`onBatch()` subset of `subscriptions`; `once()` and streams own theirs. */
   private readonly listeners = new Map<string, Listener>();
   /** Open streams, so destroy() can end their loops rather than strand them. */
@@ -180,9 +180,9 @@ export class StreamdClient {
     poller.start();
     // An already-aborted signal leaves the poller stopped: nothing to track.
     if (poller.active) {
-      this.subscriptions.set(id, poller);
+      const stop = () => (poller.stop(), forget());
+      this.subscriptions.set(id, { poller, stop });
       if (listener !== undefined) {
-        const stop = () => (poller.stop(), forget());
         this.listeners.set(id, { key: descriptorKey(descriptor), callback: listener, stop });
       }
       detach = onAbort(options?.signal, forget);
@@ -360,9 +360,6 @@ export class StreamdClient {
    */
   destroy(): void {
     for (const close of [...this.streams]) close();
-    for (const [id, poller] of this.subscriptions) {
-      poller.stop();
-      this.subscriptions.delete(id);
-    }
+    for (const { stop } of [...this.subscriptions.values()]) stop();
   }
 }
