@@ -8,6 +8,7 @@ import type {
 import { isAbsoluteVersion, raceAbort, resolveFromVersion, sleep } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
+import { resolveFromTime, validateFromTime } from "./time.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
 
 const DEFAULT_PAGE_SIZE = 25;
@@ -42,6 +43,21 @@ function validateBlockRange(filter: EventFilter): void {
   if (fromBlock !== undefined && toBlock !== undefined && fromBlock > toBlock) {
     throw new StreamdError(`fromBlock ${fromBlock} is after toBlock ${toBlock}`);
   }
+}
+
+function validateToVersion(toVersion: unknown): void {
+  if (toVersion !== undefined && toVersion !== "head" && typeof toVersion !== "bigint") {
+    throw new StreamdError(
+      `Invalid toVersion: ${String(toVersion)} (expected a bigint or "head")`,
+    );
+  }
+}
+
+async function headVersion(adapter: EventAdapter, descriptor: EventDescriptor): Promise<bigint> {
+  if (adapter.getHeadVersion === undefined) {
+    throw new StreamdError('toVersion "head" needs an adapter that implements getHeadVersion');
+  }
+  return adapter.getHeadVersion(descriptor);
 }
 
 function blockAt(
@@ -109,30 +125,39 @@ export class EventQuery {
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    const { orderBy, ...rest } = filter;
+    const { orderBy, onCursor, ...rest } = filter;
     if (orderBy !== undefined && orderBy !== "asc" && orderBy !== "desc") {
       throw new StreamdError('orderBy must be "asc" or "desc"');
     }
     validateRetries(rest.retries);
+    validateToVersion(rest.toVersion);
     validateBlockRange(rest);
+    validateFromTime(rest);
     if (orderBy !== "desc") {
-      yield* this.ascendingPages<TData>(descriptor, rest, pageSize);
+      const end = yield* this.ascendingPages<TData>(descriptor, rest, pageSize);
+      onCursor?.(end);
       return;
     }
 
     // Adapters only page forward, so walk the whole range and keep the tail.
+    // The walk still ends at the end of the range, so its cursor is exact.
     const limit = rest.limit;
-    if (limit !== undefined && limit <= 0) return;
+    if (limit !== undefined && limit <= 0) {
+      onCursor?.(undefined);
+      return;
+    }
     let latest: StreamdEvent<TData>[] = [];
-    const walk = { ...rest, limit: undefined };
-    for await (const page of this.ascendingPages<TData>(descriptor, walk, pageSize)) {
-      latest.push(...page);
+    const walk = this.ascendingPages<TData>(descriptor, { ...rest, limit: undefined }, pageSize);
+    let step = await walk.next();
+    for (; !step.done; step = await walk.next()) {
+      latest.push(...step.value);
       if (limit !== undefined && latest.length > limit) latest = latest.slice(-limit);
     }
     latest.reverse();
     for (let i = 0; i < latest.length; i += pageSize) {
       yield latest.slice(i, i + pageSize);
     }
+    onCursor?.(step.value);
   }
 
   /**
@@ -156,7 +181,7 @@ export class EventQuery {
     descriptor: EventDescriptor,
     filter: EventFilter,
     pageSize: number,
-  ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
+  ): AsyncGenerator<StreamdEvent<TData>[], string | undefined, unknown> {
     const {
       where,
       decode: fields,
@@ -165,6 +190,7 @@ export class EventQuery {
       signal,
       fromBlock,
       toBlock,
+      fromTime,
       ...adapterFilter
     } = filter;
     const decode = fieldDecoder(fields);
@@ -174,11 +200,17 @@ export class EventQuery {
     let fromVersion = isAbsoluteVersion(filter.fromVersion)
       ? filter.fromVersion
       : undefined;
-    let toVersion = filter.toVersion;
+    let toVersion = filter.toVersion === "head" ? undefined : filter.toVersion;
     let resolved =
-      isAbsoluteVersion(filter.fromVersion) && fromBlock === undefined && toBlock === undefined;
+      isAbsoluteVersion(filter.fromVersion) &&
+      filter.toVersion !== "head" &&
+      fromBlock === undefined &&
+      toBlock === undefined &&
+      fromTime === undefined;
     let fetched = 0;
     let pages = 0;
+    // The cursor after the last page read in full; see `EventFilter.onCursor`.
+    let end: string | undefined;
 
     while (true) {
       if (signal?.aborted) throw signal.reason;
@@ -189,18 +221,21 @@ export class EventQuery {
         limit !== undefined ? Math.min(pageSize, limit - fetched) : pageSize;
       if (batchLimit <= 0) break;
 
-      // Only a relative, earliest or block bound awaits, so an absolute range
-      // fetches synchronously.
+      // Only a relative, earliest, head, time or block bound awaits, so an
+      // absolute range fetches synchronously.
       if (!resolved) {
-        fromVersion =
-          fromBlock === undefined
-            ? await withRetries(
-                () => resolveFromVersion(adapter, descriptor, filter.fromVersion),
-                retries,
-                signal,
-              )
-            : (await withRetries(() => blockAt(adapter, descriptor, fromBlock), retries, signal))
-                .firstVersion;
+        const head =
+          filter.toVersion === "head"
+            ? await withRetries(() => headVersion(adapter, descriptor), retries, signal)
+            : undefined;
+        toVersion ??= head;
+        const start = (): Promise<bigint | undefined> =>
+          fromTime !== undefined
+            ? resolveFromTime(adapter, descriptor, fromTime, () => signal?.aborted === true)
+            : fromBlock !== undefined
+              ? blockAt(adapter, descriptor, fromBlock).then((b) => b.firstVersion)
+              : resolveFromVersion(adapter, descriptor, filter.fromVersion, head);
+        fromVersion = await withRetries(start, retries, signal);
         if (toBlock !== undefined) {
           toVersion = (
             await withRetries(() => blockAt(adapter, descriptor, toBlock), retries, signal)
@@ -243,6 +278,13 @@ export class EventQuery {
           ? matched.slice(0, limit - fetched)
           : matched;
 
+      // A clamped page has unread events behind its cursor, and a version
+      // bound lets adapters move the cursor past events beyond it.
+      end =
+        events.length < matched.length || toVersion !== undefined
+          ? undefined
+          : page.nextCursor;
+
       if (events.length > 0) {
         fetched += events.length;
         yield events as StreamdEvent<TData>[];
@@ -256,5 +298,6 @@ export class EventQuery {
       if (page.nextCursor === cursor) break; // adapter made no progress
       cursor = page.nextCursor;
     }
+    return end;
   }
 }

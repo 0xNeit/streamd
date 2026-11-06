@@ -5,26 +5,36 @@ import type {
   EventCallback,
   EventDescriptor,
   EventFilter,
+  ListenerDefaults,
   ListenerOptions,
   OnceOptions,
   StreamdConfig,
   StreamdEvent,
   Subscription,
+  SubscriptionOptions,
 } from "./types.js";
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
-import { EventPoller, type Delivery } from "./poller.js";
+import { EventPoller, resolveMaxBackoff, type Delivery } from "./poller.js";
 import { EventQuery } from "./query.js";
 import {
   StreamdError,
   StreamdPollingError,
   StreamdTimeoutError,
 } from "./errors.js";
-import { generateId, onAbort } from "./utils.js";
-import { normalizeAddress } from "./filter.js";
+import { descriptorKey, generateId, onAbort } from "./utils.js";
 import { eventStream } from "./stream.js";
 import { RequestLimiter } from "./limiter.js";
+import { CursorManager } from "./cursor.js";
+import { fieldDecoder } from "./decode.js";
+import { SharedFetches } from "./shared.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
+
+// Runtimes without explicit resource management lack `Symbol.dispose`. The
+// registry key is the one core-js polyfills it with, so `using` still finds
+// the method when such a polyfill loads after this module.
+const DISPOSE: typeof Symbol.dispose =
+  Symbol.dispose ?? (Symbol.for("Symbol.dispose") as typeof Symbol.dispose);
 
 function checkTimeout(ms: number | undefined): StreamdError | undefined {
   if (ms === undefined || (typeof ms === "number" && ms >= 0 && ms <= MAX_TIMEOUT)) {
@@ -43,34 +53,45 @@ function resolveLimiter(max: number | undefined): RequestLimiter {
   return new RequestLimiter(max);
 }
 
-function typeSet(types: unknown): unknown[] {
-  return Array.isArray(types) ? [...new Set(types)].sort() : [types];
+const DEFAULT_KEYS = [
+  "pollInterval",
+  "batchSize",
+  "maxErrors",
+  "maxBackoff",
+  "dedupWindow",
+  "decode",
+] as const satisfies readonly (keyof ListenerDefaults)[];
+
+/** `config.defaults` checked as a call's options would be, with `defaultPollInterval` folded in. */
+function resolveDefaults(config: StreamdConfig): ListenerDefaults {
+  const defaults: unknown = config.defaults === undefined ? {} : config.defaults;
+  if (typeof defaults !== "object" || defaults === null || Array.isArray(defaults)) {
+    throw new StreamdError("defaults must be an object of listener options");
+  }
+  const refused = Object.keys(defaults).find(
+    (k) => !(DEFAULT_KEYS as readonly string[]).includes(k),
+  );
+  if (refused !== undefined) {
+    throw new StreamdError(
+      `Unsupported listener default: ${refused} (allowed: ${DEFAULT_KEYS.join(", ")})`,
+    );
+  }
+  const resolved: ListenerDefaults = { ...defaults };
+  resolveMaxBackoff(resolved.maxBackoff);
+  fieldDecoder(resolved.decode);
+  new CursorManager(undefined, resolved.dedupWindow);
+  resolved.pollInterval ??= config.defaultPollInterval ?? 1000;
+  return resolved;
 }
 
-/**
- * Value key for listener lookup: equal for descriptors that select the same
- * events, undefined for anything that is not one of the three kinds.
- */
-function descriptorKey(d: EventDescriptor | undefined): string | undefined {
-  switch (d?.kind) {
-    case "module":
-      return JSON.stringify(["module", typeSet(d.eventType)]);
-    case "handle":
-      return JSON.stringify([
-        "handle",
-        normalizeAddress(d.accountAddress) ?? d.accountAddress,
-        d.eventHandleStruct,
-        d.fieldName,
-      ]);
-    case "account":
-      return JSON.stringify([
-        "account",
-        normalizeAddress(d.accountAddress) ?? d.accountAddress,
-        d.eventTypes === undefined ? null : typeSet(d.eventTypes),
-      ]);
-    default:
-      return undefined;
-  }
+/** `options` with each field it leaves `undefined` taken from `defaults`. */
+function withDefaults(
+  options: ListenerOptions | undefined,
+  defaults: ListenerDefaults,
+): ListenerOptions {
+  const merged: Record<string, unknown> = { ...options };
+  for (const key of DEFAULT_KEYS) merged[key] ??= defaults[key];
+  return merged as ListenerOptions;
 }
 
 /** An `on()` or `onBatch()` subscription, as `off()` and friends see it. */
@@ -93,12 +114,14 @@ function resolveAdapter(config: StreamdConfig): EventAdapter {
 }
 
 export class StreamdClient {
-  private readonly defaultPollInterval: number;
+  private readonly defaults: ListenerDefaults;
   private readonly onError?: (error: Error) => void;
   private readonly adapter: EventAdapter;
   private readonly query: EventQuery;
   /** Shared by every poller and query, so the cap holds client-wide. */
   private readonly limiter: RequestLimiter;
+  /** Lets identical subscriptions share each poll's adapter request. */
+  private readonly shared: SharedFetches;
   private readonly subscriptions = new Map<string, { poller: EventPoller; stop: () => void }>();
   /** The `on()`/`onBatch()` subset of `subscriptions`; `once()` and streams own theirs. */
   private readonly listeners = new Map<string, Listener>();
@@ -106,28 +129,33 @@ export class StreamdClient {
   private readonly streams = new Set<() => void>();
 
   constructor(config: StreamdConfig) {
-    this.defaultPollInterval = config.defaultPollInterval ?? 1000;
+    this.defaults = resolveDefaults(config);
     this.onError = config.onError;
     this.limiter = resolveLimiter(config.maxConcurrentRequests);
     this.adapter = resolveAdapter(config);
+    this.shared = new SharedFetches(this.adapter);
     this.query = new EventQuery(this.adapter, this.limiter);
   }
 
   /**
    * Subscribe to real-time events. Polls under the hood.
    *
-   * Every subscription polls on its own. For a `module` descriptor on the
-   * default adapter that means its own ledger read and transaction scan per
-   * poll, so N module subscriptions scan the same transactions N times. Pass an
-   * array of `eventType`s on one `module` descriptor to serve several Move
-   * types from a single scan.
+   * Subscriptions on this client that would send the adapter the identical
+   * request (same descriptor value, cursor or absolute start, `batchSize` and
+   * `pollInterval`) share one request per `pollInterval`; everything else about
+   * each one, its cursor, pause and error budget included, stays its own. A
+   * start at the head is never shared, so subscriptions started at different
+   * times share only once their cursors coincide. Shared subscriptions receive
+   * the same event objects, so treat them as read-only. Pass an array of
+   * `eventType`s on one `module` descriptor to serve several Move types from a
+   * single scan.
    */
   on<TData = unknown>(
     descriptor: EventDescriptor<TData>,
     callback: EventCallback<TData>,
-    options?: ListenerOptions,
+    options?: SubscriptionOptions,
   ): Subscription {
-    return this.subscribe(descriptor, callback as EventCallback, options, callback);
+    return this.subscribe(descriptor, callback as EventCallback, options, callback, options?.id);
   }
 
   /**
@@ -137,13 +165,14 @@ export class StreamdClient {
   onBatch<TData = unknown>(
     descriptor: EventDescriptor<TData>,
     callback: BatchCallback<TData>,
-    options?: ListenerOptions,
+    options?: SubscriptionOptions,
   ): Subscription {
     return this.subscribe(
       descriptor,
       { batch: callback as BatchCallback },
       options,
       callback,
+      options?.id,
     );
   }
 
@@ -152,21 +181,25 @@ export class StreamdClient {
     delivery: Delivery,
     options?: ListenerOptions,
     listener?: unknown,
+    callerId?: string,
   ): Subscription {
-    const id = generateId();
+    const id = callerId === undefined ? generateId() : this.claimId(callerId);
     let detach = () => {};
     const forget = () => {
-      this.subscriptions.delete(id);
-      this.listeners.delete(id);
+      // A later subscription may hold this id by now; leave its entries alone.
+      if (this.subscriptions.get(id)?.poller === poller) {
+        this.subscriptions.delete(id);
+        this.listeners.delete(id);
+      }
       detach();
     };
+    const resolved = withDefaults(options, this.defaults);
     const poller = new EventPoller(
-      this.adapter,
+      this.shared.view(resolved.pollInterval!),
       descriptor,
       delivery,
       {
-        pollInterval: this.defaultPollInterval,
-        ...options,
+        ...resolved,
         onError: (err) => {
           // Drop the subscription once the poller has given up and stopped
           // itself; a paused one reporting a late handler error stays.
@@ -188,6 +221,10 @@ export class StreamdClient {
       detach = onAbort(options?.signal, forget);
     }
 
+    const unsubscribe = () => {
+      poller.stop();
+      forget();
+    };
     return {
       id,
       get active() {
@@ -204,11 +241,20 @@ export class StreamdClient {
       },
       pause: () => poller.pause(),
       resume: () => poller.resume(),
-      unsubscribe: () => {
-        poller.stop();
-        forget();
-      },
+      unsubscribe,
+      [DISPOSE]: unsubscribe,
     };
+  }
+
+  private claimId(id: unknown): string {
+    if (typeof id !== "string" || id === "") {
+      const shown = typeof id === "string" ? '""' : String(id);
+      throw new StreamdError(`Invalid id: ${shown} (expected a non-empty string)`);
+    }
+    if (this.subscriptions.has(id)) {
+      throw new StreamdError(`Subscription id already in use on this client: ${id}`);
+    }
+    return id;
   }
 
   /**
@@ -373,5 +419,11 @@ export class StreamdClient {
   destroy(): void {
     for (const close of [...this.streams]) close();
     for (const { stop } of [...this.subscriptions.values()]) stop();
+    this.shared.clear();
+  }
+
+  /** `destroy()`, so `using client = new StreamdClient(...)` cleans up at scope exit. */
+  [DISPOSE](): void {
+    this.destroy();
   }
 }

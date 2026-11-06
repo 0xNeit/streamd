@@ -47,6 +47,7 @@ const sub = streamd.on(
     maxErrors: 10,       // consecutive failures before stopping (default 10)
     maxBackoff: 60_000,  // max backoff delay in ms on failures (default 60000)
     dedupWindow: 1000,   // seen-event dedup window size, 0 to disable (default 1000)
+    id: "deposits",      // sub.id; generated when omitted
     onError: (err) => console.error(err),
   },
 );
@@ -81,6 +82,32 @@ input, such as a malformed address or cursor, stops it at once, since retrying
 cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
 a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
 its own `onError`.
+
+`id` names the subscription for your logs and maps; `on()` and `onBatch()` take it. It must
+be a non-empty string that no live subscription on the same client holds, or the call throws
+`StreamdError` before anything polls. The name is free again once the subscription ends:
+`unsubscribe()`, disposal, `off()`, its `signal` aborting, polling giving up, or `destroy()`.
+It cannot be a client-wide default.
+
+### Client-wide listener defaults
+
+```ts
+const streamd = new StreamdClient({
+  aptos,
+  defaults: { pollInterval: 3000, maxErrors: 3, decode: ["amount"] },
+});
+
+streamd.on(deposits, handle);                           // polls every 3000 ms
+streamd.on(withdrawals, handle, { pollInterval: 500 }); // its own interval, still maxErrors 3
+```
+
+`defaults` sets `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`, `dedupWindow`
+and `decode` for every `on()`, `onBatch()`, `once()` and `stream()` call on the client.
+A call's own value for a field wins, and one it leaves `undefined` takes the default; a
+call's `decode` replaces the default list rather than adding to it. `defaults.pollInterval`
+wins over `defaultPollInterval`. Start positions, `where`, `signal`, `onCaughtUp` and
+`once()`'s `timeout` stay per call, and `onError` has its own client-wide option. The
+constructor throws a `StreamdError` for an invalid value or any other key.
 
 ### Pause and resume
 
@@ -161,7 +188,37 @@ The cursor is the adapter's own token, so it only works with the same descriptor
 adapter that produced it, and it wins over `fromVersion`. It moves only once every handler
 on a page has settled, and the dedup window is not saved, so events from the page in
 flight when the process stopped arrive again after a restart: make your handler
-idempotent on `(version, eventIndex)`.
+idempotent on `(version, eventIndex)`, which [`eventId`](#event-identity) returns as one string.
+
+### Backfill, then follow
+
+Read history first, then go live from exactly where it ended. Pass `onCursor` to a query
+and hand the cursor it reports to `on()`:
+
+```ts
+let cursor: string | undefined;
+const history = await streamd.getEvents(descriptor, {
+  fromVersion: -100_000n,
+  onCursor: (c) => (cursor = c),
+});
+render(history);
+
+if (cursor === undefined) throw new Error("no exact resume point");
+streamd.on(descriptor, handle, { cursor }); // the first event after the history
+```
+
+`onCursor` is called once, when the walk finishes, from `getEvents`, `getEventPages` and
+`iterateEvents` alike; leaving a page loop early or a rejected query never calls it. Every
+event after the history arrives once, with none skipped, because the cursor is the one the
+adapter reported after the last page the query read in full. `orderBy: "desc"`, `where`,
+`maxPages` and `fromTime` all keep it exact.
+
+It is `undefined` when the query cannot name an exact point: no page was read (`limit: 0`,
+`maxPages: 0`), `limit` cut the last page short, `toVersion` or `toBlock` bounded the walk,
+or the adapter gave no cursor. Bound a backfill you mean to follow with `fromVersion` and
+`maxPages` rather than `limit`, and after a `toVersion` bound follow with
+`fromVersion: toVersion + 1n`. Like a subscription's cursor, it only works with the same
+descriptor and the same client's adapter.
 
 ### Start relative to the head
 
@@ -180,6 +237,27 @@ fetches its first page; a `cursor` still wins and skips that read. `once()`, `st
 and `onBatch()` accept it too. An adapter without `getHeadVersion` is rejected as invalid
 input.
 
+### End at the head as of the query's start
+
+```ts
+// the latest 50 transfers, even on a type that never stops emitting
+const latest = await streamd.getEvents(descriptor, {
+  fromVersion: -100_000n,
+  toVersion: "head",
+  orderBy: "desc",
+  limit: 50,
+});
+```
+
+`toVersion: "head"` reads the head once, from the adapter's `getHeadVersion`, before the
+first page, and ends the query there (inclusive). Without it a walk over a busy type keeps
+finding new pages as transactions land and may never finish. With a negative `fromVersion`
+the same single read sets both ends, and `retries` covers it like the other lookups. A query
+that fetches nothing (`limit: 0`, `maxPages: 0`) reads no head. An adapter without
+`getHeadVersion` is rejected as invalid input before any fetch, as is `"head"` together with
+`toBlock`. Like any `toVersion`, it makes `onCursor` report `undefined`. Listeners have no
+end bound, so `"head"` is for queries only.
+
 ### Start at the earliest available version
 
 ```ts
@@ -197,6 +275,26 @@ relative start reads the head, and a `cursor` still wins and skips the read. `on
 rejected as invalid input, and so is any `fromVersion` that is neither a `bigint` nor
 `"earliest"`. A module-event scan from the earliest version walks every transaction since,
 so bound a query with `limit` or `maxPages`.
+
+### Start at a time
+
+```ts
+// microseconds since the Unix epoch, the unit of event.timestamp
+const oneHourAgo = BigInt(Date.now() - 3_600_000) * 1000n;
+
+streamd.on(descriptor, handle, { fromTime: oneHourAgo });
+const lastHour = await streamd.getEvents(descriptor, { fromTime: oneHourAgo, maxPages: 50 });
+```
+
+`fromTime` starts at the first block stamped at or after that time. It is resolved to a
+version once, when a query starts or on a subscription's first poll, by searching blocks
+through the adapter's `getBlockHeights` and `getBlock`: on mainnet that is about 9 to 13
+block lookups, which counts against the public fullnode's anonymous rate limit. A time
+before the oldest unpruned block starts at that block; a time in the future starts at the
+head. It cannot be combined with `fromVersion` or `fromBlock`, and a `cursor` still wins
+and skips the search. A failed lookup is retried under a query's `retries`, and on a
+subscription it is a polling error like any other, so the next poll searches again.
+`once()`, `stream()` and `onBatch()` accept it too.
 
 ### Wait for one event
 
@@ -315,10 +413,21 @@ const streamd = new StreamdClient({ aptos, maxConcurrentRequests: 4 });
 At most that many adapter calls run at once across every subscription and query on the
 client; the rest wait their turn in order. `fetchEvents`, the `getHeadVersion` read behind
 a negative `fromVersion`, the `getEarliestVersion` read behind `"earliest"`, and the
-`getBlock` lookups behind `fromBlock`/`toBlock` all count. The unit is one adapter call, not one HTTP request:
+`getBlock` and `getBlockHeights` lookups behind `fromBlock`/`toBlock` and `fromTime` all count. The unit is one adapter call, not one HTTP request:
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
 dropped without reaching the adapter. Omit the option for no limit.
+
+### Shared polling
+
+Subscriptions on one client that would send the adapter the same request share it: the same
+descriptor, the same cursor (or absolute start), and the same `batchSize` and `pollInterval`.
+They make one fetch per interval between them, while each keeps its own cursor, pause state,
+error budget, `where` and `decode`. A shared page can be up to one `pollInterval` old when a
+subscription reuses it. A start at the head is never shared, so subscriptions started at
+different times share only once their cursors meet: after the next event for `handle` and
+`account` descriptors, usually never for `module` descriptors on `FullnodeScanAdapter`.
+Shared subscriptions receive the same event objects, so treat events as read-only.
 
 ### Manage listeners
 
@@ -343,6 +452,19 @@ with their promise or loop, or `destroy()`.
 streamd.destroy(); // stops every active subscription
 ```
 
+Subscriptions and the client are `Disposable`, so `using` cleans up at scope exit:
+
+```ts
+{
+  using sub = streamd.on(descriptor, (event) => console.log(event));
+  // ...
+} // sub.unsubscribe() runs here
+```
+
+Disposing is `unsubscribe()` (or `destroy()` for the client) and is safe to repeat. `using`
+needs a runtime with `Symbol.dispose` (Node 18.18+, 20.4+, Bun) or a polyfill, and
+TypeScript 5.2+; the type declarations pull in the `esnext.disposable` lib themselves.
+
 ## Choosing events
 
 Every call takes an event descriptor:
@@ -350,12 +472,18 @@ Every call takes an event descriptor:
 | `kind` | Matches | Example |
 |---|---|---|
 | `module` | Module events of one or more Move types | `{ kind: "module", eventType: "0x1::coin::WithdrawEvent" }` or `{ kind: "module", eventType: ["0x1::fungible_asset::Withdraw", "0x1::fungible_asset::Deposit"] }` |
-| `handle` | A legacy `EventHandle` on an account | `{ kind: "handle", accountAddress, eventHandleStruct, fieldName }` |
+| `handle` | A legacy `EventHandle` on an account | `{ kind: "handle", accountAddress, eventHandleStruct, fieldName }` or, by its guid, `{ kind: "handle", accountAddress, creationNumber: 3n }` |
 | `account` | Events from transactions an account **sent** | `{ kind: "account", accountAddress, eventTypes?: [...] }` |
 
 When `module.eventType` is an array of Move types, `FullnodeScanAdapter` serves
 all of them in a single transaction scan per page, delivering matches in
 `(version, eventIndex)` order.
+
+A `handle` descriptor takes one form or the other, never both. The creation-number
+form names the handle by its guid, so `accountAddress` is the account that created
+the handle, and `creationNumber` is a `bigint` up to `u64::MAX`. It reads the same
+events as the struct and field form, through the fullnode's
+`/accounts/{address}/events/{creation_number}` endpoint.
 
 `account` only sees transactions the account signed. If someone else's
 transaction deposits into the account, that event belongs to the sender's
@@ -371,18 +499,22 @@ an endpoint that omits the surrounding transaction, so all three are
 `undefined` there. `timestamp` is `undefined` on genesis transactions, and
 `sender` on system transactions such as block metadata, which no account signs.
 
+Events emitted through a legacy `EventHandle` also carry `guid`
+(`{ creationNumber: bigint, accountAddress: string }`), on every descriptor kind.
+Module events have no handle, so `guid` is `undefined` on them.
+
 ### Discover event handles
 
 `listEventHandles(aptos, address)` reads an account's resources and returns
 each `EventHandle` it finds as a ready-to-use `handle` descriptor, with the
-number of events emitted on it so far:
+number of events emitted on it so far and its guid:
 
 ```ts
 import { Aptos } from "@aptos-labs/ts-sdk";
 import { listEventHandles } from "streamd";
 
 const handles = await listEventHandles(new Aptos(), "0x1");
-// [{ descriptor: { kind: "handle", accountAddress, eventHandleStruct: "0x1::block::BlockResource", fieldName: "new_block_events" }, count: 1165098930n }, ...]
+// [{ descriptor: { kind: "handle", accountAddress, eventHandleStruct: "0x1::block::BlockResource", fieldName: "new_block_events" }, count: 1165098930n, guid: { creationNumber: 3n, accountAddress: "0x1" } }, ...]
 
 const blocks = handles.find((h) => h.descriptor.fieldName === "new_block_events");
 if (blocks) client.on(blocks.descriptor, (event) => console.log(event.data));
@@ -390,8 +522,9 @@ if (blocks) client.on(blocks.descriptor, (event) => console.log(event.data));
 
 It takes an `Aptos` instance rather than living on the client, because a
 client may run on any adapter. Only handles stored directly on a resource field
-are listed: the fullnode's handle endpoint cannot address one nested inside a
-struct field, so those are skipped.
+are listed, since the struct and field form cannot address one nested inside a
+struct field. A nested handle is still readable by creation number, taken from
+the `guid` in the resource data.
 
 ### Typed events
 
@@ -454,6 +587,30 @@ top-level fields named in `decode` are turned back into `bigint`, by the same
 rule as the `decode` option; deeper ones stay strings. Malformed input throws
 a `StreamdError`.
 
+### Event identity
+
+`eventId(event)` returns the key streamd deduplicates on, `version:eventIndex`
+(for example `"2817350001:3"`). Use it to make a handler idempotent across restarts, or to key a
+store or `Map`. It takes anything with `version` and `eventIndex`, so parsed
+events work too:
+
+```ts
+import { eventId } from "streamd";
+
+const seen = new Set<string>();
+streamd.on(descriptor, (event) => {
+  if (seen.has(eventId(event))) return;
+  seen.add(eventId(event));
+  handle(event);
+});
+```
+
+`sequenceNumber` is not part of it, since module events commonly report `0`.
+`handle` events from `FullnodeScanAdapter` use the handle's sequence number as
+`eventIndex`, because that endpoint does not say where an event sits in its
+transaction, so their ids stay unique per handle but are not transaction
+positions.
+
 ## Filtering
 
 Chain APIs can't filter on what's inside an event. `where` filters on your
@@ -514,8 +671,9 @@ const streamd = new StreamdClient({ aptos, adapter: myIndexAdapter });
 An adapter has one required method, `fetchEvents(descriptor, options)`, returning
 `{ events, nextCursor, hasMore }`, an optional `getHeadVersion(descriptor)` that
 a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` that
-`fromVersion: "earliest"` needs, and an optional `getBlock(descriptor, height)` that
-`fromBlock`/`toBlock` need. See the `EventAdapter` type for the full contract.
+`fromVersion: "earliest"` needs, an optional `getBlock(descriptor, height)` that
+`fromBlock`/`toBlock` need, and an optional `getBlockHeights(descriptor)` that `fromTime`
+needs alongside `getBlock`. See the `EventAdapter` type for the full contract.
 
 To check a custom adapter against that contract, run `checkAdapter` from any
 test runner or a plain script. It walks a few pages (`maxPages`, default 3),
@@ -583,6 +741,28 @@ const streamd = new StreamdClient({
   }),
 });
 ```
+
+To skip the source when re-reading settled history, wrap an adapter with
+`CachingAdapter`. It stores only pages the adapter marks `final: true`,
+meaning the same request will always return the same page, and passes
+everything else through. `FullnodeScanAdapter` marks a page final when it
+started from a cursor, offset or `fromVersion` and read nothing at or past the
+chain head; a page that tails the head is never cached. Entries are dropped
+least recently used past `maxEntries` (default 1000):
+
+```ts
+import { CachingAdapter, FullnodeScanAdapter, StreamdClient } from "streamd";
+
+const streamd = new StreamdClient({
+  adapter: new CachingAdapter(new FullnodeScanAdapter(aptos), { maxEntries: 500 }),
+});
+```
+
+A cached page keeps being served after the fullnode prunes that history, where
+the node itself would answer 410. A custom adapter opts in by setting `final`
+on pages that cannot change; leave it unset when unsure. `RoutingAdapter` and
+`withHooks` pass the flag through, `FallbackAdapter` keeps it only on pages
+from its first source, and `MemoryAdapter` never sets it.
 
 For offline unit tests, pass `MemoryAdapter` with a list of events (`aptos` is
 optional when a custom `adapter` is supplied):

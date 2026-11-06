@@ -1,4 +1,5 @@
 import type {
+  BlockHeights,
   BlockInfo,
   EventAdapter,
   EventDescriptor,
@@ -34,6 +35,7 @@ async function tryInOrder<T>(
  * falling back to the next adapter when one fails with a network or source
  * error. Invalid caller input (a `StreamdError` that is not a
  * `StreamdNetworkError`) is rethrown at once without trying later adapters.
+ * A page from any source but the first comes back with `final: false`.
  */
 export class FallbackAdapter implements EventAdapter {
   private readonly adapters: readonly EventAdapter[];
@@ -51,9 +53,14 @@ export class FallbackAdapter implements EventAdapter {
     descriptor: EventDescriptor,
     options: FetchOptions = {},
   ): Promise<EventPage> {
-    return tryInOrder(this.adapters, (adapter) =>
-      adapter.fetchEvents(descriptor, { ...options }),
-    );
+    return tryInOrder(this.adapters, async (adapter) => {
+      const page = await adapter.fetchEvents(descriptor, { ...options });
+      // Which source answers depends on availability, so only the first
+      // source's page is the request's settled answer.
+      return page.final === true && adapter !== this.adapters[0]
+        ? { ...page, final: false }
+        : page;
+    });
   }
 
   /** From the first adapter that reports one, with the same fallback rules. */
@@ -85,5 +92,14 @@ export class FallbackAdapter implements EventAdapter {
       throw new StreamdError("No FallbackAdapter source reports blocks");
     }
     return tryInOrder(reporting, (adapter) => adapter.getBlock!(descriptor, height));
+  }
+
+  /** From the first adapter that reports block heights, with the same fallback rules. */
+  async getBlockHeights(descriptor: EventDescriptor): Promise<BlockHeights> {
+    const reporting = this.adapters.filter((a) => a.getBlockHeights !== undefined);
+    if (reporting.length === 0) {
+      throw new StreamdError("No FallbackAdapter source reports block heights");
+    }
+    return tryInOrder(reporting, (adapter) => adapter.getBlockHeights!(descriptor));
   }
 }

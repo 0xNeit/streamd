@@ -1,4 +1,5 @@
 export { StreamdClient } from "./client.js";
+export { CachingAdapter } from "./adapters/caching.js";
 export { FallbackAdapter } from "./adapters/fallback.js";
 export { FullnodeScanAdapter } from "./adapters/fullnode.js";
 export { withHooks } from "./adapters/hooks.js";
@@ -6,7 +7,7 @@ export { MemoryAdapter } from "./adapters/memory.js";
 export { RoutingAdapter } from "./adapters/routing.js";
 export { EventPoller } from "./poller.js";
 export { EventQuery } from "./query.js";
-export { CursorManager } from "./cursor.js";
+export { CursorManager, eventId } from "./cursor.js";
 export { checkAdapter } from "./conformance.js";
 export { defineEvent } from "./define.js";
 export { listEventHandles } from "./handles.js";
@@ -36,6 +37,7 @@ export type {
   AdapterCheckReport,
   AdapterCheckResult,
 } from "./conformance.js";
+export type { CachingAdapterOptions } from "./adapters/caching.js";
 export type { FullnodeScanAdapterOptions } from "./adapters/fullnode.js";
 export type {
   AdapterHooks,
@@ -54,15 +56,19 @@ export type {
 export type {
   AccountEventDescriptor,
   BatchCallback,
+  BlockHeights,
   BlockInfo,
+  CreationNumberEventDescriptor,
   EventAdapter,
   EventCallback,
   EventDescriptor,
   EventFilter,
+  EventGuid,
   EventPage,
   EventPredicate,
   FetchOptions,
   HandleEventDescriptor,
+  ListenerDefaults,
   ListenerOptions,
   ModuleEventDescriptor,
   MoveEventType,
@@ -70,5 +76,6 @@ export type {
   StreamdConfig,
   StreamdEvent,
   Subscription,
+  SubscriptionOptions,
   SubscriptionStatus,
 } from "./types.js";

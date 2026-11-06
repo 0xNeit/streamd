@@ -313,7 +313,7 @@ function handleEvent(seq: number, version: number) {
 }
 
 /** Serves a handle's events by sequence number. */
-function handle(events: ReturnType<typeof handleEvent>[]) {
+function handle(events: (ReturnType<typeof handleEvent> & { guid?: unknown })[]) {
   return (path: string, params: Record<string, unknown>): Reply => {
     if (path !== HANDLE_PATH) throw new Error(`unexpected path ${path}`);
     const start = Number(params.start ?? 0);
@@ -377,6 +377,174 @@ describe("FullnodeScanAdapter handle events", () => {
     await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {});
     expect(calls[0]?.headers["x-team"]).toBe("streamd");
     expect(calls[0]?.headers.Authorization).toBe("Bearer secret");
+  });
+});
+
+const CREATION_PATH = `accounts/0x${"0".repeat(63)}1/events/7`;
+const creationDesc: EventDescriptor = { kind: "handle", accountAddress: "0x1", creationNumber: 7n };
+
+describe("FullnodeScanAdapter handle events by creation number", () => {
+  const serve = (events: ReturnType<typeof handleEvent>[]) =>
+    (path: string, params: Record<string, unknown>): Reply => {
+      if (path !== CREATION_PATH) throw new Error(`unexpected path ${path}`);
+      const start = Number(params.start ?? 0);
+      return { data: events.slice(start, start + Number(params.limit ?? 25)) };
+    };
+  const events = [handleEvent(0, 3), handleEvent(1, 7), handleEvent(2, 9)];
+
+  it("reads the creation-number endpoint and pages like the field form", async () => {
+    const { aptos, calls } = fakeNode(serve(events), {
+      API_KEY: "secret",
+      HEADERS: { "x-team": "streamd" },
+    });
+    const adapter = new FullnodeScanAdapter(aptos);
+    const first = await adapter.fetchEvents(creationDesc, { limit: 2 });
+    const second = await adapter.fetchEvents(creationDesc, { cursor: first.nextCursor!, limit: 2 });
+
+    expect(calls.map((c) => [c.path, c.params.start, c.params.limit])).toEqual([
+      [CREATION_PATH, "0", 2],
+      [CREATION_PATH, "2", 2],
+    ]);
+    expect(calls[0]?.headers["x-team"]).toBe("streamd");
+    expect(calls[0]?.headers.Authorization).toBe("Bearer secret");
+    expect(first).toMatchObject({ nextCursor: "2", hasMore: true, final: true });
+    expect(first.events.map((e) => [e.version, e.eventIndex])).toEqual([[3n, 0], [7n, 1]]);
+    expect(second.events.map((e) => e.version)).toEqual([9n]);
+    expect(second.hasMore).toBe(false);
+    expect(second.final).toBeUndefined();
+  });
+
+  const bad: [string, unknown][] = [
+    ["both forms", { ...handleDesc, creationNumber: 7n }],
+    ["a negative creationNumber", { ...creationDesc, creationNumber: -1n }],
+    ["a number creationNumber", { ...creationDesc, creationNumber: 7 }],
+    ["a string creationNumber", { ...creationDesc, creationNumber: "7" }],
+    ["an over-u64 creationNumber", { ...creationDesc, creationNumber: 2n ** 64n }],
+    ["no form at all", { kind: "handle", accountAddress: "0x1" }],
+    ["an empty fieldName", { ...handleDesc, fieldName: "" }],
+  ];
+  for (const [name, descriptor] of bad) {
+    it(`refuses ${name} as input, before any request`, async () => {
+      const { aptos, calls } = fakeNode(serve(events));
+      const err = await new FullnodeScanAdapter(aptos)
+        .fetchEvents(descriptor as EventDescriptor, {})
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+      expect(calls).toHaveLength(0);
+    });
+  }
+
+  it("accepts the largest u64 creation number", async () => {
+    const max = 2n ** 64n - 1n;
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    await new FullnodeScanAdapter(aptos).fetchEvents({ ...creationDesc, creationNumber: max }, {});
+    expect(calls[0]?.path).toBe(`accounts/0x${"0".repeat(63)}1/events/${max}`);
+  });
+});
+
+describe("FullnodeScanAdapter guids", () => {
+  const ZERO = { creation_number: "0", account_address: "0x0" };
+  const legacy = { creation_number: "3", account_address: "0x1" };
+  const guidTxn = (version: number) => ({
+    version: String(version),
+    type: "user_transaction",
+    events: [
+      { type: TYPE, data: { v: version }, sequence_number: "0", guid: ZERO },
+      { type: TYPE, data: { v: version }, sequence_number: "5", guid: legacy },
+    ],
+  });
+
+  it("carries a legacy event's guid and none for the zero guid on the module scan", async () => {
+    const { aptos } = fakeNode(chain(1, [guidTxn(0), guidTxn(1)]));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(moduleDesc, { fromVersion: 1n });
+    expect("guid" in page.events[0]!).toBe(false);
+    expect(page.events[1]!.guid).toEqual({ creationNumber: 3n, accountAddress: "0x1" });
+  });
+
+  it("carries guids on the account walk", async () => {
+    const { aptos } = fakeNode(account([guidTxn(4)]));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(accountDesc, { offset: 0 });
+    expect(page.events.map((e) => e.guid)).toEqual([
+      undefined,
+      { creationNumber: 3n, accountAddress: "0x1" },
+    ]);
+  });
+
+  it("keeps creation number 0 at a real account and drops a malformed guid", async () => {
+    const first = { creation_number: "0", account_address: "0x1" };
+    const { aptos } = fakeNode(
+      handle([
+        { ...handleEvent(0, 3), guid: first },
+        { ...handleEvent(1, 4), guid: { creation_number: "x", account_address: "0x1" } },
+        { ...handleEvent(2, 5), guid: { creation_number: "1", account_address: "0x" } },
+      ]),
+    );
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {});
+    expect(page.events.map((e) => e.guid)).toEqual([
+      { creationNumber: 0n, accountAddress: "0x1" },
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("carries the handle's guid on handle events", async () => {
+    const { aptos } = fakeNode(handle([{ ...handleEvent(0, 3), guid: legacy }]));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {});
+    expect(page.events[0]!.guid).toEqual({ creationNumber: 3n, accountAddress: "0x1" });
+  });
+});
+
+describe("FullnodeScanAdapter page finality", () => {
+  const ten = Array.from({ length: 10 }, (_, i) => txn(i));
+  const moduleFinal = async (head: number, options: Record<string, unknown>) => {
+    const { aptos } = fakeNode(chain(head, ten));
+    // The SDK caches ledger info per network for 10s, across instances.
+    aptos.getLedgerInfo = async () => ({ ledger_version: String(head) }) as never;
+    const adapter = new FullnodeScanAdapter(aptos, { scanBatch: 2 });
+    return (await adapter.fetchEvents(moduleDesc, options)).final;
+  };
+
+  it("marks a module page final only when its scan stayed below the head", async () => {
+    expect(await moduleFinal(9, { fromVersion: 0n, limit: 3 })).toBe(true);
+    expect(await moduleFinal(9, { cursor: "2", toVersion: 4n })).toBe(true);
+    expect(await moduleFinal(9, { fromVersion: 6n, limit: 50 })).toBeUndefined();
+    expect(await moduleFinal(9, { fromVersion: 8n, limit: 1 })).toBeUndefined();
+    expect(await moduleFinal(20, { fromVersion: 8n, limit: 50 })).toBeUndefined();
+  });
+
+  it("never marks a module page final when its start came from the head", async () => {
+    expect(await moduleFinal(9, {})).toBeUndefined();
+    expect(await moduleFinal(9, { toVersion: 3n })).toBeUndefined();
+  });
+
+  const accountFinal = async (length: number, options: Record<string, unknown>) => {
+    const { aptos } = fakeNode(account(Array.from({ length }, (_, i) => txn(i))));
+    const adapter = new FullnodeScanAdapter(aptos, { scanBatch: 2 });
+    return (await adapter.fetchEvents(accountDesc, options)).final;
+  };
+
+  it("marks an account page final only when every batch came back full", async () => {
+    expect(await accountFinal(10, { offset: 0, limit: 3 })).toBe(true);
+    expect(await accountFinal(10, { cursor: "4", toVersion: 4n })).toBe(true);
+    expect(await accountFinal(5, { offset: 2, limit: 3 })).toBeUndefined();
+    expect(await accountFinal(4, { offset: 0, limit: 50 })).toBeUndefined();
+    expect(await accountFinal(4, { fromVersion: 0n, limit: 50 })).toBeUndefined();
+  });
+
+  it("never marks an account page final when its start came from the latest sequence number", async () => {
+    expect(await accountFinal(10, {})).toBeUndefined();
+  });
+
+  it("marks a handle page final only when the node returned a full page", async () => {
+    const events = [handleEvent(0, 3), handleEvent(1, 7), handleEvent(2, 9)];
+    const fetch = async (options: Record<string, unknown>) => {
+      const { aptos } = fakeNode(handle(events));
+      return (await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, options)).final;
+    };
+    expect(await fetch({ limit: 2 })).toBe(true);
+    expect(await fetch({ limit: 2, fromVersion: 8n })).toBe(true);
+    expect(await fetch({ cursor: "2", limit: 2 })).toBeUndefined();
   });
 });
 
@@ -494,6 +662,35 @@ describe("FullnodeScanAdapter earliest version", () => {
 
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect((err as StreamdNetworkError).statusCode).toBe(503);
+  });
+});
+
+describe("FullnodeScanAdapter block heights", () => {
+  it("reports the oldest and newest block heights from one ledger read", async () => {
+    const { aptos } = fakeNode(() => {
+      throw new Error("no HTTP expected");
+    });
+    let reads = 0;
+    aptos.getLedgerInfo = async () => {
+      reads++;
+      return { oldest_block_height: "1142401405", block_height: "1165817595" } as never;
+    };
+    expect(await new FullnodeScanAdapter(aptos).getBlockHeights()).toEqual({
+      oldest: 1142401405n,
+      newest: 1165817595n,
+    });
+    expect(reads).toBe(1);
+  });
+
+  it("surfaces a failed ledger read as StreamdNetworkError with its status", async () => {
+    const { aptos } = fakeNode(() => ({ status: 429, data: { message: "slow down" } }));
+    aptos.getLedgerInfo = async () => {
+      throw Object.assign(new Error("Too Many Requests"), { status: 429 });
+    };
+    const err = await new FullnodeScanAdapter(aptos).getBlockHeights().catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(429);
   });
 });
 

@@ -1,9 +1,12 @@
 import { getAptosFullNode, type Aptos } from "@aptos-labs/ts-sdk";
 import type {
   AccountEventDescriptor,
+  BlockHeights,
   BlockInfo,
+  CreationNumberEventDescriptor,
   EventAdapter,
   EventDescriptor,
+  EventGuid,
   EventPage,
   FetchOptions,
   HandleEventDescriptor,
@@ -13,6 +16,7 @@ import type {
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import {
   DEFAULT_LIMIT,
+  handlePath,
   moduleTypeFilter,
   parseCursor,
   requireAddress,
@@ -44,6 +48,24 @@ const DEFAULT_SCAN_BATCH = 100;
  */
 const DEFAULT_MAX_SCAN = 1000;
 
+/**
+ * The raw guid, unless it is missing, malformed, or the zero guid module
+ * events report. A bad guid drops only the field, never the page.
+ */
+function toGuid(raw: RawEvent): EventGuid | undefined {
+  const guid = raw.guid;
+  if (
+    guid === undefined ||
+    !/^\d+$/.test(String(guid.creation_number)) ||
+    !/^0x[0-9a-fA-F]+$/.test(String(guid.account_address))
+  ) {
+    return undefined;
+  }
+  const creationNumber = BigInt(guid.creation_number);
+  if (creationNumber === 0n && BigInt(guid.account_address) === 0n) return undefined;
+  return { creationNumber, accountAddress: guid.account_address };
+}
+
 /** Events of one transaction whose type passes `keep`, indexed by position in it. */
 function toStreamdEvents(
   txn: TransactionWithEvents,
@@ -63,6 +85,8 @@ function toStreamdEvents(
     };
     if (txn.hash !== undefined) item.transactionHash = txn.hash;
     if (txn.sender !== undefined) item.sender = txn.sender;
+    const guid = toGuid(event);
+    if (guid !== undefined) item.guid = guid;
     if (txn.timestamp !== undefined) {
       timestamp ??= BigInt(txn.timestamp);
       item.timestamp = timestamp;
@@ -162,6 +186,16 @@ export class FullnodeScanAdapter implements EventAdapter {
     }
   }
 
+  /** The fullnode's oldest unpruned and newest block heights, whatever the descriptor. */
+  async getBlockHeights(): Promise<BlockHeights> {
+    try {
+      const info = await this.aptos.getLedgerInfo();
+      return { oldest: BigInt(info.oldest_block_height), newest: BigInt(info.block_height) };
+    } catch (err) {
+      throw toStreamdError(err, "block heights");
+    }
+  }
+
   /** The block at `height`, whatever the descriptor; a pruned block fails with status 410. */
   async getBlock(_descriptor: EventDescriptor, height: bigint): Promise<BlockInfo> {
     try {
@@ -214,6 +248,7 @@ export class FullnodeScanAdapter implements EventAdapter {
     const events: StreamdEvent[] = [];
     let scanned = 0;
     let hasMore = false;
+    let ranDry = false;
 
     while (events.length < wanted && next <= head) {
       if (options.toVersion !== undefined && next > options.toVersion) break;
@@ -224,7 +259,10 @@ export class FullnodeScanAdapter implements EventAdapter {
 
       const limit = Math.min(this.scanBatch, this.maxScan - scanned);
       const txns = await this.getTransactions(next, limit);
-      if (txns.length === 0) break;
+      if (txns.length === 0) {
+        ranDry = true;
+        break;
+      }
 
       let stoppedAtToVersion = false;
       for (const txn of txns) {
@@ -246,11 +284,18 @@ export class FullnodeScanAdapter implements EventAdapter {
     // than dropping events the cursor has already moved past.
     if (options.orderBy === "desc") events.reverse();
 
-    return {
+    const page: EventPage = {
       events,
       nextCursor: next.toString(),
       hasMore: hasMore || events.length >= wanted,
     };
+    // Everything scanned sits strictly below the head read before scanning, so
+    // later transactions cannot change it. A start taken from the head can, and
+    // so can a scan that ran dry below a head this node has not reached (the
+    // SDK caches ledger info per network, not per node).
+    const fixedStart = options.cursor !== undefined || options.fromVersion !== undefined;
+    if (fixedStart && !ranDry && next <= head) page.final = true;
+    return page;
   }
 
   /**
@@ -281,6 +326,9 @@ export class FullnodeScanAdapter implements EventAdapter {
     let scanned = 0;
     let hasMore = false;
     let exhausted = false;
+    // A full batch by sequence number never changes; a short one ended at the
+    // account's latest transaction, which a later request reads past.
+    let batchesFull = false;
 
     while (events.length < wanted) {
       if (scanned >= this.maxScan) {
@@ -294,6 +342,7 @@ export class FullnodeScanAdapter implements EventAdapter {
         seq,
         limit,
       );
+      batchesFull = (scanned === 0 || batchesFull) && txns.length === limit;
       if (txns.length === 0) {
         exhausted = true;
         break;
@@ -329,19 +378,27 @@ export class FullnodeScanAdapter implements EventAdapter {
       }
     }
 
-    return {
+    const page: EventPage = {
       events,
       nextCursor: seq.toString(),
       hasMore: exhausted ? false : hasMore || events.length >= wanted,
     };
+    const fixedStart =
+      options.cursor !== undefined ||
+      options.offset !== undefined ||
+      options.fromVersion !== undefined ||
+      options.toVersion !== undefined;
+    if (fixedStart && batchesFull) page.final = true;
+    return page;
   }
 
   /**
    * Handle events paginate by sequence number, so the cursor is a sequence
-   * number rather than a ledger version.
+   * number rather than a ledger version. Both descriptor forms read the same
+   * stream, by struct and field or by creation number.
    */
   private async fetchHandleEvents(
-    descriptor: HandleEventDescriptor,
+    descriptor: HandleEventDescriptor | CreationNumberEventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage> {
     const limit = options.limit ?? DEFAULT_LIMIT;
@@ -352,8 +409,7 @@ export class FullnodeScanAdapter implements EventAdapter {
         ? parseCursor(options.cursor)
         : BigInt(options.offset ?? 0);
 
-    // The address lands in the URL path, so it is validated before use.
-    const address = requireAddress(descriptor.accountAddress);
+    const path = handlePath(descriptor);
 
     // Through the SDK, not bare fetch, so the config's headers and API key apply.
     const { data: raw } = await getAptosFullNode<
@@ -362,23 +418,25 @@ export class FullnodeScanAdapter implements EventAdapter {
     >({
       aptosConfig: this.aptos.config,
       originMethod: "fetchHandleEvents",
-      path:
-        `accounts/${address}/events/` +
-        `${encodeURIComponent(descriptor.eventHandleStruct)}/` +
-        `${encodeURIComponent(descriptor.fieldName)}`,
+      path,
       params: { start: start.toString(), limit },
     });
 
     // This endpoint does not say where an event sits in its transaction, and a
     // page position restarts at 0 every page. The handle's sequence number is
     // unique and stable, so it stands in as the index.
-    let events: StreamdEvent[] = raw.map((e) => ({
-      type: e.type,
-      data: e.data,
-      version: BigInt(e.version),
-      sequenceNumber: BigInt(e.sequence_number),
-      eventIndex: Number(e.sequence_number),
-    }));
+    let events: StreamdEvent[] = raw.map((e) => {
+      const event: StreamdEvent = {
+        type: e.type,
+        data: e.data,
+        version: BigInt(e.version),
+        sequenceNumber: BigInt(e.sequence_number),
+        eventIndex: Number(e.sequence_number),
+      };
+      const guid = toGuid(e);
+      if (guid !== undefined) event.guid = guid;
+      return event;
+    });
 
     if (options.fromVersion !== undefined) {
       events = events.filter((e) => e.version >= options.fromVersion!);
@@ -391,7 +449,12 @@ export class FullnodeScanAdapter implements EventAdapter {
     const nextCursor = (start + BigInt(raw.length)).toString();
     if (options.orderBy === "desc") events.reverse();
 
-    return { events, nextCursor, hasMore: raw.length >= limit };
+    // The start comes from the request, and a full page of a handle's events
+    // by sequence number never changes.
+    const full = raw.length >= limit;
+    return full
+      ? { events, nextCursor, hasMore: true, final: true }
+      : { events, nextCursor, hasMore: false };
   }
 
   /** Cursor wins over fromVersion; neither means "start at the head". */

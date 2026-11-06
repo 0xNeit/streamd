@@ -1,5 +1,6 @@
 import type { EventAdapter, EventDescriptor } from "./types.js";
 import { StreamdError } from "./errors.js";
+import { normalizeAddress } from "./filter.js";
 
 let nextId = 0;
 
@@ -67,12 +68,14 @@ export function isAbsoluteVersion(
 /**
  * A negative `fromVersion` counts back from the adapter's head, as ethers
  * reads a negative block tag, and `"earliest"` reads the adapter's oldest
- * servable version; other values pass through without a read.
+ * servable version; other values pass through without a read. A `head`
+ * already read for the same query is reused instead of read again.
  */
 export async function resolveFromVersion(
   adapter: EventAdapter,
   descriptor: EventDescriptor,
   fromVersion: bigint | "earliest" | undefined,
+  head?: bigint,
 ): Promise<bigint | undefined> {
   if (isAbsoluteVersion(fromVersion)) return fromVersion;
   if (fromVersion === "earliest") {
@@ -88,11 +91,40 @@ export async function resolveFromVersion(
       `Invalid fromVersion: ${String(fromVersion)} (expected a bigint or "earliest")`,
     );
   }
-  if (adapter.getHeadVersion === undefined) {
+  if (head === undefined && adapter.getHeadVersion === undefined) {
     throw new StreamdError(
       "A negative fromVersion needs an adapter that implements getHeadVersion",
     );
   }
-  const start = (await adapter.getHeadVersion(descriptor)) + fromVersion;
+  const start = (head ?? (await adapter.getHeadVersion!(descriptor))) + fromVersion;
   return start < 0n ? 0n : start;
+}
+
+function typeSet(types: unknown): unknown[] {
+  return Array.isArray(types) ? [...new Set(types)].sort() : [types];
+}
+
+/**
+ * Value key for a descriptor: equal for descriptors that select the same
+ * events, undefined for anything that is not one of the three kinds.
+ */
+export function descriptorKey(d: EventDescriptor | undefined): string | undefined {
+  switch (d?.kind) {
+    case "module":
+      return JSON.stringify(["module", typeSet(d.eventType)]);
+    case "handle": {
+      const address = normalizeAddress(d.accountAddress) ?? d.accountAddress;
+      return d.creationNumber !== undefined
+        ? JSON.stringify(["handle", address, String(d.creationNumber)])
+        : JSON.stringify(["handle", address, d.eventHandleStruct, d.fieldName]);
+    }
+    case "account":
+      return JSON.stringify([
+        "account",
+        normalizeAddress(d.accountAddress) ?? d.accountAddress,
+        d.eventTypes === undefined ? null : typeSet(d.eventTypes),
+      ]);
+    default:
+      return undefined;
+  }
 }

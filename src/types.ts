@@ -1,3 +1,6 @@
+// Kept in the emitted declarations so consumers whose `lib` predates
+// explicit resource management still have `Symbol.dispose` (TypeScript 5.2+).
+/// <reference lib="esnext.disposable" preserve="true" />
 import type { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
 
 // ---- Event identification ----
@@ -35,6 +38,20 @@ export interface HandleEventDescriptor {
   accountAddress: string;
   eventHandleStruct: string;
   fieldName: string;
+  creationNumber?: never;
+}
+
+/**
+ * Legacy EventHandle event, identified by the handle's guid: the account that
+ * created the handle and its creation number (`EventGuid`). Reaches handles
+ * the struct and field form cannot, such as one nested inside a struct field.
+ */
+export interface CreationNumberEventDescriptor {
+  kind: "handle";
+  accountAddress: string;
+  creationNumber: bigint;
+  eventHandleStruct?: never;
+  fieldName?: never;
 }
 
 /**
@@ -57,6 +74,7 @@ export interface AccountEventDescriptor {
 export type EventDescriptor<TData = unknown> =
   | ModuleEventDescriptor<TData>
   | HandleEventDescriptor
+  | CreationNumberEventDescriptor
   | AccountEventDescriptor;
 
 // ---- Parsed event ----
@@ -103,6 +121,19 @@ export interface StreamdEvent<TData = unknown> {
    * Omitted on `handle` events and on system transactions.
    */
   sender?: string;
+  /**
+   * The `EventHandle` that emitted this event, when the source reports one.
+   * Module events report the zero guid, which names no handle, so they carry
+   * none.
+   */
+  guid?: EventGuid;
+}
+
+/** An `EventHandle`'s on-chain id: the account that created it and its creation number. */
+export interface EventGuid {
+  creationNumber: bigint;
+  /** As the source reports it, not normalized. */
+  accountAddress: string;
 }
 
 // ---- Filters ----
@@ -125,8 +156,12 @@ export interface EventFilter {
    * `EventAdapter.getEarliestVersion`.
    */
   fromVersion?: bigint | "earliest";
-  /** End at this version (inclusive) */
-  toVersion?: bigint;
+  /**
+   * End at this version (inclusive). `"head"` ends at the head as it stood
+   * when the query started, read once from `EventAdapter.getHeadVersion`, so
+   * a walk over a busy type ends instead of chasing new transactions.
+   */
+  toVersion?: bigint | "head";
   /**
    * Start at the first version of this block height (inclusive), read once
    * from `EventAdapter.getBlock`. Cannot be combined with `fromVersion`.
@@ -137,6 +172,14 @@ export interface EventFilter {
    * `EventAdapter.getBlock`. Cannot be combined with `toVersion`.
    */
   toBlock?: bigint;
+  /**
+   * Start at the first block stamped at or after this time, in microseconds
+   * since the Unix epoch (the unit of `StreamdEvent.timestamp`), searched once
+   * through `EventAdapter.getBlockHeights` and `getBlock`. Before the oldest
+   * served block clamps to it; in the future starts at the head. Cannot be
+   * combined with `fromVersion` or `fromBlock`.
+   */
+  fromTime?: bigint;
   /** Maximum events to return, counted *after* `where` is applied */
   limit?: number;
   /** Offset for pagination */
@@ -164,7 +207,8 @@ export interface EventFilter {
   /**
    * `"desc"` returns the last `limit` matches of the range, newest first.
    * Adapters only page forward, so the whole range is still walked: bound it
-   * with `fromVersion` (a negative one works) or `maxPages`.
+   * with `fromVersion` (a negative one works) or `maxPages`, and end it with
+   * `toVersion: "head"` on a type that keeps emitting.
    */
   orderBy?: "asc" | "desc";
   /**
@@ -179,6 +223,16 @@ export interface EventFilter {
    * with the signal's `reason` and stops fetching further pages.
    */
   signal?: AbortSignal;
+  /**
+   * Called once when the walk finishes, with the cursor to pass as
+   * `ListenerOptions.cursor` so a subscription on the same descriptor and
+   * client resumes exactly where the query ended. `undefined` means there is
+   * no exact resume point: no page was read, `limit` cut the last page short,
+   * `toVersion` or `toBlock` bounded the walk (follow with `fromVersion` past
+   * the bound instead), or the adapter gave no cursor. Not called when the
+   * query rejects or a `getEventPages`/`iterateEvents` loop is left early.
+   */
+  onCursor?: (cursor: string | undefined) => void;
 }
 
 /**
@@ -191,16 +245,21 @@ export interface FetchOptions
   extends Omit<
     EventFilter,
     | "fromVersion"
+    | "toVersion"
     | "fromBlock"
+    | "fromTime"
     | "toBlock"
     | "where"
     | "decode"
     | "maxPages"
     | "retries"
     | "signal"
+    | "onCursor"
   > {
   /** Start from this version (inclusive); always absolute by the time an adapter sees it. */
   fromVersion?: bigint;
+  /** End at this version (inclusive); always absolute by the time an adapter sees it. */
+  toVersion?: bigint;
   orderBy?: "asc" | "desc";
   /**
    * Opaque resume token returned by this adapter's previous page. When
@@ -223,6 +282,12 @@ export interface EventPage {
   nextCursor?: string;
   /** True when more data is immediately available (drives catch-up polling). */
   hasMore: boolean;
+  /**
+   * True only when this exact request will always return this exact page,
+   * which is what lets `CachingAdapter` reuse it. Only the adapter can say so,
+   * since only it can read its cursor; leave it unset when unsure.
+   */
+  final?: boolean;
 }
 
 // ---- Listener options ----
@@ -241,9 +306,18 @@ export interface ListenerOptions {
    */
   fromVersion?: bigint | "earliest";
   /**
-   * Resume from a token a previous subscription reported as `cursor`. It wins
-   * over `fromVersion`, and is only meaningful with the same descriptor and
-   * adapter that produced it.
+   * Start at the first block stamped at or after this time, in microseconds
+   * since the Unix epoch, searched once on the first poll through
+   * `EventAdapter.getBlockHeights` and `getBlock`. Before the oldest served
+   * block clamps to it; in the future starts at the head. Cannot be combined
+   * with `fromVersion`.
+   */
+  fromTime?: bigint;
+  /**
+   * Resume from a token a previous subscription reported as `cursor`, or one a
+   * query passed to `EventFilter.onCursor`. It wins over `fromVersion` and
+   * `fromTime`, and is only meaningful with the same descriptor and adapter
+   * that produced it.
    */
   cursor?: string;
   /**
@@ -296,6 +370,16 @@ export interface ListenerOptions {
   signal?: AbortSignal;
 }
 
+/** Options for `on()` and `onBatch()`, the calls that return a `Subscription`. */
+export interface SubscriptionOptions extends ListenerOptions {
+  /**
+   * The subscription's `id` instead of a generated one: a non-empty string no
+   * other live subscription on this client holds. Free again once the
+   * subscription ends.
+   */
+  id?: string;
+}
+
 export interface OnceOptions extends ListenerOptions {
   /**
    * Milliseconds to wait before unsubscribing and rejecting with
@@ -303,6 +387,16 @@ export interface OnceOptions extends ListenerOptions {
    */
   timeout?: number;
 }
+
+/**
+ * Listener options a client can set once for every `on`, `onBatch`, `once` and
+ * `stream` call. Start position, filters, callbacks and `signal` are per
+ * subscription; `StreamdConfig.onError` is the client-wide error handler.
+ */
+export type ListenerDefaults = Pick<
+  ListenerOptions,
+  "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "dedupWindow" | "decode"
+>;
 
 // ---- Client config ----
 
@@ -332,11 +426,18 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
   maxConcurrentRequests?: number;
+  /**
+   * Listener options for every subscription this client creates. A call's own
+   * value for a field wins; one it leaves `undefined` takes this one. A call's
+   * `decode` replaces this list rather than adding to it. `pollInterval` here
+   * wins over `defaultPollInterval`. Checked when the client is constructed.
+   */
+  defaults?: ListenerDefaults;
 }
 
 // ---- Subscription handle ----
@@ -373,6 +474,8 @@ export interface Subscription {
   id: string;
   /** Stop listening and clean up */
   unsubscribe(): void;
+  /** `unsubscribe()`, so `using sub = client.on(...)` stops it at scope exit. */
+  [Symbol.dispose](): void;
   /**
    * Stop polling without ending the subscription; `resume()` carries on from
    * the same cursor and dedup window. No-op unless active.
@@ -466,6 +569,17 @@ export interface EventAdapter {
    * `fromBlock`/`toBlock` on a query need it.
    */
   getBlock?(descriptor: EventDescriptor, height: bigint): Promise<BlockInfo>;
+  /**
+   * The oldest and newest block heights this source can serve for
+   * `descriptor`. Optional; `fromTime` needs it, together with `getBlock`.
+   */
+  getBlockHeights?(descriptor: EventDescriptor): Promise<BlockHeights>;
+}
+
+/** Block heights an adapter can serve, both inclusive, as `EventAdapter.getBlockHeights` reports them. */
+export interface BlockHeights {
+  oldest: bigint;
+  newest: bigint;
 }
 
 /** A block's position in the ledger, as `EventAdapter.getBlock` reports it. */

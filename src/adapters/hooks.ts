@@ -44,7 +44,7 @@ function requireHook<K extends keyof AdapterHooks>(
 
 /**
  * Wraps `adapter` so every `fetchEvents` call is reported to `hooks`, to log
- * or time requests. `getHeadVersion`, `getEarliestVersion` and `getBlock` pass through,
+ * or time requests. `getHeadVersion`, `getEarliestVersion`, `getBlock` and `getBlockHeights` pass through,
  * unhooked, only when the wrapped adapter has them.
  */
 export function withHooks(
@@ -84,6 +84,9 @@ export function withHooks(
   }
   if (source.getBlock !== undefined) {
     wrapped.getBlock = (descriptor, height) => source.getBlock!(descriptor, height);
+  }
+  if (source.getBlockHeights !== undefined) {
+    wrapped.getBlockHeights = (descriptor) => source.getBlockHeights!(descriptor);
   }
   return wrapped;
 }

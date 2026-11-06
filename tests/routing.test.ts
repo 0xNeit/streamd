@@ -226,6 +226,30 @@ describe("RoutingAdapter head version", () => {
   });
 });
 
+describe("RoutingAdapter block heights", () => {
+  const heights = { oldest: 3n, newest: 9n };
+  const bare: EventAdapter = {
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+  };
+
+  it("asks the adapter routed for the descriptor's kind", async () => {
+    const withHeights: EventAdapter = { ...bare, getBlockHeights: vi.fn(async () => heights) };
+    const router = new RoutingAdapter({ module: withHeights, default: bare });
+
+    expect(await router.getBlockHeights(moduleDesc)).toBe(heights);
+    expect(withHeights.getBlockHeights).toHaveBeenCalledWith(moduleDesc);
+  });
+
+  it("throws StreamdError when the routed adapter cannot report block heights", async () => {
+    const router = new RoutingAdapter({ account: bare });
+
+    const err = await router.getBlockHeights(accountDesc).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain('"account"');
+  });
+});
+
 describe("RoutingAdapter earliest version", () => {
   it("asks the adapter routed for the descriptor's kind", async () => {
     const router = new RoutingAdapter({

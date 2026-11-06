@@ -140,6 +140,11 @@ describe("checkAdapter walk", () => {
     ["a fractional eventIndex", { events: [{ ...ev(1), eventIndex: 0.5 }], hasMore: false }, "eventIndex"],
     ["a string timestamp", { events: [{ ...ev(1), timestamp: "1" }], hasMore: false }, "timestamp"],
     ["a numeric sender", { events: [{ ...ev(1), sender: 1 }], hasMore: false }, "sender"],
+    [
+      "a number guid creationNumber",
+      { events: [{ ...ev(1), guid: { creationNumber: 1, accountAddress: "0x1" } }], hasMore: false },
+      "guid",
+    ],
   ])("fails page-shape on %s", async (_label, page, message) => {
     const report = await checkAdapter(scripted([page]), desc);
     expect(failed(report)).toEqual(["page-shape"]);
