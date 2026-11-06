@@ -1662,6 +1662,28 @@ describe("StreamdClient fromTime queries", () => {
     const events = await client.getEvents(descriptor, { fromTime: 1500n });
     expect(events.map((e) => e.version)).toEqual([20n, 25n]);
   });
+
+  it("on() delivers from the resolved block, and rejects fromTime with fromVersion", async () => {
+    const memory = new MemoryAdapter([5, 10, 15, 20, 25].map((v) => makeEvent(v)));
+    const client = new StreamdClient({
+      adapter: {
+        fetchEvents: (d, o) => memory.fetchEvents(d, o),
+        getBlock: async (_d, height) => ({
+          height,
+          firstVersion: height * 10n,
+          lastVersion: height * 10n + 9n,
+          timestamp: height * 1000n,
+        }),
+        getBlockHeights: async () => ({ oldest: 0n, newest: 2n }),
+      },
+    });
+
+    expect(() => client.on(descriptor, () => {}, { fromTime: 1n, fromVersion: 0n })).toThrow(
+      "fromTime or fromVersion",
+    );
+    const first = await client.once(descriptor, { fromTime: 1500n });
+    expect(first.version).toBe(20n);
+  });
 });
 
 describe("StreamdClient latest-first queries", () => {

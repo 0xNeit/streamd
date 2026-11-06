@@ -198,6 +198,26 @@ rejected as invalid input, and so is any `fromVersion` that is neither a `bigint
 `"earliest"`. A module-event scan from the earliest version walks every transaction since,
 so bound a query with `limit` or `maxPages`.
 
+### Start at a time
+
+```ts
+// microseconds since the Unix epoch, the unit of event.timestamp
+const oneHourAgo = BigInt(Date.now() - 3_600_000) * 1000n;
+
+streamd.on(descriptor, handle, { fromTime: oneHourAgo });
+const lastHour = await streamd.getEvents(descriptor, { fromTime: oneHourAgo, maxPages: 50 });
+```
+
+`fromTime` starts at the first block stamped at or after that time. It is resolved to a
+version once, when a query starts or on a subscription's first poll, by searching blocks
+through the adapter's `getBlockHeights` and `getBlock`: on mainnet that is about 9 to 13
+block lookups, which counts against the public fullnode's anonymous rate limit. A time
+before the oldest unpruned block starts at that block; a time in the future starts at the
+head. It cannot be combined with `fromVersion` or `fromBlock`, and a `cursor` still wins
+and skips the search. A failed lookup is retried under a query's `retries`, and on a
+subscription it is a polling error like any other, so the next poll searches again.
+`once()`, `stream()` and `onBatch()` accept it too.
+
 ### Wait for one event
 
 ```ts
@@ -315,7 +335,7 @@ const streamd = new StreamdClient({ aptos, maxConcurrentRequests: 4 });
 At most that many adapter calls run at once across every subscription and query on the
 client; the rest wait their turn in order. `fetchEvents`, the `getHeadVersion` read behind
 a negative `fromVersion`, the `getEarliestVersion` read behind `"earliest"`, and the
-`getBlock` lookups behind `fromBlock`/`toBlock` all count. The unit is one adapter call, not one HTTP request:
+`getBlock` and `getBlockHeights` lookups behind `fromBlock`/`toBlock` and `fromTime` all count. The unit is one adapter call, not one HTTP request:
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
 dropped without reaching the adapter. Omit the option for no limit.
@@ -514,8 +534,9 @@ const streamd = new StreamdClient({ aptos, adapter: myIndexAdapter });
 An adapter has one required method, `fetchEvents(descriptor, options)`, returning
 `{ events, nextCursor, hasMore }`, an optional `getHeadVersion(descriptor)` that
 a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` that
-`fromVersion: "earliest"` needs, and an optional `getBlock(descriptor, height)` that
-`fromBlock`/`toBlock` need. See the `EventAdapter` type for the full contract.
+`fromVersion: "earliest"` needs, an optional `getBlock(descriptor, height)` that
+`fromBlock`/`toBlock` need, and an optional `getBlockHeights(descriptor)` that `fromTime`
+needs alongside `getBlock`. See the `EventAdapter` type for the full contract.
 
 To check a custom adapter against that contract, run `checkAdapter` from any
 test runner or a plain script. It walks a few pages (`maxPages`, default 3),

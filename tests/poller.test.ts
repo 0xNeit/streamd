@@ -2231,3 +2231,126 @@ describe("EventPoller decode", () => {
     ).toThrow(StreamdError);
   });
 });
+
+describe("EventPoller time start", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Block n holds versions 10n..10n+9 and is stamped n * 1000.
+  function timedAdapter(pages: EventPage[] = []) {
+    const adapter = createMockAdapter(pages);
+    adapter.getBlockHeights = vi.fn(async () => ({ oldest: 0n, newest: 99n }));
+    adapter.getBlock = vi.fn(async (_d: EventDescriptor, height: bigint) => ({
+      height,
+      firstVersion: height * 10n,
+      lastVersion: height * 10n + 9n,
+      timestamp: height * 1000n,
+    }));
+    return adapter;
+  }
+
+  const froms = (adapter: EventAdapter) =>
+    mocked(adapter.fetchEvents).mock.calls.map((c) => c[1].fromVersion);
+
+  it("starts at the first block stamped at or after fromTime, searching once", async () => {
+    const adapter = timedAdapter([page([makeEvent(420)], 421, true)]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      fromTime: 41_500n,
+      pollInterval: 100,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(250);
+    poller.stop();
+
+    expect(froms(adapter)[0]).toBe(420n);
+    expect(froms(adapter).slice(1).every((v) => v === undefined)).toBe(true);
+    expect(mocked(adapter.fetchEvents).mock.calls.length).toBeGreaterThan(1);
+    expect(adapter.getBlockHeights).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not search when a cursor is given", async () => {
+    const adapter = timedAdapter();
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { fromTime: 1n, cursor: "7" });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    poller.stop();
+
+    expect(adapter.getBlockHeights).not.toHaveBeenCalled();
+    expect(mocked(adapter.fetchEvents).mock.calls[0]![1].cursor).toBe("7");
+  });
+
+  it("throws from the constructor on a conflicting or malformed fromTime", () => {
+    const adapter = timedAdapter();
+    for (const options of [
+      { fromTime: 1n, fromVersion: 5n },
+      { fromTime: 1n, fromVersion: "earliest" },
+      { fromTime: -1n },
+    ] as ListenerOptions[]) {
+      expect(() => new EventPoller(adapter, descriptor, vi.fn(), options)).toThrow(StreamdError);
+    }
+  });
+
+  it("stops as invalid input when the adapter cannot search blocks", async () => {
+    const adapter = createMockAdapter([]);
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { fromTime: 1n, onError });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(poller.active).toBe(false);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+    const err = onError.mock.calls[0]![0] as StreamdPollingError;
+    expect(err).toBeInstanceOf(StreamdPollingError);
+    expect(err.message).toContain("getBlockHeights");
+  });
+
+  it("restarts the search on a later poll after a network failure partway through", async () => {
+    const adapter = timedAdapter();
+    const lookup = adapter.getBlock!;
+    let failed = false;
+    adapter.getBlock = vi.fn(async (d: EventDescriptor, height: bigint) => {
+      if (height !== 0n && height !== 99n && !failed) {
+        failed = true;
+        throw new StreamdNetworkError("429 Too Many Requests", 429);
+      }
+      return lookup(d, height);
+    });
+    const onError = vi.fn();
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      fromTime: 41_500n,
+      pollInterval: 100,
+      onError,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect(poller.active).toBe(true);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+
+    await advanceTimersByTimeAsync(200);
+    poller.stop();
+    expect(adapter.getBlockHeights).toHaveBeenCalledTimes(2);
+    expect(froms(adapter)[0]).toBe(420n);
+  });
+
+  it("abandons a search once the subscription stops", async () => {
+    const adapter = timedAdapter();
+    const lookup = adapter.getBlock!;
+    let poller: EventPoller | undefined;
+    adapter.getBlock = vi.fn(async (d: EventDescriptor, height: bigint) => {
+      if (height === 99n) poller!.stop();
+      return lookup(d, height);
+    });
+    poller = new EventPoller(adapter, descriptor, vi.fn(), { fromTime: 41_500n });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(mocked(adapter.getBlock!).mock.calls.map((c) => c[1])).toEqual([0n, 99n]);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+  });
+});

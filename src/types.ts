@@ -256,8 +256,16 @@ export interface ListenerOptions {
    */
   fromVersion?: bigint | "earliest";
   /**
+   * Start at the first block stamped at or after this time, in microseconds
+   * since the Unix epoch, searched once on the first poll through
+   * `EventAdapter.getBlockHeights` and `getBlock`. Before the oldest served
+   * block clamps to it; in the future starts at the head. Cannot be combined
+   * with `fromVersion`.
+   */
+  fromTime?: bigint;
+  /**
    * Resume from a token a previous subscription reported as `cursor`. It wins
-   * over `fromVersion`, and is only meaningful with the same descriptor and
+   * over `fromVersion` and `fromTime`, and is only meaningful with the same descriptor and
    * adapter that produced it.
    */
   cursor?: string;

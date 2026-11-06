@@ -18,6 +18,7 @@ import { CursorManager } from "./cursor.js";
 import { resolveFromVersion } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
+import { resolveFromTime, validateFromTime } from "./time.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
 const DEFAULT_BATCH_SIZE = 25;
@@ -69,6 +70,8 @@ export class EventPoller {
   private readonly maxBackoff: number;
   /** Absolute once the first poll has resolved a relative or earliest start. */
   private fromVersion?: bigint | "earliest";
+  /** Cleared once the first poll has resolved it into `fromVersion`. */
+  private fromTime?: bigint;
   private readonly where?: EventPredicate;
   private readonly decode?: (event: StreamdEvent) => StreamdEvent;
   private readonly onError?: (error: Error) => void;
@@ -89,7 +92,9 @@ export class EventPoller {
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.maxErrors = options.maxErrors ?? DEFAULT_MAX_ERRORS;
     this.maxBackoff = resolveMaxBackoff(options.maxBackoff);
+    validateFromTime(options);
     this.fromVersion = options.fromVersion;
+    this.fromTime = options.fromTime;
     this.where = options.where;
     this.decode = fieldDecoder(options.decode);
     this.onError = options.onError;
@@ -199,12 +204,17 @@ export class EventPoller {
       // the very first poll.
       let fromVersion: bigint | undefined;
       if (this.position.token === undefined) {
-        fromVersion = await resolveFromVersion(
-          adapter,
-          this.descriptor,
-          this.fromVersion,
-        );
+        fromVersion =
+          this.fromTime === undefined
+            ? await resolveFromVersion(adapter, this.descriptor, this.fromVersion)
+            : await resolveFromTime(
+                adapter,
+                this.descriptor,
+                this.fromTime,
+                () => !this.isCurrent(gen),
+              );
         this.fromVersion = fromVersion;
+        this.fromTime = undefined;
         if (!this.isCurrent(gen)) return;
       }
       const page = await adapter.fetchEvents(this.descriptor, {
