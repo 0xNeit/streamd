@@ -36,6 +36,8 @@ async function tryInOrder<T>(
  * error. Invalid caller input (a `StreamdError` that is not a
  * `StreamdNetworkError`) is rethrown at once without trying later adapters.
  * A page from any source but the first comes back with `final: false`.
+ * `throughVersion` is kept from whichever source answered, since it describes
+ * how far that source scanned for the events it returned.
  */
 export class FallbackAdapter implements EventAdapter {
   private readonly adapters: readonly EventAdapter[];
