@@ -1,0 +1,153 @@
+import { describe, it, expect } from "bun:test";
+import { withHooks } from "../src/adapters/hooks.js";
+import { MemoryAdapter } from "../src/adapters/memory.js";
+import { StreamdError, StreamdNetworkError } from "../src/errors.js";
+import type { AdapterHooks, AdapterResponse } from "../src/adapters/hooks.js";
+import type {
+  EventAdapter,
+  EventDescriptor,
+  EventPage,
+  StreamdEvent,
+} from "../src/types.js";
+
+const PING = "0x1::test::Ping";
+const moduleDesc: EventDescriptor = { kind: "module", eventType: PING };
+
+function ev(version: number): StreamdEvent {
+  return {
+    type: PING,
+    data: { version },
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 0,
+  };
+}
+
+const PAGE: EventPage = { events: [ev(1)], nextCursor: "1", hasMore: false };
+
+describe("withHooks", () => {
+  it("calls onRequest, then the adapter, then onResponse with the page, and returns it unchanged", async () => {
+    const calls: string[] = [];
+    let response: AdapterResponse | undefined;
+    const inner: EventAdapter = {
+      async fetchEvents() {
+        calls.push("fetch");
+        return PAGE;
+      },
+    };
+    const options = { limit: 10 };
+    const adapter = withHooks(inner, {
+      onRequest(request) {
+        calls.push("request");
+        expect(request).toEqual({ descriptor: moduleDesc, options });
+      },
+      onResponse(r) {
+        calls.push("response");
+        response = r;
+      },
+    });
+
+    const page = await adapter.fetchEvents(moduleDesc, options);
+
+    expect(page).toBe(PAGE);
+    expect(calls).toEqual(["request", "fetch", "response"]);
+    expect(response!.descriptor).toBe(moduleDesc);
+    expect(response!.options).toBe(options);
+    expect(response!.page).toBe(PAGE);
+    expect(response!.error).toBeUndefined();
+    expect(typeof response!.durationMs).toBe("number");
+    expect(response!.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("reports a failed fetch to onResponse and rethrows the same error", async () => {
+    const failure = new StreamdNetworkError("down");
+    let response: AdapterResponse | undefined;
+    const adapter = withHooks(
+      {
+        async fetchEvents() {
+          throw failure;
+        },
+      },
+      { onResponse: (r) => (response = r) },
+    );
+
+    await expect(adapter.fetchEvents(moduleDesc, {})).rejects.toBe(failure);
+    expect(response!.error).toBe(failure);
+    expect(response!.page).toBeUndefined();
+    expect(response!.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  it("rejects the fetch when a hook throws", async () => {
+    const boom = new Error("hook");
+    let fetched = 0;
+    const inner: EventAdapter = {
+      async fetchEvents() {
+        fetched++;
+        return PAGE;
+      },
+    };
+
+    await expect(
+      withHooks(inner, {
+        onRequest() {
+          throw boom;
+        },
+      }).fetchEvents(moduleDesc, {}),
+    ).rejects.toBe(boom);
+    expect(fetched).toBe(0);
+
+    await expect(
+      withHooks(inner, {
+        onResponse() {
+          throw boom;
+        },
+      }).fetchEvents(moduleDesc, {}),
+    ).rejects.toBe(boom);
+  });
+
+  it("works with no hooks set", async () => {
+    const adapter = withHooks(new MemoryAdapter([ev(1)]), {});
+    const page = await adapter.fetchEvents(moduleDesc, {});
+    expect(page.events).toEqual([ev(1)]);
+  });
+
+  it("reads the hooks once, when wrapping", async () => {
+    let requests = 0;
+    const hooks: AdapterHooks = { onRequest: () => requests++ };
+    const adapter = withHooks(new MemoryAdapter([]), hooks);
+    hooks.onRequest = () => {
+      throw new Error("replaced");
+    };
+    await adapter.fetchEvents(moduleDesc, {});
+    expect(requests).toBe(1);
+  });
+
+  it("delegates getHeadVersion when the wrapped adapter has one, without calling hooks", async () => {
+    let hooked = 0;
+    const adapter = withHooks(new MemoryAdapter([ev(1), ev(7)]), {
+      onRequest: () => hooked++,
+      onResponse: () => hooked++,
+    });
+    expect(await adapter.getHeadVersion!(moduleDesc)).toBe(7n);
+    expect(hooked).toBe(0);
+  });
+
+  it("has no getHeadVersion when the wrapped adapter lacks one", () => {
+    const adapter = withHooks({ fetchEvents: async () => PAGE }, {});
+    expect("getHeadVersion" in adapter).toBe(false);
+  });
+
+  it("refuses an invalid adapter, hooks object, or hook", () => {
+    const inner = new MemoryAdapter([]);
+    expect(() => withHooks({} as EventAdapter, {})).toThrow(StreamdError);
+    expect(() => withHooks(inner, null as unknown as AdapterHooks)).toThrow(
+      StreamdError,
+    );
+    expect(() =>
+      withHooks(inner, { onRequest: "log" } as unknown as AdapterHooks),
+    ).toThrow(StreamdError);
+    expect(() =>
+      withHooks(inner, { onResponse: 1 } as unknown as AdapterHooks),
+    ).toThrow(StreamdError);
+  });
+});
