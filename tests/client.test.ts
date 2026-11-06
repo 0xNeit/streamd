@@ -1654,14 +1654,15 @@ describe("StreamdClient decode", () => {
   });
 });
 
+const T = "0x1::test::Event";
+const U = "0x1::test::Other";
+const moduleOf = (eventType: ModuleEventDescriptor["eventType"]) =>
+  ({ kind: "module", eventType }) as const;
+const quiet = () => new StreamdClient({ adapter: new MemoryAdapter([]) });
+
 describe("listener management", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
-
-  const T = "0x1::test::Event";
-  const U = "0x1::test::Other";
-  const moduleOf = (eventType: ModuleEventDescriptor["eventType"]) => ({ kind: "module", eventType }) as const;
-  const quiet = () => new StreamdClient({ adapter: new MemoryAdapter([]) });
 
   it("counts on() and onBatch() subscriptions, in total and per descriptor", () => {
     const client = quiet();
@@ -1745,6 +1746,91 @@ describe("listener management", () => {
     await advanceTimersByTimeAsync(200);
     expect(client.listenerCount(moduleOf(U))).toBe(0);
     expect(client.listenerCount()).toBe(1);
+    client.destroy();
+  });
+});
+
+describe("off and removeAllListeners", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("off(d, cb) stops only the earliest match", () => {
+    const client = quiet();
+    const cb = () => {};
+    const first = client.on(moduleOf(T), cb);
+    const second = client.on(moduleOf(T), cb);
+    const other = client.on(moduleOf(T), () => {});
+    const batch = client.onBatch(moduleOf(T), cb);
+
+    expect(client.off(moduleOf([T]), cb)).toBe(client);
+    expect([first.active, second.active, other.active, batch.active]).toEqual([
+      false, true, true, true,
+    ]);
+    expect(client.listenerCount(moduleOf(T))).toBe(3);
+
+    client.off(moduleOf(T), () => {});
+    client.off(moduleOf(U), cb);
+    expect(client.listenerCount(moduleOf(T))).toBe(3);
+    client.destroy();
+  });
+
+  it("off(d, cb) removes an onBatch() subscription by its batch callback", () => {
+    const client = quiet();
+    const batchCb = () => {};
+    const sub = client.onBatch(moduleOf(T), batchCb);
+    client.off(moduleOf(T), batchCb);
+    expect(sub.active).toBe(false);
+    expect(client.listenerCount()).toBe(0);
+  });
+
+  it("off(d) stops every listener on d and nothing else", () => {
+    const client = quiet();
+    const a = client.on(moduleOf(T), () => {});
+    const b = client.onBatch(moduleOf(T), () => {});
+    const c = client.on(moduleOf(U), () => {});
+
+    client.off(moduleOf(T));
+    expect([a.active, b.active, c.active]).toEqual([false, false, true]);
+    expect(client.listenerCount()).toBe(1);
+    client.destroy();
+  });
+
+  it("off() with a descriptor that is not one of the three kinds is a no-op", () => {
+    const client = quiet();
+    const sub = client.on(moduleOf(T), () => {});
+    client.off({ kind: "bogus" } as unknown as EventDescriptor);
+    client.off(undefined as unknown as EventDescriptor);
+    client.removeAllListeners({ kind: "bogus" } as unknown as EventDescriptor);
+    expect(sub.active).toBe(true);
+    client.destroy();
+  });
+
+  it("removeAllListeners(d) stops only that descriptor's listeners", () => {
+    const client = quiet();
+    const a = client.on(moduleOf(T), () => {});
+    const c = client.on(moduleOf(U), () => {});
+    expect(client.removeAllListeners(moduleOf(T))).toBe(client);
+    expect([a.active, c.active]).toEqual([false, true]);
+    client.destroy();
+  });
+
+  it("removeAllListeners() leaves once() and stream() running", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter([makeEvent(1)]) });
+    const a = client.on(moduleOf(T), () => {});
+    const paused = client.onBatch(moduleOf(U), () => {});
+    paused.pause();
+    const pending = client.once(moduleOf(T), { fromVersion: 0n, pollInterval: 100 });
+    const it = client.stream(moduleOf(T), { fromVersion: 0n });
+
+    client.removeAllListeners();
+    expect([a.active, paused.active, paused.paused]).toEqual([false, false, false]);
+    expect(client.listenerCount()).toBe(0);
+
+    const next = it.next();
+    await advanceTimersByTimeAsync(0);
+    expect((await pending).version).toBe(1n);
+    expect((await next).value?.version).toBe(1n);
+    await it.return!();
     client.destroy();
   });
 });

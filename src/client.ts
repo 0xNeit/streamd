@@ -77,6 +77,7 @@ function descriptorKey(d: EventDescriptor | undefined): string | undefined {
 interface Listener {
   key: string | undefined;
   callback: unknown;
+  stop: () => void;
 }
 
 function resolveAdapter(config: StreamdConfig): EventAdapter {
@@ -181,7 +182,8 @@ export class StreamdClient {
     if (poller.active) {
       this.subscriptions.set(id, poller);
       if (listener !== undefined) {
-        this.listeners.set(id, { key: descriptorKey(descriptor), callback: listener });
+        const stop = () => (poller.stop(), forget());
+        this.listeners.set(id, { key: descriptorKey(descriptor), callback: listener, stop });
       }
       detach = onAbort(options?.signal, forget);
     }
@@ -310,6 +312,30 @@ export class StreamdClient {
     pageSize?: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
     return this.query.getEventPages<TData>(descriptor, filter, pageSize);
+  }
+
+  /**
+   * Stop the earliest `on()`/`onBatch()` subscription on `descriptor` whose
+   * callback is `callback`, or all of them on `descriptor` when it is omitted.
+   */
+  off<TData = unknown>(
+    descriptor: EventDescriptor<TData>,
+    callback?: EventCallback<TData> | BatchCallback<TData>,
+  ): this {
+    // A missing descriptor must not fall through to removing everything.
+    if (descriptorKey(descriptor) === undefined) return this;
+    if (callback === undefined) return this.removeAllListeners(descriptor);
+    this.matching(descriptor).find((l) => l.callback === callback)?.stop();
+    return this;
+  }
+
+  /**
+   * Stop every `on()`/`onBatch()` subscription, or those on `descriptor`.
+   * `once()` and `stream()` keep running; `destroy()` ends those too.
+   */
+  removeAllListeners(descriptor?: EventDescriptor): this {
+    for (const l of this.matching(descriptor)) l.stop();
+    return this;
   }
 
   /**
