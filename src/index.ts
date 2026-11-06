@@ -97,7 +97,9 @@ export type {
   StreamdEvent,
   Subscription,
   SubscriptionOptions,
+  StateRequestBuilder,
   SubscriptionStatus,
   TransactionEvents,
   TransactionSimulation,
+  ViewRequest,
 } from "./types.js";
