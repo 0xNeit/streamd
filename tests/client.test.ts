@@ -11,7 +11,13 @@ import { MemoryAdapter } from "../src/adapters/memory.js";
 import { RoutingAdapter } from "../src/adapters/routing.js";
 import { StreamdClient } from "../src/client.js";
 import { every, involvesAddress, not, whereField } from "../src/filter.js";
-import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
+import type {
+  EventAdapter,
+  EventDescriptor,
+  EventPage,
+  ModuleEventDescriptor,
+  StreamdEvent,
+} from "../src/types.js";
 import {
   StreamdError,
   StreamdNetworkError,
@@ -1644,6 +1650,187 @@ describe("StreamdClient decode", () => {
     await advanceTimersByTimeAsync(0);
 
     expect(seen).toEqual([{ amount: 1000n, store: "0x1" }]);
+    client.destroy();
+  });
+});
+
+const T = "0x1::test::Event";
+const U = "0x1::test::Other";
+const moduleOf = (eventType: ModuleEventDescriptor["eventType"]) =>
+  ({ kind: "module", eventType }) as const;
+const quiet = () => new StreamdClient({ adapter: new MemoryAdapter([]) });
+
+describe("listener management", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("counts on() and onBatch() subscriptions, in total and per descriptor", () => {
+    const client = quiet();
+    client.on(moduleOf(T), () => {});
+    client.onBatch(moduleOf(T), () => {});
+    client.on(moduleOf(U), () => {});
+
+    expect(client.listenerCount()).toBe(3);
+    expect(client.listenerCount(moduleOf(T))).toBe(2);
+    expect(client.listenerCount(moduleOf(U))).toBe(1);
+    expect(client.listenerCount(moduleOf("0x1::test::None"))).toBe(0);
+    client.destroy();
+  });
+
+  it("does not count once() or stream()", async () => {
+    const client = quiet();
+    const pending = client.once(moduleOf(T));
+    pending.catch(() => {});
+    const it = client.stream(moduleOf(T));
+    const next = it.next();
+    await advanceTimersByTimeAsync(0);
+
+    expect(client.listenerCount()).toBe(0);
+    expect(client.listenerCount(moduleOf(T))).toBe(0);
+    await it.return!();
+    await next;
+    client.destroy();
+  });
+
+  it("matches descriptors by value", () => {
+    const client = quiet();
+    client.on(moduleOf([T, U]), () => {});
+    client.on(moduleOf(T), () => {});
+    client.on(
+      { kind: "handle", accountAddress: "0x1", eventHandleStruct: "0x1::a::S", fieldName: "f" },
+      () => {},
+    );
+    client.on({ kind: "account", accountAddress: "0x1" }, () => {});
+    client.on({ kind: "account", accountAddress: "0x1", eventTypes: [] }, () => {});
+
+    expect(client.listenerCount(moduleOf([U, T]))).toBe(1);
+    expect(client.listenerCount(moduleOf([T]))).toBe(1);
+    expect(
+      client.listenerCount({
+        kind: "handle",
+        accountAddress: `0x${"0".repeat(63)}1`,
+        eventHandleStruct: "0x1::a::S",
+        fieldName: "f",
+      }),
+    ).toBe(1);
+    expect(client.listenerCount({ kind: "account", accountAddress: "0x1" })).toBe(1);
+    expect(
+      client.listenerCount({ kind: "account", accountAddress: "0x1", eventTypes: [] }),
+    ).toBe(1);
+    expect(
+      client.listenerCount({ kind: "bogus" } as unknown as EventDescriptor),
+    ).toBe(0);
+    client.destroy();
+  });
+
+  it("counts paused subscriptions and drops ended ones", async () => {
+    const failing: EventAdapter = {
+      fetchEvents: vi.fn(async () => {
+        throw new Error("network down");
+      }),
+    };
+    const client = new StreamdClient({ adapter: failing });
+    const controller = new AbortController();
+    const paused = client.on(moduleOf(T), () => {}, { onError: () => {} });
+    paused.pause();
+    const unsubscribed = client.on(moduleOf(T), () => {}, { onError: () => {} });
+    client.on(moduleOf(T), () => {}, { signal: controller.signal, onError: () => {} });
+    client.on(moduleOf(U), () => {}, { pollInterval: 100, maxErrors: 2, onError: () => {} });
+    expect(client.listenerCount()).toBe(4);
+
+    unsubscribed.unsubscribe();
+    controller.abort();
+    expect(client.listenerCount(moduleOf(T))).toBe(1);
+
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(200);
+    expect(client.listenerCount(moduleOf(U))).toBe(0);
+    expect(client.listenerCount()).toBe(1);
+    client.destroy();
+  });
+});
+
+describe("off and removeAllListeners", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("off(d, cb) stops only the earliest match", () => {
+    const client = quiet();
+    const cb = () => {};
+    const first = client.on(moduleOf(T), cb);
+    const second = client.on(moduleOf(T), cb);
+    const other = client.on(moduleOf(T), () => {});
+    const batch = client.onBatch(moduleOf(T), cb);
+
+    expect(client.off(moduleOf([T]), cb)).toBe(client);
+    expect([first.active, second.active, other.active, batch.active]).toEqual([
+      false, true, true, true,
+    ]);
+    expect(client.listenerCount(moduleOf(T))).toBe(3);
+
+    client.off(moduleOf(T), () => {});
+    client.off(moduleOf(U), cb);
+    expect(client.listenerCount(moduleOf(T))).toBe(3);
+    client.destroy();
+  });
+
+  it("off(d, cb) removes an onBatch() subscription by its batch callback", () => {
+    const client = quiet();
+    const batchCb = () => {};
+    const sub = client.onBatch(moduleOf(T), batchCb);
+    client.off(moduleOf(T), batchCb);
+    expect(sub.active).toBe(false);
+    expect(client.listenerCount()).toBe(0);
+  });
+
+  it("off(d) stops every listener on d and nothing else", () => {
+    const client = quiet();
+    const a = client.on(moduleOf(T), () => {});
+    const b = client.onBatch(moduleOf(T), () => {});
+    const c = client.on(moduleOf(U), () => {});
+
+    client.off(moduleOf(T));
+    expect([a.active, b.active, c.active]).toEqual([false, false, true]);
+    expect(client.listenerCount()).toBe(1);
+    client.destroy();
+  });
+
+  it("off() with a descriptor that is not one of the three kinds is a no-op", () => {
+    const client = quiet();
+    const sub = client.on(moduleOf(T), () => {});
+    client.off({ kind: "bogus" } as unknown as EventDescriptor);
+    client.off(undefined as unknown as EventDescriptor);
+    client.removeAllListeners({ kind: "bogus" } as unknown as EventDescriptor);
+    expect(sub.active).toBe(true);
+    client.destroy();
+  });
+
+  it("removeAllListeners(d) stops only that descriptor's listeners", () => {
+    const client = quiet();
+    const a = client.on(moduleOf(T), () => {});
+    const c = client.on(moduleOf(U), () => {});
+    expect(client.removeAllListeners(moduleOf(T))).toBe(client);
+    expect([a.active, c.active]).toEqual([false, true]);
+    client.destroy();
+  });
+
+  it("removeAllListeners() leaves once() and stream() running", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter([makeEvent(1)]) });
+    const a = client.on(moduleOf(T), () => {});
+    const paused = client.onBatch(moduleOf(U), () => {});
+    paused.pause();
+    const pending = client.once(moduleOf(T), { fromVersion: 0n, pollInterval: 100 });
+    const it = client.stream(moduleOf(T), { fromVersion: 0n });
+
+    client.removeAllListeners();
+    expect([a.active, paused.active, paused.paused]).toEqual([false, false, false]);
+    expect(client.listenerCount()).toBe(0);
+
+    const next = it.next();
+    await advanceTimersByTimeAsync(0);
+    expect((await pending).version).toBe(1n);
+    expect((await next).value?.version).toBe(1n);
+    await it.return!();
     client.destroy();
   });
 });
