@@ -204,6 +204,32 @@ describe("FallbackAdapter", () => {
   });
 });
 
+describe("FallbackAdapter page finality", () => {
+  const finalPage = (version: number) => ({
+    events: [ev(version)],
+    nextCursor: String(version),
+    hasMore: true,
+    final: true,
+  });
+
+  it("keeps final on the first source's page and drops it on a backup's", async () => {
+    let primaryUp = true;
+    const primary: EventAdapter = {
+      async fetchEvents() {
+        if (!primaryUp) throw new StreamdNetworkError("down");
+        return finalPage(1);
+      },
+    };
+    const backup: EventAdapter = { fetchEvents: async () => finalPage(2) };
+    const fallback = new FallbackAdapter([primary, backup]);
+
+    expect((await fallback.fetchEvents(moduleDesc, {})).final).toBe(true);
+    primaryUp = false;
+    const page = await fallback.fetchEvents(moduleDesc, {});
+    expect(page).toEqual({ ...finalPage(2), final: false });
+  });
+});
+
 describe("FallbackAdapter head version", () => {
   const bare: EventAdapter = {
     fetchEvents: async () => ({ events: [], hasMore: false }),

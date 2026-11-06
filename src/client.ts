@@ -19,8 +19,7 @@ import {
   StreamdPollingError,
   StreamdTimeoutError,
 } from "./errors.js";
-import { generateId, onAbort } from "./utils.js";
-import { normalizeAddress } from "./filter.js";
+import { descriptorKey, generateId, onAbort } from "./utils.js";
 import { eventStream } from "./stream.js";
 import { RequestLimiter } from "./limiter.js";
 
@@ -41,36 +40,6 @@ function resolveLimiter(max: number | undefined): RequestLimiter {
     );
   }
   return new RequestLimiter(max);
-}
-
-function typeSet(types: unknown): unknown[] {
-  return Array.isArray(types) ? [...new Set(types)].sort() : [types];
-}
-
-/**
- * Value key for listener lookup: equal for descriptors that select the same
- * events, undefined for anything that is not one of the three kinds.
- */
-function descriptorKey(d: EventDescriptor | undefined): string | undefined {
-  switch (d?.kind) {
-    case "module":
-      return JSON.stringify(["module", typeSet(d.eventType)]);
-    case "handle":
-      return JSON.stringify([
-        "handle",
-        normalizeAddress(d.accountAddress) ?? d.accountAddress,
-        d.eventHandleStruct,
-        d.fieldName,
-      ]);
-    case "account":
-      return JSON.stringify([
-        "account",
-        normalizeAddress(d.accountAddress) ?? d.accountAddress,
-        d.eventTypes === undefined ? null : typeSet(d.eventTypes),
-      ]);
-    default:
-      return undefined;
-  }
 }
 
 /** An `on()` or `onBatch()` subscription, as `off()` and friends see it. */

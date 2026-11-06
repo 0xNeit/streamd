@@ -584,6 +584,28 @@ const streamd = new StreamdClient({
 });
 ```
 
+To skip the source when re-reading settled history, wrap an adapter with
+`CachingAdapter`. It stores only pages the adapter marks `final: true`,
+meaning the same request will always return the same page, and passes
+everything else through. `FullnodeScanAdapter` marks a page final when it
+started from a cursor, offset or `fromVersion` and read nothing at or past the
+chain head; a page that tails the head is never cached. Entries are dropped
+least recently used past `maxEntries` (default 1000):
+
+```ts
+import { CachingAdapter, FullnodeScanAdapter, StreamdClient } from "streamd";
+
+const streamd = new StreamdClient({
+  adapter: new CachingAdapter(new FullnodeScanAdapter(aptos), { maxEntries: 500 }),
+});
+```
+
+A cached page keeps being served after the fullnode prunes that history, where
+the node itself would answer 410. A custom adapter opts in by setting `final`
+on pages that cannot change; leave it unset when unsure. `RoutingAdapter` and
+`withHooks` pass the flag through, `FallbackAdapter` keeps it only on pages
+from its first source, and `MemoryAdapter` never sets it.
+
 For offline unit tests, pass `MemoryAdapter` with a list of events (`aptos` is
 optional when a custom `adapter` is supplied):
 

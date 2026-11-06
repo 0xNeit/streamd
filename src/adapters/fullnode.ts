@@ -214,6 +214,7 @@ export class FullnodeScanAdapter implements EventAdapter {
     const events: StreamdEvent[] = [];
     let scanned = 0;
     let hasMore = false;
+    let ranDry = false;
 
     while (events.length < wanted && next <= head) {
       if (options.toVersion !== undefined && next > options.toVersion) break;
@@ -224,7 +225,10 @@ export class FullnodeScanAdapter implements EventAdapter {
 
       const limit = Math.min(this.scanBatch, this.maxScan - scanned);
       const txns = await this.getTransactions(next, limit);
-      if (txns.length === 0) break;
+      if (txns.length === 0) {
+        ranDry = true;
+        break;
+      }
 
       let stoppedAtToVersion = false;
       for (const txn of txns) {
@@ -246,11 +250,18 @@ export class FullnodeScanAdapter implements EventAdapter {
     // than dropping events the cursor has already moved past.
     if (options.orderBy === "desc") events.reverse();
 
-    return {
+    const page: EventPage = {
       events,
       nextCursor: next.toString(),
       hasMore: hasMore || events.length >= wanted,
     };
+    // Everything scanned sits strictly below the head read before scanning, so
+    // later transactions cannot change it. A start taken from the head can, and
+    // so can a scan that ran dry below a head this node has not reached (the
+    // SDK caches ledger info per network, not per node).
+    const fixedStart = options.cursor !== undefined || options.fromVersion !== undefined;
+    if (fixedStart && !ranDry && next <= head) page.final = true;
+    return page;
   }
 
   /**
@@ -281,6 +292,9 @@ export class FullnodeScanAdapter implements EventAdapter {
     let scanned = 0;
     let hasMore = false;
     let exhausted = false;
+    // A full batch by sequence number never changes; a short one ended at the
+    // account's latest transaction, which a later request reads past.
+    let batchesFull = false;
 
     while (events.length < wanted) {
       if (scanned >= this.maxScan) {
@@ -294,6 +308,7 @@ export class FullnodeScanAdapter implements EventAdapter {
         seq,
         limit,
       );
+      batchesFull = (scanned === 0 || batchesFull) && txns.length === limit;
       if (txns.length === 0) {
         exhausted = true;
         break;
@@ -329,11 +344,18 @@ export class FullnodeScanAdapter implements EventAdapter {
       }
     }
 
-    return {
+    const page: EventPage = {
       events,
       nextCursor: seq.toString(),
       hasMore: exhausted ? false : hasMore || events.length >= wanted,
     };
+    const fixedStart =
+      options.cursor !== undefined ||
+      options.offset !== undefined ||
+      options.fromVersion !== undefined ||
+      options.toVersion !== undefined;
+    if (fixedStart && batchesFull) page.final = true;
+    return page;
   }
 
   /**
@@ -391,7 +413,12 @@ export class FullnodeScanAdapter implements EventAdapter {
     const nextCursor = (start + BigInt(raw.length)).toString();
     if (options.orderBy === "desc") events.reverse();
 
-    return { events, nextCursor, hasMore: raw.length >= limit };
+    // The start comes from the request, and a full page of a handle's events
+    // by sequence number never changes.
+    const full = raw.length >= limit;
+    return full
+      ? { events, nextCursor, hasMore: true, final: true }
+      : { events, nextCursor, hasMore: false };
   }
 
   /** Cursor wins over fromVersion; neither means "start at the head". */

@@ -223,6 +223,12 @@ export interface EventPage {
   nextCursor?: string;
   /** True when more data is immediately available (drives catch-up polling). */
   hasMore: boolean;
+  /**
+   * True only when this exact request will always return this exact page,
+   * which is what lets `CachingAdapter` reuse it. Only the adapter can say so,
+   * since only it can read its cursor; leave it unset when unsure.
+   */
+  final?: boolean;
 }
 
 // ---- Listener options ----

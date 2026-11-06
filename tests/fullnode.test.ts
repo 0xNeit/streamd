@@ -380,6 +380,59 @@ describe("FullnodeScanAdapter handle events", () => {
   });
 });
 
+describe("FullnodeScanAdapter page finality", () => {
+  const ten = Array.from({ length: 10 }, (_, i) => txn(i));
+  const moduleFinal = async (head: number, options: Record<string, unknown>) => {
+    const { aptos } = fakeNode(chain(head, ten));
+    // The SDK caches ledger info per network for 10s, across instances.
+    aptos.getLedgerInfo = async () => ({ ledger_version: String(head) }) as never;
+    const adapter = new FullnodeScanAdapter(aptos, { scanBatch: 2 });
+    return (await adapter.fetchEvents(moduleDesc, options)).final;
+  };
+
+  it("marks a module page final only when its scan stayed below the head", async () => {
+    expect(await moduleFinal(9, { fromVersion: 0n, limit: 3 })).toBe(true);
+    expect(await moduleFinal(9, { cursor: "2", toVersion: 4n })).toBe(true);
+    expect(await moduleFinal(9, { fromVersion: 6n, limit: 50 })).toBeUndefined();
+    expect(await moduleFinal(9, { fromVersion: 8n, limit: 1 })).toBeUndefined();
+    expect(await moduleFinal(20, { fromVersion: 8n, limit: 50 })).toBeUndefined();
+  });
+
+  it("never marks a module page final when its start came from the head", async () => {
+    expect(await moduleFinal(9, {})).toBeUndefined();
+    expect(await moduleFinal(9, { toVersion: 3n })).toBeUndefined();
+  });
+
+  const accountFinal = async (length: number, options: Record<string, unknown>) => {
+    const { aptos } = fakeNode(account(Array.from({ length }, (_, i) => txn(i))));
+    const adapter = new FullnodeScanAdapter(aptos, { scanBatch: 2 });
+    return (await adapter.fetchEvents(accountDesc, options)).final;
+  };
+
+  it("marks an account page final only when every batch came back full", async () => {
+    expect(await accountFinal(10, { offset: 0, limit: 3 })).toBe(true);
+    expect(await accountFinal(10, { cursor: "4", toVersion: 4n })).toBe(true);
+    expect(await accountFinal(5, { offset: 2, limit: 3 })).toBeUndefined();
+    expect(await accountFinal(4, { offset: 0, limit: 50 })).toBeUndefined();
+    expect(await accountFinal(4, { fromVersion: 0n, limit: 50 })).toBeUndefined();
+  });
+
+  it("never marks an account page final when its start came from the latest sequence number", async () => {
+    expect(await accountFinal(10, {})).toBeUndefined();
+  });
+
+  it("marks a handle page final only when the node returned a full page", async () => {
+    const events = [handleEvent(0, 3), handleEvent(1, 7), handleEvent(2, 9)];
+    const fetch = async (options: Record<string, unknown>) => {
+      const { aptos } = fakeNode(handle(events));
+      return (await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, options)).final;
+    };
+    expect(await fetch({ limit: 2 })).toBe(true);
+    expect(await fetch({ limit: 2, fromVersion: 8n })).toBe(true);
+    expect(await fetch({ cursor: "2", limit: 2 })).toBeUndefined();
+  });
+});
+
 describe("FullnodeScanAdapter errors", () => {
   const failing = () => ({ status: 429, data: { message: "slow down" } });
 
