@@ -7,6 +7,7 @@ import {
 } from "./timers.js";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { FallbackAdapter } from "../src/adapters/fallback.js";
+import { withHooks } from "../src/adapters/hooks.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { RoutingAdapter } from "../src/adapters/routing.js";
 import { StreamdClient } from "../src/client.js";
@@ -189,6 +190,30 @@ describe("StreamdClient", () => {
     expect(events).toHaveLength(1);
     expect(events[0].version).toBe(25n);
     expect(adapter.fetchEvents).toHaveBeenCalledTimes(3);
+
+    client.destroy();
+  });
+
+  it("getEvents through withHooks reports each page fetch once, and keeps relative starts working", async () => {
+    const requests: unknown[] = [];
+    const responses: number[] = [];
+    const adapter = withHooks(
+      new MemoryAdapter(Array.from({ length: 30 }, (_, i) => makeEvent(i + 1))),
+      {
+        onRequest: (request) => requests.push(request.options.cursor),
+        onResponse: (response) => responses.push(response.page!.events.length),
+      },
+    );
+    const client = new StreamdClient({ adapter });
+    const desc = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    const events = await client.getEvents(desc);
+    expect(events).toHaveLength(30);
+    expect(requests).toHaveLength(2);
+    expect(responses).toEqual([25, 5]);
+
+    const recent = await client.getEvents(desc, { fromVersion: -2n });
+    expect(recent.map((e) => e.version)).toEqual([28n, 29n, 30n]);
 
     client.destroy();
   });

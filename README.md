@@ -445,6 +445,24 @@ const streamd = new StreamdClient({
 });
 ```
 
+To log or time requests, wrap any adapter with `withHooks`. `onRequest` runs
+before each `fetchEvents` call and `onResponse` after it settles, with the
+`page` or the `error` and `durationMs` for the source call alone (time spent
+waiting on `maxConcurrentRequests` is not included). Hooks are synchronous; one
+that throws fails that fetch. `getHeadVersion` passes through unhooked:
+
+```ts
+import { FullnodeScanAdapter, StreamdClient, withHooks } from "streamd";
+
+const streamd = new StreamdClient({
+  adapter: withHooks(new FullnodeScanAdapter(aptos), {
+    onRequest: ({ descriptor }) => console.log("fetch", descriptor.kind),
+    onResponse: ({ durationMs, page }) =>
+      console.log(page ? `${page.events.length} events` : "failed", durationMs),
+  }),
+});
+```
+
 For offline unit tests, pass `MemoryAdapter` with a list of events (`aptos` is
 optional when a custom `adapter` is supplied):
 

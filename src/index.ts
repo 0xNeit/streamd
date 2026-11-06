@@ -1,6 +1,7 @@
 export { StreamdClient } from "./client.js";
 export { FallbackAdapter } from "./adapters/fallback.js";
 export { FullnodeScanAdapter } from "./adapters/fullnode.js";
+export { withHooks } from "./adapters/hooks.js";
 export { MemoryAdapter } from "./adapters/memory.js";
 export { RoutingAdapter } from "./adapters/routing.js";
 export { EventPoller } from "./poller.js";
@@ -26,6 +27,11 @@ export {
 } from "./filter.js";
 
 export type { FullnodeScanAdapterOptions } from "./adapters/fullnode.js";
+export type {
+  AdapterHooks,
+  AdapterRequest,
+  AdapterResponse,
+} from "./adapters/hooks.js";
 export type { RoutingAdapterRoutes } from "./adapters/routing.js";
 export type {
   FieldPath,
