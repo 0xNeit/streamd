@@ -26,7 +26,7 @@ const DEFAULT_MAX_ERRORS = 10;
 const DEFAULT_MAX_BACKOFF = 60_000;
 const MAX_DELAY = 2_147_483_647;
 
-function resolveMaxBackoff(maxBackoff: number | undefined): number {
+export function resolveMaxBackoff(maxBackoff: number | undefined): number {
   if (maxBackoff === undefined) return DEFAULT_MAX_BACKOFF;
   if (
     typeof maxBackoff !== "number" ||

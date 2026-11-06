@@ -2101,3 +2101,163 @@ describe("iterateEvents", () => {
     expect((await a.next()).done).toBe(true);
   });
 });
+
+describe("client-wide listener defaults", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const descriptor = { kind: "module", eventType: T } as const;
+  const failing = () => {
+    const at: number[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async () => {
+        at.push(Date.now());
+        throw new StreamdNetworkError("node 503", 503);
+      }),
+    };
+    return { adapter, at };
+  };
+
+  it("applies defaults to on() and lets a call override one field", async () => {
+    const { adapter, at } = failing();
+    const client = new StreamdClient({
+      adapter,
+      defaults: { pollInterval: 50, maxBackoff: 50, maxErrors: 2 },
+      onError: () => {},
+    });
+    const sub = client.on(descriptor, () => {});
+    await advanceTimersByTimeAsync(500);
+    expect(at.length).toBe(2);
+    expect(at[1]! - at[0]!).toBe(50);
+    expect(sub.active).toBe(false);
+
+    const { adapter: a2, at: at2 } = failing();
+    const c2 = new StreamdClient({
+      adapter: a2,
+      defaults: { pollInterval: 50, maxBackoff: 50, maxErrors: 2 },
+      onError: () => {},
+    });
+    c2.on(descriptor, () => {}, { maxErrors: 4, maxBackoff: undefined });
+    await advanceTimersByTimeAsync(500);
+    // maxErrors from the call, explicit-undefined maxBackoff still 50 from defaults.
+    expect(at2.length).toBe(4);
+    expect(at2.slice(1).map((t, i) => t - at2[i]!)).toEqual([50, 50, 50]);
+  });
+
+  it("prefers defaults.pollInterval over defaultPollInterval, and a call's over both", async () => {
+    const source = new MemoryAdapter([]);
+    const fetch = vi.spyOn(source, "fetchEvents");
+    const client = new StreamdClient({
+      adapter: source,
+      defaultPollInterval: 1000,
+      defaults: { pollInterval: 100 },
+    });
+    client.on(descriptor, () => {});
+    await advanceTimersByTimeAsync(300);
+    expect(fetch.mock.calls.length).toBe(4);
+    client.destroy();
+    fetch.mockClear();
+
+    client.on(descriptor, () => {}, { pollInterval: 300, fromVersion: undefined });
+    await advanceTimersByTimeAsync(300);
+    expect(fetch.mock.calls.length).toBe(2);
+    client.destroy();
+
+    const legacy = new StreamdClient({ adapter: source, defaultPollInterval: 200 });
+    fetch.mockClear();
+    legacy.on(descriptor, () => {}, { pollInterval: undefined });
+    await advanceTimersByTimeAsync(400);
+    expect(fetch.mock.calls.length).toBe(3);
+    legacy.destroy();
+  });
+
+  it("applies a default decode, replaced by a call's own", async () => {
+    const source = { ...makeEvent(10), data: { amount: "5", fee: "1" } };
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([source]),
+      defaults: { decode: ["amount"] },
+    });
+    const seen: unknown[] = [];
+    client.on(descriptor, (e) => void seen.push(e.data), { fromVersion: 0n });
+    client.on(descriptor, (e) => void seen.push(e.data), { fromVersion: 0n, decode: ["fee"] });
+    await advanceTimersByTimeAsync(0);
+    expect(seen).toEqual([
+      { amount: 5n, fee: "1" },
+      { amount: "5", fee: 1n },
+    ]);
+    client.destroy();
+  });
+
+  it("applies defaults to onBatch(), once() and stream()", async () => {
+    const events = [makeEvent(1), makeEvent(2), makeEvent(3)];
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter(events),
+      defaults: { batchSize: 2, pollInterval: 100 },
+    });
+    const batches: number[] = [];
+    client.onBatch(descriptor, (es) => void batches.push(es.length), { fromVersion: 0n });
+    await advanceTimersByTimeAsync(150);
+    expect(batches).toEqual([2, 1]);
+    client.destroy();
+
+    const { adapter, at } = failing();
+    const failingClient = new StreamdClient({
+      adapter,
+      defaults: { maxErrors: 1 },
+      onError: () => {},
+    });
+    const once = failingClient.once(descriptor).catch((e: unknown) => e);
+    await advanceTimersByTimeAsync(0);
+    expect(await once).toBeInstanceOf(StreamdPollingError);
+    expect(at.length).toBe(1);
+
+    const streamFail = failing();
+    const streamClient = new StreamdClient({
+      adapter: streamFail.adapter,
+      defaults: { maxErrors: 1 },
+      onError: () => {},
+    });
+    const loop = (async () => {
+      for await (const _ of streamClient.stream(descriptor)) void _;
+    })().catch((e: unknown) => e);
+    await advanceTimersByTimeAsync(0);
+    expect(await loop).toBeInstanceOf(StreamdPollingError);
+    expect(streamFail.at.length).toBe(1);
+  });
+
+  it("keeps listener tracking working for subscriptions made with defaults", () => {
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([]),
+      defaults: { pollInterval: 100 },
+    });
+    const cb = () => {};
+    client.on(descriptor, cb);
+    expect(client.listenerCount({ kind: "module", eventType: T })).toBe(1);
+    client.off({ kind: "module", eventType: T }, cb);
+    expect(client.listenerCount()).toBe(0);
+  });
+
+  it("rejects invalid or unsupported defaults at construction", () => {
+    const adapter = new MemoryAdapter([]);
+    const bad: unknown[] = [
+      { maxBackoff: -1 },
+      { dedupWindow: 1.5 },
+      { decode: [""] },
+      { decode: "amount" },
+      { fromVersion: 0n },
+      { onError: () => {} },
+      "fast",
+      null,
+      [],
+    ];
+    for (const defaults of bad) {
+      expect(
+        () => new StreamdClient({ adapter, defaults: defaults as never }),
+      ).toThrow(StreamdError);
+    }
+    expect(() => new StreamdClient({ adapter, defaults: { fromVersion: 0n } as never })).toThrow(
+      /Unsupported listener default: fromVersion/,
+    );
+    expect(() => new StreamdClient({ adapter, defaults: undefined })).not.toThrow();
+  });
+});
