@@ -71,7 +71,7 @@ function toStreamdEvents(
   return out;
 }
 
-function toStreamdError(err: unknown, what: string): StreamdError {
+export function toStreamdError(err: unknown, what: string): StreamdError {
   if (err instanceof StreamdError) return err;
   const status = (err as { status?: unknown } | null)?.status;
   return new StreamdNetworkError(
