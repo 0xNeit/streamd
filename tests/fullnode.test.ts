@@ -496,3 +496,48 @@ describe("FullnodeScanAdapter earliest version", () => {
     expect((err as StreamdNetworkError).statusCode).toBe(503);
   });
 });
+
+describe("FullnodeScanAdapter blocks", () => {
+  it("maps a block to bigints without fetching its transactions", async () => {
+    const { aptos, calls } = fakeNode((path) => {
+      if (path === "blocks/by_height/42") {
+        return {
+          data: {
+            block_height: "42",
+            block_hash: "0xabc",
+            block_timestamp: "1793063568344144",
+            first_version: "7781054619",
+            last_version: "7781054626",
+            transactions: null,
+          },
+        };
+      }
+      throw new Error(`unexpected path ${path}`);
+    });
+    const block = await new FullnodeScanAdapter(aptos).getBlock(
+      { kind: "module", eventType: TYPE },
+      42n,
+    );
+
+    expect(block).toEqual({
+      height: 42n,
+      firstVersion: 7781054619n,
+      lastVersion: 7781054626n,
+      timestamp: 1793063568344144n,
+    });
+    expect(calls[0]!.params.with_transactions).toBe(false);
+  });
+
+  it("surfaces a pruned block as StreamdNetworkError with its status", async () => {
+    const { aptos } = fakeNode(() => ({
+      status: 410,
+      data: { error_code: "block_pruned", message: "Block(1) has been pruned" },
+    }));
+    const err = await new FullnodeScanAdapter(aptos)
+      .getBlock({ kind: "module", eventType: TYPE }, 1n)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(410);
+  });
+});

@@ -249,3 +249,27 @@ describe("RoutingAdapter earliest version", () => {
     expect((err as Error).message).toContain('"account"');
   });
 });
+
+describe("RoutingAdapter blocks", () => {
+  const block = { height: 5n, firstVersion: 10n, lastVersion: 12n, timestamp: 1n };
+  const bare: EventAdapter = {
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+  };
+
+  it("asks the adapter routed for the descriptor's kind", async () => {
+    const withBlocks: EventAdapter = { ...bare, getBlock: vi.fn(async () => block) };
+    const router = new RoutingAdapter({ module: withBlocks, default: bare });
+
+    expect(await router.getBlock(moduleDesc, 5n)).toBe(block);
+    expect(withBlocks.getBlock).toHaveBeenCalledWith(moduleDesc, 5n);
+  });
+
+  it("throws StreamdError when the routed adapter cannot report blocks", async () => {
+    const router = new RoutingAdapter({ account: bare });
+
+    const err = await router.getBlock(accountDesc, 5n).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain('"account"');
+  });
+});

@@ -127,6 +127,16 @@ export interface EventFilter {
   fromVersion?: bigint | "earliest";
   /** End at this version (inclusive) */
   toVersion?: bigint;
+  /**
+   * Start at the first version of this block height (inclusive), read once
+   * from `EventAdapter.getBlock`. Cannot be combined with `fromVersion`.
+   */
+  fromBlock?: bigint;
+  /**
+   * End at the last version of this block height (inclusive), read once from
+   * `EventAdapter.getBlock`. Cannot be combined with `toVersion`.
+   */
+  toBlock?: bigint;
   /** Maximum events to return, counted *after* `where` is applied */
   limit?: number;
   /** Offset for pagination */
@@ -180,7 +190,14 @@ export interface EventFilter {
 export interface FetchOptions
   extends Omit<
     EventFilter,
-    "fromVersion" | "where" | "decode" | "maxPages" | "retries" | "signal"
+    | "fromVersion"
+    | "fromBlock"
+    | "toBlock"
+    | "where"
+    | "decode"
+    | "maxPages"
+    | "retries"
+    | "signal"
   > {
   /** Start from this version (inclusive); always absolute by the time an adapter sees it. */
   fromVersion?: bigint;
@@ -315,7 +332,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
@@ -444,4 +461,20 @@ export interface EventAdapter {
    * which history is pruned. Optional; `fromVersion: "earliest"` needs it.
    */
   getEarliestVersion?(descriptor: EventDescriptor): Promise<bigint>;
+  /**
+   * The block at `height` on the chain serving `descriptor`. Optional;
+   * `fromBlock`/`toBlock` on a query need it.
+   */
+  getBlock?(descriptor: EventDescriptor, height: bigint): Promise<BlockInfo>;
+}
+
+/** A block's position in the ledger, as `EventAdapter.getBlock` reports it. */
+export interface BlockInfo {
+  height: bigint;
+  /** First transaction version in the block (inclusive). */
+  firstVersion: bigint;
+  /** Last transaction version in the block (inclusive). */
+  lastVersion: bigint;
+  /** Block time in microseconds since the Unix epoch. */
+  timestamp: bigint;
 }

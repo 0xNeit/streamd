@@ -297,3 +297,33 @@ describe("FallbackAdapter earliest version", () => {
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
   });
 });
+
+describe("FallbackAdapter blocks", () => {
+  const block = { height: 5n, firstVersion: 10n, lastVersion: 12n, timestamp: 1n };
+  const bare: EventAdapter = {
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+  };
+
+  it("skips adapters without blocks and falls back on a network error", async () => {
+    const down: EventAdapter = {
+      ...bare,
+      getBlock: vi.fn(async () => {
+        throw new StreamdNetworkError("503", 503);
+      }),
+    };
+    const up: EventAdapter = { ...bare, getBlock: vi.fn(async () => block) };
+    const fallback = new FallbackAdapter([bare, down, up]);
+
+    expect(await fallback.getBlock(moduleDesc, 5n)).toBe(block);
+    expect(down.getBlock).toHaveBeenCalledTimes(1);
+    expect(up.getBlock).toHaveBeenCalledWith(moduleDesc, 5n);
+  });
+
+  it("throws StreamdError when no adapter reports blocks", async () => {
+    const err = await new FallbackAdapter([bare])
+      .getBlock(moduleDesc, 5n)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  });
+});

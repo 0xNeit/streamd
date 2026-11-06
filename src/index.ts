@@ -47,6 +47,7 @@ export type {
 export type {
   AccountEventDescriptor,
   BatchCallback,
+  BlockInfo,
   EventAdapter,
   EventCallback,
   EventDescriptor,

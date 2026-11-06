@@ -212,6 +212,122 @@ describe("EventQuery earliest start", () => {
   });
 });
 
+describe("EventQuery block range", () => {
+  // Block n holds versions 10n..10n+9.
+  function adapter() {
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>(async () => ({
+      events: [event(25)],
+      nextCursor: "x",
+      hasMore: false,
+    }));
+    const getBlock = vi.fn(async (_d: EventDescriptor, height: bigint) => ({
+      height,
+      firstVersion: height * 10n,
+      lastVersion: height * 10n + 9n,
+      timestamp: 0n,
+    }));
+    return { fetchEvents, getBlock };
+  }
+
+  it("turns fromBlock and toBlock into an inclusive version range", async () => {
+    const source = adapter();
+    await new EventQuery(source).getEvents(descriptor, { fromBlock: 2n, toBlock: 4n });
+
+    expect(source.getBlock.mock.calls.map((c) => c[1])).toEqual([2n, 4n]);
+    expect(source.getBlock.mock.calls[0]![0]).toBe(descriptor);
+    const options = source.fetchEvents.mock.calls[0]![1];
+    expect(options).toMatchObject({ fromVersion: 20n, toVersion: 49n });
+    expect("fromBlock" in options || "toBlock" in options).toBe(false);
+  });
+
+  it("keeps the other bound when only one block bound is set", async () => {
+    const from = adapter();
+    await new EventQuery(from).getEvents(descriptor, { fromBlock: 3n, toVersion: 100n });
+    expect(from.fetchEvents.mock.calls[0]![1]).toMatchObject({ fromVersion: 30n, toVersion: 100n });
+    expect(from.getBlock).toHaveBeenCalledTimes(1);
+
+    const to = adapter();
+    await new EventQuery(to).getEvents(descriptor, { fromVersion: 5n, toBlock: 1n });
+    expect(to.fetchEvents.mock.calls[0]![1]).toMatchObject({ fromVersion: 5n, toVersion: 19n });
+  });
+
+  it("looks blocks up once per query, not per page", async () => {
+    const source = adapter();
+    source.fetchEvents
+      .mockResolvedValueOnce({ events: [event(20)], nextCursor: "21", hasMore: true })
+      .mockResolvedValueOnce({ events: [event(22)], nextCursor: "23", hasMore: false });
+    const events = await new EventQuery(source).getEvents(descriptor, { fromBlock: 2n, toBlock: 2n });
+
+    expect(events.map((e) => e.version)).toEqual([20n, 22n]);
+    expect(source.getBlock).toHaveBeenCalledTimes(2);
+    expect(source.fetchEvents.mock.calls[1]![1]).toMatchObject({ cursor: "21", toVersion: 29n });
+  });
+
+  it("looks nothing up when no fetch happens", async () => {
+    const source = adapter();
+    await new EventQuery(source).getEvents(descriptor, { fromBlock: 1n, limit: 0 });
+    await new EventQuery(source).getEvents(descriptor, { fromBlock: 1n, maxPages: 0 });
+    expect(source.getBlock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ fromBlock: 1n, fromVersion: 5n }, "fromBlock or fromVersion"],
+    [{ fromBlock: 1n, fromVersion: "earliest" as const }, "fromBlock or fromVersion"],
+    [{ toBlock: 1n, toVersion: 5n }, "toBlock or toVersion"],
+    [{ fromBlock: 3n, toBlock: 2n }, "after toBlock"],
+    [{ fromBlock: -1n }, "Invalid fromBlock"],
+    [{ toBlock: 2 as unknown as bigint }, "Invalid toBlock"],
+  ])("rejects %p before any adapter call", async (filter, message) => {
+    const source = adapter();
+    const err = await new EventQuery(source)
+      .getEvents(descriptor, filter as EventFilter)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdError);
+    expect((err as Error).message).toContain(message);
+    expect(source.getBlock).not.toHaveBeenCalled();
+    expect(source.fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("rejects when the adapter cannot look blocks up", async () => {
+    const { fetchEvents } = adapter();
+    const err = await new EventQuery({ fetchEvents })
+      .getEvents(descriptor, { toBlock: 1n })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("getBlock");
+    expect(fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("applies the range to a descending query and to iterateEvents", async () => {
+    const desc = adapter();
+    await new EventQuery(desc).getEvents(descriptor, { fromBlock: 2n, toBlock: 3n, orderBy: "desc" });
+    expect(desc.fetchEvents.mock.calls[0]![1]).toMatchObject({ fromVersion: 20n, toVersion: 39n, orderBy: "asc" });
+
+    const iter = adapter();
+    const seen: bigint[] = [];
+    for await (const e of new EventQuery(iter).iterateEvents(descriptor, { fromBlock: 2n })) {
+      seen.push(e.version);
+    }
+    expect(seen).toEqual([25n]);
+    expect(iter.fetchEvents.mock.calls[0]![1].fromVersion).toBe(20n);
+  });
+
+  it("propagates the adapter's error for a block it cannot serve", async () => {
+    const source = adapter();
+    source.getBlock.mockRejectedValueOnce(new StreamdNetworkError("pruned", 410));
+    const err = await new EventQuery(source)
+      .getEvents(descriptor, { fromBlock: 1n })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(410);
+    expect(source.fetchEvents).not.toHaveBeenCalled();
+  });
+});
+
 describe("EventQuery decode", () => {
   function amountEvent(version: number, amount: unknown) {
     return { ...event(version), data: { amount } };
@@ -451,6 +567,21 @@ describe("EventQuery retries", () => {
     await drain(result);
     expect(getEarliestVersion).toHaveBeenCalledTimes(2);
     expect(fetchEvents.mock.calls[0]![1].fromVersion).toBe(5n);
+  });
+
+  it("retries a failed block lookup", async () => {
+    const getBlock = vi.fn<NonNullable<EventAdapter["getBlock"]>>()
+      .mockRejectedValueOnce(down())
+      .mockResolvedValue({ height: 4n, firstVersion: 40n, lastVersion: 49n, timestamp: 0n });
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>().mockResolvedValue(page([], "50", false));
+    const result = new EventQuery({ fetchEvents, getBlock }).getEvents(descriptor, {
+      fromBlock: 4n,
+      retries: 1,
+    });
+
+    await drain(result);
+    expect(getBlock).toHaveBeenCalledTimes(2);
+    expect(fetchEvents.mock.calls[0]![1].fromVersion).toBe(40n);
   });
 
   it("retries a failed middle page of a descending walk", async () => {

@@ -1,4 +1,5 @@
 import type {
+  BlockInfo,
   EventAdapter,
   EventDescriptor,
   EventPage,
@@ -75,5 +76,14 @@ export class FallbackAdapter implements EventAdapter {
     return tryInOrder(reporting, (adapter) =>
       adapter.getEarliestVersion!(descriptor),
     );
+  }
+
+  /** From the first adapter that reports blocks, with the same fallback rules. */
+  async getBlock(descriptor: EventDescriptor, height: bigint): Promise<BlockInfo> {
+    const reporting = this.adapters.filter((a) => a.getBlock !== undefined);
+    if (reporting.length === 0) {
+      throw new StreamdError("No FallbackAdapter source reports blocks");
+    }
+    return tryInOrder(reporting, (adapter) => adapter.getBlock!(descriptor, height));
   }
 }
