@@ -105,7 +105,7 @@ export interface StreamdEvent<TData = unknown> {
  *
  * Used for anything the chain APIs can't filter on, most importantly fields
  * or addresses inside a module event's `data`. See `whereField`,
- * `involvesAddress`, `ofType`, `every`, `some`, and `not`.
+ * `involvesAddress`, `ofType`, `ofModule`, `every`, `some`, and `not`.
  */
 export type EventPredicate = (event: StreamdEvent) => boolean;
 
