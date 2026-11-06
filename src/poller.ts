@@ -44,6 +44,7 @@ export class EventPoller {
   private currentInterval: number;
   private _active = false;
   private _paused = false;
+  private caughtUp = false;
   /** Bumped by start(), so a poll left over from an earlier run can tell. */
   private generation = 0;
   /**
@@ -60,6 +61,7 @@ export class EventPoller {
   private readonly fromVersion?: bigint;
   private readonly where?: EventPredicate;
   private readonly onError?: (error: Error) => void;
+  private readonly onCaughtUp?: () => void;
   private readonly signal?: AbortSignal;
   private readonly abort = () => this.stop();
 
@@ -76,6 +78,7 @@ export class EventPoller {
     this.fromVersion = options.fromVersion;
     this.where = options.where;
     this.onError = options.onError;
+    this.onCaughtUp = options.onCaughtUp;
     this.signal = options.signal;
     this.currentInterval = this.pollInterval;
     this.position = new CursorManager(options.cursor, options.dedupWindow);
@@ -197,11 +200,24 @@ export class EventPoller {
       this.consecutiveErrors = 0;
       this.currentInterval = this.pollInterval;
       this.lastSuccessAt = Date.now();
+      if (!page.hasMore) this.signalCaughtUp();
+      // onCaughtUp or its error handler may have stopped or paused the poller.
+      if (!this.isCurrent(gen)) return;
 
       // Catch-up mode: the adapter says more is waiting, so don't idle.
       this.schedulePoll(page.hasMore ? 0 : this.pollInterval);
     } catch (err) {
       this.handlePollError(err, gen);
+    }
+  }
+
+  private signalCaughtUp(): void {
+    if (this.caughtUp || this.onCaughtUp === undefined) return;
+    this.caughtUp = true;
+    try {
+      this.onCaughtUp();
+    } catch (err) {
+      this.report(new StreamdError("onCaughtUp threw", err));
     }
   }
 

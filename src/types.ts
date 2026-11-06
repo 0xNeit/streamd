@@ -204,6 +204,12 @@ export interface ListenerOptions {
    */
   onError?: (error: Error) => void;
   /**
+   * Called once, the first time a poll delivers its whole page and the adapter
+   * reports nothing more waiting (`hasMore: false`). Not awaited; a throw goes
+   * to `onError` and does not count toward `maxErrors`.
+   */
+  onCaughtUp?: () => void;
+  /**
    * Aborting stops the subscription as `unsubscribe()` does, without calling
    * `onError`. Already aborted, it never polls. `once()` and `stream()` also
    * reject with the signal's `reason`.

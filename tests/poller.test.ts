@@ -1677,3 +1677,125 @@ describe("EventPoller pause and resume", () => {
     poller.stop();
   });
 });
+
+describe("EventPoller onCaughtUp", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("fires once after the backlog is delivered, not before", async () => {
+    const order: string[] = [];
+    const adapter = createMockAdapter([
+      page([makeEvent(1)], 1, true),
+      page([makeEvent(2)], 2, false),
+    ]);
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      (e) => void order.push(`event ${e.version}`),
+      { pollInterval: 1000, onCaughtUp: () => void order.push("caught up") },
+    );
+    poller.start();
+
+    await advanceTimersByTimeAsync(0);
+    expect(order).toEqual(["event 1"]);
+    await advanceTimersByTimeAsync(1);
+    expect(order).toEqual(["event 1", "event 2", "caught up"]);
+    expect(poller.cursor).toBe("2");
+
+    await advanceTimersByTimeAsync(3000);
+    expect(mocked(adapter.fetchEvents).mock.calls.length).toBeGreaterThanOrEqual(4);
+    expect(order.filter((o) => o === "caught up")).toHaveLength(1);
+    poller.stop();
+  });
+
+  it("is not called for a failed poll", async () => {
+    const onCaughtUp = vi.fn();
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async () => {
+        throw new StreamdNetworkError("down");
+      }),
+    };
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      onCaughtUp,
+      onError: vi.fn(),
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+    expect(onCaughtUp).not.toHaveBeenCalled();
+    poller.stop();
+  });
+
+  it("reports a throw through onError and keeps polling", async () => {
+    const onError = vi.fn();
+    const adapter = createMockAdapter([page([], 1)]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), {
+      pollInterval: 1000,
+      onError,
+      onCaughtUp: () => {
+        throw new Error("boom");
+      },
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(onError).toHaveBeenCalledTimes(1);
+    const err = mocked(onError).mock.calls[0]![0] as StreamdError;
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdPollingError);
+    expect((err.cause as Error).message).toBe("boom");
+    expect(poller.status.consecutiveErrors).toBe(0);
+
+    await advanceTimersByTimeAsync(1000);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(2);
+    expect(poller.active).toBe(true);
+    poller.stop();
+  });
+
+  it("schedules no further poll when it stops the poller", async () => {
+    const adapter = createMockAdapter([page([], 1)]);
+    const poller: EventPoller = new EventPoller(adapter, descriptor, vi.fn(), {
+      pollInterval: 1000,
+      onCaughtUp: () => poller.stop(),
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(2000);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+    expect(poller.active).toBe(false);
+  });
+
+  it("fires after resume when a pause came before it", async () => {
+    const onCaughtUp = vi.fn();
+    const adapter = createMockAdapter([
+      page([makeEvent(1)], 1, true),
+      page([makeEvent(2)], 2, false),
+    ]);
+    const poller: EventPoller = new EventPoller(
+      adapter,
+      descriptor,
+      (e) => {
+        if (e.version === 1n) poller.pause();
+      },
+      { pollInterval: 1000, onCaughtUp },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.paused).toBe(true);
+    expect(onCaughtUp).not.toHaveBeenCalled();
+
+    poller.resume();
+    await advanceTimersByTimeAsync(0);
+    expect(onCaughtUp).toHaveBeenCalledTimes(1);
+
+    poller.pause();
+    poller.resume();
+    await advanceTimersByTimeAsync(2000);
+    expect(onCaughtUp).toHaveBeenCalledTimes(1);
+    poller.stop();
+  });
+});

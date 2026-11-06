@@ -97,6 +97,21 @@ discarded. While paused, `active` (and `sub.status.active`) is `false`. `unsubsc
 `destroy()`, or the `signal` aborting still ends a paused subscription, and `resume()` never
 revives one that has ended, including after `maxErrors`.
 
+### Caught-up signal
+
+```ts
+streamd.on(descriptor, handle, {
+  fromVersion: 3_000_000_000n,
+  onCaughtUp: () => console.log("backfill done, now live"),
+});
+```
+
+`onCaughtUp` is called once, the first time a poll delivers its whole page and the adapter
+reports nothing more waiting. Started from history, that is after the backfill; started at
+the head, after the first successful poll. It is not called again, even after a pause and
+resume. A throw from it goes to `onError` without counting toward `maxErrors`. `once()` and
+`stream()` accept it too.
+
 ### Iterate live events
 
 ```ts
