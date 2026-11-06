@@ -260,6 +260,12 @@ export interface StreamdConfig {
    * docs for the contract).
    */
   adapter?: EventAdapter;
+  /**
+   * Most adapter calls (`fetchEvents` and `getHeadVersion`) this client has in
+   * flight at once, across all subscriptions and queries; a positive integer.
+   * Further calls wait in order. Omit for no limit.
+   */
+  maxConcurrentRequests?: number;
 }
 
 // ---- Subscription handle ----

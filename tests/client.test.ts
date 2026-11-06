@@ -1527,3 +1527,98 @@ describe("StreamdClient relative start", () => {
     expect(events.map((e) => e.version)).toEqual([9n, 10n]);
   });
 });
+
+describe("maxConcurrentRequests", () => {
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** Every call waits until released, so the test controls how many are in flight. */
+  function slowAdapter() {
+    const pending: (() => void)[] = [];
+    const calls: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const hold = <T>(kind: string, value: T) =>
+      new Promise<T>((resolve) => {
+        calls.push(kind);
+        peak = Math.max(peak, ++inFlight);
+        pending.push(() => (inFlight--, resolve(value)));
+      });
+    const adapter: EventAdapter = {
+      fetchEvents: () => hold("fetch", { events: [], nextCursor: "c", hasMore: false }),
+      getHeadVersion: () => hold("head", 100n),
+    };
+    const releaseAll = () => pending.splice(0).forEach((release) => release());
+    return { adapter, calls, releaseAll, peak: () => peak };
+  }
+
+  it("caps adapter calls across subscriptions and queries, counting getHeadVersion", async () => {
+    const slow = slowAdapter();
+    const client = new StreamdClient({ adapter: slow.adapter, maxConcurrentRequests: 2 });
+    client.on(descriptor, () => {});
+    client.on(descriptor, () => {}, { fromVersion: -10n });
+    client.on(descriptor, () => {});
+    const query = client.getEvents(descriptor);
+    await advanceTimersByTimeAsync(0);
+    expect(slow.calls.length).toBe(2);
+
+    for (let i = 0; i < 4; i++) {
+      slow.releaseAll();
+      await advanceTimersByTimeAsync(0);
+    }
+    expect(await query).toEqual([]);
+    expect(slow.calls.filter((c) => c === "head").length).toBe(1);
+    expect(slow.calls.filter((c) => c === "fetch").length).toBe(4);
+    expect(slow.peak()).toBe(2);
+    client.destroy();
+  });
+
+  it("never calls the adapter for a subscription unsubscribed while queued", async () => {
+    const slow = slowAdapter();
+    const client = new StreamdClient({ adapter: slow.adapter, maxConcurrentRequests: 1 });
+    client.on(descriptor, () => {});
+    const onError = vi.fn();
+    const queued = client.on(descriptor, () => {}, { onError });
+    await advanceTimersByTimeAsync(0);
+    queued.unsubscribe();
+    slow.releaseAll();
+    await advanceTimersByTimeAsync(0);
+
+    expect(slow.calls).toEqual(["fetch"]);
+    expect(onError).not.toHaveBeenCalled();
+    client.destroy();
+  });
+
+  it("rejects a query aborted while queued without calling the adapter for it", async () => {
+    const slow = slowAdapter();
+    const client = new StreamdClient({ adapter: slow.adapter, maxConcurrentRequests: 1 });
+    client.on(descriptor, () => {});
+    await advanceTimersByTimeAsync(0);
+    const controller = new AbortController();
+    const query = client.getEvents(descriptor, { signal: controller.signal });
+    await advanceTimersByTimeAsync(0);
+    const reason = new Error("stop");
+    controller.abort(reason);
+    await expect(query).rejects.toBe(reason);
+    slow.releaseAll();
+    await advanceTimersByTimeAsync(0);
+
+    expect(slow.calls).toEqual(["fetch"]);
+    client.destroy();
+  });
+
+  it("rejects a cap that is not a positive integer", () => {
+    for (const bad of [0, -1, 1.5, NaN, Infinity, "2"]) {
+      expect(
+        () => new StreamdClient({ adapter: slowAdapter().adapter, maxConcurrentRequests: bad as number }),
+      ).toThrow(StreamdError);
+    }
+  });
+});

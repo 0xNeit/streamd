@@ -234,6 +234,19 @@ Aborting `on()` unsubscribes quietly without calling `onError`. Aborting
 paging and rejects with `signal.reason`. An already-aborted signal never
 fetches.
 
+### Limit concurrent requests
+
+```ts
+const streamd = new StreamdClient({ aptos, maxConcurrentRequests: 4 });
+```
+
+At most that many adapter calls run at once across every subscription and query on the
+client; the rest wait their turn in order. Both `fetchEvents` and the `getHeadVersion` read
+behind a negative `fromVersion` count. The unit is one adapter call, not one HTTP request:
+a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
+still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
+dropped without reaching the adapter. Omit the option for no limit.
+
 ### Clean up
 
 ```ts

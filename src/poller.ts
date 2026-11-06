@@ -16,6 +16,7 @@ import {
 } from "./errors.js";
 import { CursorManager } from "./cursor.js";
 import { resolveFromVersion } from "./utils.js";
+import { RequestLimiter } from "./limiter.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
 const DEFAULT_BATCH_SIZE = 25;
@@ -78,6 +79,7 @@ export class EventPoller {
     private readonly descriptor: EventDescriptor,
     delivery: Delivery,
     options: ListenerOptions = {},
+    private readonly limiter = new RequestLimiter(),
   ) {
     if (typeof delivery === "function") this.callback = delivery;
     else this.onBatch = delivery.batch;
@@ -185,18 +187,20 @@ export class EventPoller {
 
   private async poll(): Promise<void> {
     const gen = this.generation;
+    // A call still queued once this run has ended is dropped unstarted.
+    const adapter = this.limiter.wrap(this.adapter, () => !this.isCurrent(gen));
     try {
       await this.delivering;
       if (!this.isCurrent(gen)) return;
       if (this.position.token === undefined) {
         this.fromVersion = await resolveFromVersion(
-          this.adapter,
+          adapter,
           this.descriptor,
           this.fromVersion,
         );
         if (!this.isCurrent(gen)) return;
       }
-      const page = await this.adapter.fetchEvents(this.descriptor, {
+      const page = await adapter.fetchEvents(this.descriptor, {
         // Once we have a cursor it supersedes fromVersion, which only seeds
         // the very first poll.
         cursor: this.position.token,
