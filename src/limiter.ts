@@ -50,6 +50,10 @@ export class RequestLimiter {
       view.getEarliestVersion = (descriptor) =>
         this.run(() => adapter.getEarliestVersion!(descriptor), cancelled);
     }
+    if (adapter.getBlock !== undefined) {
+      view.getBlock = (descriptor, height) =>
+        this.run(() => adapter.getBlock!(descriptor, height), cancelled);
+    }
     return view;
   }
 

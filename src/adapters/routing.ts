@@ -1,4 +1,5 @@
 import type {
+  BlockInfo,
   EventAdapter,
   EventDescriptor,
   EventPage,
@@ -95,6 +96,16 @@ export class RoutingAdapter implements EventAdapter {
       );
     }
     return adapter.getEarliestVersion(descriptor);
+  }
+
+  async getBlock(descriptor: EventDescriptor, height: bigint): Promise<BlockInfo> {
+    const adapter = this.selectAdapter(descriptor);
+    if (adapter.getBlock === undefined) {
+      throw new StreamdError(
+        `The adapter for descriptor kind "${descriptor.kind}" does not report blocks`,
+      );
+    }
+    return adapter.getBlock(descriptor, height);
   }
 
   private selectAdapter(descriptor: EventDescriptor): EventAdapter {
