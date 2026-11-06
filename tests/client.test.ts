@@ -1547,6 +1547,54 @@ describe("StreamdClient latest-first queries", () => {
   });
 });
 
+describe("StreamdClient query retries", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+  it("getEvents() with retries recovers from a failed page", async () => {
+    const memory = new MemoryAdapter(Array.from({ length: 30 }, (_, i) => makeEvent(i + 1)));
+    let failures = 1;
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) =>
+        o.cursor !== undefined && failures-- > 0
+          ? Promise.reject(new StreamdNetworkError("node down", 503))
+          : memory.fetchEvents(d, o),
+    };
+    const client = new StreamdClient({ adapter });
+    const query = client.getEvents(descriptor, { retries: 1 });
+    await advanceTimersByTimeAsync(1010);
+
+    expect((await query).map((e) => e.version)).toEqual(
+      Array.from({ length: 30 }, (_, i) => BigInt(i + 1)),
+    );
+  });
+
+  it("a query waiting to retry does not hold a maxConcurrentRequests slot", async () => {
+    const calls: string[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: async (d) => {
+        const type = (d as ModuleEventDescriptor).eventType as string;
+        calls.push(type);
+        if (type.endsWith("Flaky") && calls.length === 1) {
+          throw new StreamdNetworkError("node down", 503);
+        }
+        return { events: [], nextCursor: "c", hasMore: false };
+      },
+    };
+    const client = new StreamdClient({ adapter, maxConcurrentRequests: 1 });
+    const flaky = client.getEvents({ kind: "module", eventType: "0x1::test::Flaky" }, { retries: 1 });
+    await advanceTimersByTimeAsync(0);
+    await client.getEvents(descriptor);
+
+    expect(calls).toEqual(["0x1::test::Flaky", "0x1::test::Event"]);
+    await advanceTimersByTimeAsync(1010);
+    expect(await flaky).toEqual([]);
+    expect(calls.length).toBe(3);
+  });
+});
+
 describe("maxConcurrentRequests", () => {
   const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
 

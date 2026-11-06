@@ -223,6 +223,17 @@ This returns the last `limit` matches of the range, newest first. Adapters only 
 forward, so the whole range is still walked: bound it with `fromVersion` or `maxPages`.
 `getEventPages` yields the same events in `pageSize` chunks once the walk ends.
 
+To ride out a flaky node, pass `retries`:
+
+```ts
+const events = await streamd.getEvents(descriptor, { fromVersion: 1_000_000n, retries: 3 });
+```
+
+A failed page is retried up to `retries` times, waiting 1s, 2s, 4s and so on (capped at
+60s) between attempts, then the query rejects with the last error. Only network failures
+are retried: any other `StreamdError` means the request itself is wrong and rejects at once.
+`signal` cancels a wait.
+
 > [!NOTE]
 > Renamed in 0.x: `getLogs` is now `getEvents` and `getLogsIterator` is now
 > `getEventPages`. Arguments and results are unchanged.
