@@ -453,6 +453,92 @@ describe("EventQuery orderBy desc", () => {
   });
 });
 
+describe("EventQuery fromTime", () => {
+  // Block n holds versions 10n..10n+9 and is stamped n * 1000.
+  function adapter() {
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>(async () => ({
+      events: [event(25)],
+      nextCursor: "x",
+      hasMore: false,
+    }));
+    const getBlockHeights = vi.fn(async (_d: EventDescriptor) => ({ oldest: 0n, newest: 99n }));
+    const getBlock = vi.fn(async (_d: EventDescriptor, height: bigint) => ({
+      height,
+      firstVersion: height * 10n,
+      lastVersion: height * 10n + 9n,
+      timestamp: height * 1000n,
+    }));
+    return { fetchEvents, getBlockHeights, getBlock };
+  }
+
+  it("starts at the first block stamped at or after the time, keeping toVersion", async () => {
+    const source = adapter();
+    await new EventQuery(source).getEvents(descriptor, { fromTime: 41_500n, toVersion: 600n });
+
+    const options = source.fetchEvents.mock.calls[0]![1];
+    expect(options).toMatchObject({ fromVersion: 420n, toVersion: 600n });
+    expect("fromTime" in options).toBe(false);
+    expect(source.getBlockHeights.mock.calls[0]![0]).toBe(descriptor);
+  });
+
+  it("combines with toBlock", async () => {
+    const source = adapter();
+    await new EventQuery(source).getEvents(descriptor, { fromTime: 3000n, toBlock: 5n });
+    expect(source.fetchEvents.mock.calls[0]![1]).toMatchObject({ fromVersion: 30n, toVersion: 59n });
+  });
+
+  it("searches once per query, not per page, and not when no fetch happens", async () => {
+    const source = adapter();
+    source.fetchEvents
+      .mockResolvedValueOnce({ events: [event(420)], nextCursor: "421", hasMore: true })
+      .mockResolvedValueOnce({ events: [event(422)], nextCursor: "423", hasMore: false });
+    const events = await new EventQuery(source).getEvents(descriptor, { fromTime: 42_000n });
+
+    expect(events.map((e) => e.version)).toEqual([420n, 422n]);
+    expect(source.getBlockHeights).toHaveBeenCalledTimes(1);
+    expect(source.fetchEvents.mock.calls[1]![1]).toMatchObject({ cursor: "421", fromVersion: undefined });
+
+    const idle = adapter();
+    await new EventQuery(idle).getEvents(descriptor, { fromTime: 1n, limit: 0 });
+    await new EventQuery(idle).getEvents(descriptor, { fromTime: 1n, maxPages: 0 });
+    expect(idle.getBlockHeights).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ fromTime: 1n, fromVersion: 5n }, "fromTime or fromVersion"],
+    [{ fromTime: 1n, fromBlock: 2n }, "fromTime or fromBlock"],
+    [{ fromTime: -1n }, "Invalid fromTime"],
+  ])("rejects %p before any adapter call", async (filter, message) => {
+    const source = adapter();
+    const err = await new EventQuery(source)
+      .getEvents(descriptor, filter as EventFilter)
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdError);
+    expect((err as Error).message).toContain(message);
+    expect(source.getBlockHeights).not.toHaveBeenCalled();
+    expect(source.fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("rejects without retrying when the adapter cannot search blocks", async () => {
+    const { fetchEvents, getBlock } = adapter();
+    const err = await new EventQuery({ fetchEvents, getBlock })
+      .getEvents(descriptor, { fromTime: 1n, retries: 3 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("getBlockHeights");
+    expect(fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("applies to a descending query", async () => {
+    const source = adapter();
+    await new EventQuery(source).getEvents(descriptor, { fromTime: 2000n, orderBy: "desc" });
+    expect(source.fetchEvents.mock.calls[0]![1]).toMatchObject({ fromVersion: 20n, orderBy: "asc" });
+  });
+});
+
 describe("EventQuery retries", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
@@ -552,6 +638,27 @@ describe("EventQuery retries", () => {
     await drain(result);
     expect(getHeadVersion).toHaveBeenCalledTimes(2);
     expect(fetchEvents.mock.calls[0]![1].fromVersion).toBe(8n);
+  });
+
+  it("retries a block lookup that fails partway through a fromTime search", async () => {
+    let failed = false;
+    const getBlock = vi.fn(async (_d: EventDescriptor, height: bigint) => {
+      if (height !== 0n && height !== 99n && !failed) {
+        failed = true;
+        throw new StreamdNetworkError("429 Too Many Requests", 429);
+      }
+      return { height, firstVersion: height * 10n, lastVersion: height * 10n + 9n, timestamp: height * 1000n };
+    });
+    const getBlockHeights = vi.fn(async (_d: EventDescriptor) => ({ oldest: 0n, newest: 99n }));
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>().mockResolvedValue(page([], "x", false));
+    const result = new EventQuery({ fetchEvents, getBlock, getBlockHeights }).getEvents(descriptor, {
+      fromTime: 41_500n,
+      retries: 1,
+    });
+
+    await drain(result);
+    expect(getBlockHeights).toHaveBeenCalledTimes(2);
+    expect(fetchEvents.mock.calls[0]![1].fromVersion).toBe(420n);
   });
 
   it("retries a failed earliest read", async () => {

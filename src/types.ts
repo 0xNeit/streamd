@@ -137,6 +137,14 @@ export interface EventFilter {
    * `EventAdapter.getBlock`. Cannot be combined with `toVersion`.
    */
   toBlock?: bigint;
+  /**
+   * Start at the first block stamped at or after this time, in microseconds
+   * since the Unix epoch (the unit of `StreamdEvent.timestamp`), searched once
+   * through `EventAdapter.getBlockHeights` and `getBlock`. Before the oldest
+   * served block clamps to it; in the future starts at the head. Cannot be
+   * combined with `fromVersion` or `fromBlock`.
+   */
+  fromTime?: bigint;
   /** Maximum events to return, counted *after* `where` is applied */
   limit?: number;
   /** Offset for pagination */
@@ -192,6 +200,7 @@ export interface FetchOptions
     EventFilter,
     | "fromVersion"
     | "fromBlock"
+    | "fromTime"
     | "toBlock"
     | "where"
     | "decode"

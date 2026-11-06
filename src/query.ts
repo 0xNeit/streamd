@@ -8,6 +8,7 @@ import type {
 import { isAbsoluteVersion, raceAbort, resolveFromVersion, sleep } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
+import { resolveFromTime, validateFromTime } from "./time.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
 
 const DEFAULT_PAGE_SIZE = 25;
@@ -115,6 +116,7 @@ export class EventQuery {
     }
     validateRetries(rest.retries);
     validateBlockRange(rest);
+    validateFromTime(rest);
     if (orderBy !== "desc") {
       yield* this.ascendingPages<TData>(descriptor, rest, pageSize);
       return;
@@ -165,6 +167,7 @@ export class EventQuery {
       signal,
       fromBlock,
       toBlock,
+      fromTime,
       ...adapterFilter
     } = filter;
     const decode = fieldDecoder(fields);
@@ -176,7 +179,10 @@ export class EventQuery {
       : undefined;
     let toVersion = filter.toVersion;
     let resolved =
-      isAbsoluteVersion(filter.fromVersion) && fromBlock === undefined && toBlock === undefined;
+      isAbsoluteVersion(filter.fromVersion) &&
+      fromBlock === undefined &&
+      toBlock === undefined &&
+      fromTime === undefined;
     let fetched = 0;
     let pages = 0;
 
@@ -189,18 +195,16 @@ export class EventQuery {
         limit !== undefined ? Math.min(pageSize, limit - fetched) : pageSize;
       if (batchLimit <= 0) break;
 
-      // Only a relative, earliest or block bound awaits, so an absolute range
-      // fetches synchronously.
+      // Only a relative, earliest, time or block bound awaits, so an absolute
+      // range fetches synchronously.
       if (!resolved) {
-        fromVersion =
-          fromBlock === undefined
-            ? await withRetries(
-                () => resolveFromVersion(adapter, descriptor, filter.fromVersion),
-                retries,
-                signal,
-              )
-            : (await withRetries(() => blockAt(adapter, descriptor, fromBlock), retries, signal))
-                .firstVersion;
+        const start = (): Promise<bigint | undefined> =>
+          fromTime !== undefined
+            ? resolveFromTime(adapter, descriptor, fromTime, () => signal?.aborted === true)
+            : fromBlock !== undefined
+              ? blockAt(adapter, descriptor, fromBlock).then((b) => b.firstVersion)
+              : resolveFromVersion(adapter, descriptor, filter.fromVersion);
+        fromVersion = await withRetries(start, retries, signal);
         if (toBlock !== undefined) {
           toVersion = (
             await withRetries(() => blockAt(adapter, descriptor, toBlock), retries, signal)
