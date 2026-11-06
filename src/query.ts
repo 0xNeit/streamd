@@ -9,7 +9,7 @@ import { isAbsoluteVersion, raceAbort, resolveFromVersion, sleep } from "./utils
 import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
-import { StreamdError, StreamdNetworkError } from "./errors.js";
+import { StreamdError, StreamdNetworkError, retryAfterHint } from "./errors.js";
 import { mergeEvents, validateMerge } from "./merge.js";
 
 const DEFAULT_PAGE_SIZE = 25;
@@ -75,7 +75,8 @@ function blockAt(
 /**
  * Runs `call` until it succeeds or `retries` extra attempts are spent. A
  * `StreamdError` that is not a network failure is the caller's input, which
- * fails the same way every time, so it is never retried.
+ * fails the same way every time, so it is never retried. A Retry-After hint
+ * replaces the exponential wait, under the same cap.
  */
 async function withRetries<T>(
   call: () => Promise<T>,
@@ -89,7 +90,8 @@ async function withRetries<T>(
       const invalidInput =
         err instanceof StreamdError && !(err instanceof StreamdNetworkError);
       if (attempt >= retries || invalidInput || signal?.aborted) throw err;
-      await sleep(Math.min(RETRY_BASE_DELAY * 2 ** attempt, RETRY_MAX_DELAY), signal);
+      const delay = retryAfterHint(err) ?? RETRY_BASE_DELAY * 2 ** attempt;
+      await sleep(Math.min(delay, RETRY_MAX_DELAY), signal);
     }
   }
 }

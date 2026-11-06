@@ -215,7 +215,8 @@ export interface EventFilter {
    * Retry a failed adapter call up to this many times (default 0), waiting
    * 1s, 2s, 4s... (capped at 60s) between attempts. Only failures worth
    * retrying are: a `StreamdError` that is not a `StreamdNetworkError` rejects
-   * at once. The query rejects with the last attempt's error.
+   * at once. A `StreamdNetworkError` carrying `retryAfter` waits that long
+   * instead, capped at 60s. The query rejects with the last attempt's error.
    */
   retries?: number;
   /**
@@ -337,7 +338,9 @@ export interface ListenerOptions {
   maxErrors?: number;
   /**
    * Maximum exponential backoff delay in ms between failed polls (default:
-   * 60000, valid range 0..2147483647).
+   * 60000, valid range 0..2147483647). A `StreamdNetworkError` carrying
+   * `retryAfter` waits that long instead, capped at this value, and still
+   * counts toward `maxErrors`.
    */
   maxBackoff?: number;
   /**

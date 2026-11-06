@@ -17,6 +17,7 @@ export {
   StreamdNetworkError,
   StreamdPollingError,
   StreamdTimeoutError,
+  parseRetryAfter,
 } from "./errors.js";
 
 export {

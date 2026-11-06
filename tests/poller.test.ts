@@ -407,6 +407,86 @@ describe("EventPoller", () => {
       expect(zeroPoller.active).toBe(false);
     });
 
+    describe("Retry-After hints", () => {
+      /** Fails every call, with the nth call's hint from `hints` (none past the end). */
+      function hintedAdapter(hints: (number | undefined)[]) {
+        const at: number[] = [];
+        const fetchEvents = vi.fn(async (): Promise<EventPage> => {
+          at.push(Date.now());
+          throw new StreamdNetworkError("rate limited", 429, undefined, hints[at.length - 1]);
+        });
+        const gaps = () => at.slice(1).map((t, i) => t - at[i]!);
+        return { fetchEvents, gaps };
+      }
+
+      it("waits the hint instead of the doubled interval, then resumes the sequence", async () => {
+        const { fetchEvents, gaps } = hintedAdapter([350, undefined]);
+        const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+          pollInterval: 100,
+          maxErrors: 10,
+        });
+        poller.start();
+        await advanceTimersByTimeAsync(1000);
+
+        // Hinted 350 in place of 200; the next, unhinted failure waits 400.
+        expect(gaps()).toEqual([350, 400]);
+        poller.stop();
+      });
+
+      it("caps a hint at maxBackoff and retries at once on a hint of 0", async () => {
+        const capped = hintedAdapter([5000, 5000]);
+        const cappedPoller = new EventPoller({ fetchEvents: capped.fetchEvents }, descriptor, vi.fn(), {
+          pollInterval: 100,
+          maxBackoff: 300,
+          maxErrors: 10,
+        });
+        cappedPoller.start();
+        await advanceTimersByTimeAsync(650);
+        cappedPoller.stop();
+        expect(capped.gaps()).toEqual([300, 300]);
+
+        const zero = hintedAdapter([0, 0]);
+        const zeroPoller = new EventPoller({ fetchEvents: zero.fetchEvents }, descriptor, vi.fn(), {
+          pollInterval: 100,
+          maxErrors: 10,
+        });
+        zeroPoller.start();
+        for (let i = 0; i < 3; i++) await advanceTimersByTimeAsync(0);
+        zeroPoller.stop();
+        // Three polls with no time advanced: none waited the 200ms backoff.
+        expect(zero.fetchEvents).toHaveBeenCalledTimes(3);
+      });
+
+      it("ignores an invalid hint", async () => {
+        const { fetchEvents, gaps } = hintedAdapter([-5, NaN]);
+        const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+          pollInterval: 100,
+          maxErrors: 10,
+        });
+        poller.start();
+        await advanceTimersByTimeAsync(700);
+        expect(gaps()).toEqual([200, 400]);
+        poller.stop();
+      });
+
+      it("still counts a hinted failure toward maxErrors", async () => {
+        const { fetchEvents } = hintedAdapter([10, 10, 10]);
+        const onError = vi.fn();
+        const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+          pollInterval: 100,
+          maxErrors: 3,
+          onError,
+        });
+        poller.start();
+        await advanceTimersByTimeAsync(100);
+
+        expect(fetchEvents).toHaveBeenCalledTimes(3);
+        expect(poller.active).toBe(false);
+        expect(onError).toHaveBeenCalledTimes(3);
+        expect(onError.mock.calls[2]![0]).toBeInstanceOf(StreamdPollingError);
+      });
+    });
+
     it("throws StreamdError when constructed with an invalid maxBackoff", () => {
       const adapter = createMockAdapter([]);
       for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
