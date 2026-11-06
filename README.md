@@ -579,6 +579,42 @@ are listed, since the struct and field form cannot address one nested inside a
 struct field. A nested handle is still readable by creation number, taken from
 the `guid` in the resource data.
 
+### Check a module descriptor
+
+A misspelled event type is not an error to the module scan: it just never
+matches. `checkDescriptor(aptos, descriptor)` reads the module ABI for each
+type in a `module` descriptor and says whether the struct is there:
+
+```ts
+import { Aptos } from "@aptos-labs/ts-sdk";
+import { checkDescriptor } from "streamd";
+
+const check = await checkDescriptor(new Aptos(), {
+  kind: "module",
+  eventType: ["0x1::fungible_asset::Deposit", "0x1::fungible_asset::Withdrawal"],
+});
+// { ok: false, types: [
+//   { eventType: "0x1::fungible_asset::Deposit", status: "event" },
+//   { eventType: "0x1::fungible_asset::Withdrawal", status: "missing-struct" } ] }
+if (!check.ok) throw new Error(JSON.stringify(check.types));
+```
+
+Each type gets one status:
+
+| Status | Meaning |
+| --- | --- |
+| `event` | The struct declares `#[event]`. |
+| `legacy` | No `#[event]`, but it has `drop` and `store`, so a legacy `EventHandle` can emit it. |
+| `not-event` | The struct lacks `drop` or `store`, so no event can carry it. |
+| `missing-module` | No such module is published at that address. |
+| `missing-struct` | The module exists but declares no such struct. |
+
+`ok` is true when every type is `event` or `legacy`. A generic type is checked
+by its outer struct only; its type arguments are not looked up. It makes one
+request per distinct module, accepts `module` descriptors only, and throws
+`StreamdError` for malformed input before any request, or
+`StreamdNetworkError` when the node fails.
+
 ### Typed events
 
 `defineEvent<T>(eventType)` returns a `module` descriptor that carries its
