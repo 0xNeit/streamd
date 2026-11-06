@@ -1,4 +1,5 @@
 export { StreamdClient } from "./client.js";
+export { CachingAdapter } from "./adapters/caching.js";
 export { FallbackAdapter } from "./adapters/fallback.js";
 export { FullnodeScanAdapter } from "./adapters/fullnode.js";
 export { withHooks } from "./adapters/hooks.js";
@@ -36,6 +37,7 @@ export type {
   AdapterCheckReport,
   AdapterCheckResult,
 } from "./conformance.js";
+export type { CachingAdapterOptions } from "./adapters/caching.js";
 export type { FullnodeScanAdapterOptions } from "./adapters/fullnode.js";
 export type {
   AdapterHooks,

@@ -1,5 +1,6 @@
 import type { EventAdapter, EventDescriptor } from "./types.js";
 import { StreamdError } from "./errors.js";
+import { normalizeAddress } from "./filter.js";
 
 let nextId = 0;
 
@@ -95,4 +96,34 @@ export async function resolveFromVersion(
   }
   const start = (await adapter.getHeadVersion(descriptor)) + fromVersion;
   return start < 0n ? 0n : start;
+}
+
+function typeSet(types: unknown): unknown[] {
+  return Array.isArray(types) ? [...new Set(types)].sort() : [types];
+}
+
+/**
+ * Value key for a descriptor: equal for descriptors that select the same
+ * events, undefined for anything that is not one of the three kinds.
+ */
+export function descriptorKey(d: EventDescriptor | undefined): string | undefined {
+  switch (d?.kind) {
+    case "module":
+      return JSON.stringify(["module", typeSet(d.eventType)]);
+    case "handle":
+      return JSON.stringify([
+        "handle",
+        normalizeAddress(d.accountAddress) ?? d.accountAddress,
+        d.eventHandleStruct,
+        d.fieldName,
+      ]);
+    case "account":
+      return JSON.stringify([
+        "account",
+        normalizeAddress(d.accountAddress) ?? d.accountAddress,
+        d.eventTypes === undefined ? null : typeSet(d.eventTypes),
+      ]);
+    default:
+      return undefined;
+  }
 }
