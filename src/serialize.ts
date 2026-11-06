@@ -21,6 +21,7 @@ export function serializeEvent(event: StreamdEvent): string {
       eventIndex: event.eventIndex,
       transactionHash: event.transactionHash,
       timestamp: event.timestamp,
+      sender: event.sender,
     },
     bigintToString,
   );
@@ -83,5 +84,11 @@ export function parseEvent<TData = unknown>(
     event.transactionHash = record.transactionHash;
   }
   if (record.timestamp !== undefined) event.timestamp = unsigned(record, "timestamp");
+  if (record.sender !== undefined) {
+    if (typeof record.sender !== "string") {
+      throw new StreamdError('Cannot parse event: "sender" must be a string');
+    }
+    event.sender = record.sender;
+  }
   return (decode ? decode(event) : event) as StreamdEvent<TData>;
 }

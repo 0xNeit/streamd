@@ -11,7 +11,7 @@ import { withHooks } from "../src/adapters/hooks.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { RoutingAdapter } from "../src/adapters/routing.js";
 import { StreamdClient } from "../src/client.js";
-import { every, involvesAddress, not, whereField } from "../src/filter.js";
+import { every, fromSender, involvesAddress, not, whereField } from "../src/filter.js";
 import type {
   EventAdapter,
   EventDescriptor,
@@ -800,6 +800,26 @@ describe("StreamdClient", () => {
     sub.unsubscribe();
 
     expect(live).toEqual([{ hash: "0xabc123", ts: 1700000010000000n }]);
+    client.destroy();
+  });
+
+  it("filters a backlog by transaction sender with fromSender", async () => {
+    const alice = "0x" + "0".repeat(63) + "a";
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([
+        { ...makeEvent(1), sender: alice },
+        { ...makeEvent(2), sender: "0xb" },
+        makeEvent(3),
+        { ...makeEvent(4), sender: alice },
+      ]),
+    });
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    const events = await client.getEvents(descriptor, {
+      fromVersion: 0n,
+      where: fromSender("0xa"),
+    });
+    expect(events.map((e) => e.version)).toEqual([1n, 4n]);
     client.destroy();
   });
 

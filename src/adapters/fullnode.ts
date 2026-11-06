@@ -29,6 +29,7 @@ interface TransactionWithEvents {
   version?: string;
   hash?: string;
   timestamp?: string;
+  sender?: string;
   type: string;
   events?: RawEvent[];
 }
@@ -60,6 +61,7 @@ function toStreamdEvents(
       eventIndex,
     };
     if (txn.hash !== undefined) item.transactionHash = txn.hash;
+    if (txn.sender !== undefined) item.sender = txn.sender;
     if (txn.timestamp !== undefined) {
       timestamp ??= BigInt(txn.timestamp);
       item.timestamp = timestamp;

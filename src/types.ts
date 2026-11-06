@@ -96,6 +96,13 @@ export interface StreamdEvent<TData = unknown> {
    * transactions.
    */
   timestamp?: bigint;
+  /**
+   * Address that signed the emitting transaction, as the source reports it,
+   * when the source had the transaction in hand and it names one (user
+   * transactions on the `module` and `account` paths of `FullnodeScanAdapter`).
+   * Omitted on `handle` events and on system transactions.
+   */
+  sender?: string;
 }
 
 // ---- Filters ----

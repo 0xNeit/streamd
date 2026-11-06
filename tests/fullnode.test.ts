@@ -185,6 +185,24 @@ describe("FullnodeScanAdapter module scan", () => {
     expect(page.events[2]?.timestamp).toBe(1700000000123456n);
   });
 
+  it("populates sender on module events from user transactions only", async () => {
+    const SENDER = "0x" + "b".repeat(64);
+    const txns = [
+      { ...txn(0), type: "block_metadata_transaction" },
+      { ...txn(1, [TYPE, OTHER, TYPE]), sender: SENDER },
+    ];
+    const { aptos } = fakeNode(chain(1, txns));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(moduleDesc, {
+      fromVersion: 0n,
+      toVersion: 1n,
+    });
+
+    expect(page.events).toHaveLength(3);
+    expect("sender" in page.events[0]!).toBe(false);
+    expect(page.events[1]?.sender).toBe(SENDER);
+    expect(page.events[2]?.sender).toBe(SENDER);
+  });
+
   it("reports hasMore when it stops on the scan budget", async () => {
     const txns = Array.from({ length: 50 }, (_, i) => txn(i, [OTHER]));
     const { aptos, calls } = fakeNode(chain(100, txns));
@@ -270,6 +288,16 @@ describe("FullnodeScanAdapter account walk", () => {
       1700000009000000n,
     ]);
   });
+
+  it("populates sender on account events", async () => {
+    const history = [{ ...txn(5), sender: ACCOUNT }];
+    const { aptos } = fakeNode(account(history));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(accountDesc, {
+      offset: 0,
+    });
+
+    expect(page.events.map((e) => e.sender)).toEqual([ACCOUNT]);
+  });
 });
 
 const HANDLE_PATH = `accounts/0x${"0".repeat(63)}1/events/0x1%3A%3Atest%3A%3AStore/pings`;
@@ -323,6 +351,7 @@ describe("FullnodeScanAdapter handle events", () => {
     expect(first.events[0]?.timestamp).toBeUndefined();
     expect("transactionHash" in first.events[0]!).toBe(false);
     expect("timestamp" in first.events[0]!).toBe(false);
+    expect("sender" in first.events[0]!).toBe(false);
   });
 
   it("requests a short address in its long form", async () => {

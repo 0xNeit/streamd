@@ -72,6 +72,20 @@ export function involvesAddress(
   };
 }
 
+/**
+ * Matches events whose transaction was signed by `address`, compared in
+ * canonical long form. Events without a `sender` (see `StreamdEvent.sender`)
+ * never match.
+ */
+export function fromSender(address: string): EventPredicate {
+  const target = normalizeAddress(address);
+  if (target === undefined) {
+    throw new TypeError(`Not a valid Aptos address: ${address}`);
+  }
+  return (event) =>
+    typeof event.sender === "string" && normalizeAddress(event.sender) === target;
+}
+
 /** Matches events whose type is exactly one of `types`. */
 export function ofType(...types: string[]): EventPredicate {
   const set = new Set(types);
