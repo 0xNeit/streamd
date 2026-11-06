@@ -13,6 +13,7 @@ import {
   StreamdError,
   StreamdNetworkError,
   StreamdPollingError,
+  retryAfterHint,
 } from "./errors.js";
 import { CursorManager } from "./cursor.js";
 import { resolveFromVersion } from "./utils.js";
@@ -285,9 +286,13 @@ export class EventPoller {
     // The handler may have stopped or restarted the poller.
     if (!this.isCurrent(gen)) return;
 
-    // Exponential backoff capped at maxBackoff
+    // Exponential backoff capped at maxBackoff. A source's Retry-After hint
+    // replaces this one wait, under the same cap; the sequence still advances.
     this.currentInterval = Math.min(this.currentInterval * 2, this.maxBackoff);
-    this.schedulePoll(this.currentInterval);
+    const hint = retryAfterHint(err);
+    this.schedulePoll(
+      hint === undefined ? this.currentInterval : Math.min(hint, this.maxBackoff),
+    );
   }
 
   private async processPage(page: EventPage, gen: number): Promise<void> {

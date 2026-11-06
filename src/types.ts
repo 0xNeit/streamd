@@ -337,7 +337,9 @@ export interface ListenerOptions {
   maxErrors?: number;
   /**
    * Maximum exponential backoff delay in ms between failed polls (default:
-   * 60000, valid range 0..2147483647).
+   * 60000, valid range 0..2147483647). A `StreamdNetworkError` carrying
+   * `retryAfter` waits that long instead, capped at this value, and still
+   * counts toward `maxErrors`.
    */
   maxBackoff?: number;
   /**
