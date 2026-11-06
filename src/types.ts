@@ -299,7 +299,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents` and `getHeadVersion`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
@@ -423,4 +423,9 @@ export interface EventAdapter {
    * negative `fromVersion` (relative to the head) needs it.
    */
   getHeadVersion?(descriptor: EventDescriptor): Promise<bigint>;
+  /**
+   * The oldest version this source can still serve for `descriptor`, below
+   * which history is pruned. Optional; `fromVersion: "earliest"` needs it.
+   */
+  getEarliestVersion?(descriptor: EventDescriptor): Promise<bigint>;
 }

@@ -225,3 +225,27 @@ describe("RoutingAdapter head version", () => {
     expect((err as Error).message).toContain('"account"');
   });
 });
+
+describe("RoutingAdapter earliest version", () => {
+  it("asks the adapter routed for the descriptor's kind", async () => {
+    const router = new RoutingAdapter({
+      module: new MemoryAdapter([ev(9), ev(12)]),
+      default: new MemoryAdapter([ev(4), ev(6)]),
+    });
+
+    expect(await router.getEarliestVersion(moduleDesc)).toBe(9n);
+    expect(await router.getEarliestVersion(handleDesc)).toBe(4n);
+  });
+
+  it("throws StreamdError when the routed adapter cannot report one", async () => {
+    const bare: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+    };
+    const router = new RoutingAdapter({ account: bare });
+
+    const err = await router.getEarliestVersion(accountDesc).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain('"account"');
+  });
+});

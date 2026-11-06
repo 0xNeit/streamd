@@ -149,6 +149,16 @@ export class FullnodeScanAdapter implements EventAdapter {
     }
   }
 
+  /** The fullnode's oldest unpruned ledger version, whatever the descriptor. */
+  async getEarliestVersion(): Promise<bigint> {
+    try {
+      const info = await this.aptos.getLedgerInfo();
+      return BigInt(info.oldest_ledger_version);
+    } catch (err) {
+      throw toStreamdError(err, "oldest ledger version");
+    }
+  }
+
   private dispatch(
     descriptor: EventDescriptor,
     options: FetchOptions,

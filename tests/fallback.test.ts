@@ -250,3 +250,50 @@ describe("FallbackAdapter head version", () => {
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
   });
 });
+
+describe("FallbackAdapter earliest version", () => {
+  const bare: EventAdapter = {
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+  };
+
+  it("skips adapters that cannot report one", async () => {
+    const fallback = new FallbackAdapter([bare, new MemoryAdapter([ev(6), ev(9)])]);
+    expect(await fallback.getEarliestVersion(moduleDesc)).toBe(6n);
+  });
+
+  it("falls back on a network error", async () => {
+    const down: EventAdapter = {
+      ...bare,
+      getEarliestVersion: vi.fn(async () => {
+        throw new StreamdNetworkError("503", 503);
+      }),
+    };
+    const fallback = new FallbackAdapter([down, new MemoryAdapter([ev(8)])]);
+
+    expect(await fallback.getEarliestVersion(moduleDesc)).toBe(8n);
+    expect(down.getEarliestVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it("rethrows invalid input without trying later adapters", async () => {
+    const invalid: EventAdapter = {
+      ...bare,
+      getEarliestVersion: async () => {
+        throw new StreamdError("bad descriptor");
+      },
+    };
+    const later = new MemoryAdapter([ev(8)]);
+    const spy = vi.spyOn(later, "getEarliestVersion");
+    const fallback = new FallbackAdapter([invalid, later]);
+
+    await expect(fallback.getEarliestVersion(moduleDesc)).rejects.toThrow("bad descriptor");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("throws StreamdError when no adapter can report one", async () => {
+    const err = await new FallbackAdapter([bare])
+      .getEarliestVersion(moduleDesc)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  });
+});

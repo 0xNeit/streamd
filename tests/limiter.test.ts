@@ -120,4 +120,37 @@ describe("RequestLimiter", () => {
     });
     expect(view.getHeadVersion).toBeUndefined();
   });
+
+  it("wrap queues getEarliestVersion behind the limit", async () => {
+    const limiter = new RequestLimiter(1);
+    const calls: string[] = [];
+    let release = () => {};
+    const page: EventPage = { events: [], hasMore: false };
+    const inner: EventAdapter = {
+      fetchEvents: () => {
+        calls.push("fetch");
+        return new Promise((r) => (release = () => r(page)));
+      },
+      async getEarliestVersion() {
+        calls.push(this === inner ? "earliest" : "earliest (unbound)");
+        return 3n;
+      },
+    };
+    const view = limiter.wrap(inner);
+    const fetched = view.fetchEvents({ kind: "module", eventType: "0x1::a::B" }, {});
+    const earliest = view.getEarliestVersion!({ kind: "module", eventType: "0x1::a::B" });
+    await flush();
+    expect(calls).toEqual(["fetch"]);
+    release();
+    expect(await fetched).toBe(page);
+    expect(await earliest).toBe(3n);
+    expect(calls).toEqual(["fetch", "earliest"]);
+  });
+
+  it("wrap leaves getEarliestVersion undefined when the inner adapter has none", () => {
+    const view = new RequestLimiter(1).wrap({
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+    });
+    expect(view.getEarliestVersion).toBeUndefined();
+  });
 });
