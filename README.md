@@ -183,6 +183,36 @@ on a page has settled, and the dedup window is not saved, so events from the pag
 flight when the process stopped arrive again after a restart: make your handler
 idempotent on `(version, eventIndex)`.
 
+### Backfill, then follow
+
+Read history first, then go live from exactly where it ended. Pass `onCursor` to a query
+and hand the cursor it reports to `on()`:
+
+```ts
+let cursor: string | undefined;
+const history = await streamd.getEvents(descriptor, {
+  fromVersion: -100_000n,
+  onCursor: (c) => (cursor = c),
+});
+render(history);
+
+if (cursor === undefined) throw new Error("no exact resume point");
+streamd.on(descriptor, handle, { cursor }); // the first event after the history
+```
+
+`onCursor` is called once, when the walk finishes, from `getEvents`, `getEventPages` and
+`iterateEvents` alike; leaving a page loop early or a rejected query never calls it. Every
+event after the history arrives once, with none skipped, because the cursor is the one the
+adapter reported after the last page the query read in full. `orderBy: "desc"`, `where`,
+`maxPages` and `fromTime` all keep it exact.
+
+It is `undefined` when the query cannot name an exact point: no page was read (`limit: 0`,
+`maxPages: 0`), `limit` cut the last page short, `toVersion` or `toBlock` bounded the walk,
+or the adapter gave no cursor. Bound a backfill you mean to follow with `fromVersion` and
+`maxPages` rather than `limit`, and after a `toVersion` bound follow with
+`fromVersion: toVersion + 1n`. Like a subscription's cursor, it only works with the same
+descriptor and the same client's adapter.
+
 ### Start relative to the head
 
 ```ts
