@@ -223,6 +223,42 @@ or the adapter gave no cursor. Bound a backfill you mean to follow with `fromVer
 `fromVersion: toVersion + 1n`. Like a subscription's cursor, it only works with the same
 descriptor and the same client's adapter.
 
+### Live derived state
+
+`reduce()` keeps a value current: it folds the history into a starting value, then folds
+each live event as it arrives, with every event folded exactly once across the seam.
+
+```ts
+const volume = streamd.reduce(
+  swaps, // a defineEvent<{ amount: bigint }> descriptor types `e.data`
+  (total, e) => total + e.data.amount,
+  0n,
+  {
+    fromVersion: -100_000n,
+    decode: ["amount"],
+    onChange: (total) => render(total), // after each live event
+  },
+);
+render(await volume.ready); // the backfilled total, once following has started
+volume.value; // always the latest total
+volume.unsubscribe(); // or `using volume = streamd.reduce(...)`
+```
+
+The reducer is synchronous and should return a new state rather than mutate the old one.
+History options (`fromVersion`, `fromTime`, `fromBlock`, `maxPages`, `retries`) shape the
+backfill, listener options (`pollInterval`, `batchSize`, `maxErrors` and the rest) the
+following, and `where` and `decode` (or the client's `defaults.decode`) apply to both.
+Options that would leave no exact point to follow from, such as `limit`, `toVersion` or
+`orderBy`, are refused.
+
+A throwing reducer stops the reduction, since folding past a lost event would leave the
+value wrong: the error goes to `onError` (or the client's), `ready` rejects if the backfill
+was still running, and `value` keeps the last good state. A failed backfill does the same.
+Live polling errors behave as they do for `on()`, and `active` turns `false` once polling
+gives up. `signal`, `unsubscribe()` and `destroy()` stop it at any stage without calling
+`onError`. `ready` never surfaces as an unhandled rejection, so ignoring it is safe. Like
+`once()` and `stream()`, a reduction is not counted by `listenerCount()`.
+
 ### Start relative to the head
 
 ```ts

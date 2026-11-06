@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import { advanceTimersByTimeAsync } from "./timers.js";
 import { StreamdClient } from "../src/client.js";
+import { defineEvent } from "../src/define.js";
 import { StreamdError, StreamdNetworkError, StreamdPollingError } from "../src/errors.js";
 import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
 
@@ -411,5 +412,22 @@ describe("reduce failure and stop paths", () => {
     r.unsubscribe();
     expect(calls.length - before).toBe(1);
     expect([r.value, seen]).toEqual([2, ["2"]]);
+  });
+});
+
+describe("reduce typing", () => {
+  it("types event.data from a defineEvent descriptor and the state from initial", async () => {
+    const swaps = defineEvent<{ amount: bigint }>("0x1::test::Event");
+    const client = new StreamdClient({ adapter: growing([ev(1, 0, "4"), ev(2, 0, "6")]).adapter });
+    const volume = client.reduce(swaps, (total, e) => total + e.data.amount, 0n, {
+      decode: ["amount"],
+      onChange: (total: bigint) => void total,
+    });
+    const total: bigint = await volume.ready;
+    volume.unsubscribe();
+    expect(total).toBe(10n);
+    // @ts-expect-error the state is a bigint, not a string
+    const wrong: string = volume.value;
+    void wrong;
   });
 });
