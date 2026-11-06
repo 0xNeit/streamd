@@ -825,9 +825,10 @@ on pages that cannot change; leave it unset when unsure. `RoutingAdapter` and
 from its first source, and `MemoryAdapter` never sets it.
 
 To capture a real session once and replay it offline, wrap an adapter with
-`recordingAdapter`. Every call that succeeds is kept, `fetchEvents` and the
-optional `getHeadVersion`, `getEarliestVersion`, `getBlock` and
-`getBlockHeights`, and `JSON.stringify(recorder)` gives the recording.
+`recordingAdapter`. Every call that succeeds for one of the three descriptor
+kinds is kept, `fetchEvents` and the optional `getHeadVersion`,
+`getEarliestVersion`, `getBlock` and `getBlockHeights`, and
+`JSON.stringify(recorder)` gives the recording.
 `replayAdapter` takes that object or its JSON text and answers the same
 requests with no network:
 
@@ -846,10 +847,11 @@ const events = await new StreamdClient({ adapter }).getEvents(descriptor, { from
 
 Requests match on the descriptor and every `FetchOptions` field, as
 `CachingAdapter` keys them, so replay the same calls with the same options.
-Identical requests get their recorded results in order, then the last one
-again, so a replayed `on()` sees what the recorded one saw. Any other request
-rejects with a plain `StreamdError` (not a `StreamdNetworkError`), and failures
-are never recorded. Events are stored as `serializeEvent` writes them, so a
+Identical requests get their recorded results in the order they were issued,
+then the last one again, so a replayed `on()` sees what the recorded one saw.
+Any other request rejects with a plain `StreamdError` (not a
+`StreamdNetworkError`), and failures are never recorded, so a replayed
+subscription stops once it asks for a page the recording never saw. Events are stored as `serializeEvent` writes them, so a
 `bigint` inside `data` comes back as a decimal string; fullnode data has none.
 The library writes no files itself. A malformed recording throws a
 `StreamdError` when `replayAdapter` reads it.

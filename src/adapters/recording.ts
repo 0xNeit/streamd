@@ -28,7 +28,7 @@ export interface RecordedCall {
 export interface Recording {
   format: typeof FORMAT;
   version: 1;
-  /** In the order the calls completed. */
+  /** In the order the calls started. */
   calls: RecordedCall[];
 }
 
@@ -62,7 +62,9 @@ function pageJson(page: EventPage): unknown {
  */
 export function recordingAdapter(adapter: EventAdapter): RecordingAdapter {
   const source = requireAdapter(adapter, "recordingAdapter");
-  const calls: RecordedCall[] = [];
+  // A slot is taken when a call starts, so identical concurrent calls replay to their callers
+  // in issue order; a failed call leaves its slot empty.
+  const calls: (RecordedCall | undefined)[] = [];
   // Serialised as each call settles, so a caller mutating the returned value cannot alter the record.
   async function tap<T>(
     method: RecordedMethod,
@@ -70,15 +72,21 @@ export function recordingAdapter(adapter: EventAdapter): RecordingAdapter {
     call: Promise<T>,
     toResult: (value: T) => unknown = toJson,
   ): Promise<T> {
+    const slot = calls.length;
+    if (key !== undefined) calls.push(undefined);
     const value = await call;
-    if (key !== undefined) calls.push({ method, key, result: toResult(value) });
+    if (key !== undefined) calls[slot] = { method, key, result: toResult(value) };
     return value;
   }
 
   const recorder: RecordingAdapter = {
     fetchEvents: (descriptor, options = {}) =>
       tap("fetchEvents", fetchKey(descriptor, options), source.fetchEvents(descriptor, options), pageJson),
-    toJSON: () => ({ format: FORMAT, version: 1, calls: [...calls] }),
+    toJSON: () => ({
+      format: FORMAT,
+      version: 1,
+      calls: calls.filter((call): call is RecordedCall => call !== undefined),
+    }),
   };
   if (source.getHeadVersion !== undefined) {
     recorder.getHeadVersion = (descriptor) =>
@@ -161,7 +169,7 @@ function parseCall(call: unknown, i: number): [string, unknown] {
   if (!isObject(call) || typeof call.key !== "string") invalid(`call ${i} needs a string "key"`);
   const method = call.method;
   if (typeof method !== "string" || !Object.hasOwn(PARSERS, method)) {
-    invalid(`call ${i} has unknown method ${JSON.stringify(method) ?? "undefined"}`);
+    invalid(`call ${i} has unknown method ${String(method)}`);
   }
   try {
     return [`${method}:${call.key}`, PARSERS[method as RecordedMethod](call.result)];
@@ -183,7 +191,7 @@ function loadRecording(input: unknown): Map<string, unknown[]> {
   if (!isObject(value) || value.format !== FORMAT) {
     invalid(`expected an object with format "${FORMAT}"`);
   }
-  if (value.version !== 1) invalid(`unsupported version ${JSON.stringify(value.version)}`);
+  if (value.version !== 1) invalid(`unsupported version ${String(value.version)}`);
   if (!Array.isArray(value.calls)) invalid('"calls" must be an array');
   const answers = new Map<string, unknown[]>();
   value.calls.forEach((call, i) => {

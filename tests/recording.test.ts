@@ -217,6 +217,28 @@ describe("replayAdapter", () => {
     expect(heads).toEqual([10n, 11n, 12n, 12n, 12n]);
   });
 
+  it("records identical concurrent calls in the order they started", async () => {
+    const resolvers: ((head: bigint) => void)[] = [];
+    const recorder = recordingAdapter({
+      async fetchEvents() {
+        return { events: [], hasMore: false };
+      },
+      getHeadVersion: () => new Promise<bigint>((resolve) => resolvers.push(resolve)),
+    });
+    const first = recorder.getHeadVersion!(moduleDesc);
+    const second = recorder.getHeadVersion!(moduleDesc);
+    resolvers[1]!(200n);
+    await second;
+    resolvers[0]!(100n);
+    await first;
+    const replay = replayAdapter(recorder.toJSON());
+    const [a, b] = await Promise.all([
+      replay.getHeadVersion!(moduleDesc),
+      replay.getHeadVersion!(moduleDesc),
+    ]);
+    expect([a, b]).toEqual([100n, 200n]);
+  });
+
   it("rejects an unrecorded request with a StreamdError that is not a network error", async () => {
     const recorder = recordingAdapter(new MemoryAdapter(events));
     await recorder.fetchEvents(moduleDesc, { limit: 2 });
@@ -255,6 +277,8 @@ describe("replayAdapter", () => {
     ["a wrong format tag", { format: "other", version: 1, calls: [] }, "format"],
     ["an unknown version", { format: "streamd-recording", version: 2, calls: [] }, "version 2"],
     ["calls that are not an array", { format: "streamd-recording", version: 1 }, '"calls"'],
+    ["a bigint version", { format: "streamd-recording", version: 1n, calls: [] }, "version 1"],
+    ["a bigint method", valid([{ method: 1n, key: "k", result: page }]), "unknown method 1"],
     ["a call without a key", valid([{ method: "fetchEvents", result: page }]), "call 0"],
     ["an unknown method", valid([{ method: "toString", key: "k", result: page }]), "unknown method"],
     ["a page without events", valid([{ method: "fetchEvents", key: "k", result: {} }]), '"events"'],
