@@ -6,6 +6,7 @@ export { RoutingAdapter } from "./adapters/routing.js";
 export { EventPoller } from "./poller.js";
 export { EventQuery } from "./query.js";
 export { CursorManager } from "./cursor.js";
+export { defineEvent } from "./define.js";
 export {
   StreamdError,
   StreamdNetworkError,
