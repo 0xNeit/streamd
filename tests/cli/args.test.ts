@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { parseCommand, UsageError } from "../../src/cli/args.js";
-import type { TailOptions } from "../../src/cli/args.js";
+import type { ForwardOptions, TailOptions } from "../../src/cli/args.js";
 
 const ADDR = "0x1";
 const LONG_ADDR = `0x${"0".repeat(63)}1`;
@@ -122,4 +122,86 @@ describe("parseCommand rejects", () => {
   ])("%j", (argv, message) => {
     rejects(argv as string[], message as RegExp);
   });
+});
+
+describe("parseCommand forward", () => {
+  const URL_WITH_TOKEN = "https://hooks.example.com/in?token=s3cret";
+
+  function forward(...argv: string[]): ForwardOptions {
+    const parsed = parseCommand(["forward", ...argv]);
+    if (parsed.command !== "forward") throw new Error("expected a forward command");
+    return parsed.options;
+  }
+
+  it("applies defaults", () => {
+    expect(forward("--to", URL_WITH_TOKEN, TYPE)).toEqual({
+      descriptor: { kind: "module", eventType: [TYPE] },
+      network: "mainnet",
+      to: URL_WITH_TOKEN,
+      cursorFile: "streamd-forward.cursor",
+      retries: 5,
+      timeout: 10000,
+      headers: {},
+    });
+  });
+
+  it("reads every flag", () => {
+    const options = forward(
+      "--account", ADDR,
+      "--to", "http://127.0.0.1:9000/hook",
+      "--cursor-file", "/tmp/c",
+      "--retries", "0",
+      "--timeout", "250",
+      "--header", "Authorization: Bearer abc:def",
+      "--header", "X-Source:streamd",
+      "--network", "testnet",
+      "--node-url", "http://127.0.0.1:8080/v1",
+      "--from-version", "7",
+      "--poll-interval", "50",
+    );
+    expect(options).toEqual({
+      descriptor: { kind: "account", accountAddress: LONG_ADDR },
+      network: "testnet",
+      nodeUrl: "http://127.0.0.1:8080/v1",
+      fromVersion: 7n,
+      pollInterval: 50,
+      to: "http://127.0.0.1:9000/hook",
+      cursorFile: "/tmp/c",
+      retries: 0,
+      timeout: 250,
+      headers: { Authorization: "Bearer abc:def", "X-Source": "streamd" },
+    });
+  });
+
+  it("returns help", () => {
+    expect(parseCommand(["forward", "--help"])).toEqual({ command: "help" });
+  });
+
+  it.each([
+    [["forward", TYPE], /forward needs --to/],
+    [["forward", "--to", URL_WITH_TOKEN], /forward needs at least one event type/],
+    [["forward", "--to", URL_WITH_TOKEN, TYPE, "--limit", "1"], /limit/],
+    [["tail", TYPE, "--to", URL_WITH_TOKEN], /to/],
+    [["forward", "--to", URL_WITH_TOKEN, TYPE, "--retries", "101"], /--retries/],
+    [["forward", "--to", URL_WITH_TOKEN, TYPE, "--timeout", "0"], /--timeout/],
+    [["forward", "--to", URL_WITH_TOKEN, TYPE, "--cursor-file", ""], /--cursor-file/],
+  ])("rejects %j", (argv, message) => {
+    rejects(argv as string[], message as RegExp);
+  });
+
+  it.each([["ftp://x.example/s3cret"], ["not a url s3cret"]])(
+    "rejects a non-http --to without echoing it: %s",
+    (url) => {
+      expect(() => forward("--to", url, TYPE)).toThrow(/--to must be an http or https URL$/);
+    },
+  );
+
+  it.each([["Authorization Bearer s3cret"], [": s3cret"], ["Bad Name: s3cret"], ["X: a\ns3cret"]])(
+    "rejects a malformed --header without echoing it: %j",
+    (header) => {
+      expect(() => forward("--to", URL_WITH_TOKEN, TYPE, "--header", header)).toThrow(
+        /^--header must be 'Name: value' with a valid header name$/,
+      );
+    },
+  );
 });
