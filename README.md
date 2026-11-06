@@ -341,6 +341,28 @@ an endpoint that omits the surrounding transaction, so all three are
 `undefined` there. `timestamp` is `undefined` on genesis transactions, and
 `sender` on system transactions such as block metadata, which no account signs.
 
+### Discover event handles
+
+`listEventHandles(aptos, address)` reads an account's resources and returns
+each `EventHandle` it finds as a ready-to-use `handle` descriptor, with the
+number of events emitted on it so far:
+
+```ts
+import { Aptos } from "@aptos-labs/ts-sdk";
+import { listEventHandles } from "streamd";
+
+const handles = await listEventHandles(new Aptos(), "0x1");
+// [{ descriptor: { kind: "handle", accountAddress, eventHandleStruct: "0x1::block::BlockResource", fieldName: "new_block_events" }, count: 1165098930n }, ...]
+
+const blocks = handles.find((h) => h.descriptor.fieldName === "new_block_events");
+if (blocks) client.on(blocks.descriptor, (event) => console.log(event.data));
+```
+
+It takes an `Aptos` instance rather than living on the client, because a
+client may run on any adapter. Only handles stored directly on a resource field
+are listed: the fullnode's handle endpoint cannot address one nested inside a
+struct field, so those are skipped.
+
 ### Typed events
 
 `defineEvent<T>(eventType)` returns a `module` descriptor that carries its
