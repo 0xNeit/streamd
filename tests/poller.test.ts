@@ -324,6 +324,27 @@ describe("EventPoller", () => {
       poller.stop();
     });
 
+    it("starts a restart after an auto-stop with a fresh error budget and backoff", async () => {
+      const { fetchEvents, gaps } = timedAdapter();
+      const onError = vi.fn();
+      const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+        pollInterval: 100,
+        maxErrors: 2,
+        onError,
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(200);
+      expect(poller.active).toBe(false);
+
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+      expect(poller.active).toBe(true);
+      expect(onError.mock.calls.at(-1)![0].message).toBe("Polling failed (1/2)");
+      await advanceTimersByTimeAsync(200);
+      expect(gaps().at(-1)).toBe(200);
+      expect(poller.active).toBe(false);
+    });
+
     it("never waits longer than a minute", async () => {
       const { fetchEvents, gaps } = timedAdapter();
       const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {

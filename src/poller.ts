@@ -138,6 +138,11 @@ export class EventPoller {
 
   start(): void {
     if (this._active || this.signal?.aborted) return;
+    // A stopped poller starts a new run; only resume() keeps the error budget.
+    if (!this._paused) {
+      this.consecutiveErrors = 0;
+      this.currentInterval = this.pollInterval;
+    }
     this._active = true;
     this._paused = false;
     this.generation++;
