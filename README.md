@@ -782,9 +782,11 @@ its first descriptor.
 Each delivered event costs one view request, made in order and counted by
 `maxConcurrentRequests`. The anonymous fullnode rate limit is a few hundred
 requests per five minutes, so a busy event type needs an API key or a
-narrow `where`. On `FullnodeScanAdapter`, a version the node has pruned (410) or
-a view that aborts (400) is refused as invalid input, since it fails the same
-way every time.
+narrow `where`. On `FullnodeScanAdapter`, a view that aborts (400) is refused as
+invalid input, since it fails the same way every time. A version the node has
+pruned fails as a `StreamdNetworkError` (status 410), so `FallbackAdapter` can
+answer it from another node; with no such node, a subscription stops once
+`maxErrors` retries have failed.
 
 A query rejects when the builder throws, returns an invalid request, or the
 view fails (after its `retries`). A subscription reports a throwing builder or

@@ -230,8 +230,7 @@ export interface EventFilter {
    * `where`, `limit` and `orderBy`, so only returned events cost a call: one
    * request each, in order, through `maxConcurrentRequests` and with
    * `retries`. A throw, an invalid request or a failed view rejects the query.
-   * On `FullnodeScanAdapter` a pruned version or an aborting view is not
-   * retried.
+   * On `FullnodeScanAdapter` an aborting view is not retried.
    */
   withState?: StateRequestBuilder;
   /**
@@ -430,8 +429,8 @@ export interface ListenerOptions {
    * and goes to `onError` without counting toward `maxErrors`. A failed view
    * fails the poll: events before it on the page are delivered, and the next
    * poll retries from it (with `dedupWindow: 0`, redelivering those before).
-   * A view refused as invalid input, such as a pruned version or an aborting
-   * view on `FullnodeScanAdapter`, stops the subscription at once.
+   * A view refused as invalid input, such as an aborting view on
+   * `FullnodeScanAdapter`, stops the subscription at once.
    */
   withState?: StateRequestBuilder;
   /**

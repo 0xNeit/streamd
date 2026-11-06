@@ -295,9 +295,10 @@ export class FullnodeScanAdapter implements EventAdapter {
 
   /**
    * Runs the view function at `ledgerVersion`, whatever the descriptor: one
-   * JSON POST to `/view`, so no module ABI is fetched first. A pruned version
-   * (410) or an aborting view (400) fails the same way every time, so it is a
-   * plain `StreamdError`; any other failure is a `StreamdNetworkError`. Either
+   * JSON POST to `/view`, so no module ABI is fetched first. An aborting view
+   * (400) fails the same way every time, so it is a plain `StreamdError`; any
+   * other failure is a `StreamdNetworkError`, a pruned version included (410),
+   * since another node may still serve it, as `FallbackAdapter` relies on. Either
    * keeps the SDK's message and status but not its `cause`, which holds the
    * request and client config; the message still names the node URL.
    */
@@ -323,7 +324,7 @@ export class FullnodeScanAdapter implements EventAdapter {
       const message = `Fullnode view ${fn} at version ${version} failed: ${
         err instanceof Error ? err.message : "unknown error"
       }`;
-      if (status === 400 || status === 410) throw new StreamdError(message);
+      if (status === 400) throw new StreamdError(message);
       throw new StreamdNetworkError(message, typeof status === "number" ? status : undefined);
     }
   }

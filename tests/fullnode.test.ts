@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { Account, Aptos, AptosConfig, Network, parseTypeTag } from "@aptos-labs/ts-sdk";
 import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
+import { FallbackAdapter } from "../src/adapters/fallback.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import type { EventDescriptor } from "../src/types.js";
 
@@ -1110,8 +1111,8 @@ describe("FullnodeScanAdapter view", () => {
     expect((args as Error).message).not.toContain("secret-arg");
   });
 
-  it("refuses a pruned version or an aborting view as invalid input, with no cause", async () => {
-    for (const status of [410, 400]) {
+  it("refuses an aborting view as invalid input, with no cause", async () => {
+    for (const status of [400]) {
       const { aptos } = fakeNode(() => ({ status, data: { message: "nope" } }));
       const err = await new FullnodeScanAdapter(aptos)
         .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
@@ -1123,12 +1124,24 @@ describe("FullnodeScanAdapter view", () => {
     }
   });
 
-  it("rejects other node errors as network errors with status and no cause", async () => {
-    const { aptos } = fakeNode(() => ({ status: 503, data: { message: "down" } }));
-    const err = await new FullnodeScanAdapter(aptos).view({ function: BALANCE }, 5n).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StreamdNetworkError);
-    expect((err as StreamdNetworkError).statusCode).toBe(503);
-    expect((err as StreamdNetworkError).cause).toBeUndefined();
+  it("rejects a pruned version and other node errors as network errors with status and no cause", async () => {
+    for (const status of [410, 503]) {
+      const { aptos } = fakeNode(() => ({ status, data: { message: "down" } }));
+      const err = await new FullnodeScanAdapter(aptos).view({ function: BALANCE }, 5n).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdNetworkError);
+      expect((err as StreamdNetworkError).statusCode).toBe(status);
+      expect((err as StreamdNetworkError).cause).toBeUndefined();
+    }
+  });
+
+  it("lets FallbackAdapter answer a pruned view from another node", async () => {
+    const pruned = fakeNode(() => ({ status: 410, data: { message: "pruned" } }));
+    const archive = fakeNode(() => ({ data: ["7"] }));
+    const adapter = new FallbackAdapter([
+      new FullnodeScanAdapter(pruned.aptos),
+      new FullnodeScanAdapter(archive.aptos),
+    ]);
+    expect(await adapter.view({ function: BALANCE }, 5n)).toEqual(["7"]);
   });
 
   it("sends the values it checked and refuses unserialisable arguments", async () => {

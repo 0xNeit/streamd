@@ -316,7 +316,7 @@ export class EventPoller {
       let event = prepared.event;
       if (prepared.request !== undefined) {
         // A failed view is the source's: it fails this poll with the event
-        // unmarked, so the retry delivers it rather than losing it.
+        // unmarked, so a network failure's retry delivers it rather than losing it.
         try {
           event = await readState(adapter, this.descriptor, event, prepared.request);
         } catch (err) {
