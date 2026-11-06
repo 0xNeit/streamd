@@ -132,6 +132,12 @@ export interface EventFilter {
    */
   where?: EventPredicate;
   /**
+   * Top-level `data` fields whose decimal strings (u64, u128, u256) become
+   * `bigint`, before `where` runs. An event without the field is left as is;
+   * one holding anything else rejects the query with a `StreamdError`.
+   */
+  decode?: readonly string[];
+  /**
    * Stop after this many adapter pages, even if `limit` is unmet. Unbounded
    * when omitted. Use it to put a ceiling on a filtered walk.
    */
@@ -150,7 +156,7 @@ export interface EventFilter {
  * pushed down to a remote data source. Query and poller apply them to results.
  */
 export interface FetchOptions
-  extends Omit<EventFilter, "where" | "maxPages" | "signal"> {
+  extends Omit<EventFilter, "where" | "decode" | "maxPages" | "signal"> {
   orderBy?: "asc" | "desc";
   /**
    * Opaque resume token returned by this adapter's previous page. When
@@ -216,6 +222,13 @@ export interface ListenerOptions {
    * fetching. See `whereField`, `involvesAddress`, `every`, `some`, and `not`.
    */
   where?: EventPredicate;
+  /**
+   * Top-level `data` fields whose decimal strings (u64, u128, u256) become
+   * `bigint`, before `where` runs. An event without the field is left as is;
+   * one holding anything else is skipped and reported through `onError`,
+   * without counting toward `maxErrors`.
+   */
+  decode?: readonly string[];
   /**
    * Receives polling failures and errors thrown by `where` or the callback,
    * overriding `StreamdConfig.onError` for this subscription. A throw from it

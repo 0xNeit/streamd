@@ -6,6 +6,7 @@ import type {
 } from "./types.js";
 import { raceAbort, resolveFromVersion } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
+import { fieldDecoder } from "./decode.js";
 
 const DEFAULT_PAGE_SIZE = 25;
 
@@ -41,7 +42,8 @@ export class EventQuery {
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    const { where, maxPages, signal, ...adapterFilter } = filter;
+    const { where, decode: fields, maxPages, signal, ...adapterFilter } = filter;
+    const decode = fieldDecoder(fields);
     const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
     const limit = filter.limit;
     let cursor: string | undefined;
@@ -84,8 +86,9 @@ export class EventQuery {
       // and cannot be pushed down to a remote source. `limit` counts what
       // survives it, so a restrictive predicate keeps paging rather than
       // returning short.
-      const matched =
-        where === undefined ? page.events : page.events.filter(where);
+      const decoded =
+        decode === undefined ? page.events : page.events.map(decode);
+      const matched = where === undefined ? decoded : decoded.filter(where);
 
       // Adapters may overshoot `limit` — a single transaction can emit several
       // matching events, and the scan adapter keeps them rather than dropping

@@ -153,3 +153,34 @@ describe("EventQuery relative start", () => {
     expect(source.fetchEvents).not.toHaveBeenCalled();
   });
 });
+
+describe("EventQuery decode", () => {
+  function amountEvent(version: number, amount: unknown) {
+    return { ...event(version), data: { amount } };
+  }
+
+  it("returns decoded data, filters on it, and never passes decode to the adapter", async () => {
+    const fetchEvents = vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockResolvedValue({
+        events: [amountEvent(1, "2"), amountEvent(2, "340282366920938463463374607431768211455")],
+        hasMore: false,
+      });
+    const events = await new EventQuery({ fetchEvents }).getEvents(descriptor, {
+      decode: ["amount"],
+      where: (e) => (e.data as { amount: bigint }).amount > 2n,
+    });
+
+    expect(events.map((e) => e.data)).toEqual([
+      { amount: 340282366920938463463374607431768211455n },
+    ]);
+    expect(fetchEvents.mock.calls[0]![1]).not.toHaveProperty("decode");
+  });
+
+  it("rejects when a named field cannot be decoded", async () => {
+    const fetchEvents = vi.fn(async () => ({ events: [amountEvent(1, 5)], hasMore: false }));
+    await expect(
+      new EventQuery({ fetchEvents }).getEvents(descriptor, { decode: ["amount"] }),
+    ).rejects.toThrow(/"amount" of 1:0/);
+  });
+});

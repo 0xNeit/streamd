@@ -2055,3 +2055,69 @@ describe("EventPoller relative start", () => {
     expect(adapter.getHeadVersion).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("EventPoller decode", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function amountEvent(version: number, amount: unknown): StreamdEvent {
+    return { ...makeEvent(version), data: { amount } };
+  }
+
+  it("delivers decoded data, and where sees the same decoded event", async () => {
+    const seen: unknown[] = [];
+    const tested: unknown[] = [];
+    const source = amountEvent(1, "18446744073709551615");
+    const adapter = createMockAdapter([page([source, amountEvent(2, "3")], 2)]);
+    const poller = new EventPoller(adapter, descriptor, (e) => void seen.push(e.data), {
+      decode: ["amount"],
+      where: (e) => {
+        tested.push((e.data as { amount: unknown }).amount);
+        return (e.data as { amount: bigint }).amount > 5n;
+      },
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(tested).toEqual([18446744073709551615n, 3n]);
+    expect(seen).toEqual([{ amount: 18446744073709551615n }]);
+    expect(source.data).toEqual({ amount: "18446744073709551615" });
+    poller.stop();
+  });
+
+  it("reports an undecodable event through onError, skips it, and keeps polling", async () => {
+    const seen: bigint[] = [];
+    const onError = vi.fn();
+    const adapter = createMockAdapter([
+      page([amountEvent(1, "not a number"), amountEvent(2, "4")], 2),
+    ]);
+    const poller = new EventPoller(adapter, descriptor, (e) => void seen.push(e.version), {
+      decode: ["amount"],
+      onError,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+
+    expect(seen).toEqual([2n]);
+    expect(onError).toHaveBeenCalledTimes(1);
+    const reported = onError.mock.calls[0]![0] as StreamdError;
+    expect(reported).toBeInstanceOf(StreamdError);
+    expect(reported).not.toBeInstanceOf(StreamdPollingError);
+    expect((reported.cause as Error).message).toMatch(/"amount" of 1:0/);
+    expect(poller.status.consecutiveErrors).toBe(0);
+    expect(poller.cursor).toBe("2");
+    expect(poller.active).toBe(true);
+    poller.stop();
+  });
+
+  it("rejects an invalid decode option at construction", () => {
+    expect(
+      () => new EventPoller(createMockAdapter([]), descriptor, vi.fn(), { decode: [""] }),
+    ).toThrow(StreamdError);
+  });
+});
