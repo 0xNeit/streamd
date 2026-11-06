@@ -62,6 +62,7 @@ export type {
   EventCallback,
   EventDescriptor,
   EventFilter,
+  EventGuid,
   EventPage,
   EventPredicate,
   FetchOptions,

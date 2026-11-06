@@ -313,7 +313,7 @@ function handleEvent(seq: number, version: number) {
 }
 
 /** Serves a handle's events by sequence number. */
-function handle(events: ReturnType<typeof handleEvent>[]) {
+function handle(events: (ReturnType<typeof handleEvent> & { guid?: unknown })[]) {
   return (path: string, params: Record<string, unknown>): Reply => {
     if (path !== HANDLE_PATH) throw new Error(`unexpected path ${path}`);
     const start = Number(params.start ?? 0);
@@ -377,6 +377,41 @@ describe("FullnodeScanAdapter handle events", () => {
     await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {});
     expect(calls[0]?.headers["x-team"]).toBe("streamd");
     expect(calls[0]?.headers.Authorization).toBe("Bearer secret");
+  });
+});
+
+describe("FullnodeScanAdapter guids", () => {
+  const ZERO = { creation_number: "0", account_address: "0x0" };
+  const legacy = { creation_number: "3", account_address: "0x1" };
+  const guidTxn = (version: number) => ({
+    version: String(version),
+    type: "user_transaction",
+    events: [
+      { type: TYPE, data: { v: version }, sequence_number: "0", guid: ZERO },
+      { type: TYPE, data: { v: version }, sequence_number: "5", guid: legacy },
+    ],
+  });
+
+  it("carries a legacy event's guid and none for the zero guid on the module scan", async () => {
+    const { aptos } = fakeNode(chain(1, [guidTxn(0), guidTxn(1)]));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(moduleDesc, { fromVersion: 1n });
+    expect("guid" in page.events[0]!).toBe(false);
+    expect(page.events[1]!.guid).toEqual({ creationNumber: 3n, accountAddress: "0x1" });
+  });
+
+  it("carries guids on the account walk", async () => {
+    const { aptos } = fakeNode(account([guidTxn(4)]));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(accountDesc, { offset: 0 });
+    expect(page.events.map((e) => e.guid)).toEqual([
+      undefined,
+      { creationNumber: 3n, accountAddress: "0x1" },
+    ]);
+  });
+
+  it("carries the handle's guid on handle events", async () => {
+    const { aptos } = fakeNode(handle([{ ...handleEvent(0, 3), guid: legacy }]));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {});
+    expect(page.events[0]!.guid).toEqual({ creationNumber: 3n, accountAddress: "0x1" });
   });
 });
 

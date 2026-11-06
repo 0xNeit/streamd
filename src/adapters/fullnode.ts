@@ -5,6 +5,7 @@ import type {
   BlockInfo,
   EventAdapter,
   EventDescriptor,
+  EventGuid,
   EventPage,
   FetchOptions,
   HandleEventDescriptor,
@@ -45,6 +46,15 @@ const DEFAULT_SCAN_BATCH = 100;
  */
 const DEFAULT_MAX_SCAN = 1000;
 
+/** The raw guid, unless it is missing or the zero guid module events report. */
+function toGuid(raw: RawEvent): EventGuid | undefined {
+  const guid = raw.guid;
+  if (guid === undefined) return undefined;
+  const creationNumber = BigInt(guid.creation_number);
+  if (creationNumber === 0n && BigInt(guid.account_address) === 0n) return undefined;
+  return { creationNumber, accountAddress: guid.account_address };
+}
+
 /** Events of one transaction whose type passes `keep`, indexed by position in it. */
 function toStreamdEvents(
   txn: TransactionWithEvents,
@@ -64,6 +74,8 @@ function toStreamdEvents(
     };
     if (txn.hash !== undefined) item.transactionHash = txn.hash;
     if (txn.sender !== undefined) item.sender = txn.sender;
+    const guid = toGuid(event);
+    if (guid !== undefined) item.guid = guid;
     if (txn.timestamp !== undefined) {
       timestamp ??= BigInt(txn.timestamp);
       item.timestamp = timestamp;
@@ -405,13 +417,18 @@ export class FullnodeScanAdapter implements EventAdapter {
     // This endpoint does not say where an event sits in its transaction, and a
     // page position restarts at 0 every page. The handle's sequence number is
     // unique and stable, so it stands in as the index.
-    let events: StreamdEvent[] = raw.map((e) => ({
-      type: e.type,
-      data: e.data,
-      version: BigInt(e.version),
-      sequenceNumber: BigInt(e.sequence_number),
-      eventIndex: Number(e.sequence_number),
-    }));
+    let events: StreamdEvent[] = raw.map((e) => {
+      const event: StreamdEvent = {
+        type: e.type,
+        data: e.data,
+        version: BigInt(e.version),
+        sequenceNumber: BigInt(e.sequence_number),
+        eventIndex: Number(e.sequence_number),
+      };
+      const guid = toGuid(e);
+      if (guid !== undefined) event.guid = guid;
+      return event;
+    });
 
     if (options.fromVersion !== undefined) {
       events = events.filter((e) => e.version >= options.fromVersion!);

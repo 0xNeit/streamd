@@ -1,6 +1,6 @@
 import { fieldDecoder, UNSIGNED_INTEGER } from "./decode.js";
 import { StreamdError } from "./errors.js";
-import type { StreamdEvent } from "./types.js";
+import type { EventGuid, StreamdEvent } from "./types.js";
 
 function bigintToString(_key: string, value: unknown): unknown {
   return typeof value === "bigint" ? value.toString() : value;
@@ -22,6 +22,7 @@ export function serializeEvent(event: StreamdEvent): string {
       transactionHash: event.transactionHash,
       timestamp: event.timestamp,
       sender: event.sender,
+      guid: event.guid,
     },
     bigintToString,
   );
@@ -43,9 +44,17 @@ function unsigned(record: Record<string, unknown>, field: string): bigint {
   return BigInt(value);
 }
 
+function guidOf(value: unknown): EventGuid {
+  const guid = value as Record<string, unknown> | null;
+  if (typeof guid !== "object" || guid === null || typeof guid.accountAddress !== "string") {
+    throw new StreamdError('Cannot parse event: "guid" must be { creationNumber, accountAddress }');
+  }
+  return { creationNumber: unsigned(guid, "creationNumber"), accountAddress: guid.accountAddress };
+}
+
 /**
  * Reads an event written by `serializeEvent` (or a `streamd tail` line),
- * restoring `version`, `sequenceNumber` and `timestamp` as `bigint`. The
+ * restoring `version`, `sequenceNumber`, `timestamp` and `guid.creationNumber` as `bigint`. The
  * `TData` type is the caller's claim about `data`, not a runtime check.
  */
 export function parseEvent<TData = unknown>(
@@ -90,5 +99,6 @@ export function parseEvent<TData = unknown>(
     }
     event.sender = record.sender;
   }
+  if (record.guid !== undefined) event.guid = guidOf(record.guid);
   return (decode ? decode(event) : event) as StreamdEvent<TData>;
 }

@@ -106,6 +106,19 @@ export interface StreamdEvent<TData = unknown> {
    * Omitted on `handle` events and on system transactions.
    */
   sender?: string;
+  /**
+   * The `EventHandle` that emitted this event, when the source reports one.
+   * Module events report the zero guid, which names no handle, so they carry
+   * none.
+   */
+  guid?: EventGuid;
+}
+
+/** An `EventHandle`'s on-chain id: the account that created it and its creation number. */
+export interface EventGuid {
+  creationNumber: bigint;
+  /** As the source reports it, not normalized. */
+  accountAddress: string;
 }
 
 // ---- Filters ----
