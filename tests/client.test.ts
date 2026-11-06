@@ -1534,6 +1534,19 @@ describe("StreamdClient relative start", () => {
   });
 });
 
+describe("StreamdClient latest-first queries", () => {
+  it("getEvents() with orderBy desc returns the most recent events across pages", async () => {
+    const versions = Array.from({ length: 60 }, (_, i) => makeEvent(i + 1));
+    const client = new StreamdClient({ adapter: new MemoryAdapter(versions) });
+    const events = await client.getEvents(
+      { kind: "module", eventType: "0x1::test::Event" },
+      { orderBy: "desc", limit: 3, fromVersion: -50n },
+    );
+
+    expect(events.map((e) => e.version)).toEqual([60n, 59n, 58n]);
+  });
+});
+
 describe("maxConcurrentRequests", () => {
   const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
 
