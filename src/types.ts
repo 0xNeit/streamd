@@ -342,6 +342,16 @@ export interface ListenerOptions {
   signal?: AbortSignal;
 }
 
+/** Options for `on()` and `onBatch()`, the calls that return a `Subscription`. */
+export interface SubscriptionOptions extends ListenerOptions {
+  /**
+   * The subscription's `id` instead of a generated one: a non-empty string no
+   * other live subscription on this client holds. Free again once the
+   * subscription ends.
+   */
+  id?: string;
+}
+
 export interface OnceOptions extends ListenerOptions {
   /**
    * Milliseconds to wait before unsubscribing and rejecting with

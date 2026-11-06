@@ -74,5 +74,6 @@ export type {
   StreamdConfig,
   StreamdEvent,
   Subscription,
+  SubscriptionOptions,
   SubscriptionStatus,
 } from "./types.js";
