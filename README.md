@@ -360,6 +360,17 @@ a module-event scan on `FullnodeScanAdapter` may make several requests per call.
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
 dropped without reaching the adapter. Omit the option for no limit.
 
+### Shared polling
+
+Subscriptions on one client that would send the adapter the same request share it: the same
+descriptor, the same cursor (or absolute start), and the same `batchSize` and `pollInterval`.
+They make one fetch per interval between them, while each keeps its own cursor, pause state,
+error budget, `where` and `decode`. A shared page can be up to one `pollInterval` old when a
+subscription reuses it. A start at the head is never shared, so subscriptions started at
+different times share only once their cursors meet: after the next event for `handle` and
+`account` descriptors, usually never for `module` descriptors on `FullnodeScanAdapter`.
+Shared subscriptions receive the same event objects, so treat events as read-only.
+
 ### Manage listeners
 
 ```ts
