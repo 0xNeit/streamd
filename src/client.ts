@@ -340,10 +340,15 @@ export class StreamdClient {
   }
 
   /**
-   * Query historical events matching a descriptor and filter.
+   * Query historical events matching a descriptor and filter. Pass an array of
+   * descriptors, of any kinds, to get their events merged into one history in
+   * `(version, eventIndex)` order, each event once. Each descriptor is walked
+   * separately (`maxPages` caps each walk); several Move types on one `module`
+   * descriptor stay the cheaper single scan, and the one that works with
+   * `onCursor`, which a merge rejects, as it does `offset`.
    */
   async getEvents<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
   ): Promise<StreamdEvent<TData>[]> {
     return this.query.getEvents<TData>(descriptor, filter);
@@ -353,7 +358,7 @@ export class StreamdClient {
    * Async iterator for paginating through large historical result sets.
    */
   getEventPages<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
     pageSize?: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
@@ -365,7 +370,7 @@ export class StreamdClient {
    * options. Leaving the loop early fetches nothing further.
    */
   iterateEvents<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
     pageSize?: number,
   ): AsyncGenerator<StreamdEvent<TData>, void, unknown> {

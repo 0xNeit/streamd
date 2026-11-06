@@ -360,6 +360,34 @@ A failed page is retried up to `retries` times, waiting 1s, 2s, 4s and so on (ca
 are retried: any other `StreamdError` means the request itself is wrong and rejects at once.
 `signal` cancels a wait.
 
+### Query several descriptors at once
+
+Pass an array of descriptors, of any kinds, to read their events as one history:
+
+```ts
+const activity = await streamd.getEvents(
+  [
+    { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
+    { kind: "account", accountAddress: "0xcafe" },
+  ],
+  { fromVersion: -10_000n, toVersion: "head", limit: 100 },
+);
+```
+
+Each descriptor is walked on its own and the results are merged in ascending
+`(version, eventIndex)` order, or newest first with `orderBy: "desc"`. An event two
+descriptors both select comes back once. `limit` counts the merged result after `where`;
+`maxPages` caps each descriptor's walk. A head, block or time bound is read once and shared,
+so every walk covers the same versions, while `"earliest"` is resolved per descriptor. Only
+one page per descriptor is held at a time. `getEventPages` and `iterateEvents` take arrays
+too. `onCursor` and `offset` are refused, since one cursor cannot resume several walks.
+
+For several Move types, one `module` descriptor with a list of `eventType`s is cheaper: one
+scan, one cursor, and it works with `on()` too. Some sources report a handle event's
+sequence number as its `eventIndex`, so merging handle events with others is deterministic
+but does not reflect position within a transaction. Typed descriptors with different
+payloads take an explicit type argument, such as `getEvents<Deposit | Withdraw>([...])`.
+
 ### Query by block range
 
 ```ts
