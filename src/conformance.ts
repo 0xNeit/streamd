@@ -5,17 +5,21 @@ import type {
   FetchOptions,
   StreamdEvent,
 } from "./types.js";
-import { StreamdError } from "./errors.js";
+import { StreamdError, StreamdNetworkError } from "./errors.js";
 import { DEFAULT_LIMIT, requireAdapter } from "./adapters/validate.js";
 
 /** The `EventAdapter` contract rules `checkAdapter` reports on, in report order. */
 export type AdapterCheckName =
   | "fetch"
   | "page-shape"
-  | "limit"
   | "from-version"
   | "order"
-  | "cursor-advance";
+  | "cursor-advance"
+  | "cursor-precedence"
+  | "foreign-cursor"
+  | "head-version"
+  | "earliest-version"
+  | "block";
 
 export interface AdapterCheckOptions {
   /** Where the walk starts; omitted leaves the start to the adapter (usually the head). */
@@ -24,6 +28,8 @@ export interface AdapterCheckOptions {
   limit?: number;
   /** Most pages the walk fetches (default 3), which bounds the work against a real source. */
   maxPages?: number;
+  /** Height to ask `getBlock` for; its rule is skipped without one. */
+  blockHeight?: bigint;
 }
 
 export interface AdapterCheckResult {
@@ -42,11 +48,13 @@ export interface AdapterCheckReport {
 }
 
 const DEFAULT_MAX_PAGES = 3;
+const FOREIGN_CURSOR = "streamd-check:never-issued";
 
 interface Settings {
   fromVersion?: bigint;
   limit: number;
   maxPages: number;
+  blockHeight?: bigint;
 }
 
 interface WalkedPage {
@@ -85,6 +93,7 @@ function settings(options: AdapterCheckOptions): Settings {
     fromVersion: requireVersion(options.fromVersion, "fromVersion"),
     limit: requireCount(options.limit, "limit", DEFAULT_LIMIT),
     maxPages: requireCount(options.maxPages, "maxPages", DEFAULT_MAX_PAGES),
+    blockHeight: requireVersion(options.blockHeight, "blockHeight"),
   };
 }
 
@@ -196,12 +205,6 @@ function cursorAdvanceError(w: Walk): string | undefined {
   return undefined;
 }
 
-function limitError(w: Walk, limit: number): string | undefined {
-  const i = w.pages.findIndex(({ page }) => page.events.length > limit);
-  if (i === -1) return undefined;
-  return `page ${i + 1} holds ${w.pages[i]!.page.events.length} events for limit ${limit}`;
-}
-
 function fromVersionError(events: StreamdEvent[], from: bigint): string | undefined {
   const below = events.find((e) => e.version < from);
   return below && `event ${id(below)} is below fromVersion ${from}`;
@@ -214,7 +217,6 @@ function walkResults(w: Walk, s: Settings): AdapterCheckResult[] {
   return [
     verdict("fetch", w.fetchError === undefined ? undefined : `fetchEvents rejected: ${w.fetchError}`),
     w.shapeError === undefined ? judge("page-shape", undefined) : verdict("page-shape", w.shapeError),
-    judge("limit", limitError(w, s.limit)),
     s.fromVersion === undefined
       ? skip("from-version", "fromVersion not given")
       : judge("from-version", fromVersionError(events, s.fromVersion)),
@@ -223,12 +225,134 @@ function walkResults(w: Walk, s: Settings): AdapterCheckResult[] {
   ];
 }
 
+async function cursorPrecedence(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  w: Walk,
+  s: Settings,
+): Promise<AdapterCheckResult> {
+  const second = w.pages[1];
+  if (second === undefined) return skip("cursor-precedence", "the walk had no second page");
+  const request = { cursor: second.cursor, fromVersion: s.fromVersion ?? 0n, limit: s.limit };
+  let page: unknown;
+  try {
+    page = await adapter.fetchEvents(descriptor, request);
+  } catch (err) {
+    return verdict("cursor-precedence", `fetchEvents with cursor and fromVersion rejected: ${describe(err)}`);
+  }
+  const shapeError = pageShapeError(page);
+  if (shapeError !== undefined) return verdict("cursor-precedence", shapeError);
+  const got = (page as EventPage).events.map(id).join(",");
+  const want = second.page.events.map(id).join(",");
+  return verdict(
+    "cursor-precedence",
+    got === want ? undefined : `cursor plus fromVersion returned [${got}], cursor alone [${want}]`,
+  );
+}
+
+async function foreignCursor(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  s: Settings,
+): Promise<AdapterCheckResult> {
+  try {
+    await adapter.fetchEvents(descriptor, { cursor: FOREIGN_CURSOR, limit: s.limit });
+  } catch (err) {
+    if (err instanceof StreamdNetworkError) {
+      return verdict("foreign-cursor", "rejected as StreamdNetworkError, so callers would retry it");
+    }
+    if (err instanceof StreamdError) return verdict("foreign-cursor", undefined);
+    return verdict("foreign-cursor", `rejected with ${describe(err)}, not a StreamdError`);
+  }
+  return verdict("foreign-cursor", `accepted cursor ${FOREIGN_CURSOR}, which it never issued`);
+}
+
+/** Calls an optional method; a string result is the failure message. */
+async function readVersion(
+  name: "getHeadVersion" | "getEarliestVersion",
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+): Promise<bigint | string> {
+  try {
+    const value: unknown = await adapter[name]!(descriptor);
+    if (typeof value === "bigint" && value >= 0n) return value;
+    return `${name} resolved ${String(value)}, not a non-negative bigint`;
+  } catch (err) {
+    return `${name} rejected: ${describe(err)}`;
+  }
+}
+
+function headResult(head: bigint | string, events: StreamdEvent[]): AdapterCheckResult {
+  if (typeof head === "string") return verdict("head-version", head);
+  const above = events.find((e) => e.version > head);
+  return verdict("head-version", above && `head ${head} is below seen event ${id(above)}`);
+}
+
+function earliestResult(
+  earliest: bigint | string,
+  head: bigint | string | undefined,
+  events: StreamdEvent[],
+): AdapterCheckResult {
+  if (typeof earliest === "string") return verdict("earliest-version", earliest);
+  const below = events.find((e) => e.version < earliest);
+  if (below !== undefined) {
+    return verdict("earliest-version", `earliest ${earliest} is above seen event ${id(below)}`);
+  }
+  const overHead = typeof head === "bigint" && earliest > head;
+  return verdict("earliest-version", overHead ? `earliest ${earliest} is above head ${head}` : undefined);
+}
+
+async function versionResults(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  events: StreamdEvent[],
+): Promise<AdapterCheckResult[]> {
+  const absent = "not implemented (optional)";
+  const head = adapter.getHeadVersion && (await readVersion("getHeadVersion", adapter, descriptor));
+  const earliest =
+    adapter.getEarliestVersion && (await readVersion("getEarliestVersion", adapter, descriptor));
+  return [
+    head === undefined ? skip("head-version", absent) : headResult(head, events),
+    earliest === undefined
+      ? skip("earliest-version", absent)
+      : earliestResult(earliest, head, events),
+  ];
+}
+
+function blockError(block: unknown, height: bigint): string | undefined {
+  if (typeof block !== "object" || block === null) return "getBlock resolved a non-object";
+  const b = block as Record<string, unknown>;
+  for (const key of ["height", "firstVersion", "lastVersion", "timestamp"]) {
+    if (typeof b[key] !== "bigint") return `getBlock ${key} is not a bigint`;
+  }
+  if (b.height !== height) return `getBlock(${height}) returned height ${String(b.height)}`;
+  if ((b.firstVersion as bigint) > (b.lastVersion as bigint)) {
+    return "getBlock firstVersion is above lastVersion";
+  }
+  return undefined;
+}
+
+async function blockResult(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  height: bigint | undefined,
+): Promise<AdapterCheckResult> {
+  if (adapter.getBlock === undefined) return skip("block", "not implemented (optional)");
+  if (height === undefined) return skip("block", "blockHeight not given");
+  try {
+    return verdict("block", blockError(await adapter.getBlock(descriptor, height), height));
+  } catch (err) {
+    return verdict("block", `getBlock rejected: ${describe(err)}`);
+  }
+}
+
 /**
  * Drive `adapter` through a short read-only walk over `descriptor` and report
  * which `EventAdapter` contract rules it keeps. Violations are `fail` results,
  * never rejections; it rejects only for invalid arguments. Against a real
- * source it makes network reads, at most `maxPages` fetches. Needs no test
- * runner, so assert on `report.ok` from any of them.
+ * source it makes network reads: at most `maxPages` walk fetches, two more
+ * fetches, and one call per optional method present. Needs no test runner, so
+ * assert on `report.ok` from any of them.
  */
 export async function checkAdapter(
   adapter: EventAdapter,
@@ -238,7 +362,13 @@ export async function checkAdapter(
   requireAdapter(adapter, "checkAdapter");
   const s = settings(options);
   const w = await walk(adapter, descriptor, s);
-  const results = walkResults(w, s);
+  const results = [
+    ...walkResults(w, s),
+    await cursorPrecedence(adapter, descriptor, w, s),
+    await foreignCursor(adapter, descriptor, s),
+    ...(await versionResults(adapter, descriptor, allEvents(w))),
+    await blockResult(adapter, descriptor, s.blockHeight),
+  ];
   return {
     ok: results.every((r) => r.status !== "fail"),
     results,
