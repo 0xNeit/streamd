@@ -337,7 +337,7 @@ describe("withState edge cases", () => {
 
   it("stops a subscription at once on a view refused as invalid input", async () => {
     const { adapter, calls } = viewing([ev(1)], () => {
-      throw new StreamdError("pruned");
+      throw new StreamdError("aborted");
     });
     const errors: Error[] = [];
     const sub = new StreamdClient({ adapter }).on(pings, () => {}, {

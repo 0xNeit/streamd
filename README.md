@@ -785,8 +785,8 @@ requests per five minutes, so a busy event type needs an API key or a
 narrow `where`. On `FullnodeScanAdapter`, a view that aborts (400) is refused as
 invalid input, since it fails the same way every time. A version the node has
 pruned fails as a `StreamdNetworkError` (status 410), so `FallbackAdapter` can
-answer it from another node; with no such node, a subscription stops once
-`maxErrors` retries have failed.
+answer it from another node; with no such node, a subscription stops after
+`maxErrors` consecutive failed polls.
 
 A query rejects when the builder throws, returns an invalid request, or the
 view fails (after its `retries`). A subscription reports a throwing builder or
