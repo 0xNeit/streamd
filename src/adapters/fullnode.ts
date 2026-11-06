@@ -244,7 +244,8 @@ export class FullnodeScanAdapter implements EventAdapter {
     if (wanted <= 0) return { events: [], hasMore: false };
 
     const head = await this.ledgerVersion();
-    let next = this.resolveStart(options, head);
+    const start = this.resolveStart(options, head);
+    let next = start;
     const events: StreamdEvent[] = [];
     let scanned = 0;
     let hasMore = false;
@@ -295,6 +296,8 @@ export class FullnodeScanAdapter implements EventAdapter {
     // SDK caches ledger info per network, not per node).
     const fixedStart = options.cursor !== undefined || options.fromVersion !== undefined;
     if (fixedStart && !ranDry && next <= head) page.final = true;
+    // Whole transactions are scanned, so nothing at the last one is left over.
+    if (next > start) page.throughVersion = next - 1n;
     return page;
   }
 
@@ -329,6 +332,9 @@ export class FullnodeScanAdapter implements EventAdapter {
     // A full batch by sequence number never changes; a short one ended at the
     // account's latest transaction, which a later request reads past.
     let batchesFull = false;
+    // The account's sequence order is version order, so everything it sent up
+    // to the last transaction examined has been seen.
+    let through: bigint | undefined;
 
     while (events.length < wanted) {
       if (scanned >= this.maxScan) {
@@ -361,8 +367,10 @@ export class FullnodeScanAdapter implements EventAdapter {
         // toVersion nothing later can qualify.
         if (options.toVersion !== undefined && version > options.toVersion) {
           pastToVersion = true;
+          through = options.toVersion;
           break;
         }
+        through = version;
         if (options.fromVersion !== undefined && version < options.fromVersion) {
           continue;
         }
@@ -389,6 +397,7 @@ export class FullnodeScanAdapter implements EventAdapter {
       options.fromVersion !== undefined ||
       options.toVersion !== undefined;
     if (fixedStart && batchesFull) page.final = true;
+    if (through !== undefined) page.throughVersion = through;
     return page;
   }
 
@@ -452,9 +461,15 @@ export class FullnodeScanAdapter implements EventAdapter {
     // The start comes from the request, and a full page of a handle's events
     // by sequence number never changes.
     const full = raw.length >= limit;
-    return full
+    const page: EventPage = full
       ? { events, nextCursor, hasMore: true, final: true }
       : { events, nextCursor, hasMore: false };
+    // A full page may stop partway through one transaction's events, so only
+    // the versions below its last event are settled.
+    const last = raw.at(-1);
+    const through = last === undefined ? -1n : BigInt(last.version) - (full ? 1n : 0n);
+    if (through >= 0n) page.throughVersion = through;
+    return page;
   }
 
   /** Cursor wins over fromVersion; neither means "start at the head". */

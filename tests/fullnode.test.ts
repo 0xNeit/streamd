@@ -548,6 +548,63 @@ describe("FullnodeScanAdapter page finality", () => {
   });
 });
 
+describe("FullnodeScanAdapter scan progress", () => {
+  const ten = Array.from({ length: 10 }, (_, i) => txn(i, i % 3 === 0 ? [TYPE] : [OTHER]));
+  const moduleThrough = async (head: number, options: Record<string, unknown>) => {
+    const { aptos } = fakeNode(chain(head, ten.slice(0, head + 1)));
+    aptos.getLedgerInfo = async () => ({ ledger_version: String(head) }) as never;
+    const adapter = new FullnodeScanAdapter(aptos, { scanBatch: 2 });
+    return (await adapter.fetchEvents(moduleDesc, options)).throughVersion;
+  };
+
+  it("reports the last module version scanned, matches or not", async () => {
+    expect(await moduleThrough(9, { fromVersion: 0n, limit: 2 })).toBe(3n);
+    expect(await moduleThrough(9, { fromVersion: 1n, limit: 50 })).toBe(9n);
+    expect(await moduleThrough(9, { cursor: "2", toVersion: 4n })).toBe(4n);
+    expect(await moduleThrough(9, {})).toBe(9n);
+  });
+
+  it("leaves module progress unset when nothing was scanned", async () => {
+    expect(await moduleThrough(9, { fromVersion: 5n, toVersion: 4n })).toBeUndefined();
+    expect(await moduleThrough(9, { fromVersion: 0n, limit: 0 })).toBeUndefined();
+    expect(await moduleThrough(4, { fromVersion: 7n })).toBeUndefined();
+  });
+
+  const accountThrough = async (options: Record<string, unknown>) => {
+    const history = [txn(3), txn(8), txn(12), txn(20)];
+    const { aptos } = fakeNode(account(history));
+    const adapter = new FullnodeScanAdapter(aptos, { scanBatch: 2 });
+    return (await adapter.fetchEvents(accountDesc, options)).throughVersion;
+  };
+
+  it("reports the version of the last account transaction examined", async () => {
+    expect(await accountThrough({ offset: 0, limit: 1 })).toBe(8n);
+    expect(await accountThrough({ fromVersion: 15n, limit: 50 })).toBe(20n);
+    expect(await accountThrough({ toVersion: 10n })).toBe(10n);
+    expect(await accountThrough({ cursor: "4" })).toBeUndefined();
+    expect(await accountThrough({})).toBeUndefined();
+  });
+
+  const handleThrough = async (options: Record<string, unknown>) => {
+    const events = [handleEvent(0, 3), handleEvent(1, 7), handleEvent(2, 7)];
+    const { aptos } = fakeNode(handle(events));
+    return (await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, options)).throughVersion;
+  };
+
+  it("settles a full handle page only below its last event's version", async () => {
+    expect(await handleThrough({ limit: 2 })).toBe(6n);
+    expect(await handleThrough({ cursor: "2", limit: 2 })).toBe(7n);
+    expect(await handleThrough({ limit: 5, fromVersion: 8n })).toBe(7n);
+    expect(await handleThrough({ cursor: "3", limit: 2 })).toBeUndefined();
+  });
+
+  it("never reports a negative handle version", async () => {
+    const { aptos } = fakeNode(handle([handleEvent(0, 0)]));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, { limit: 1 });
+    expect(page.throughVersion).toBeUndefined();
+  });
+});
+
 describe("FullnodeScanAdapter errors", () => {
   const failing = () => ({ status: 429, data: { message: "slow down" } });
 

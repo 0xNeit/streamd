@@ -288,6 +288,15 @@ export interface EventPage {
    * since only it can read its cursor; leave it unset when unsure.
    */
   final?: boolean;
+  /**
+   * The highest ledger version the source has finished examining for this
+   * descriptor: resuming from `nextCursor` returns nothing at or below it,
+   * and nothing at or below it is missing from this or earlier pages of the
+   * walk. Never decreases across a walk. Events on this same page may sit
+   * above it, such as when a page ends partway through a transaction's
+   * events. Leave it unset when the source cannot say.
+   */
+  throughVersion?: bigint;
 }
 
 // ---- Listener options ----
