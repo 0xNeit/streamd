@@ -8,6 +8,7 @@ import type {
   EventPage,
   FetchOptions,
   StreamdEvent,
+  TransactionSimulation,
 } from "../src/types.js";
 
 const PING = "0x1::test::Ping";
@@ -205,6 +206,26 @@ describe("CachingAdapter transaction lookup", () => {
     expect(seen).toEqual([[hash, descriptor]]);
     expect(
       new CachingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).getTransactionEvents,
+    ).toBeUndefined();
+  });
+});
+
+describe("CachingAdapter simulation", () => {
+  const simulation = { transaction: { rawTransaction: {} } } as unknown as TransactionSimulation;
+  const simulated = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+
+  it("passes simulateTransactionEvents through uncached, only when the source has it", async () => {
+    const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    const seen: unknown[] = [];
+    const caching = new CachingAdapter({
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      simulateTransactionEvents: async (...args) => (seen.push(args), simulated),
+    });
+    expect(await caching.simulateTransactionEvents!(simulation, descriptor)).toBe(simulated);
+    expect(await caching.simulateTransactionEvents!(simulation, descriptor)).toBe(simulated);
+    expect(seen).toEqual([[simulation, descriptor], [simulation, descriptor]]);
+    expect(
+      new CachingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).simulateTransactionEvents,
     ).toBeUndefined();
   });
 });

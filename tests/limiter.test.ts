@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { RequestLimiter } from "../src/limiter.js";
 import { StreamdError } from "../src/errors.js";
-import type { EventAdapter, EventPage } from "../src/types.js";
+import type { EventAdapter, EventPage, TransactionSimulation } from "../src/types.js";
 
 const flush = () => new Promise<void>((r) => setTimeout(r, 0));
 
@@ -240,5 +240,31 @@ describe("RequestLimiter.wrap transaction lookups", () => {
     expect(peak).toBe(1);
     expect(seen[0]).toEqual([hash, descriptor]);
     expect(new RequestLimiter(1).wrap({ fetchEvents: inner.fetchEvents }).getTransactionEvents).toBeUndefined();
+  });
+});
+
+describe("RequestLimiter.wrap simulations", () => {
+  it("runs simulateTransactionEvents through the cap, only when the adapter has it", async () => {
+    const simulation = { transaction: { rawTransaction: {} } } as unknown as TransactionSimulation;
+  const simulated = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+    let active = 0;
+    let peak = 0;
+    const seen: unknown[] = [];
+    const inner: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async simulateTransactionEvents(...args) {
+        seen.push(args);
+        peak = Math.max(peak, ++active);
+        await Bun.sleep(2);
+        active--;
+        return simulated;
+      },
+    };
+    const view = new RequestLimiter(1).wrap(inner);
+    const descriptor = { kind: "module", eventType: "0x1::t::A" } as const;
+    await Promise.all([view.simulateTransactionEvents!(simulation, descriptor), view.simulateTransactionEvents!(simulation)]);
+    expect(peak).toBe(1);
+    expect(seen[0]).toEqual([simulation, descriptor]);
+    expect(new RequestLimiter(1).wrap({ fetchEvents: inner.fetchEvents }).simulateTransactionEvents).toBeUndefined();
   });
 });

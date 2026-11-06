@@ -3,7 +3,7 @@ import { MemoryAdapter } from "../src/adapters/memory.js";
 import { recordingAdapter, replayAdapter, type Recording } from "../src/adapters/recording.js";
 import { StreamdClient } from "../src/client.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
-import type { EventAdapter, EventDescriptor, StreamdEvent } from "../src/types.js";
+import type { EventAdapter, EventDescriptor, StreamdEvent, TransactionSimulation } from "../src/types.js";
 
 const PING = "0x1::test::Ping";
 const moduleDesc: EventDescriptor = { kind: "module", eventType: PING };
@@ -425,5 +425,24 @@ describe("recording transaction lookups", () => {
     ]) {
       expect(() => replayAdapter(bad(result))).toThrow("Invalid recording");
     }
+  });
+});
+
+describe("recordingAdapter simulation", () => {
+  const simulation = { transaction: { rawTransaction: {} } } as unknown as TransactionSimulation;
+  const simulated = { version: 1n, success: true, vmStatus: "Executed successfully", events: [] };
+
+  it("passes simulateTransactionEvents through unrecorded, and replay never has it", async () => {
+    const seen: unknown[] = [];
+    const recorder = recordingAdapter({
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      simulateTransactionEvents: async (...args) => (seen.push(args), simulated),
+    });
+    expect(await recorder.simulateTransactionEvents!(simulation, moduleDesc)).toBe(simulated);
+    expect(seen).toEqual([[simulation, moduleDesc]]);
+    expect(recorder.toJSON().calls).toEqual([]);
+    expect(replayAdapter(JSON.stringify(recorder)).simulateTransactionEvents).toBeUndefined();
+    expect(recordingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).simulateTransactionEvents)
+      .toBeUndefined();
   });
 });
