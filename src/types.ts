@@ -251,6 +251,16 @@ export interface EventsOfOptions {
   signal?: AbortSignal;
 }
 
+/** Options for `StreamdClient.previewEvents`. */
+export interface PreviewEventsOptions {
+  /** The sender's public key, so the simulation checks its auth key; omitted, that check is skipped. */
+  signerPublicKey?: PublicKey;
+  /** Keep only events satisfying this predicate, after `decode`. */
+  where?: EventPredicate;
+  /** Top-level `data` fields turned from decimal strings into `bigint`, as `EventFilter.decode`. */
+  decode?: readonly string[];
+}
+
 /**
  * What an adapter receives on each fetch.
  *
@@ -507,7 +517,7 @@ export interface StreamdConfig {
    */
   adapter?: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, and the `getTransactionEvents` lookups behind `eventsOf`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, and the `simulateTransactionEvents` calls behind `previewEvents`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit.
    */
