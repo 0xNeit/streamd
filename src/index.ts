@@ -8,6 +8,7 @@ export { EventPoller } from "./poller.js";
 export { EventQuery } from "./query.js";
 export { CursorManager } from "./cursor.js";
 export { defineEvent } from "./define.js";
+export { parseEvent, serializeEvent } from "./serialize.js";
 export {
   StreamdError,
   StreamdNetworkError,
@@ -33,6 +34,7 @@ export type {
   AdapterResponse,
 } from "./adapters/hooks.js";
 export type { RoutingAdapterRoutes } from "./adapters/routing.js";
+export type { ParseEventOptions } from "./serialize.js";
 export type {
   FieldPath,
   FieldValue,

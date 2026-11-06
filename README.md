@@ -381,6 +381,25 @@ values. An event without the field is left alone. A named field holding
 anything other than an unsigned decimal string is an error: a subscription
 reports it through `onError` and skips the event, and a query rejects.
 
+### Serialise events
+
+JSON has no `bigint`, so `JSON.stringify` throws on a `StreamdEvent`. Use
+`serializeEvent` and `parseEvent` to store or send events and read them back:
+
+```ts
+import { parseEvent, serializeEvent } from "streamd";
+
+const text = serializeEvent(event); // one line, the same format as `streamd tail`
+const back = parseEvent(text, { decode: ["amount"] });
+back.version; // bigint again
+```
+
+`version`, `sequenceNumber` and `timestamp` always come back as `bigint`.
+Inside `data`, every `bigint` is written as a decimal string, and only the
+top-level fields named in `decode` are turned back into `bigint`, by the same
+rule as the `decode` option; deeper ones stay strings. Malformed input throws
+a `StreamdError`.
+
 ## Filtering
 
 Chain APIs can't filter on what's inside an event. `where` filters on your

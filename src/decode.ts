@@ -1,7 +1,7 @@
 import { StreamdError } from "./errors.js";
 import type { StreamdEvent } from "./types.js";
 
-const UNSIGNED_INTEGER = /^\d+$/;
+export const UNSIGNED_INTEGER = /^\d+$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
