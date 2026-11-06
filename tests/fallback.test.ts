@@ -203,3 +203,50 @@ describe("FallbackAdapter", () => {
     ).toThrow(/FallbackAdapter\[1\] requires a valid EventAdapter/);
   });
 });
+
+describe("FallbackAdapter head version", () => {
+  const bare: EventAdapter = {
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+  };
+
+  it("skips adapters that cannot report a head", async () => {
+    const fallback = new FallbackAdapter([bare, new MemoryAdapter([ev(6)])]);
+    expect(await fallback.getHeadVersion(moduleDesc)).toBe(6n);
+  });
+
+  it("falls back on a network error", async () => {
+    const down: EventAdapter = {
+      ...bare,
+      getHeadVersion: vi.fn(async () => {
+        throw new StreamdNetworkError("503", 503);
+      }),
+    };
+    const fallback = new FallbackAdapter([down, new MemoryAdapter([ev(8)])]);
+
+    expect(await fallback.getHeadVersion(moduleDesc)).toBe(8n);
+    expect(down.getHeadVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it("rethrows invalid input without trying later adapters", async () => {
+    const invalid: EventAdapter = {
+      ...bare,
+      getHeadVersion: async () => {
+        throw new StreamdError("bad descriptor");
+      },
+    };
+    const later = new MemoryAdapter([ev(8)]);
+    const spy = vi.spyOn(later, "getHeadVersion");
+    const fallback = new FallbackAdapter([invalid, later]);
+
+    await expect(fallback.getHeadVersion(moduleDesc)).rejects.toThrow("bad descriptor");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("throws StreamdError when no adapter can report a head", async () => {
+    const err = await new FallbackAdapter([bare])
+      .getHeadVersion(moduleDesc)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  });
+});

@@ -366,4 +366,9 @@ export interface EventAdapter {
     descriptor: EventDescriptor,
     options: FetchOptions,
   ): Promise<EventPage>;
+  /**
+   * The latest version this source can serve for `descriptor`. Optional; a
+   * negative `fromVersion` (relative to the head) needs it.
+   */
+  getHeadVersion?(descriptor: EventDescriptor): Promise<bigint>;
 }

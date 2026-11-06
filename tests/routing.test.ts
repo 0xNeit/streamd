@@ -201,3 +201,27 @@ describe("RoutingAdapter", () => {
     ).toThrow(/RoutingAdapter\.default requires a valid EventAdapter/);
   });
 });
+
+describe("RoutingAdapter head version", () => {
+  it("asks the adapter routed for the descriptor's kind", async () => {
+    const router = new RoutingAdapter({
+      module: new MemoryAdapter([ev(9)]),
+      default: new MemoryAdapter([ev(4)]),
+    });
+
+    expect(await router.getHeadVersion(moduleDesc)).toBe(9n);
+    expect(await router.getHeadVersion(handleDesc)).toBe(4n);
+  });
+
+  it("throws StreamdError when the routed adapter cannot report a head", async () => {
+    const bare: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+    };
+    const router = new RoutingAdapter({ account: bare });
+
+    const err = await router.getHeadVersion(accountDesc).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain('"account"');
+  });
+});

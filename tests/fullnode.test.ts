@@ -25,6 +25,7 @@ interface Call {
 function fakeNode(
   route: (path: string, params: Record<string, unknown>) => Reply,
   clientConfig: Record<string, unknown> = {},
+  network: Network = Network.LOCAL,
 ) {
   const calls: Call[] = [];
   const client = {
@@ -43,7 +44,7 @@ function fakeNode(
   };
   const aptos = new Aptos(
     new AptosConfig({
-      network: Network.LOCAL,
+      network,
       fullnode: "http://fake/v1",
       client: client as never,
       clientConfig: { http2: false, ...clientConfig },
@@ -412,4 +413,27 @@ describe("FullnodeScanAdapter errors", () => {
       expect(calls).toHaveLength(0);
     });
   }
+});
+
+// The SDK caches ledger info per network for 10s, so each case uses a network
+// no other test in this file reads the ledger through.
+describe("FullnodeScanAdapter head version", () => {
+  it("reports the ledger version", async () => {
+    const { aptos } = fakeNode(chain(42, []), {}, Network.DEVNET);
+    expect(await new FullnodeScanAdapter(aptos).getHeadVersion()).toBe(42n);
+  });
+
+  it("surfaces a failed ledger read as StreamdNetworkError with its status", async () => {
+    const { aptos } = fakeNode(
+      () => ({ status: 503, data: { message: "down" } }),
+      {},
+      Network.TESTNET,
+    );
+    const err = await new FullnodeScanAdapter(aptos)
+      .getHeadVersion()
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(503);
+  });
 });

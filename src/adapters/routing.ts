@@ -77,6 +77,16 @@ export class RoutingAdapter implements EventAdapter {
     return adapter.fetchEvents(descriptor, options);
   }
 
+  async getHeadVersion(descriptor: EventDescriptor): Promise<bigint> {
+    const adapter = this.selectAdapter(descriptor);
+    if (adapter.getHeadVersion === undefined) {
+      throw new StreamdError(
+        `The adapter for descriptor kind "${descriptor.kind}" does not report a head version`,
+      );
+    }
+    return adapter.getHeadVersion(descriptor);
+  }
+
   private selectAdapter(descriptor: EventDescriptor): EventAdapter {
     let target: EventAdapter | undefined;
     switch (descriptor?.kind) {

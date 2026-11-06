@@ -7,6 +7,27 @@ import type {
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import { requireAdapter } from "./validate.js";
 
+async function tryInOrder<T>(
+  adapters: readonly EventAdapter[],
+  run: (adapter: EventAdapter) => Promise<T>,
+): Promise<T> {
+  let lastError: unknown;
+  for (const adapter of adapters) {
+    try {
+      return await run(adapter);
+    } catch (err) {
+      if (
+        err instanceof StreamdError &&
+        !(err instanceof StreamdNetworkError)
+      ) {
+        throw err;
+      }
+      lastError = err;
+    }
+  }
+  throw lastError;
+}
+
 /**
  * Tries a list of `EventAdapter` sources in order on each `fetchEvents` call,
  * falling back to the next adapter when one fails with a network or source
@@ -29,20 +50,19 @@ export class FallbackAdapter implements EventAdapter {
     descriptor: EventDescriptor,
     options: FetchOptions = {},
   ): Promise<EventPage> {
-    let lastError: unknown;
-    for (const adapter of this.adapters) {
-      try {
-        return await adapter.fetchEvents(descriptor, { ...options });
-      } catch (err) {
-        if (
-          err instanceof StreamdError &&
-          !(err instanceof StreamdNetworkError)
-        ) {
-          throw err;
-        }
-        lastError = err;
-      }
+    return tryInOrder(this.adapters, (adapter) =>
+      adapter.fetchEvents(descriptor, { ...options }),
+    );
+  }
+
+  /** From the first adapter that reports one, with the same fallback rules. */
+  async getHeadVersion(descriptor: EventDescriptor): Promise<bigint> {
+    const reporting = this.adapters.filter((a) => a.getHeadVersion !== undefined);
+    if (reporting.length === 0) {
+      throw new StreamdError("No FallbackAdapter source reports a head version");
     }
-    throw lastError;
+    return tryInOrder(reporting, (adapter) =>
+      adapter.getHeadVersion!(descriptor),
+    );
   }
 }
