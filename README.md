@@ -124,9 +124,10 @@ Pausing keeps the cursor, the dedup window, and the error count, so `resume()` p
 with the page it held and skips events already delivered. A handler already running when
 you pause finishes, the rest of its page waits for `resume()`, and a fetch in flight runs
 to completion with its result discarded: `resume()` waits for it rather than sending a
-second request. While paused, `active` (and `sub.status.active`) is `false`. `unsubscribe()`,
-`destroy()`, or the `signal` aborting still ends a paused subscription, and `resume()` never
-revives one that has ended, including after `maxErrors`.
+second request. A `withState` view in flight is abandoned instead, so a hung one never stalls
+`resume()` or keeps its request slot once the subscription ends. While paused, `active` (and
+`sub.status.active`) is `false`. `unsubscribe()`, `destroy()`, or the `signal` aborting still
+ends a paused subscription, and `resume()` never revives one that has ended, including after `maxErrors`.
 
 ### Caught-up signal
 

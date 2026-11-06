@@ -64,6 +64,8 @@ export class EventPoller {
    * waits for it, so a new run never fetches or delivers alongside the old one.
    */
   private delivering: Promise<void> = Promise.resolve();
+  /** Aborted when this run ends, so a hung view never holds the next run or its request slot. */
+  private runAbort = new AbortController();
   private readonly position: CursorManager;
   private readonly callback?: EventCallback;
   private readonly onBatch?: BatchCallback;
@@ -146,6 +148,7 @@ export class EventPoller {
     this._active = true;
     this._paused = false;
     this.generation++;
+    this.runAbort = new AbortController();
     this.signal?.addEventListener("abort", this.abort, { once: true });
     this.schedulePoll(0);
   }
@@ -155,6 +158,7 @@ export class EventPoller {
     this._paused = false;
     this.signal?.removeEventListener("abort", this.abort);
     this.clearTimer();
+    this.runAbort.abort();
   }
 
   /**
@@ -166,6 +170,7 @@ export class EventPoller {
     this._active = false;
     this._paused = true;
     this.clearTimer();
+    this.runAbort.abort();
   }
 
   /** Undo a pause(); a stopped poller stays stopped. */
@@ -208,7 +213,10 @@ export class EventPoller {
   private async poll(): Promise<void> {
     const gen = this.generation;
     // A call still queued once this run has ended is dropped unstarted.
-    const adapter = this.limiter.wrap(this.adapter, () => !this.isCurrent(gen));
+    const cancelled = () => !this.isCurrent(gen);
+    const adapter = this.limiter.wrap(this.adapter, cancelled);
+    // Fetches are left to settle, since a restart waits for them; views are not.
+    const viewer = this.limiter.wrap(this.adapter, cancelled, this.runAbort.signal);
     try {
       await this.delivering;
       if (!this.isCurrent(gen)) return;
@@ -223,7 +231,7 @@ export class EventPoller {
                 adapter,
                 this.descriptor,
                 this.fromTime,
-                () => !this.isCurrent(gen),
+                cancelled,
               );
         this.fromVersion = fromVersion;
         this.fromTime = undefined;
@@ -246,7 +254,7 @@ export class EventPoller {
       // not touch the cursor or the error budget the live run resumes with.
       if (!this.isCurrent(gen)) return;
 
-      const delivery = this.processPage(page, gen, adapter);
+      const delivery = this.processPage(page, gen, viewer);
       // A failed page is this poll's error alone; later polls must not inherit it.
       this.delivering = delivery.catch(() => {});
       await delivery;

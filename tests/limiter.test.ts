@@ -64,6 +64,22 @@ describe("RequestLimiter", () => {
     expect(await third).toBe(3);
   });
 
+  it("frees the slot of a started task once its signal aborts", async () => {
+    const limiter = new RequestLimiter(1);
+    const h = harness();
+    const controller = new AbortController();
+    const hung = limiter.run(h.task(1), undefined, controller.signal).catch((e: Error) => e.name);
+    const next = limiter.run(h.task(2));
+    await flush();
+    expect(h.started).toEqual([1]);
+    controller.abort();
+    expect(await hung).toBe("AbortError");
+    await flush();
+    expect(h.started).toEqual([1, 2]);
+    h.settle.get(2)!.ok();
+    expect(await next).toBe(2);
+  });
+
   it("drops a queued task that is cancelled by the time a slot frees", async () => {
     const limiter = new RequestLimiter(1);
     const h = harness();

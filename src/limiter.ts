@@ -1,5 +1,6 @@
 import type { EventAdapter } from "./types.js";
 import { StreamdError } from "./errors.js";
+import { raceAbort } from "./utils.js";
 
 interface Waiter {
   start: () => void;
@@ -18,12 +19,20 @@ export class RequestLimiter {
 
   constructor(private readonly max = Infinity) {}
 
-  run<T>(task: () => Promise<T>, cancelled: () => boolean = () => false): Promise<T> {
+  /**
+   * `signal` abandons a started task: its promise rejects and its slot frees,
+   * though the adapter call itself, which takes no signal, runs on.
+   */
+  run<T>(
+    task: () => Promise<T>,
+    cancelled: () => boolean = () => false,
+    signal?: AbortSignal,
+  ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const start = () => {
         this.active++;
         // Wrapped so a task that throws synchronously still frees its slot.
-        new Promise<T>((r) => r(task()))
+        raceAbort(new Promise<T>((r) => r(task())), signal)
           .then(resolve, reject)
           .finally(() => {
             this.active--;
@@ -37,38 +46,38 @@ export class RequestLimiter {
   }
 
   /** An adapter view whose calls go through this limiter. */
-  wrap(adapter: EventAdapter, cancelled?: () => boolean): EventAdapter {
+  wrap(adapter: EventAdapter, cancelled?: () => boolean, signal?: AbortSignal): EventAdapter {
     const view: EventAdapter = {
       fetchEvents: (descriptor, options) =>
-        this.run(() => adapter.fetchEvents(descriptor, options), cancelled),
+        this.run(() => adapter.fetchEvents(descriptor, options), cancelled, signal),
     };
     if (adapter.getHeadVersion !== undefined) {
       view.getHeadVersion = (descriptor) =>
-        this.run(() => adapter.getHeadVersion!(descriptor), cancelled);
+        this.run(() => adapter.getHeadVersion!(descriptor), cancelled, signal);
     }
     if (adapter.getEarliestVersion !== undefined) {
       view.getEarliestVersion = (descriptor) =>
-        this.run(() => adapter.getEarliestVersion!(descriptor), cancelled);
+        this.run(() => adapter.getEarliestVersion!(descriptor), cancelled, signal);
     }
     if (adapter.getBlock !== undefined) {
       view.getBlock = (descriptor, height) =>
-        this.run(() => adapter.getBlock!(descriptor, height), cancelled);
+        this.run(() => adapter.getBlock!(descriptor, height), cancelled, signal);
     }
     if (adapter.getBlockHeights !== undefined) {
       view.getBlockHeights = (descriptor) =>
-        this.run(() => adapter.getBlockHeights!(descriptor), cancelled);
+        this.run(() => adapter.getBlockHeights!(descriptor), cancelled, signal);
     }
     if (adapter.getTransactionEvents !== undefined) {
       view.getTransactionEvents = (hash, descriptor) =>
-        this.run(() => adapter.getTransactionEvents!(hash, descriptor), cancelled);
+        this.run(() => adapter.getTransactionEvents!(hash, descriptor), cancelled, signal);
     }
     if (adapter.simulateTransactionEvents !== undefined) {
       view.simulateTransactionEvents = (simulation, descriptor) =>
-        this.run(() => adapter.simulateTransactionEvents!(simulation, descriptor), cancelled);
+        this.run(() => adapter.simulateTransactionEvents!(simulation, descriptor), cancelled, signal);
     }
     if (adapter.view !== undefined) {
       view.view = (request, ledgerVersion, descriptor) =>
-        this.run(() => adapter.view!(request, ledgerVersion, descriptor), cancelled);
+        this.run(() => adapter.view!(request, ledgerVersion, descriptor), cancelled, signal);
     }
     return view;
   }
