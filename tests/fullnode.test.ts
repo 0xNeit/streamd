@@ -869,6 +869,8 @@ describe("FullnodeScanAdapter transaction lookup", () => {
       expect(err).not.toBeInstanceOf(StreamdNetworkError);
     }
     expect(calls).toHaveLength(0);
+    const long = await adapter.getTransactionEvents(`0x${"a".repeat(5000)}`).catch((e: Error) => e);
+    expect((long as Error).message.length).toBeLessThan(150);
   });
 
   it("rejects a server error as StreamdNetworkError and a malformed reply as StreamdError", async () => {

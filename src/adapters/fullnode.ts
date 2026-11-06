@@ -236,7 +236,7 @@ export class FullnodeScanAdapter implements EventAdapter {
       }
       if (txn.type === "pending_transaction") return undefined;
       if (typeof txn.hash === "string" && txn.hash.toLowerCase() !== hash.toLowerCase()) {
-        throw new StreamdError(`Fullnode answered ${hash} with transaction ${txn.hash}`);
+        throw new StreamdError(`Fullnode answered ${hash} with a different transaction`);
       }
       if (!/^\d+$/.test(String(txn.version)) || typeof txn.success !== "boolean") {
         throw new StreamdError(`Fullnode returned a malformed transaction for ${hash}`);

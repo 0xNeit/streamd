@@ -25,6 +25,8 @@ const DEFAULT_LOOKUP_INTERVAL = 1000;
  * is real work; here it would be a request per round trip for the whole wait.
  */
 const MIN_LOOKUP_INTERVAL = 100;
+/** setTimeout fires at once past this. */
+const MAX_LOOKUP_INTERVAL = 2_147_483_647;
 
 /** Which of a transaction's events `descriptor` selects. */
 function eventMatcher(descriptor: EventDescriptor): (event: StreamdEvent) => boolean {
@@ -90,7 +92,7 @@ export async function eventsOf(
 
   const timeout = options.timeout ?? DEFAULT_TRANSACTION_TIMEOUT;
   const interval = Number.isFinite(pollInterval)
-    ? Math.max(pollInterval, MIN_LOOKUP_INTERVAL)
+    ? Math.min(Math.max(pollInterval, MIN_LOOKUP_INTERVAL), MAX_LOOKUP_INTERVAL)
     : DEFAULT_LOOKUP_INTERVAL;
   const wait = new AbortController();
   const timer = setTimeout(

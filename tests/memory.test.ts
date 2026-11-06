@@ -417,7 +417,7 @@ describe("MemoryAdapter transaction lookup", () => {
   ];
 
   it("serves the seeded events carrying the hash, in order, as a successful transaction", async () => {
-    const found = await new MemoryAdapter(seeded).getTransactionEvents(hash);
+    const found = await new MemoryAdapter(seeded).getTransactionEvents(`0x${"EF".repeat(32)}`);
     expect(found).toEqual({
       version: 4n,
       success: true,

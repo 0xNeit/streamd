@@ -234,7 +234,7 @@ describe("eventsOf", () => {
   });
 
   it("waits at least 100ms between lookups whatever pollInterval says", async () => {
-    for (const pollInterval of [0, -5, Number.NaN]) {
+    for (const pollInterval of [0, -5, Number.NaN, 3e9]) {
       const { adapter, calls } = lookup(committed, Infinity);
       const c = new StreamdClient({ adapter, defaults: { pollInterval } });
       await c.eventsOf(HASH, undefined, { timeout: 150 }).catch(() => {});
