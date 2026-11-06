@@ -2006,3 +2006,27 @@ describe("off and removeAllListeners", () => {
     expect(remove).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("iterateEvents", () => {
+  it("yields single events, and two interleaved loops share a one-request cap", async () => {
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+    const events = [1, 2, 3, 4, 5].map((v) => makeEvent(v));
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter(events),
+      maxConcurrentRequests: 1,
+    });
+    const a = client.iterateEvents(descriptor, { fromVersion: 2n }, 2);
+    const b = client.iterateEvents(descriptor, { orderBy: "desc", limit: 3 }, 2);
+    const seenA: bigint[] = [];
+    const seenB: bigint[] = [];
+    for (let i = 0; i < 4; i++) {
+      const [x, y] = await Promise.all([a.next(), b.next()]);
+      if (!x.done) seenA.push(x.value.version);
+      if (!y.done) seenB.push(y.value.version);
+    }
+
+    expect(seenA).toEqual([2n, 3n, 4n, 5n]);
+    expect(seenB).toEqual([5n, 4n, 3n]);
+    expect((await a.next()).done).toBe(true);
+  });
+});
