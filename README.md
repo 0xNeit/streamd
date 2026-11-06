@@ -209,6 +209,20 @@ for await (const page of streamd.getEventPages(descriptor, { limit: 1000 }, 100)
 }
 ```
 
+For the most recent events first, pass `orderBy: "desc"`:
+
+```ts
+const latest = await streamd.getEvents(descriptor, {
+  fromVersion: -100_000n,
+  orderBy: "desc",
+  limit: 10,
+});
+```
+
+This returns the last `limit` matches of the range, newest first. Adapters only page
+forward, so the whole range is still walked: bound it with `fromVersion` or `maxPages`.
+`getEventPages` yields the same events in `pageSize` chunks once the walk ends.
+
 > [!NOTE]
 > Renamed in 0.x: `getLogs` is now `getEvents` and `getLogsIterator` is now
 > `getEventPages`. Arguments and results are unchanged.

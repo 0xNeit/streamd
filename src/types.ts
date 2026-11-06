@@ -143,6 +143,12 @@ export interface EventFilter {
    */
   maxPages?: number;
   /**
+   * `"desc"` returns the last `limit` matches of the range, newest first.
+   * Adapters only page forward, so the whole range is still walked: bound it
+   * with `fromVersion` (a negative one works) or `maxPages`.
+   */
+  orderBy?: "asc" | "desc";
+  /**
    * Aborting rejects `getEvents()` or the pending/next `getEventPages()` page
    * with the signal's `reason` and stops fetching further pages.
    */

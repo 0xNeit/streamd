@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "bun:test";
 import { EventQuery } from "../src/query.js";
+import { StreamdError } from "../src/errors.js";
 import type { EventAdapter, EventDescriptor, FetchOptions } from "../src/types.js";
 
 const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::test::Event" };
@@ -182,5 +183,99 @@ describe("EventQuery decode", () => {
     await expect(
       new EventQuery({ fetchEvents }).getEvents(descriptor, { decode: ["amount"] }),
     ).rejects.toThrow(/"amount" of 1:0/);
+  });
+});
+
+describe("EventQuery orderBy desc", () => {
+  const at = (version: number, eventIndex = 0) => ({ ...event(version), eventIndex });
+
+  // Three ascending pages: versions 1-2, 3-4 (two events in 4), 5-6.
+  function threePages() {
+    return vi
+      .fn<EventAdapter["fetchEvents"]>()
+      .mockResolvedValueOnce({ events: [at(1), at(2)], nextCursor: "3", hasMore: true })
+      .mockResolvedValueOnce({ events: [at(3), at(4, 0), at(4, 1)], nextCursor: "5", hasMore: true })
+      .mockResolvedValueOnce({ events: [at(5), at(6)], nextCursor: "7", hasMore: false });
+  }
+  const ids = (events: { version: bigint; eventIndex: number }[]) =>
+    events.map((e) => `${e.version}:${e.eventIndex}`);
+
+  it("returns the last N across pages, newest first, asking the adapter for asc", async () => {
+    const fetchEvents = threePages();
+    const events = await new EventQuery({ fetchEvents }).getEvents(descriptor, {
+      orderBy: "desc",
+      limit: 4,
+    });
+
+    expect(ids(events)).toEqual(["6:0", "5:0", "4:1", "4:0"]);
+    expect(fetchEvents).toHaveBeenCalledTimes(3);
+    for (const [, options] of fetchEvents.mock.calls) {
+      expect(options.orderBy).toBe("asc");
+      expect(options.limit).toBe(25);
+    }
+  });
+
+  it("counts limit after where", async () => {
+    const events = await new EventQuery({ fetchEvents: threePages() }).getEvents(descriptor, {
+      orderBy: "desc",
+      limit: 2,
+      where: (e) => e.version % 2n === 1n,
+    });
+    expect(ids(events)).toEqual(["5:0", "3:0"]);
+  });
+
+  it("returns the whole range reversed without a limit", async () => {
+    const events = await new EventQuery({ fetchEvents: threePages() }).getEvents(descriptor, {
+      orderBy: "desc",
+    });
+    expect(ids(events)).toEqual(["6:0", "5:0", "4:1", "4:0", "3:0", "2:0", "1:0"]);
+  });
+
+  it("makes no fetch for limit 0", async () => {
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>();
+    const events = await new EventQuery({ fetchEvents }).getEvents(descriptor, {
+      orderBy: "desc",
+      limit: 0,
+    });
+    expect(events).toEqual([]);
+    expect(fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("caps the walk with maxPages and returns the latest of what was walked", async () => {
+    const fetchEvents = threePages();
+    const events = await new EventQuery({ fetchEvents }).getEvents(descriptor, {
+      orderBy: "desc",
+      limit: 2,
+      maxPages: 2,
+    });
+    expect(ids(events)).toEqual(["4:1", "4:0"]);
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+  });
+
+  it("yields getEventPages in pageSize chunks, newest first", async () => {
+    const query = new EventQuery({ fetchEvents: threePages() });
+    const pages: string[][] = [];
+    for await (const page of query.getEventPages(descriptor, { orderBy: "desc", limit: 5 }, 2)) {
+      pages.push(ids(page));
+    }
+    expect(pages).toEqual([["6:0", "5:0"], ["4:1", "4:0"], ["3:0"]]);
+  });
+
+  it("rejects an unknown orderBy before fetching", async () => {
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>();
+    const promise = new EventQuery({ fetchEvents }).getEvents(descriptor, {
+      orderBy: "DESC" as "desc",
+    });
+    await expect(promise).rejects.toBeInstanceOf(StreamdError);
+    await expect(promise).rejects.toThrow('orderBy must be "asc" or "desc"');
+    expect(fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("leaves ascending unchanged", async () => {
+    const events = await new EventQuery({ fetchEvents: threePages() }).getEvents(descriptor, {
+      orderBy: "asc",
+      limit: 3,
+    });
+    expect(ids(events)).toEqual(["1:0", "2:0", "3:0"]);
   });
 });

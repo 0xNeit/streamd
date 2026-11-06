@@ -7,6 +7,7 @@ import type {
 import { raceAbort, resolveFromVersion } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
+import { StreamdError } from "./errors.js";
 
 const DEFAULT_PAGE_SIZE = 25;
 
@@ -41,6 +42,35 @@ export class EventQuery {
     descriptor: EventDescriptor,
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
+  ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
+    const { orderBy, ...rest } = filter;
+    if (orderBy !== undefined && orderBy !== "asc" && orderBy !== "desc") {
+      throw new StreamdError('orderBy must be "asc" or "desc"');
+    }
+    if (orderBy !== "desc") {
+      yield* this.ascendingPages<TData>(descriptor, rest, pageSize);
+      return;
+    }
+
+    // Adapters only page forward, so walk the whole range and keep the tail.
+    const limit = rest.limit;
+    if (limit !== undefined && limit <= 0) return;
+    let latest: StreamdEvent<TData>[] = [];
+    const walk = { ...rest, limit: undefined };
+    for await (const page of this.ascendingPages<TData>(descriptor, walk, pageSize)) {
+      latest.push(...page);
+      if (limit !== undefined && latest.length > limit) latest = latest.slice(-limit);
+    }
+    latest.reverse();
+    for (let i = 0; i < latest.length; i += pageSize) {
+      yield latest.slice(i, i + pageSize);
+    }
+  }
+
+  private async *ascendingPages<TData>(
+    descriptor: EventDescriptor,
+    filter: EventFilter,
+    pageSize: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
     const { where, decode: fields, maxPages, signal, ...adapterFilter } = filter;
     const decode = fieldDecoder(fields);
