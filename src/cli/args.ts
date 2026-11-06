@@ -73,6 +73,9 @@ const MAX_RETRIES = 100;
 const DEFAULT_TIMEOUT = 10_000;
 // RFC 9110 token characters.
 const HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+// What fetch accepts in a value; anything else fails every attempt with an
+// error naming the offending character.
+const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
 
 export const USAGE = `Usage:
   streamd tail [options] <eventType>...
@@ -135,10 +138,14 @@ function network(raw: string | undefined): Network {
   return raw as Network;
 }
 
+function httpUrl(raw: string): URL | undefined {
+  const url = URL.canParse(raw) ? new URL(raw) : undefined;
+  return url?.protocol === "http:" || url?.protocol === "https:" ? url : undefined;
+}
+
 function nodeUrl(raw: string | undefined): string | undefined {
   if (raw === undefined) return undefined;
-  const url = URL.canParse(raw) ? new URL(raw) : undefined;
-  if (url?.protocol !== "http:" && url?.protocol !== "https:") {
+  if (httpUrl(raw) === undefined) {
     throw new UsageError(`--node-url must be an http or https URL: ${raw}`);
   }
   return raw;
@@ -146,10 +153,12 @@ function nodeUrl(raw: string | undefined): string | undefined {
 
 function webhookUrl(raw: string | undefined): string {
   if (raw === undefined) throw new UsageError("forward needs --to <url>");
-  const url = URL.canParse(raw) ? new URL(raw) : undefined;
   // The URL is not echoed: it may carry a token.
-  if (url?.protocol !== "http:" && url?.protocol !== "https:") {
-    throw new UsageError("--to must be an http or https URL");
+  const url = httpUrl(raw);
+  if (url === undefined) throw new UsageError("--to must be an http or https URL");
+  // fetch refuses these with an error quoting the whole URL.
+  if (url.username !== "" || url.password !== "") {
+    throw new UsageError("--to must not carry credentials; pass them with --header");
   }
   return raw;
 }
@@ -161,10 +170,11 @@ function headers(raw: readonly string[] = []): Record<string, string> {
     const name = header.slice(0, Math.max(colon, 0)).trim();
     const value = header.slice(colon + 1).trim();
     // Neither part is echoed: the value is usually a secret.
-    if (!HEADER_NAME.test(name) || /[\r\n\0]/.test(value)) {
-      throw new UsageError("--header must be 'Name: value' with a valid header name");
+    if (!HEADER_NAME.test(name) || !HEADER_VALUE.test(value)) {
+      throw new UsageError("--header must be 'Name: value' with a valid name and value");
     }
-    result[name] = value;
+    // Lowercased so a given content-type replaces the default rather than joining it.
+    result[name.toLowerCase()] = value;
   }
   return result;
 }

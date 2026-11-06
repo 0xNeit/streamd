@@ -169,7 +169,7 @@ describe("parseCommand forward", () => {
       cursorFile: "/tmp/c",
       retries: 0,
       timeout: 250,
-      headers: { Authorization: "Bearer abc:def", "X-Source": "streamd" },
+      headers: { authorization: "Bearer abc:def", "x-source": "streamd" },
     });
   });
 
@@ -181,7 +181,7 @@ describe("parseCommand forward", () => {
     [["forward", TYPE], /forward needs --to/],
     [["forward", "--to", URL_WITH_TOKEN], /forward needs at least one event type/],
     [["forward", "--to", URL_WITH_TOKEN, TYPE, "--limit", "1"], /limit/],
-    [["tail", TYPE, "--to", URL_WITH_TOKEN], /to/],
+    [["tail", TYPE, "--to", URL_WITH_TOKEN], /Unknown option '--to'/],
     [["forward", "--to", URL_WITH_TOKEN, TYPE, "--retries", "101"], /--retries/],
     [["forward", "--to", URL_WITH_TOKEN, TYPE, "--timeout", "0"], /--timeout/],
     [["forward", "--to", URL_WITH_TOKEN, TYPE, "--cursor-file", ""], /--cursor-file/],
@@ -192,15 +192,22 @@ describe("parseCommand forward", () => {
   it.each([["ftp://x.example/s3cret"], ["not a url s3cret"]])(
     "rejects a non-http --to without echoing it: %s",
     (url) => {
-      expect(() => forward("--to", url, TYPE)).toThrow(/--to must be an http or https URL$/);
+      expect(() => forward("--to", url, TYPE)).toThrow(/^--to must be an http or https URL$/);
     },
   );
 
-  it.each([["Authorization Bearer s3cret"], [": s3cret"], ["Bad Name: s3cret"], ["X: a\ns3cret"]])(
+  it.each([
+    ["Authorization Bearer s3cret"],
+    [": s3cret"],
+    ["Bad Name: s3cret"],
+    ["X: a\ns3cret"],
+    ["X: s3\u20accret"],
+    ["X: s3\u0007cret"],
+  ])(
     "rejects a malformed --header without echoing it: %j",
     (header) => {
       expect(() => forward("--to", URL_WITH_TOKEN, TYPE, "--header", header)).toThrow(
-        /^--header must be 'Name: value' with a valid header name$/,
+        /^--header must be 'Name: value' with a valid name and value$/,
       );
     },
   );

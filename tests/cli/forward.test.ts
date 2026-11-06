@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runForward } from "../../src/cli/forward.js";
@@ -169,6 +169,57 @@ describe("runForward", () => {
     expect(received.map(versions)).toEqual([["1"], ["2"]]);
     expect(errors).toEqual(["streamd: delivery failed: HTTP 400"]);
     expect(readFileSync(cursorFile(), "utf8")).toBe("a\n");
+  });
+
+  it("exits 1 at once on a 400 for the first batch, leaving no cursor", async () => {
+    handler = () => new Response("", { status: 400 });
+    const { io, errors } = harness(new MemoryAdapter([ev(1)]));
+    expect(await runForward(options(), io)).toBe(1);
+    expect(received).toHaveLength(1);
+    expect(errors).toEqual(["streamd: delivery failed: HTTP 400"]);
+    expect(existsSync(cursorFile())).toBe(false);
+  });
+
+  it("aborts during a retry wait without advancing", async () => {
+    handler = () => new Response("", { status: 500 });
+    const { io, errors, controller } = harness(new MemoryAdapter([ev(1)]));
+    io.retryDelay = 60_000;
+    const run = runForward(options(), io);
+    await until(() => errors.length === 1);
+    controller.abort();
+    expect(await run).toBe(0);
+    expect(received).toHaveLength(1);
+    expect(existsSync(cursorFile())).toBe(false);
+  });
+
+  it("exits 1 when the cursor file cannot be written", async () => {
+    const { io, errors } = harness(new MemoryAdapter([ev(1)]));
+    const code = await runForward(options({ cursorFile: join(dir, "missing", "cursor") }), io);
+    expect(code).toBe(1);
+    expect(received).toHaveLength(1);
+    expect(errors[0]).toMatch(/^streamd: cannot write cursor file:/);
+  });
+
+  it("refuses to write through a link planted at the temp name", async () => {
+    const target = join(dir, "target");
+    writeFileSync(target, "keep");
+    symlinkSync(target, `${cursorFile()}.${process.pid}.tmp`);
+    const { io, controller } = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(options(), io);
+    await until(() => existsSync(cursorFile()));
+    controller.abort();
+    expect(await run).toBe(0);
+    expect(readFileSync(target, "utf8")).toBe("keep");
+    expect(readFileSync(cursorFile(), "utf8")).toBe("1\n");
+  });
+
+  it("never prints the URL on a connection error", async () => {
+    const { io, errors } = harness(new MemoryAdapter([ev(1)]));
+    const code = await runForward(options({ to: `http://127.0.0.1:1/?token=${SECRET}`, retries: 0 }), io);
+    expect(code).toBe(1);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/^streamd: delivery failed: /);
+    expect(errors.join("\n")).not.toContain(SECRET);
   });
 
   it("does not follow redirects", async () => {

@@ -1,11 +1,11 @@
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import type { StreamdClient } from "../client.js";
 import { parseRetryAfter } from "../errors.js";
 import { serializeEvent } from "../serialize.js";
 import type { Subscription } from "../types.js";
 import type { ForwardOptions } from "./args.js";
-import { message } from "./tail.js";
+import { message } from "./format.js";
 
 export interface ForwardIO {
   client: Pick<StreamdClient, "onBatch">;
@@ -35,7 +35,10 @@ function readCursor(path: string): string | undefined {
 // A rename replaces the file whole, so a crash mid-write never leaves a torn cursor.
 function writeCursor(path: string, cursor: string): void {
   const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, `${cursor}\n`);
+  // Exclusive create: a link planted at the predictable name fails the write
+  // instead of redirecting it. A stale temp file from this pid is ours to drop.
+  rmSync(temp, { force: true });
+  writeFileSync(temp, `${cursor}\n`, { flag: "wx", mode: 0o600 });
   renameSync(temp, path);
 }
 
@@ -154,8 +157,15 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     sub = io.client.onBatch(
       options.descriptor,
       async (events) => {
-        const body = `[${events.map(serializeEvent).join(",")}]`;
-        if (!(await deliver(body, options, io))) {
+        let delivered: boolean;
+        try {
+          delivered = await deliver(`[${events.map(serializeEvent).join(",")}]`, options, io);
+        } catch (err) {
+          // A throw would let the poller move past the page: stop first instead.
+          io.error(`streamd: ${message(err)}`);
+          delivered = false;
+        }
+        if (!delivered) {
           // Stopping before returning keeps the cursor on this undelivered page.
           finish(io.signal.aborted ? 0 : 1);
           return;
