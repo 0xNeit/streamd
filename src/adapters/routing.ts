@@ -7,6 +7,7 @@ import type {
   FetchOptions,
   TransactionEvents,
   TransactionSimulation,
+  ViewRequest,
 } from "../types.js";
 import { StreamdError } from "../errors.js";
 import { requireAdapter } from "./validate.js";
@@ -163,6 +164,27 @@ export class RoutingAdapter implements EventAdapter {
       );
     }
     return adapter.simulateTransactionEvents(simulation, descriptor);
+  }
+
+  /** From the adapter for `descriptor`'s kind, or the `default` adapter without one. */
+  async view(
+    request: ViewRequest,
+    ledgerVersion: bigint,
+    descriptor?: EventDescriptor,
+  ): Promise<unknown[]> {
+    const adapter =
+      descriptor === undefined ? this.defaultAdapter : this.selectAdapter(descriptor);
+    if (adapter === undefined) {
+      throw new StreamdError("RoutingAdapter needs a descriptor or a default adapter to run a view");
+    }
+    if (adapter.view === undefined) {
+      throw new StreamdError(
+        descriptor === undefined
+          ? "The default adapter does not run views"
+          : `The adapter for descriptor kind "${descriptor.kind}" does not run views`,
+      );
+    }
+    return adapter.view(request, ledgerVersion, descriptor);
   }
 
   private selectAdapter(descriptor: EventDescriptor): EventAdapter {

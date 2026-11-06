@@ -447,3 +447,29 @@ describe("FallbackAdapter simulation", () => {
     await expect(new FallbackAdapter([bare]).simulateTransactionEvents(simulation)).rejects.toBeInstanceOf(StreamdError);
   });
 });
+
+describe("FallbackAdapter view", () => {
+  const request = { function: "0x1::coin::balance" as const };
+
+  it("falls back on a network error to the next source that runs views", async () => {
+    const down: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      view: async () => {
+        throw new StreamdNetworkError("down", 503);
+      },
+    };
+    const up: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      view: vi.fn(async () => ["ok"]),
+    };
+    const adapter = new FallbackAdapter([down, new MemoryAdapter(), up]);
+    expect(await adapter.view(request, 3n)).toEqual(["ok"]);
+    expect(up.view).toHaveBeenCalledWith(request, 3n, undefined);
+  });
+
+  it("refuses when no source runs views", async () => {
+    await expect(new FallbackAdapter([new MemoryAdapter()]).view(request, 1n)).rejects.toThrow(
+      "No FallbackAdapter source runs views",
+    );
+  });
+});

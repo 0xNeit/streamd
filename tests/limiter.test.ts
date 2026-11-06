@@ -268,3 +268,27 @@ describe("RequestLimiter.wrap simulations", () => {
     expect(new RequestLimiter(1).wrap({ fetchEvents: inner.fetchEvents }).simulateTransactionEvents).toBeUndefined();
   });
 });
+
+describe("RequestLimiter.wrap views", () => {
+  it("runs view through the cap, only when the adapter has it", async () => {
+    let release!: () => void;
+    const order: string[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: async () => {
+        order.push("fetch");
+        await new Promise<void>((r) => (release = r));
+        return { events: [], hasMore: false };
+      },
+      view: async (request, version) => (order.push("view"), [request.function, String(version)]),
+    };
+    const view = new RequestLimiter(1).wrap(adapter);
+    const fetching = view.fetchEvents({ kind: "module", eventType: "0x1::a::B" }, {});
+    const viewing = view.view!({ function: "0x1::coin::balance" }, 2n);
+    await Promise.resolve();
+    expect(order).toEqual(["fetch"]);
+    release();
+    await fetching;
+    expect(await viewing).toEqual(["0x1::coin::balance", "2"]);
+    expect(new RequestLimiter().wrap({ fetchEvents: adapter.fetchEvents }).view).toBeUndefined();
+  });
+});

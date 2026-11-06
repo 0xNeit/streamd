@@ -4,6 +4,7 @@ import type {
   EventAdapter,
   EventPage,
   TransactionEvents,
+  ViewRequest,
 } from "../types.js";
 import { UNSIGNED_INTEGER } from "../decode.js";
 import { StreamdError } from "../errors.js";
@@ -19,7 +20,8 @@ export type RecordedMethod =
   | "getEarliestVersion"
   | "getBlock"
   | "getBlockHeights"
-  | "getTransactionEvents";
+  | "getTransactionEvents"
+  | "view";
 
 /**
  * One successful adapter call. `result` is JSON-safe: every `bigint` is a
@@ -75,8 +77,9 @@ function transactionJson(found: TransactionEvents | undefined): unknown {
  * call whose descriptor is not one of the three kinds. `getHeadVersion`,
  * `getEarliestVersion`, `getBlock`, `getBlockHeights` and `getTransactionEvents`
  * (keyed by hash) are recorded only when the wrapped adapter has them.
- * `simulateTransactionEvents` passes through unrecorded: a simulation answers
- * for state at that moment, so replaying it would be stale.
+ * `view` is recorded keyed by request and ledger version, whose answer never
+ * changes. `simulateTransactionEvents` passes through unrecorded: a
+ * simulation answers for state at that moment, so replaying it would be stale.
  */
 export function recordingAdapter(adapter: EventAdapter): RecordingAdapter {
   const source = requireAdapter(adapter, "recordingAdapter");
@@ -135,11 +138,26 @@ export function recordingAdapter(adapter: EventAdapter): RecordingAdapter {
     recorder.simulateTransactionEvents = (simulation, descriptor) =>
       source.simulateTransactionEvents!(simulation, descriptor);
   }
+  if (source.view !== undefined) {
+    recorder.view = (request, ledgerVersion, descriptor) =>
+      tap("view", viewKey(request, ledgerVersion), source.view!(request, ledgerVersion, descriptor));
+  }
   return recorder;
 }
 
 function blockKey(selector: string | undefined, height: bigint): string | undefined {
   return selector === undefined ? undefined : `${selector}|${String(height)}`;
+}
+
+/** The request as JSON, so argument order and bigints key the same way every time. */
+function viewKey(request: ViewRequest, ledgerVersion: bigint): string | undefined {
+  try {
+    return JSON.stringify(
+      toJson([request.function, request.typeArguments ?? [], request.functionArguments ?? [], ledgerVersion]),
+    );
+  } catch {
+    return undefined;
+  }
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -206,6 +224,10 @@ const PARSERS: Record<RecordedMethod, (result: unknown) => unknown> = {
   getBlock: (result) => decimals(result, ["height", "firstVersion", "lastVersion", "timestamp"]),
   getBlockHeights: (result) => decimals(result, ["oldest", "newest"]),
   getTransactionEvents: parseTransaction,
+  view: (result) => {
+    if (!Array.isArray(result)) throw new StreamdError("expected an array");
+    return result;
+  },
 };
 
 /** A value for an error message that never throws itself, whatever the input holds. */
@@ -307,6 +329,10 @@ export function replayAdapter(recording: Recording | string): EventAdapter {
       const found = answer<TransactionEvents | undefined>("getTransactionEvents", hash);
       return found === undefined ? undefined : { ...found, events: [...found.events] };
     };
+  }
+  if (has("view")) {
+    adapter.view = async (request, ledgerVersion) =>
+      structuredClone(answer<unknown[]>("view", viewKey(request, ledgerVersion)));
   }
   return adapter;
 }
