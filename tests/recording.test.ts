@@ -372,3 +372,53 @@ describe("replayAdapter", () => {
     });
   }
 });
+
+describe("recording transaction lookups", () => {
+  const hash = `0x${"ef".repeat(32)}`;
+  const missing = `0x${"99".repeat(32)}`;
+  const seeded: StreamdEvent = {
+    type: PING,
+    data: { amount: "5" },
+    version: 2n ** 64n,
+    sequenceNumber: 0n,
+    eventIndex: 0,
+    transactionHash: hash,
+    timestamp: 1700000000000000n,
+  };
+
+  it("replays found and not-found lookups, bigints included, through eventsOf", async () => {
+    const recorder = recordingAdapter(new MemoryAdapter([seeded]));
+    const live = await recorder.getTransactionEvents!(hash);
+    expect(await recorder.getTransactionEvents!(missing)).toBeUndefined();
+
+    const replay = replayAdapter(JSON.stringify(recorder));
+    expect(await replay.getTransactionEvents!(hash)).toEqual(live);
+    expect(await replay.getTransactionEvents!(missing)).toBeUndefined();
+    const events = await new StreamdClient({ adapter: replay }).eventsOf(hash);
+    expect(events).toEqual([seeded]);
+    await expect(replay.getTransactionEvents!(`0x${"aa".repeat(32)}`)).rejects.toBeInstanceOf(StreamdError);
+  });
+
+  it("has no getTransactionEvents when the source or the recording lacks it", () => {
+    expect(recordingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).getTransactionEvents)
+      .toBeUndefined();
+    expect(replayAdapter({ format: "streamd-recording", version: 1, calls: [] }).getTransactionEvents).toBeUndefined();
+  });
+
+  it("refuses a malformed recorded lookup", () => {
+    const bad = (result: unknown): Recording => ({
+      format: "streamd-recording",
+      version: 1,
+      calls: [{ method: "getTransactionEvents", key: hash, result }],
+    });
+    for (const result of [
+      { version: "1", success: "yes", vmStatus: "", events: [] },
+      { version: "-1", success: true, vmStatus: "", events: [] },
+      { version: "1", success: true, vmStatus: 3, events: [] },
+      { version: "1", success: true, vmStatus: "", events: {} },
+      undefined,
+    ]) {
+      expect(() => replayAdapter(bad(result))).toThrow("Invalid recording");
+    }
+  });
+});

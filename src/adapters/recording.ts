@@ -1,4 +1,10 @@
-import type { BlockHeights, BlockInfo, EventAdapter, EventPage } from "../types.js";
+import type {
+  BlockHeights,
+  BlockInfo,
+  EventAdapter,
+  EventPage,
+  TransactionEvents,
+} from "../types.js";
 import { UNSIGNED_INTEGER } from "../decode.js";
 import { StreamdError } from "../errors.js";
 import { parseEvent, serializeEvent } from "../serialize.js";
@@ -12,7 +18,8 @@ export type RecordedMethod =
   | "getHeadVersion"
   | "getEarliestVersion"
   | "getBlock"
-  | "getBlockHeights";
+  | "getBlockHeights"
+  | "getTransactionEvents";
 
 /**
  * One successful adapter call. `result` is JSON-safe: every `bigint` is a
@@ -53,12 +60,21 @@ function pageJson(page: EventPage): unknown {
   });
 }
 
+/** Not found is recorded as `null`, which JSON can hold. */
+function transactionJson(found: TransactionEvents | undefined): unknown {
+  if (found === undefined) return null;
+  return toJson({
+    ...found,
+    events: found.events.map((event) => JSON.parse(serializeEvent(event)) as unknown),
+  });
+}
+
 /**
  * Wraps `adapter` and records every call that succeeds, for `replayAdapter`
  * to answer offline later. Failures pass through unrecorded, and so does a
  * call whose descriptor is not one of the three kinds. `getHeadVersion`,
- * `getEarliestVersion`, `getBlock` and `getBlockHeights` are recorded only
- * when the wrapped adapter has them.
+ * `getEarliestVersion`, `getBlock`, `getBlockHeights` and `getTransactionEvents`
+ * (keyed by hash) are recorded only when the wrapped adapter has them.
  */
 export function recordingAdapter(adapter: EventAdapter): RecordingAdapter {
   const source = requireAdapter(adapter, "recordingAdapter");
@@ -103,6 +119,15 @@ export function recordingAdapter(adapter: EventAdapter): RecordingAdapter {
   if (source.getBlockHeights !== undefined) {
     recorder.getBlockHeights = (descriptor) =>
       tap("getBlockHeights", descriptorKey(descriptor), source.getBlockHeights!(descriptor));
+  }
+  if (source.getTransactionEvents !== undefined) {
+    recorder.getTransactionEvents = (hash, descriptor) =>
+      tap(
+        "getTransactionEvents",
+        typeof hash === "string" ? hash : undefined,
+        source.getTransactionEvents!(hash, descriptor),
+        transactionJson,
+      );
   }
   return recorder;
 }
@@ -153,12 +178,28 @@ function parsePage(value: unknown): EventPage {
   return page;
 }
 
+function parseTransaction(value: unknown): TransactionEvents | undefined {
+  if (value === null) return undefined;
+  if (!isObject(value) || !Array.isArray(value.events)) {
+    throw new StreamdError('"events" must be an array');
+  }
+  if (typeof value.success !== "boolean") throw new StreamdError('"success" must be a boolean');
+  if (typeof value.vmStatus !== "string") throw new StreamdError('"vmStatus" must be a string');
+  return {
+    version: decimal(value.version, "version"),
+    success: value.success,
+    vmStatus: value.vmStatus,
+    events: value.events.map((event) => parseEvent(JSON.stringify(event) ?? "")),
+  };
+}
+
 const PARSERS: Record<RecordedMethod, (result: unknown) => unknown> = {
   fetchEvents: parsePage,
   getHeadVersion: (result) => decimal(result, "result"),
   getEarliestVersion: (result) => decimal(result, "result"),
   getBlock: (result) => decimals(result, ["height", "firstVersion", "lastVersion", "timestamp"]),
   getBlockHeights: (result) => decimals(result, ["oldest", "newest"]),
+  getTransactionEvents: parseTransaction,
 };
 
 /** A value for an error message that never throws itself, whatever the input holds. */
@@ -254,6 +295,12 @@ export function replayAdapter(recording: Recording | string): EventAdapter {
   if (has("getBlockHeights")) {
     adapter.getBlockHeights = async (descriptor) =>
       ({ ...answer<BlockHeights>("getBlockHeights", descriptorKey(descriptor)) });
+  }
+  if (has("getTransactionEvents")) {
+    adapter.getTransactionEvents = async (hash) => {
+      const found = answer<TransactionEvents | undefined>("getTransactionEvents", hash);
+      return found === undefined ? undefined : { ...found, events: [...found.events] };
+    };
   }
   return adapter;
 }
