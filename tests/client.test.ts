@@ -2261,3 +2261,120 @@ describe("client-wide listener defaults", () => {
     expect(() => new StreamdClient({ adapter, defaults: undefined })).not.toThrow();
   });
 });
+
+describe("shared polling", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+  const spied = () => {
+    const adapter = new MemoryAdapter([makeEvent(1), makeEvent(2), makeEvent(3)]);
+    const fetch = vi.spyOn(adapter, "fetchEvents");
+    return { adapter, fetch };
+  };
+  const opts = { fromVersion: 0n, pollInterval: 100, batchSize: 2 };
+
+  async function runAlone(options: typeof opts): Promise<number> {
+    const { adapter, fetch } = spied();
+    const client = new StreamdClient({ adapter });
+    client.on(descriptor, () => {}, options);
+    await advanceTimersByTimeAsync(30);
+    await advanceTimersByTimeAsync(970);
+    client.destroy();
+    return fetch.mock.calls.length;
+  }
+
+  it("serves identical subscriptions from one fetch per interval, each receiving every event", async () => {
+    const alone = await runAlone(opts);
+    const { adapter, fetch } = spied();
+    const client = new StreamdClient({ adapter });
+    const seen: [string, bigint][] = [];
+    client.on(descriptor, (e) => void seen.push(["a", e.version]), opts);
+    await advanceTimersByTimeAsync(30);
+    client.onBatch(descriptor, (es) => es.forEach((e) => seen.push(["b", e.version])), opts);
+    await advanceTimersByTimeAsync(970);
+    // The second pays only for its first backfill page, which is not kept.
+    expect(fetch.mock.calls.length).toBe(alone + 1);
+    expect(seen.filter(([s]) => s === "a").map(([, v]) => v)).toEqual([1n, 2n, 3n]);
+    expect(seen.filter(([s]) => s === "b").map(([, v]) => v)).toEqual([1n, 2n, 3n]);
+    client.destroy();
+  });
+
+  it("fetches separately for a different batchSize or pollInterval", async () => {
+    const alone = await runAlone(opts);
+    for (const other of [{ batchSize: 3 }, { pollInterval: 90 }]) {
+      const { adapter, fetch } = spied();
+      const client = new StreamdClient({ adapter });
+      client.on(descriptor, () => {}, opts);
+      await advanceTimersByTimeAsync(30);
+      client.on(descriptor, () => {}, { ...opts, ...other });
+      await advanceTimersByTimeAsync(970);
+      expect(fetch.mock.calls.length).toBeGreaterThan(alone + 5);
+      client.destroy();
+    }
+  });
+
+  it("never shares a start at the head, then shares once the cursors coincide", async () => {
+    const { adapter, fetch } = spied();
+    const client = new StreamdClient({ adapter });
+    client.on(descriptor, () => {}, { pollInterval: 100 });
+    client.on(descriptor, () => {}, { pollInterval: 100 });
+    await advanceTimersByTimeAsync(0);
+    const first = fetch.mock.calls.filter(([, o]) => o?.cursor === undefined);
+    expect(first.length).toBe(2);
+    const before = fetch.mock.calls.length;
+    await advanceTimersByTimeAsync(1000);
+    expect(fetch.mock.calls.length - before).toBe(10);
+    client.destroy();
+  });
+
+  it("keeps the other subscription polling when one unsubscribes or pauses", async () => {
+    const { adapter, fetch } = spied();
+    const client = new StreamdClient({ adapter });
+    const a = client.on(descriptor, () => {}, opts);
+    const b = client.on(descriptor, () => {}, opts);
+    await advanceTimersByTimeAsync(100);
+    a.unsubscribe();
+    let before = fetch.mock.calls.length;
+    await advanceTimersByTimeAsync(250);
+    expect(b.active).toBe(true);
+    expect(fetch.mock.calls.length - before).toBe(3);
+    expect(client.listenerCount(descriptor)).toBe(1);
+
+    const c = client.on(descriptor, () => {}, opts);
+    await advanceTimersByTimeAsync(0);
+    b.pause();
+    before = fetch.mock.calls.length;
+    await advanceTimersByTimeAsync(250);
+    expect(c.active).toBe(true);
+    expect(fetch.mock.calls.length - before).toBe(3);
+    client.destroy();
+  });
+
+  it("gives each subscription its own error budget and StreamdPollingError on a shared failure", async () => {
+    const fetchEvents = vi.fn(async () => {
+      throw new StreamdNetworkError("node 503", 503);
+    });
+    const client = new StreamdClient({ adapter: { fetchEvents } });
+    const errors: [string, Error][] = [];
+    const sub = (name: string) =>
+      client.on(descriptor, () => {}, {
+        ...opts,
+        maxErrors: 2,
+        onError: (e) => void errors.push([name, e]),
+      });
+    const a = sub("a");
+    const b = sub("b");
+    await advanceTimersByTimeAsync(1000);
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+    expect(a.active).toBe(false);
+    expect(b.active).toBe(false);
+    expect(errors.map(([n, e]) => [n, (e as StreamdPollingError).consecutiveFailures])).toEqual([
+      ["a", 1],
+      ["b", 1],
+      ["a", 2],
+      ["b", 2],
+    ]);
+    expect(client.listenerCount()).toBe(0);
+  });
+});
