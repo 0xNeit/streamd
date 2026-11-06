@@ -19,6 +19,7 @@ export {
   involvesAddress,
   normalizeAddress,
   not,
+  ofModule,
   ofType,
   some,
   whereField,

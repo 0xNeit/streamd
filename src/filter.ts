@@ -4,6 +4,7 @@ import type { EventPredicate, StreamdEvent } from "./types.js";
 
 const HEX_ADDRESS = /^0x[0-9a-fA-F]{1,64}$/;
 const ARRAY_INDEX = /^(0|[1-9]\d*)$/;
+const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFAULT_MAX_DEPTH = 8;
 const MISSING: unique symbol = Symbol("missing");
 
@@ -78,6 +79,21 @@ export function ofType(...types: string[]): EventPredicate {
 }
 
 /**
+ * Matches events whose type is declared in one of `modules`, each written
+ * `address::module` (e.g. `"0x1::coin"`), whatever the struct or its generics.
+ * Addresses compare in canonical long form.
+ */
+export function ofModule(...modules: string[]): EventPredicate {
+  const keys = new Set(modules.map(parseModuleId));
+  return (event) => {
+    const [address, module, struct] = event.type.split("::");
+    if (module === undefined || struct === undefined) return false;
+    const normalized = normalizeAddress(address);
+    return normalized !== undefined && keys.has(`${normalized}::${module}`);
+  };
+}
+
+/**
  * Matches events whose payload has `value` at `path` inside `event.data`.
  *
  * `path` is either a dot-separated string (`"store"`, `"inner.owner"`,
@@ -129,6 +145,17 @@ export function not(predicate: EventPredicate): EventPredicate {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function parseModuleId(id: string): string {
+  const parts = typeof id === "string" ? id.split("::") : [];
+  const address = parts.length === 2 ? normalizeAddress(parts[0]) : undefined;
+  if (address === undefined || !MOVE_IDENTIFIER.test(parts[1])) {
+    throw new StreamdError(
+      `Module must be written address::module: ${JSON.stringify(id)}`,
+    );
+  }
+  return `${address}::${parts[1]}`;
 }
 
 function parseFieldPath(path: FieldPath): (string | number)[] {
