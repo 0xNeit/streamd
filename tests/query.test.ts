@@ -157,6 +157,99 @@ describe("EventQuery relative start", () => {
   });
 });
 
+describe("EventQuery head snapshot", () => {
+  // A chain whose head moves one version past every fetch, with one event per
+  // version, so an unbounded walk would never run out of pages.
+  function busy(head = 3n) {
+    const source = {
+      head,
+      fetchEvents: vi.fn<EventAdapter["fetchEvents"]>(async (_d, options = {}) => {
+        source.head++;
+        const at = options.cursor !== undefined ? BigInt(options.cursor) : (options.fromVersion ?? 0n);
+        if (options.toVersion !== undefined && at > options.toVersion) {
+          return { events: [], nextCursor: String(at), hasMore: false };
+        }
+        return { events: [event(Number(at))], nextCursor: String(at + 1n), hasMore: true };
+      }),
+      getHeadVersion: vi.fn(async () => source.head),
+    };
+    return source;
+  }
+
+  it("ends at the head read once before the first page", async () => {
+    const source = busy(3n);
+    const events = await new EventQuery(source).getEvents(descriptor, { toVersion: "head" });
+
+    expect(events.map((e) => e.version)).toEqual([0n, 1n, 2n, 3n]);
+    expect(source.getHeadVersion).toHaveBeenCalledTimes(1);
+    expect(source.getHeadVersion).toHaveBeenCalledWith(descriptor);
+    for (const [, options] of source.fetchEvents.mock.calls) expect(options?.toVersion).toBe(3n);
+  });
+
+  it("reuses the one head read for a negative fromVersion", async () => {
+    const source = busy(10n);
+    const events = await new EventQuery(source).getEvents(descriptor, {
+      fromVersion: -2n,
+      toVersion: "head",
+    });
+
+    expect(events.map((e) => e.version)).toEqual([8n, 9n, 10n]);
+    expect(source.getHeadVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a negative fromVersion relative to the head under a fixed toVersion", async () => {
+    const source = busy(10n);
+    await new EventQuery(source).getEvents(descriptor, { fromVersion: -2n, toVersion: 9n });
+
+    expect(source.fetchEvents.mock.calls[0]![1]).toMatchObject({ fromVersion: 8n, toVersion: 9n });
+  });
+
+  it("bounds a descending walk to the snapshot", async () => {
+    const source = busy(5n);
+    const events = await new EventQuery(source).getEvents(descriptor, {
+      toVersion: "head",
+      orderBy: "desc",
+      limit: 2,
+    });
+
+    expect(events.map((e) => e.version)).toEqual([5n, 4n]);
+  });
+
+  it("rejects without fetching when the adapter cannot report a head", async () => {
+    const { fetchEvents } = busy();
+    await expect(
+      new EventQuery({ fetchEvents }).getEvents(descriptor, { toVersion: "head" }),
+    ).rejects.toThrow('toVersion "head" needs an adapter that implements getHeadVersion');
+    expect(fetchEvents).not.toHaveBeenCalled();
+  });
+
+  it("reads no head when no page is fetched", async () => {
+    for (const filter of [{ limit: 0 }, { maxPages: 0 }, { limit: 0, orderBy: "desc" as const }]) {
+      const source = busy();
+      await new EventQuery(source).getEvents(descriptor, { ...filter, toVersion: "head" });
+      expect(source.getHeadVersion).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
+    [{ toVersion: "head" as const, toBlock: 1n }, "toBlock or toVersion"],
+    [{ toVersion: "latest" as unknown as bigint }, "Invalid toVersion"],
+  ])("rejects %p as invalid input", async (filter, message) => {
+    const source = busy();
+    await expect(new EventQuery(source).getEvents(descriptor, filter)).rejects.toThrow(message);
+    expect(source.getHeadVersion).not.toHaveBeenCalled();
+  });
+
+  it("reports no resume cursor, like any version bound", async () => {
+    const reported: (string | undefined)[] = [];
+    await new EventQuery(busy()).getEvents(descriptor, {
+      toVersion: "head",
+      onCursor: (c) => reported.push(c),
+    });
+    expect(reported).toEqual([undefined]);
+  });
+});
+
 describe("EventQuery earliest start", () => {
   function adapter(earliest: bigint) {
     return {
@@ -638,6 +731,21 @@ describe("EventQuery retries", () => {
     await drain(result);
     expect(getHeadVersion).toHaveBeenCalledTimes(2);
     expect(fetchEvents.mock.calls[0]![1].fromVersion).toBe(8n);
+  });
+
+  it("retries a failed head read for a head snapshot", async () => {
+    const getHeadVersion = vi.fn<() => Promise<bigint>>()
+      .mockRejectedValueOnce(down())
+      .mockResolvedValueOnce(10n);
+    const fetchEvents = vi.fn<EventAdapter["fetchEvents"]>().mockResolvedValue(page([], "11", false));
+    const result = new EventQuery({ fetchEvents, getHeadVersion }).getEvents(descriptor, {
+      toVersion: "head",
+      retries: 1,
+    });
+
+    await drain(result);
+    expect(getHeadVersion).toHaveBeenCalledTimes(2);
+    expect(fetchEvents.mock.calls[0]![1].toVersion).toBe(10n);
   });
 
   it("retries a block lookup that fails partway through a fromTime search", async () => {

@@ -128,8 +128,12 @@ export interface EventFilter {
    * `EventAdapter.getEarliestVersion`.
    */
   fromVersion?: bigint | "earliest";
-  /** End at this version (inclusive) */
-  toVersion?: bigint;
+  /**
+   * End at this version (inclusive). `"head"` ends at the head as it stood
+   * when the query started, read once from `EventAdapter.getHeadVersion`, so
+   * a walk over a busy type ends instead of chasing new transactions.
+   */
+  toVersion?: bigint | "head";
   /**
    * Start at the first version of this block height (inclusive), read once
    * from `EventAdapter.getBlock`. Cannot be combined with `fromVersion`.
@@ -212,6 +216,7 @@ export interface FetchOptions
   extends Omit<
     EventFilter,
     | "fromVersion"
+    | "toVersion"
     | "fromBlock"
     | "fromTime"
     | "toBlock"
@@ -224,6 +229,8 @@ export interface FetchOptions
   > {
   /** Start from this version (inclusive); always absolute by the time an adapter sees it. */
   fromVersion?: bigint;
+  /** End at this version (inclusive); always absolute by the time an adapter sees it. */
+  toVersion?: bigint;
   orderBy?: "asc" | "desc";
   /**
    * Opaque resume token returned by this adapter's previous page. When
