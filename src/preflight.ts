@@ -54,10 +54,12 @@ function statusOf(module: MoveModuleBytecode | undefined, struct: string): Event
   const found = module.abi!.structs.find((s) => s?.name === struct);
   if (found === undefined) return "missing-struct";
   const abilities: unknown = found.abilities;
-  if (typeof found.is_event !== "boolean" || !Array.isArray(abilities)) {
+  // Nodes from before module events omit is_event; treat that as false.
+  const isEvent: unknown = found.is_event ?? false;
+  if (typeof isEvent !== "boolean" || !Array.isArray(abilities)) {
     throw new StreamdError(`Fullnode returned a malformed ABI for struct ${struct}`);
   }
-  if (found.is_event) return "event";
+  if (isEvent) return "event";
   return abilities.includes("drop") && abilities.includes("store") ? "legacy" : "not-event";
 }
 

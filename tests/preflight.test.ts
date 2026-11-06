@@ -155,6 +155,12 @@ describe("checkDescriptor", () => {
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
   });
 
+  it("reads a struct with no is_event as not declaring #[event]", async () => {
+    const { is_event: _, ...old } = struct("DepositEvent", false, ["drop", "store"]);
+    const { aptos } = fakeNode(() => ({ data: { ...coinModule, abi: { ...coinModule.abi, structs: [null, old] } } }));
+    expect((await checkDescriptor(aptos, mod("0x1::coin::DepositEvent"))).types[0]!.status).toBe("legacy");
+  });
+
   it("rejects malformed ABI struct entries as StreamdError", async () => {
     const bad = [
       [null, struct("CoinDeposit", "yes" as never, ["drop", "store"])],
