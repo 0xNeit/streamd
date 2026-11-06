@@ -26,7 +26,8 @@ export function requireAddress(value: string): string {
 /** A transaction hash as `0x` and 64 hex digits; it lands in a URL path. */
 export function requireTransactionHash(value: unknown): string {
   if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
-    throw new StreamdError(`Not a valid transaction hash: ${String(value)}`);
+    const shown = typeof value === "string" ? JSON.stringify(value.slice(0, 80)) : typeof value;
+    throw new StreamdError(`Not a valid transaction hash: ${shown}`);
   }
   return value;
 }

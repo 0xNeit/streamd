@@ -358,7 +358,8 @@ const deposits = await streamd.eventsOf(
 );
 ```
 
-`eventsOf()` looks the transaction up every `pollInterval` (the client-wide default) until
+`eventsOf()` looks the transaction up every `pollInterval` (the client-wide default, but at
+least 100ms) until
 it is committed, then resolves with its events in transaction order, each shaped like any
 other event, `version`, `transactionHash`, `sender` and `timestamp` included. A descriptor,
 `decode` and `where` narrow them as they narrow a query. A `module` descriptor matches by
@@ -369,7 +370,9 @@ field holding it (`listEventHandles` reports each guid).
 A transaction that failed rejects with `StreamdTransactionError`, whose `vmStatus` says
 why: the chain discards a failed transaction's events, so there is nothing to return. One
 not committed within `timeout` (default 20 seconds) rejects with `StreamdTimeoutError`, an
-abort with `signal.reason`, and a failed lookup at once with its error. The hash must be
+abort with `signal.reason`, and a failed lookup at once with its error. The adapter is not
+told about a timeout or abort, so a lookup already in flight runs to completion and holds
+its `maxConcurrentRequests` slot until then. The hash must be
 `0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which
 `FullnodeScanAdapter` and `MemoryAdapter` have and the wrapping adapters pass through.
 

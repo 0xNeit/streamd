@@ -845,6 +845,9 @@ describe("FullnodeScanAdapter transaction lookup", () => {
     }));
     const found = await new FullnodeScanAdapter(aptos).getTransactionEvents(HASH);
     expect(found).toEqual({ version: 77n, success: false, vmStatus: "Move abort: 0x1", events: [] });
+    const { vm_status: _, ...silent } = committed;
+    const quiet = fakeNode(() => ({ data: silent }));
+    expect((await new FullnodeScanAdapter(quiet.aptos).getTransactionEvents(HASH))!.vmStatus).toBe("");
   });
 
   it("gives undefined for an unknown or pending transaction", async () => {
@@ -860,8 +863,8 @@ describe("FullnodeScanAdapter transaction lookup", () => {
   it("refuses a malformed hash before any request", async () => {
     const { aptos, calls } = fakeNode(() => ({ data: committed }));
     const adapter = new FullnodeScanAdapter(aptos);
-    for (const bad of ["0x1234", `${"ab".repeat(32)}`, `0x${"ab".repeat(31)}/../`, `0x${"zz".repeat(32)}`]) {
-      const err = await adapter.getTransactionEvents(bad).catch((e: unknown) => e);
+    for (const bad of ["0x1234", `${"ab".repeat(32)}`, `0x${"ab".repeat(31)}/../`, `0x${"zz".repeat(32)}`, `../0x${"ab".repeat(32)}`, Object.create(null)]) {
+      const err = await adapter.getTransactionEvents(bad as string).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(StreamdError);
       expect(err).not.toBeInstanceOf(StreamdNetworkError);
     }
@@ -874,9 +877,15 @@ describe("FullnodeScanAdapter transaction lookup", () => {
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect((err as StreamdNetworkError).statusCode).toBe(500);
 
-    const odd = fakeNode(() => ({ data: { ...committed, success: "yes" } }));
-    const bad = await new FullnodeScanAdapter(odd.aptos).getTransactionEvents(HASH).catch((e: unknown) => e);
-    expect(bad).toBeInstanceOf(StreamdError);
-    expect(bad).not.toBeInstanceOf(StreamdNetworkError);
+    for (const reply of [
+      { ...committed, success: "yes" },
+      { ...committed, version: "abc" },
+      { ...committed, hash: `0x${"cd".repeat(32)}` },
+    ]) {
+      const odd = fakeNode(() => ({ data: reply }));
+      const bad = await new FullnodeScanAdapter(odd.aptos).getTransactionEvents(HASH).catch((e: unknown) => e);
+      expect(bad).toBeInstanceOf(StreamdError);
+      expect(bad).not.toBeInstanceOf(StreamdNetworkError);
+    }
   });
 });

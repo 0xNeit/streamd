@@ -216,3 +216,24 @@ describe("RequestLimiter", () => {
     expect(calls).toEqual(["fetch", "heights module"]);
   });
 });
+
+describe("RequestLimiter.wrap transaction lookups", () => {
+  it("runs getTransactionEvents through the cap, only when the adapter has it", async () => {
+    const hash = `0x${"ef".repeat(32)}`;
+    let active = 0;
+    let peak = 0;
+    const inner: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async getTransactionEvents() {
+        peak = Math.max(peak, ++active);
+        await Bun.sleep(2);
+        active--;
+        return undefined;
+      },
+    };
+    const view = new RequestLimiter(1).wrap(inner);
+    await Promise.all([view.getTransactionEvents!(hash), view.getTransactionEvents!(hash)]);
+    expect(peak).toBe(1);
+    expect(new RequestLimiter(1).wrap({ fetchEvents: inner.fetchEvents }).getTransactionEvents).toBeUndefined();
+  });
+});

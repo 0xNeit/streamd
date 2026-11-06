@@ -194,9 +194,15 @@ describe("CachingAdapter transaction lookup", () => {
   };
 
   it("passes getTransactionEvents through, only when the source has it", async () => {
-    expect((await new CachingAdapter(new MemoryAdapter([event])).getTransactionEvents!(hash))!.events).toEqual([
+    const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    const seen: unknown[] = [];
+    const source = new MemoryAdapter([event]);
+    const lookup = source.getTransactionEvents.bind(source);
+    source.getTransactionEvents = (...args) => (seen.push(args), lookup(...args));
+    expect((await new CachingAdapter(source).getTransactionEvents!(hash, descriptor))!.events).toEqual([
       event,
     ]);
+    expect(seen).toEqual([[hash, descriptor]]);
     expect(
       new CachingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).getTransactionEvents,
     ).toBeUndefined();

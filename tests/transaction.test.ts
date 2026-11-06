@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, spyOn } from "bun:test";
 import { StreamdClient } from "../src/client.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import {
@@ -34,6 +34,7 @@ const EVENTS = [
   ev(1, PONG, { guid: { creationNumber: 5n, accountAddress: SENDER } }),
   ev(2, PING, { guid: { creationNumber: 6n, accountAddress: SENDER } }),
 ];
+const FRAMEWORK = `0x${"0".repeat(63)}1`;
 
 const committed: TransactionEvents = {
   version: 9n,
@@ -125,12 +126,12 @@ describe("eventsOf", () => {
 
   it("rejects with StreamdTimeoutError when the transaction never lands", async () => {
     const { adapter, calls } = lookup(committed, Infinity);
-    const err = await client(adapter).eventsOf(HASH, undefined, { timeout: 30 }).catch((e: unknown) => e);
+    const err = await client(adapter).eventsOf(HASH, undefined, { timeout: 150 }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdTimeoutError);
-    expect((err as StreamdTimeoutError).timeout).toBe(30);
+    expect((err as StreamdTimeoutError).timeout).toBe(150);
     const seen = calls.length;
     expect(seen).toBeGreaterThan(1);
-    await Bun.sleep(20);
+    await Bun.sleep(120);
     expect(calls).toHaveLength(seen);
   });
 
@@ -171,6 +172,7 @@ describe("eventsOf", () => {
     const refused = [
       c.eventsOf("0x12"),
       c.eventsOf(`0x${"cd".repeat(32)}?x=1`),
+      c.eventsOf(`../0x${"cd".repeat(32)}`),
       c.eventsOf(HASH, undefined, { timeout: -1 }),
       c.eventsOf(HASH, undefined, { decode: [""] }),
       c.eventsOf(HASH, { kind: "module", eventType: [] }),
@@ -217,5 +219,62 @@ describe("eventsOf", () => {
   it("works offline over a MemoryAdapter", async () => {
     const c = client(new MemoryAdapter(EVENTS));
     expect((await c.eventsOf(HASH, { kind: "module", eventType: PONG })).map((e) => e.eventIndex)).toEqual([1]);
+  });
+
+  it("matches event-side addresses in short form", async () => {
+    const framework = {
+      ...committed,
+      events: [ev(0, PING, { sender: "0x1", guid: { creationNumber: 2n, accountAddress: "0x1" } })],
+    };
+    const c = client(lookup(framework).adapter);
+    expect(await c.eventsOf(HASH, { kind: "account", accountAddress: FRAMEWORK })).toHaveLength(1);
+    expect(
+      await c.eventsOf(HASH, { kind: "handle", accountAddress: FRAMEWORK, creationNumber: 2n }),
+    ).toHaveLength(1);
+  });
+
+  it("waits at least 100ms between lookups whatever pollInterval says", async () => {
+    for (const pollInterval of [0, -5, Number.NaN]) {
+      const { adapter, calls } = lookup(committed, Infinity);
+      const c = new StreamdClient({ adapter, defaults: { pollInterval } });
+      await c.eventsOf(HASH, undefined, { timeout: 150 }).catch(() => {});
+      expect(calls.length).toBeLessThanOrEqual(3);
+    }
+  });
+
+  it("clears its timer and abort listener once settled", async () => {
+    const controller = new AbortController();
+    const removed: string[] = [];
+    const remove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.removeEventListener = (type: string, listener: never) => {
+      removed.push(type);
+      remove(type, listener);
+    };
+    const cleared = spyOn(globalThis, "clearTimeout");
+    await client(lookup().adapter).eventsOf(HASH, undefined, { signal: controller.signal });
+    expect(cleared).toHaveBeenCalled();
+    expect(removed).toContain("abort");
+    cleared.mockRestore();
+  });
+
+  it("drops a lookup still queued when the wait times out", async () => {
+    let release = () => {};
+    let lookups = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async getTransactionEvents() {
+        lookups++;
+        await new Promise<void>((r) => (release = r));
+        return committed;
+      },
+    };
+    const c = client(adapter, { maxConcurrentRequests: 1 });
+    const first = c.eventsOf(HASH);
+    const second = await c.eventsOf(HASH, undefined, { timeout: 20 }).catch((e: unknown) => e);
+    expect(second).toBeInstanceOf(StreamdTimeoutError);
+    release();
+    await first;
+    await Bun.sleep(5);
+    expect(lookups).toBe(1);
   });
 });

@@ -205,8 +205,13 @@ describe("withHooks transaction lookup", () => {
   it("passes getTransactionEvents through unhooked, only when the source has it", async () => {
     let hooked = 0;
     const hooks = { onRequest: () => void hooked++ };
-    const wrapped = withHooks({ fetchEvents: async () => PAGE, getTransactionEvents: async () => found }, hooks);
-    expect(await wrapped.getTransactionEvents!(hash)).toBe(found);
+    const seen: unknown[] = [];
+    const wrapped = withHooks(
+      { fetchEvents: async () => PAGE, getTransactionEvents: async (...args) => (seen.push(args), found) },
+      hooks,
+    );
+    expect(await wrapped.getTransactionEvents!(hash, moduleDesc)).toBe(found);
+    expect(seen).toEqual([[hash, moduleDesc]]);
     expect(hooked).toBe(0);
     expect(withHooks({ fetchEvents: async () => PAGE }, hooks).getTransactionEvents).toBeUndefined();
   });

@@ -415,7 +415,8 @@ export class StreamdClient {
    * its events in transaction order, narrowed by `descriptor` when given, then
    * `decode` and `where`. A `handle` descriptor must name its handle by
    * `creationNumber`. Looks the transaction up every `pollInterval` (the
-   * client-wide default) through `EventAdapter.getTransactionEvents`.
+   * client-wide default, at least 100ms here) through
+   * `EventAdapter.getTransactionEvents`.
    *
    * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
    * transaction failed, as its events were discarded on chain; with

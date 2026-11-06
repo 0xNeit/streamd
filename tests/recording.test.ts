@@ -387,8 +387,13 @@ describe("recording transaction lookups", () => {
   };
 
   it("replays found and not-found lookups, bigints included, through eventsOf", async () => {
-    const recorder = recordingAdapter(new MemoryAdapter([seeded]));
-    const live = await recorder.getTransactionEvents!(hash);
+    const seen: unknown[] = [];
+    const source = new MemoryAdapter([seeded]);
+    const lookup = source.getTransactionEvents.bind(source);
+    source.getTransactionEvents = (...args) => (seen.push(args), lookup(...args));
+    const recorder = recordingAdapter(source);
+    const live = await recorder.getTransactionEvents!(hash, moduleDesc);
+    expect(seen[0]).toEqual([hash, moduleDesc]);
     expect(await recorder.getTransactionEvents!(missing)).toBeUndefined();
 
     const replay = replayAdapter(JSON.stringify(recorder));

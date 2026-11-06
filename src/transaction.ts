@@ -18,7 +18,13 @@ import {
 } from "./adapters/validate.js";
 
 /** Matches the SDK's own `waitForTransaction` default. */
-export const DEFAULT_TRANSACTION_TIMEOUT = 20_000;
+const DEFAULT_TRANSACTION_TIMEOUT = 20_000;
+const DEFAULT_LOOKUP_INTERVAL = 1000;
+/**
+ * A `pollInterval` of 0 suits `on()` catching up, where a page with `hasMore`
+ * is real work; here it would be a request per round trip for the whole wait.
+ */
+const MIN_LOOKUP_INTERVAL = 100;
 
 /** Which of a transaction's events `descriptor` selects. */
 function eventMatcher(descriptor: EventDescriptor): (event: StreamdEvent) => boolean {
@@ -61,8 +67,9 @@ function eventMatcher(descriptor: EventDescriptor): (event: StreamdEvent) => boo
 /**
  * Polls `adapter` every `pollInterval` ms until the transaction is committed,
  * then returns its events narrowed by `descriptor`, `decode` and `where`.
- * Input is refused before the first lookup; `timeout` bounds the whole wait,
- * an in-flight lookup included.
+ * Input is refused before the first lookup. `timeout` bounds the caller's
+ * wait, an in-flight lookup included, but the adapter gets no signal: a hung
+ * lookup keeps its `maxConcurrentRequests` slot until it settles.
  */
 export async function eventsOf(
   adapter: EventAdapter,
@@ -82,6 +89,9 @@ export async function eventsOf(
   if (outer?.aborted) throw outer.reason;
 
   const timeout = options.timeout ?? DEFAULT_TRANSACTION_TIMEOUT;
+  const interval = Number.isFinite(pollInterval)
+    ? Math.max(pollInterval, MIN_LOOKUP_INTERVAL)
+    : DEFAULT_LOOKUP_INTERVAL;
   const wait = new AbortController();
   const timer = setTimeout(
     () => wait.abort(new StreamdTimeoutError(`Transaction ${hash} not found after ${timeout}ms`, timeout)),
@@ -96,7 +106,7 @@ export async function eventsOf(
         wait.signal,
       );
       if (found !== undefined) break;
-      await sleep(pollInterval, wait.signal);
+      await sleep(interval, wait.signal);
     }
   } finally {
     clearTimeout(timer);

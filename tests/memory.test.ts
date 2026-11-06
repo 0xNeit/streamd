@@ -411,13 +411,13 @@ describe("MemoryAdapter scan progress", () => {
 describe("MemoryAdapter transaction lookup", () => {
   const hash = `0x${"ef".repeat(32)}`;
   const seeded: StreamdEvent[] = [
-    { type: "0x1::t::A", data: {}, version: 4n, sequenceNumber: 0n, eventIndex: 1, transactionHash: hash },
+    { type: "0x1::t::A", data: {}, version: 4n, sequenceNumber: 0n, eventIndex: 1, transactionHash: `0x${"EF".repeat(32)}` },
     { type: "0x1::t::B", data: {}, version: 3n, sequenceNumber: 0n, eventIndex: 0, transactionHash: `0x${"01".repeat(32)}` },
     { type: "0x1::t::A", data: {}, version: 4n, sequenceNumber: 0n, eventIndex: 0, transactionHash: hash },
   ];
 
   it("serves the seeded events carrying the hash, in order, as a successful transaction", async () => {
-    const found = await new MemoryAdapter(seeded).getTransactionEvents(hash.toUpperCase().replace("0X", "0x"));
+    const found = await new MemoryAdapter(seeded).getTransactionEvents(hash);
     expect(found).toEqual({
       version: 4n,
       success: true,

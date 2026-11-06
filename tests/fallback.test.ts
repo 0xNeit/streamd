@@ -414,6 +414,7 @@ describe("FallbackAdapter transaction lookup", () => {
     const up: EventAdapter = { ...bare, getTransactionEvents: vi.fn(async () => found) };
     const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
     expect(await new FallbackAdapter([bare, down, up]).getTransactionEvents(hash, descriptor)).toBe(found);
+    expect(down.getTransactionEvents).toHaveBeenCalledTimes(1);
     expect(up.getTransactionEvents).toHaveBeenCalledWith(hash, descriptor);
   });
 
