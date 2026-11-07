@@ -1,5 +1,5 @@
 import { describe, it, expect } from "bun:test";
-import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { listEventHandles } from "../src/handles.js";
 import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
@@ -132,9 +132,21 @@ describe("listEventHandles", () => {
     expect(paths).toEqual(["accounts/0x1/resources"]);
   });
 
+  it("resolves an Aptos name and puts the address in the descriptors", async () => {
+    const { aptos, paths } = serve(resources);
+    const names: string[] = [];
+    Object.assign(aptos, {
+      getTargetAddress: async ({ name }: { name: string }) => (names.push(name), AccountAddress.from(ADDR)),
+    });
+    const found = await listEventHandles(aptos, "alice.apt");
+    expect(names).toEqual(["alice.apt"]);
+    expect(found.map((h) => h.descriptor.accountAddress)).toEqual([ADDR, ADDR, ADDR]);
+    expect(paths).toEqual([`accounts/${ADDR}/resources`]);
+  });
+
   it("rejects an invalid address before any request", async () => {
     const { aptos, paths } = serve(resources);
-    const err = await listEventHandles(aptos, "not-an-address").catch((e) => e);
+    const err = await listEventHandles(aptos, "not an address").catch((e) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
     expect(paths).toEqual([]);

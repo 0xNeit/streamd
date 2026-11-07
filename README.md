@@ -704,7 +704,7 @@ Module events have no handle, so `guid` is `undefined` on them.
 
 ### Discover event handles
 
-`listEventHandles(aptos, address)` reads an account's resources and returns
+`listEventHandles(aptos, address)` (an address or an Aptos name) reads an account's resources and returns
 each `EventHandle` it finds as a ready-to-use `handle` descriptor, with the
 number of events emitted on it so far and its guid:
 
@@ -1005,6 +1005,37 @@ streamd.on(
   plain `StreamdError`, which stops a listener. A query rejects either way. The version
   must be committed and unpruned on the node `aptos` reaches, so `previewEvents`
   events, whose version is simulated, cannot be checked.
+
+### Aptos names
+
+`resolveName(aptos, nameOrAddress)` turns an Aptos name (`alice.apt`,
+`sub.alice.apt`) into the long-form address it points to, read once through
+the ANS router at the node's head. An address comes back in long form with no
+read. Resolve up front, then pass the address anywhere one is taken:
+
+```ts
+import { involvesAddress, resolveName } from "@streamd/core";
+
+const alice = await resolveName(aptos, "alice.apt");
+streamd.on({ kind: "account", accountAddress: alice }, onEvent);
+streamd.on(DEPOSITS, onEvent, { where: involvesAddress(alice) });
+```
+
+`ownedBy(aptos, "alice.apt")` and `listEventHandles(aptos, "alice.apt")` take a
+name directly, since they already hold `aptos`: `ownedBy` resolves it on its
+first evaluation, once, and retries a failed resolution on the next.
+Descriptors and the synchronous predicates take addresses only, so they stay
+synchronous and a descriptor's identity never depends on a lookup.
+
+- **Once, not per event.** A name that later points elsewhere is not followed;
+  resolve again to pick up the change.
+- **Errors.** An unregistered or expired name, or one with no target address,
+  rejects with a `StreamdError`, as does a malformed one before any request. A
+  string starting `0x` is always read as an address. A node or transport failure
+  rejects with a `StreamdNetworkError`.
+- **Networks.** Names resolve on Aptos mainnet only. On testnet the SDK's
+  router address resolves nothing, and the Movement presets are custom networks
+  the SDK knows no ANS contract for, so names reject there with a `StreamdError`.
 
 ## Asset transfers
 

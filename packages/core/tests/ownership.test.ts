@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import type { Aptos } from "@aptos-labs/ts-sdk";
+import { AccountAddress, type Aptos } from "@aptos-labs/ts-sdk";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import { ownedBy } from "../src/ownership.js";
 import type { StreamdEvent } from "../src/types.js";
@@ -147,9 +147,37 @@ describe("ownedBy", () => {
     expect(peak).toBe(2);
   });
 
+  it("resolves a name once and reads with the resolved wallet", async () => {
+    const { aptos, calls } = fakeAptos(owned("5"));
+    let lookups = 0;
+    Object.assign(aptos, { getTargetAddress: async () => (lookups++, AccountAddress.from(WALLET_LONG)) });
+    const where = ownedBy(aptos, "alice.apt");
+    expect(lookups).toBe(0);
+    expect(await Promise.all([where(ev({ store: "0x5" }, 1n)), where(ev({ store: "0x6" }, 2n))])).toEqual([true, false]);
+    expect(await where(ev({ store: "0x5" }, 3n))).toBe(true);
+    expect(lookups).toBe(1);
+    expect(calls.map((c) => c.functionArguments[1])).toEqual([WALLET_LONG, WALLET_LONG, WALLET_LONG]);
+  });
+
+  it("retries a failed name resolution on the next evaluation", async () => {
+    const { aptos } = fakeAptos(owned("5"));
+    let lookups = 0;
+    Object.assign(aptos, {
+      getTargetAddress: async () => {
+        if (lookups++ === 0) throw apiError(503);
+        return AccountAddress.from(WALLET_LONG);
+      },
+    });
+    const where = ownedBy(aptos, "alice.apt");
+    await expect(where(ev({ store: "0x5" }))).rejects.toBeInstanceOf(StreamdNetworkError);
+    expect(await where(ev({ store: "0x5" }))).toBe(true);
+    expect(lookups).toBe(2);
+  });
+
   it("validates its arguments at construction", () => {
     const { aptos } = fakeAptos(() => [true]);
-    expect(() => ownedBy(aptos, "nope")).toThrow(StreamdError);
+    expect(() => ownedBy(aptos, "0xzz")).toThrow(StreamdError);
+    expect(() => ownedBy(aptos, "no")).toThrow(StreamdError);
     expect(() => ownedBy({} as Aptos, WALLET)).toThrow("needs an Aptos instance");
     expect(() => ownedBy(aptos, WALLET, { fields: [] })).toThrow("fields");
     expect(() => ownedBy(aptos, WALLET, { fields: [""] })).toThrow("fields");

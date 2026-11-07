@@ -1,7 +1,7 @@
 import type { Aptos } from "@aptos-labs/ts-sdk";
 import type { EventGuid, HandleEventDescriptor } from "./types.js";
 import { toStreamdError } from "./adapters/fullnode.js";
-import { requireAddress } from "./adapters/validate.js";
+import { resolveName } from "./names.js";
 
 export interface EventHandleInfo {
   descriptor: HandleEventDescriptor;
@@ -39,12 +39,14 @@ function handleParts(value: unknown): { counter: string; guid: EventGuid } | und
  * Handles nested inside a struct field are skipped: the struct and field
  * form only addresses top-level fields. A nested handle is still readable by
  * creation number, from its guid in the resource data.
+ *
+ * `address` may be an Aptos name, resolved first through `resolveName`.
  */
 export async function listEventHandles(
   aptos: Aptos,
   address: string,
 ): Promise<EventHandleInfo[]> {
-  const accountAddress = requireAddress(address);
+  const accountAddress = await resolveName(aptos, address);
   let resources;
   try {
     resources = await aptos.getAccountResources({ accountAddress });
