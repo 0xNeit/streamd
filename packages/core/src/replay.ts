@@ -12,6 +12,8 @@ import { eventId } from "./cursor.js";
 import { isThenable } from "./filter.js";
 import { onAbort } from "./utils.js";
 
+const MAX_WAIT = 2_147_483_647;
+
 /** What a replay needs from its client. */
 export type ReplayHost = Pick<ReduceHost, "query" | "defaults" | "onError" | "track">;
 
@@ -60,11 +62,12 @@ export function startReplay<TData>(
   callback: EventCallback<TData>,
   options: ReplayOptions = {},
 ): Replay {
-  checkOptions(options);
+  const speed = checkOptions(options);
   const controller = new AbortController();
   let stopped = false;
   let paused = false;
   let release: (() => void) | undefined;
+  let cancelWait: (() => void) | undefined;
 
   const report = (error: Error) => {
     try {
@@ -81,6 +84,7 @@ export function startReplay<TData>(
     detachSignal();
     untrack();
     release?.();
+    cancelWait?.();
   };
   const stop = (reason: unknown) => {
     if (stopped) return;
@@ -90,6 +94,26 @@ export function startReplay<TData>(
   const untrack = host.track(() => stop(new StreamdError("Replay stopped before it finished")));
   const detachSignal = onAbort(options.signal, () => stop(options.signal!.reason));
   if (options.signal?.aborted) stop(options.signal.reason);
+
+  const wait = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, Math.min(ms, MAX_WAIT));
+      cancelWait = () => (clearTimeout(timer), resolve());
+    });
+
+  // Measured from the previous timestamped delivery, so fetch and handler
+  // time do not stretch the replay.
+  let lastStamp: bigint | undefined;
+  let lastAt = 0;
+  const pace = async (event: StreamdEvent) => {
+    if (speed === Infinity || event.timestamp === undefined) return;
+    if (lastStamp !== undefined) {
+      const ms = Number(event.timestamp - lastStamp) / 1000 / speed - (Date.now() - lastAt);
+      if (ms > 0) await wait(ms);
+    }
+    lastStamp = event.timestamp;
+    lastAt = Date.now();
+  };
 
   const deliver = async (event: StreamdEvent) => {
     try {
@@ -111,6 +135,7 @@ export function startReplay<TData>(
     const pageSize = options.batchSize ?? host.defaults.batchSize;
     try {
       for await (const event of host.query.iterateEvents(descriptor, filter, pageSize)) {
+        await pace(event);
         while (paused) await new Promise<void>((resolve) => (release = resolve));
         if (stopped) break;
         await deliver(event);

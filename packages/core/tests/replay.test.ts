@@ -1,4 +1,5 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
+import { advanceTimersByTimeAsync } from "./timers.js";
 import { StreamdClient } from "../src/client.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
@@ -226,5 +227,91 @@ describe("replay", () => {
       expect(bad({ speed })).toThrow("Invalid speed");
     }
     expect(bad({ speed: Infinity })).not.toThrow();
+  });
+});
+
+describe("replay speed", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const SECOND = 1_000_000n;
+  const at = (version: number, seconds?: number) =>
+    ev(version, 0, seconds === undefined ? {} : { timestamp: BigInt(seconds) * SECOND });
+
+  /** Replays `events` and records the fake clock at each delivery, relative to the start. */
+  function timed(events: StreamdEvent[], options: ReplayOptions, onEvent?: (e: StreamdEvent) => unknown) {
+    const start = Date.now();
+    const times: number[] = [];
+    const r = client(events).replay(
+      descriptor,
+      (e) => {
+        times.push(Date.now() - start);
+        return onEvent?.(e) as void;
+      },
+      options,
+    );
+    return { r, times };
+  }
+
+  it("scales the gaps between timestamps by speed", async () => {
+    const { r, times } = timed([at(1, 0), at(2, 10), at(3, 30)], { speed: 2 });
+    await advanceTimersByTimeAsync(4990);
+    expect(times).toEqual([0]);
+    await advanceTimersByTimeAsync(20);
+    expect(times).toEqual([0, 5000]);
+    await advanceTimersByTimeAsync(10000);
+    expect(times).toEqual([0, 5000, 15000]);
+    expect(await r.done).toBe(3);
+  });
+
+  it("delivers an event without a timestamp at once, measuring on from the last stamp", async () => {
+    const { r, times } = timed([at(1, 0), at(2), at(3, 4)], { speed: 1 });
+    await advanceTimersByTimeAsync(3990);
+    expect(times).toEqual([0, 0]);
+    await advanceTimersByTimeAsync(20);
+    expect(times).toEqual([0, 0, 4000]);
+    expect(await r.done).toBe(3);
+  });
+
+  it("subtracts the time the callback took from the next wait", async () => {
+    const slow = () => new Promise<void>((resolve) => setTimeout(resolve, 3000));
+    const { r, times } = timed([at(1, 0), at(2, 5), at(3, 6)], { speed: 1 }, (e) =>
+      e.version === 1n ? slow() : undefined,
+    );
+    await advanceTimersByTimeAsync(5000);
+    expect(times).toEqual([0, 5000]);
+    // A gap shorter than the callback before it is not waited at all.
+    const late = timed([at(1, 0), at(2, 1)], { speed: 1 }, (e) => (e.version === 1n ? slow() : undefined));
+    await advanceTimersByTimeAsync(3000);
+    expect(late.times).toEqual([0, 3000]);
+    await advanceTimersByTimeAsync(1000);
+    expect(times).toEqual([0, 5000, 6000]);
+    expect(await r.done).toBe(3);
+  });
+
+  it("holds an event whose wait ends while paused until resume", async () => {
+    const { r, times } = timed([at(1, 0), at(2, 2)], { speed: 1 });
+    await advanceTimersByTimeAsync(1000);
+    r.pause();
+    await advanceTimersByTimeAsync(5000);
+    expect(times).toEqual([0]);
+    const pausedFor = times.length;
+    r.resume();
+    await advanceTimersByTimeAsync(0);
+    expect(pausedFor).toBe(1);
+    // Delivered on resume, not 2000ms in when its wait ended.
+    expect(times[1]).toBeGreaterThanOrEqual(6000);
+    expect(times[1]).toBeLessThan(6010);
+    expect(await r.done).toBe(2);
+  });
+
+  it("delivers nothing more when unsubscribed during a wait", async () => {
+    const { r, times } = timed([at(1, 0), at(2, 100)], { speed: 1 });
+    await advanceTimersByTimeAsync(10);
+    r.unsubscribe();
+    await expect(r.done).rejects.toThrow("Replay stopped before it finished");
+    await advanceTimersByTimeAsync(100);
+    expect(times).toEqual([0]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
