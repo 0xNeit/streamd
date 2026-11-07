@@ -2979,6 +2979,32 @@ describe("transfers through the client", () => {
     await expect(client.getTransfers({ asset: "nope" })).rejects.toBeInstanceOf(StreamdError);
   });
 
+  it("returns coin, token object and legacy token records together in identity order", async () => {
+    const NFT = long("deed");
+    const LEGACY_ID = { token_data_id: { creator: ALICE, collection: "Apes", name: "Ape #1" }, property_version: "0" };
+    const memory = new MemoryAdapter([
+      ...events,
+      { type: "0x1::object::Transfer", data: { object: NFT, from: ALICE, to: BOB }, version: 3n, sequenceNumber: 0n, eventIndex: 0 },
+      { type: "0x3::token::TokenWithdraw", data: { account: BOB, id: LEGACY_ID, amount: "1" }, version: 3n, sequenceNumber: 0n, eventIndex: 1 },
+      { type: "0x3::token::TokenDeposit", data: { account: ALICE, id: LEGACY_ID, amount: "1" }, version: 3n, sequenceNumber: 0n, eventIndex: 2 },
+    ]);
+    const views = withViews();
+    const client = new StreamdClient({
+      adapter: {
+        fetchEvents: (d, o) => memory.fetchEvents(d, o),
+        view: async (request, version) =>
+          request.function === "0x4::token::creator" ? [ALICE] : views.view!(request, version),
+      },
+    });
+    const records = await client.getTransfers({ fromVersion: 0n });
+    expect(records.map((e) => [`${e.version}:${e.eventIndex}`, e.data])).toEqual([
+      ["1:1", { asset: USDC, amount: 5n, from: ALICE, to: BOB }],
+      ["2:0", { asset: long("a"), amount: 8n, from: undefined, to: BOB }],
+      ["3:0", { asset: NFT, amount: 1n, from: ALICE, to: BOB }],
+      ["3:2", { asset: `${ALICE}::Apes::Ape #1::0`, amount: 1n, from: BOB, to: ALICE }],
+    ]);
+  });
+
   it("follows live, retrying a poll whose view failed and delivering each transfer once", async () => {
     let reads = 0;
     const errors: Error[] = [];

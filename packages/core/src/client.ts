@@ -406,9 +406,10 @@ export class StreamdClient {
   }
 
   /**
-   * Follow coin and fungible-asset transfers as they land, each delivered as
-   * an event whose `data` is a `Transfer`, from one scan over
-   * `0x1::fungible_asset::Withdraw`/`Deposit` and `0x1::coin::CoinWithdraw`/`CoinDeposit`.
+   * Follow coin, fungible-asset and token transfers as they land, each
+   * delivered as an event whose `data` is a `Transfer`, from one scan over
+   * `0x1::fungible_asset::Withdraw`/`Deposit`, `0x1::coin::CoinWithdraw`/`CoinDeposit`,
+   * `0x3::token::TokenWithdraw`/`TokenDeposit` and `0x1::object::Transfer`.
    *
    * Within a transaction, in event order, a deposit pairs with the most recent
    * unpaired withdraw of the same asset and amount; a deposit with none has no
@@ -418,8 +419,10 @@ export class StreamdClient {
    * a time per subscription and outside `maxConcurrentRequests`; a leg whose store existed neither after nor before its
    * transaction is skipped. A failed read fails the poll, which retries as
    * for `on()`. The record keeps the deposit's identity, or the withdraw's
-   * when it stands alone. `asset` narrows to one fungible asset or coin type
-   * before any owner is read. Like `reduce()`, it is not a listener for
+   * when it stands alone. An `object::Transfer` is reported, unpaired and
+   * with `amount` 1, only when the object holds a `0x4::token::Token`,
+   * checked once per object by view. `asset` narrows to one fungible asset,
+   * coin type or token before any owner is read. Like `reduce()`, it is not a listener for
    * `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
    */
   transfers(

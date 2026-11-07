@@ -1008,7 +1008,7 @@ streamd.on(
 
 ## Asset transfers
 
-`transfers(callback, options?)` follows coin and fungible-asset movements as
+`transfers(callback, options?)` follows coin, fungible-asset and token movements as
 `{ from, to, asset, amount }`, and `getTransfers(filter?)` returns them for a
 past range. Each arrives as an event whose `data` is a `Transfer`:
 
@@ -1021,13 +1021,24 @@ const sub = streamd.transfers(
 const recent = await streamd.getTransfers({ fromVersion: -10_000n, asset: "0xa" });
 ```
 
-- **Sources.** One scan over `0x1::fungible_asset::Withdraw`/`Deposit` and
-  `0x1::coin::CoinWithdraw`/`CoinDeposit`. Coin events name the account and coin
+- **Sources.** One scan over `0x1::fungible_asset::Withdraw`/`Deposit`,
+  `0x1::coin::CoinWithdraw`/`CoinDeposit`, `0x3::token::TokenWithdraw`/`TokenDeposit`
+  and `0x1::object::Transfer`. Coin events name the account and coin
   type; fungible-asset events name only a store, so its asset
   (`fungible_asset::store_metadata`) and owner (`object::owner`) are read through
   the adapter's `view` at the event's version. A store's asset is cached; owners
   are read per event. With `asset` set, other assets cost one metadata read per
   store and no owner read; a coin type costs no store reads at all.
+- **Tokens.** `object::Transfer` fires for every object, so each object is
+  checked once (cached) with the `0x4::token::creator` view, which aborts unless
+  the object holds a `0x4::token::Token`; other objects are skipped, after a
+  second read as the object stood before the transaction. A token's record has
+  the object address as `asset`, `amount` 1n, and the event's `from` and `to`.
+  A legacy `0x3::token` withdraw and deposit pair like coin legs, with `asset`
+  `"<creator>::<collection>::<name>::<property_version>"` (creator in long
+  form, the rest as stored, so a name containing `::` reads ambiguously) and
+  the token amount. `asset` takes a token object address or a legacy id too;
+  other objects are then dropped before any read.
 - **Pairing.** Within a transaction, in event order, a deposit pairs with the
   most recent unpaired withdraw of the same asset and amount. A deposit with
   none (a mint, or a fee-on-transfer token) has no `from`; a withdraw left over
@@ -1046,8 +1057,11 @@ const recent = await streamd.getTransfers({ fromVersion: -10_000n, asset: "0xa" 
   `on()`; a query rejects. Each subscription or query keeps at most 4 reads in
   flight, on top of `maxConcurrentRequests`, while its page fetch holds one slot.
 - **Limits.** Pairing sees one page; `FullnodeScanAdapter` pages hold whole
-  transactions. Legacy coin handle events (`DepositEvent`/`WithdrawEvent`, from
-  before module events) are not read. A transfers subscription is not a
+  transactions. Legacy handle events (coin and `0x3::token`
+  `DepositEvent`/`WithdrawEvent`, `object::TransferEvent`, from before module
+  events) are not read. Token mints and burns emit no `object::Transfer`, so
+  they do not appear. A legacy token offer and its claim land in different
+  transactions and come out as a lone withdraw and a lone deposit. A transfers subscription is not a
   listener for `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 
 ## Data sources and their limits
