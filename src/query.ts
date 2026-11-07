@@ -175,7 +175,7 @@ export class EventQuery {
     validateWithState(withState);
     const pages = this.pages<TData>(descriptor, rest, pageSize);
     if (withState === undefined) return yield* pages;
-    const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
+    const adapter = this.limiter.wrap(this.source, signal);
     const first = Array.isArray(descriptor)
       ? (descriptor as readonly EventDescriptor[])[0]!
       : (descriptor as EventDescriptor);
@@ -299,7 +299,7 @@ export class EventQuery {
       filter.fromTime !== undefined ||
       (!earliest && !isAbsoluteVersion(filter.fromVersion));
     if (!shared) return filter;
-    const adapter = this.limiter.wrap(this.source, () => filter.signal?.aborted === true);
+    const adapter = this.limiter.wrap(this.source, filter.signal);
     const bounds = await resolveBounds(adapter, descriptor, {
       ...filter,
       fromVersion: earliest ? undefined : filter.fromVersion,
@@ -331,7 +331,7 @@ export class EventQuery {
       ...adapterFilter
     } = filter;
     const decode = fieldDecoder(fields);
-    const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
+    const adapter = this.limiter.wrap(this.source, signal);
     const limit = filter.limit;
     let cursor: string | undefined;
     let fromVersion = isAbsoluteVersion(filter.fromVersion)

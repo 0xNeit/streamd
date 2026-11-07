@@ -214,11 +214,12 @@ export class EventPoller {
 
   private async poll(): Promise<void> {
     const gen = this.generation;
-    // A call still queued once this run has ended is dropped unstarted.
     const cancelled = () => !this.isCurrent(gen);
-    const adapter = this.limiter.wrap(this.adapter, cancelled);
+    // stop() and pause() abort the run, so its queued calls leave the limiter.
+    const run = this.runAbort.signal;
+    const adapter = this.limiter.wrap(this.adapter, run);
     // Fetches are left to settle, since a restart waits for them; views are not.
-    const viewer = this.limiter.wrap(this.adapter, cancelled, this.runAbort.signal);
+    const viewer = this.limiter.wrap(this.adapter, run, run);
     try {
       await this.delivering;
       if (!this.isCurrent(gen)) return;
