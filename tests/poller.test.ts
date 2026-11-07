@@ -1959,6 +1959,20 @@ describe("EventPoller batch delivery", () => {
 
   const versions = (events: StreamdEvent[]) => events.map((e) => Number(e.version));
 
+  it("delivers an event a page repeats once, unless dedupWindow is 0", async () => {
+    for (const [dedupWindow, expected] of [[undefined, [1, 2]], [0, [1, 1, 2]]] as const) {
+      const adapter = createMockAdapter([page([makeEvent(1), makeEvent(1), makeEvent(2)], 2)]);
+      const batches: number[][] = [];
+      const poller = new EventPoller(adapter, descriptor, { batch: (es) => void batches.push(versions(es)) }, {
+        dedupWindow,
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+      poller.stop();
+      expect(batches).toEqual([[...expected]]);
+    }
+  });
+
   it("delivers each page's new, filtered events in one call, in order", async () => {
     const adapter = createMockAdapter([
       page([makeEvent(1), makeEvent(2), makeEvent(3)], 3, true),

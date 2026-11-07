@@ -67,6 +67,7 @@ export class EventPoller {
   /** Aborted when this run ends, so a hung view never holds the next run or its request slot. */
   private runAbort = new AbortController();
   private readonly position: CursorManager;
+  private readonly dedupWindow?: number;
   private readonly callback?: EventCallback;
   private readonly onBatch?: BatchCallback;
 
@@ -110,6 +111,7 @@ export class EventPoller {
     this.onCaughtUp = options.onCaughtUp;
     this.signal = options.signal;
     this.currentInterval = this.pollInterval;
+    this.dedupWindow = options.dedupWindow;
     this.position = new CursorManager(options.cursor, options.dedupWindow);
   }
 
@@ -324,11 +326,13 @@ export class EventPoller {
   private async processPage(page: EventPage, gen: number, adapter: EventAdapter): Promise<void> {
     const batch: StreamdEvent[] = [];
     const batched: StreamdEvent[] = [];
+    // Dedups the batch's events until they are marked seen on delivery.
+    const pending = new CursorManager(undefined, this.dedupWindow);
     let viewFailure: unknown;
     for (const raw of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
-      if (this.position.hasSeen(raw)) continue;
+      if (this.position.hasSeen(raw) || pending.hasSeen(raw)) continue;
       const prepared = this.prepare(raw);
       if (prepared === undefined) {
         if (!this.isCurrent(gen)) return;
@@ -350,6 +354,7 @@ export class EventPoller {
         // Marked seen only once handed over, so a batch a pause abandons is redelivered.
         batch.push(event);
         batched.push(raw);
+        pending.mark(raw);
         continue;
       }
       this.see(raw);
