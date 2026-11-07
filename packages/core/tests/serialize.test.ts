@@ -27,6 +27,7 @@ describe("serializeEvent / parseEvent", () => {
       timestamp: 1_700_000_000_000_000n,
       sender: "0x1",
       guid: { creationNumber: 2n ** 64n - 1n, accountAddress: "0x1" },
+      entryFunction: { function: "0x1::coin::transfer", typeArguments: ["0x1::aptos_coin::AptosCoin"], arguments: ["0xa", "5"] },
     });
     const parsed = parseEvent(serializeEvent(event), { decode: ["amount"] });
     expect(parsed).toEqual(event);
@@ -41,6 +42,15 @@ describe("serializeEvent / parseEvent", () => {
     expect(Object.keys(parsed)).not.toContain("transactionHash");
     expect(Object.keys(parsed)).not.toContain("sender");
     expect(Object.keys(parsed)).not.toContain("guid");
+    expect(Object.keys(parsed)).not.toContain("entryFunction");
+  });
+
+  it("writes entryFunction last", () => {
+    const text = serializeEvent(
+      ev({ state: [1], entryFunction: { function: "0x1::a::b", typeArguments: [], arguments: [3n] } }),
+    );
+    expect(Object.keys(JSON.parse(text)).slice(-2)).toEqual(["state", "entryFunction"]);
+    expect(parseEvent(text).entryFunction).toEqual({ function: "0x1::a::b", typeArguments: [], arguments: ["3"] });
   });
 
   it("leaves data bigints as strings unless named, and nested ones always", () => {
@@ -84,6 +94,11 @@ describe("serializeEvent / parseEvent", () => {
     ["a string guid", line({ guid: "0x1" }), '"guid"'],
     ["a null guid", line({ guid: null }), '"guid"'],
     ["a guid without accountAddress", line({ guid: { creationNumber: "1" } }), '"guid"'],
+    ["a string entryFunction", line({ entryFunction: "0x1::a::b" }), '"entryFunction"'],
+    ["a null entryFunction", line({ entryFunction: null }), '"entryFunction"'],
+    ["an entryFunction without function", line({ entryFunction: { typeArguments: [], arguments: [] } }), '"entryFunction"'],
+    ["a numeric type argument", line({ entryFunction: { function: "0x1::a::b", typeArguments: [1], arguments: [] } }), '"entryFunction"'],
+    ["entryFunction arguments not an array", line({ entryFunction: { function: "0x1::a::b", typeArguments: [], arguments: {} } }), '"entryFunction"'],
     ["a numeric guid creationNumber", line({ guid: { creationNumber: 1, accountAddress: "0x1" } }), '"creationNumber"'],
   ])("rejects %s", (_name, text, field) => {
     expect(() => parseEvent(text)).toThrow(StreamdError);

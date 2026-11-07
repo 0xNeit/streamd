@@ -151,6 +151,25 @@ export interface StreamdEvent<TData = unknown> {
    * when `withState` built a request for this event.
    */
   state?: unknown[];
+  /**
+   * The entry function call that produced this event, when the source had the
+   * transaction in hand and its payload is an `entry_function_payload`.
+   * Omitted on `handle` events, on script, multisig and encrypted payloads, and
+   * on system transactions.
+   */
+  entryFunction?: EntryFunctionCall;
+}
+
+/**
+ * An entry function call as the fullnode reports it. `arguments` are JSON Move
+ * values (u64 and wider as decimal strings), and the events of one transaction
+ * share these arrays.
+ */
+export interface EntryFunctionCall {
+  /** `address::module::name`, the address as the fullnode writes it. */
+  function: string;
+  typeArguments: string[];
+  arguments: unknown[];
 }
 
 /**

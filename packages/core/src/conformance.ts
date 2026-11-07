@@ -126,6 +126,17 @@ function eventShapeError(value: unknown): string | undefined {
       return "guid is not { creationNumber: bigint, accountAddress: string }";
     }
   }
+  if (e.entryFunction !== undefined) {
+    const call = e.entryFunction as Record<string, unknown> | null;
+    if (
+      typeof call?.function !== "string" ||
+      !Array.isArray(call.typeArguments) ||
+      !call.typeArguments.every((t) => typeof t === "string") ||
+      !Array.isArray(call.arguments)
+    ) {
+      return "entryFunction is not { function: string, typeArguments: string[], arguments: unknown[] }";
+    }
+  }
   return undefined;
 }
 

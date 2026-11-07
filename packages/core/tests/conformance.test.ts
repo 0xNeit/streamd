@@ -151,6 +151,11 @@ describe("checkAdapter walk", () => {
     ["a string timestamp", { events: [{ ...ev(1), timestamp: "1" }], hasMore: false }, "timestamp"],
     ["a numeric sender", { events: [{ ...ev(1), sender: 1 }], hasMore: false }, "sender"],
     [
+      "an entryFunction without arguments",
+      { events: [{ ...ev(1), entryFunction: { function: "0x1::a::b", typeArguments: [] } }], hasMore: false },
+      "entryFunction",
+    ],
+    [
       "a number guid creationNumber",
       { events: [{ ...ev(1), guid: { creationNumber: 1, accountAddress: "0x1" } }], hasMore: false },
       "guid",

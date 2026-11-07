@@ -30,6 +30,7 @@ export {
 
 export {
   every,
+  fromFunction,
   fromSender,
   involvesAddress,
   normalizeAddress,
@@ -84,6 +85,7 @@ export type {
   BlockHeights,
   BlockInfo,
   CreationNumberEventDescriptor,
+  EntryFunctionCall,
   EventAdapter,
   EventCallback,
   EventDescriptor,

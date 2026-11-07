@@ -4,6 +4,7 @@ import type {
   BlockHeights,
   BlockInfo,
   CreationNumberEventDescriptor,
+  EntryFunctionCall,
   EventAdapter,
   EventDescriptor,
   EventGuid,
@@ -40,6 +41,14 @@ interface RawEvent {
   data: unknown;
 }
 
+/** Only `entry_function_payload` is read; other payload kinds leave no call. */
+interface RawPayload {
+  type?: unknown;
+  function?: unknown;
+  type_arguments?: unknown;
+  arguments?: unknown;
+}
+
 /** A write-set change; only the resource kinds are read. */
 interface RawChange {
   type: string;
@@ -54,6 +63,7 @@ export interface TransactionWithEvents {
   timestamp?: string;
   sender?: string;
   type: string;
+  payload?: RawPayload;
   success?: unknown;
   vm_status?: unknown;
   events?: RawEvent[];
@@ -114,7 +124,24 @@ function withTransaction(item: StreamdEvent, txn: TransactionWithEvents): Stream
   if (txn.hash !== undefined) item.transactionHash = txn.hash;
   if (txn.sender !== undefined) item.sender = txn.sender;
   if (txn.timestamp !== undefined) item.timestamp = BigInt(txn.timestamp);
+  const call = toEntryFunction(txn.payload);
+  if (call !== undefined) item.entryFunction = call;
   return item;
+}
+
+/** The entry function call, unless the payload is another kind or malformed. */
+function toEntryFunction(payload: RawPayload | undefined): EntryFunctionCall | undefined {
+  if (payload?.type !== "entry_function_payload") return undefined;
+  const { function: fn, type_arguments: typeArguments, arguments: args } = payload;
+  if (
+    typeof fn !== "string" ||
+    !Array.isArray(typeArguments) ||
+    !typeArguments.every((t) => typeof t === "string") ||
+    !Array.isArray(args)
+  ) {
+    return undefined;
+  }
+  return { function: fn, typeArguments, arguments: args };
 }
 
 /**

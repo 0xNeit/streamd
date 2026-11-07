@@ -29,6 +29,17 @@ describe("formatEvent", () => {
     );
   });
 
+  it("prints entryFunction after every other field", () => {
+    const line = formatEvent(
+      ev({ sender: "0x1", entryFunction: { function: "0x1::coin::transfer", typeArguments: [], arguments: ["0x2", "5"] } }),
+    );
+    expect(line).toBe(
+      '{"type":"0x1::coin::DepositEvent","data":{"amount":"100"},"version":"42",' +
+        '"sequenceNumber":"7","eventIndex":1,"sender":"0x1",' +
+        '"entryFunction":{"function":"0x1::coin::transfer","typeArguments":[],"arguments":["0x2","5"]}}',
+    );
+  });
+
   it("serialises bigints nested inside data", () => {
     const line = formatEvent(
       ev({ data: { amount: 2n ** 70n, list: [1n, { deep: 3n }] } }),
