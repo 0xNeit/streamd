@@ -324,6 +324,27 @@ describe("EventPoller", () => {
       poller.stop();
     });
 
+    it("starts a restart after an auto-stop with a fresh error budget and backoff", async () => {
+      const { fetchEvents, gaps } = timedAdapter();
+      const onError = vi.fn();
+      const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
+        pollInterval: 100,
+        maxErrors: 2,
+        onError,
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(200);
+      expect(poller.active).toBe(false);
+
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+      expect(poller.active).toBe(true);
+      expect(onError.mock.calls.at(-1)![0].message).toBe("Polling failed (1/2)");
+      await advanceTimersByTimeAsync(200);
+      expect(gaps().at(-1)).toBe(200);
+      expect(poller.active).toBe(false);
+    });
+
     it("never waits longer than a minute", async () => {
       const { fetchEvents, gaps } = timedAdapter();
       const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), {
@@ -1735,6 +1756,46 @@ describe("EventPoller pause and resume", () => {
     expect(poller.status.consecutiveErrors).toBe(0);
   });
 
+  it("cancels the pending poll timer, so an immediate resume runs one polling loop", async () => {
+    const adapter = createMockAdapter([]);
+    const poller = new EventPoller(adapter, descriptor, vi.fn(), { pollInterval: 100 });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
+
+    poller.pause();
+    poller.resume();
+    await advanceTimersByTimeAsync(1000);
+    // The first poll, the resume's immediate poll, then one per interval.
+    expect(adapter.fetchEvents).toHaveBeenCalledTimes(12);
+
+    poller.stop();
+  });
+
+  it("never has two fetches in flight when paused and resumed during one", async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const fetchEvents = vi.fn(async () => {
+      peak = Math.max(peak, ++inFlight);
+      await new Promise((r) => setTimeout(r, 200));
+      inFlight--;
+      return page([], 1);
+    });
+    const poller = new EventPoller({ fetchEvents }, descriptor, vi.fn(), { pollInterval: 1000 });
+    poller.start();
+    await advanceTimersByTimeAsync(10);
+    for (let i = 0; i < 5; i++) {
+      poller.pause();
+      poller.resume();
+      await advanceTimersByTimeAsync(10);
+    }
+    await advanceTimersByTimeAsync(500);
+    expect(peak).toBe(1);
+    expect(fetchEvents).toHaveBeenCalledTimes(2);
+
+    poller.stop();
+  });
+
   it("carries consecutiveErrors across a pause and retries at once on resume", async () => {
     const fetchEvents = vi
       .fn()
@@ -1897,6 +1958,20 @@ describe("EventPoller batch delivery", () => {
   }
 
   const versions = (events: StreamdEvent[]) => events.map((e) => Number(e.version));
+
+  it("delivers an event a page repeats once, unless dedupWindow is 0", async () => {
+    for (const [dedupWindow, expected] of [[undefined, [1, 2]], [0, [1, 1, 2]]] as const) {
+      const adapter = createMockAdapter([page([makeEvent(1), makeEvent(1), makeEvent(2)], 2)]);
+      const batches: number[][] = [];
+      const poller = new EventPoller(adapter, descriptor, { batch: (es) => void batches.push(versions(es)) }, {
+        dedupWindow,
+      });
+      poller.start();
+      await advanceTimersByTimeAsync(0);
+      poller.stop();
+      expect(batches).toEqual([[...expected]]);
+    }
+  });
 
   it("delivers each page's new, filtered events in one call, in order", async () => {
     const adapter = createMockAdapter([

@@ -279,6 +279,53 @@ describe("withState on listeners", () => {
     expect((errors[0] as StreamdError).cause).toBeInstanceOf(StreamdNetworkError);
   });
 
+  it("abandons a hung view on pause, so resume reads the event again", async () => {
+    const { adapter, calls } = viewing([ev(1)], (c, n) =>
+      n === 1 ? new Promise(() => {}) : [String(c.version)],
+    );
+    const seen: unknown[] = [];
+    const sub = new StreamdClient({ adapter }).on(pings, (e) => void seen.push(e.state), {
+      fromVersion: 0n,
+      pollInterval: 1,
+      withState: balanceOf,
+    });
+    await until(() => calls.length === 1);
+    sub.pause();
+    sub.resume();
+    await until(() => seen.length === 1);
+    sub.unsubscribe();
+    expect(seen).toEqual([["1"]]);
+    expect(calls).toHaveLength(2);
+  });
+
+  it("redelivers a batch abandoned by a pause during a view", async () => {
+    const { adapter, calls } = viewing([ev(1), ev(2), ev(3)], (c, n) =>
+      n === 2 ? new Promise(() => {}) : [String(c.version)],
+    );
+    const batches: bigint[][] = [];
+    const sub = new StreamdClient({ adapter }).onBatch(
+      pings,
+      (es) => void batches.push(es.map((e) => e.version)),
+      { fromVersion: 0n, pollInterval: 1, withState: balanceOf },
+    );
+    await until(() => calls.length === 2);
+    sub.pause();
+    sub.resume();
+    await until(() => batches.flat().length >= 3);
+    sub.unsubscribe();
+    expect(batches).toEqual([[1n, 2n, 3n]]);
+  });
+
+  it("frees a hung view's request slot when the subscription ends", async () => {
+    const { adapter, calls } = viewing([ev(1)], () => new Promise(() => {}));
+    const client = new StreamdClient({ adapter, maxConcurrentRequests: 1 });
+    const sub = client.on(pings, () => {}, { fromVersion: 0n, withState: balanceOf });
+    await until(() => calls.length === 1);
+    sub.unsubscribe();
+    expect(await client.getEvents(pings, { fromVersion: 0n })).toHaveLength(1);
+    client.destroy();
+  });
+
   it("delivers a partial batch before failing the poll", async () => {
     const { adapter } = viewing([ev(1), ev(2), ev(3)], (c, n) => {
       if (n === 2) throw new StreamdNetworkError("flaky", 503);

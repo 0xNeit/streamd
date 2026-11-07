@@ -566,7 +566,9 @@ export interface StreamdConfig {
   /**
    * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, the `simulateTransactionEvents` calls behind `previewEvents`, and the `view` calls behind `withState`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
-   * Further calls wait in order. Omit for no limit.
+   * Further calls wait in order. Omit for no limit. A `withState` view that
+   * a pause or unsubscribe abandons frees its slot at once, though the
+   * request itself runs on uncounted, since adapters take no signal.
    */
   maxConcurrentRequests?: number;
   /**

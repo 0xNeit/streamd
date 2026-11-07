@@ -60,11 +60,14 @@ export class EventPoller {
   /** Bumped by start(), so a poll left over from an earlier run can tell. */
   private generation = 0;
   /**
-   * The page still being delivered, if any. A restart's first poll waits for
-   * it, so a new run never delivers alongside a handler from the old one.
+   * The fetch or page delivery still running, if any. A restart's first poll
+   * waits for it, so a new run never fetches or delivers alongside the old one.
    */
   private delivering: Promise<void> = Promise.resolve();
+  /** Aborted when this run ends, so a hung view never holds the next run or its request slot. */
+  private runAbort = new AbortController();
   private readonly position: CursorManager;
+  private readonly dedupWindow?: number;
   private readonly callback?: EventCallback;
   private readonly onBatch?: BatchCallback;
 
@@ -108,6 +111,7 @@ export class EventPoller {
     this.onCaughtUp = options.onCaughtUp;
     this.signal = options.signal;
     this.currentInterval = this.pollInterval;
+    this.dedupWindow = options.dedupWindow;
     this.position = new CursorManager(options.cursor, options.dedupWindow);
   }
 
@@ -138,9 +142,15 @@ export class EventPoller {
 
   start(): void {
     if (this._active || this.signal?.aborted) return;
+    // A stopped poller starts a new run; only resume() keeps the error budget.
+    if (!this._paused) {
+      this.consecutiveErrors = 0;
+      this.currentInterval = this.pollInterval;
+    }
     this._active = true;
     this._paused = false;
     this.generation++;
+    this.runAbort = new AbortController();
     this.signal?.addEventListener("abort", this.abort, { once: true });
     this.schedulePoll(0);
   }
@@ -150,6 +160,7 @@ export class EventPoller {
     this._paused = false;
     this.signal?.removeEventListener("abort", this.abort);
     this.clearTimer();
+    this.runAbort.abort();
   }
 
   /**
@@ -161,6 +172,7 @@ export class EventPoller {
     this._active = false;
     this._paused = true;
     this.clearTimer();
+    this.runAbort.abort();
   }
 
   /** Undo a pause(); a stopped poller stays stopped. */
@@ -203,7 +215,10 @@ export class EventPoller {
   private async poll(): Promise<void> {
     const gen = this.generation;
     // A call still queued once this run has ended is dropped unstarted.
-    const adapter = this.limiter.wrap(this.adapter, () => !this.isCurrent(gen));
+    const cancelled = () => !this.isCurrent(gen);
+    const adapter = this.limiter.wrap(this.adapter, cancelled);
+    // Fetches are left to settle, since a restart waits for them; views are not.
+    const viewer = this.limiter.wrap(this.adapter, cancelled, this.runAbort.signal);
     try {
       await this.delivering;
       if (!this.isCurrent(gen)) return;
@@ -218,23 +233,30 @@ export class EventPoller {
                 adapter,
                 this.descriptor,
                 this.fromTime,
-                () => !this.isCurrent(gen),
+                cancelled,
               );
         this.fromVersion = fromVersion;
         this.fromTime = undefined;
         if (!this.isCurrent(gen)) return;
       }
-      const page = await adapter.fetchEvents(this.descriptor, {
+      const fetching = adapter.fetchEvents(this.descriptor, {
         cursor: this.position.token,
         fromVersion,
         limit: this.batchSize,
         orderBy: "asc",
       });
+      // The request runs on after a pause or stop, so a restart waits for it
+      // rather than sending a second one beside it.
+      this.delivering = fetching.then(
+        () => {},
+        () => {},
+      );
+      const page = await fetching;
       // A fetch that resolves after stop(), or after stop() and start(), must
       // not touch the cursor or the error budget the live run resumes with.
       if (!this.isCurrent(gen)) return;
 
-      const delivery = this.processPage(page, gen, adapter);
+      const delivery = this.processPage(page, gen, viewer);
       // A failed page is this poll's error alone; later polls must not inherit it.
       this.delivering = delivery.catch(() => {});
       await delivery;
@@ -303,11 +325,14 @@ export class EventPoller {
 
   private async processPage(page: EventPage, gen: number, adapter: EventAdapter): Promise<void> {
     const batch: StreamdEvent[] = [];
+    const batched: StreamdEvent[] = [];
+    // Dedups the batch's events until they are marked seen on delivery.
+    const pending = new CursorManager(undefined, this.dedupWindow);
     let viewFailure: unknown;
     for (const raw of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
-      if (this.position.hasSeen(raw)) continue;
+      if (this.position.hasSeen(raw) || pending.hasSeen(raw)) continue;
       const prepared = this.prepare(raw);
       if (prepared === undefined) {
         if (!this.isCurrent(gen)) return;
@@ -325,11 +350,14 @@ export class EventPoller {
         }
         if (!this.isCurrent(gen)) return;
       }
-      this.see(raw);
       if (this.onBatch !== undefined) {
+        // Marked seen only once handed over, so a batch a pause abandons is redelivered.
         batch.push(event);
+        batched.push(raw);
+        pending.mark(raw);
         continue;
       }
+      this.see(raw);
       try {
         // Awaited one event at a time, so a slow handler holds back the rest
         // of the page and the next poll rather than piling up work.
@@ -344,6 +372,7 @@ export class EventPoller {
     // Delivered even when a view failed: these events are marked seen, so a
     // retried page would skip them.
     if (batch.length > 0 && this.isCurrent(gen)) {
+      for (const raw of batched) this.see(raw);
       try {
         const result: unknown = this.onBatch!(batch);
         if (isThenable(result)) await result;
