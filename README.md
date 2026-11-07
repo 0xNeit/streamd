@@ -1314,6 +1314,38 @@ if (!report.ok) console.table(report.results.filter((r) => r.status === "fail"))
 does, usually the head), and `blockHeight` lets it check `getBlock`; a rule
 whose method or input is missing is `skip`.
 
+To check that two sources agree, `compareAdapters(a, b, descriptor, range)` walks both over
+the same version range and reports, by `eventId`, what only `a` returned (`missing`), what
+only `b` returned (`extra`), and what both returned but disagree on (`different`, with the
+fields named). Like `checkAdapter` it only reads, reports instead of throwing, and needs no
+test runner:
+
+```ts
+import { compareAdapters, FullnodeScanAdapter } from "@streamd/core";
+
+const report = await compareAdapters(
+  myIndexAdapter,
+  new FullnodeScanAdapter(aptos),
+  { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
+  { fromVersion: 1_000_000n, toVersion: 1_001_000n, maxPages: 10 },
+);
+if (!report.ok) console.log(report.window, report.missing, report.extra, report.different);
+```
+
+- **Window.** Only versions both walks provably finished are compared: up to each walk's
+  `throughVersion`, or, for a source that sets none, the last version it returned (one below
+  it when `maxPages` cut the walk). `report.window` says what that was, `report.coverage`
+  how far each side got; when they share nothing, `window` is `undefined` and `ok` is false.
+  Pick a settled range: a source that lags the head (the Indexer does) covers less.
+- **Difference.** `type`, `data` (deep, bigint-safe, key order ignored) and
+  `sequenceNumber` always; `guid`, `transactionHash`, `timestamp`, `sender` and
+  `entryFunction` only when both sides set them, with addresses compared normalized.
+  `state` is never compared.
+- **Bounds.** At most `maxPages` (default 10) fetches of `limit` (default 25) per source;
+  each list keeps `maxReported` (default 100) entries, and `truncated` says one was cut.
+- **Failures.** A source that rejects or returns a malformed page lands in `report.errors`;
+  what it returned before that is still compared. Only invalid arguments reject.
+
 Combine sources with `RoutingAdapter` (by descriptor `kind`, with an optional
 `default` for the rest) and `FallbackAdapter` (try sources in order on each
 call when one fails, while still rejecting invalid input at once):
