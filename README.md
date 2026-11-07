@@ -30,13 +30,15 @@ bun install
 bun run build
 ```
 
-The repository is a Turborepo monorepo on Bun workspaces with three packages:
+The repository is a Turborepo monorepo on Bun workspaces with four packages:
 
 - `@streamd/core` (`packages/core`) - the library. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer
   dependency, and it ships ESM, CommonJS and TypeScript types.
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core`.
 - `@streamd/store-sqlite` (`packages/store-sqlite`) - opt-in persistence: events written to a
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
+- `@streamd/react` (`packages/react`) - `useEvents` and `useLogs` hooks. `react` (>= 18) and
+  `@aptos-labs/ts-sdk` are peer dependencies. See [React hooks](#react-hooks).
 
 ## Usage
 
@@ -1152,6 +1154,53 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   stored. With no `cursor` or `fromVersion` a fetch starts at the earliest stored event.
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
   first use.
+
+## React hooks
+
+`@streamd/react` ties a subscription or a query to a component's lifetime.
+
+```tsx
+import { StreamdProvider, useEvents, useLogs } from "@streamd/react";
+
+const deposits = { kind: "module", eventType: "0x1::fungible_asset::Deposit" } as const;
+
+function App() {
+  return (
+    <StreamdProvider client={streamd}>
+      <Feed />
+    </StreamdProvider>
+  );
+}
+
+function Feed() {
+  const { events, error, status } = useEvents(deposits, { maxEvents: 20 });
+  const { data, loading } = useLogs(deposits, { fromVersion: -1_000n, limit: 10 });
+  // ...
+}
+```
+
+- **`useEvents(descriptor, options?)`** follows the descriptor with `client.onBatch` and
+  returns `{ events, error, status }`: the most recent `maxEvents` events (default 100), oldest
+  first; the last error, cleared when events next arrive; and `status`, `"idle"` (no
+  descriptor, or not mounted yet), `"live"`, or `"stopped"` once `maxErrors` is reached.
+  Options are `on()`'s, without `signal`.
+- **`useLogs(descriptor, options?)`** runs `client.getEvents` and returns
+  `{ data, error, loading }`. `data` is the last successful result and stays through refetches
+  and errors. Options are `getEvents`'s, without `signal`; it takes a list of descriptors too.
+- **Keyed by value.** Inline descriptors and options are compared by value (bigints
+  included), so a re-render with an equal one keeps the subscription or result. A different
+  one resubscribes, starting `events` empty, or refetches, aborting the request it replaces.
+  Function options such as `where` are always called in their latest form without
+  resubscribing.
+- **Lifetime.** Unmounting unsubscribes or aborts, StrictMode's double mount included. Nothing
+  polls or fetches during server rendering. Pass `null` as the descriptor to wait, for
+  example until a wallet is connected.
+- **Errors.** Neither hook retries on its own: the subscription's backoff and `maxErrors`
+  apply. `options.onError` still runs; the client's `onError` does not, since the error is in
+  the hook's result. In a browser every visitor shares one anonymous rate limit per IP, and a
+  rate-limited fullnode response can surface as a `StreamdNetworkError` without `retryAfter`,
+  so give the `Aptos` client an API key.
+- `client` in either hook's options overrides the provider's.
 
 ## Command line
 
