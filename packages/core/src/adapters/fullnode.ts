@@ -37,7 +37,7 @@ interface RawEvent {
   data: unknown;
 }
 
-interface TransactionWithEvents {
+export interface TransactionWithEvents {
   version?: string;
   hash?: string;
   timestamp?: string;
@@ -76,7 +76,7 @@ function toGuid(raw: RawEvent): EventGuid | undefined {
 }
 
 /** Events of one transaction whose type passes `keep`, indexed by position in it. */
-function toStreamdEvents(
+export function toStreamdEvents(
   txn: TransactionWithEvents,
   version: bigint,
   keep: (type: string) => boolean,

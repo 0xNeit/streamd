@@ -899,7 +899,8 @@ By default streamd reads from a fullnode with `FullnodeScanAdapter`:
 
 - **Handle events** use the dedicated fullnode endpoint. Exact and cheap.
 - **Account events** walk that account's own transaction history. Cheap even
-  far back.
+  far back, but only transactions the account sent; `IndexerAccountAdapter`
+  (below) adds the ones it received.
 - **Module events** have no by-type endpoint on Aptos, so the adapter scans
   transactions and keeps the matches. That's fine for following the chain
   head, but not for deep history: fullnodes prune old data, and a rare event
@@ -977,6 +978,35 @@ const streamd = new StreamdClient({
   }),
 });
 ```
+
+For `account` descriptors that see every transaction touching the account, received
+ones included, use `IndexerAccountAdapter`. It pages the Aptos Indexer's
+`account_transactions` table by version, then reads each transaction's events from the
+fullnode, one read per transaction. It serves `account` descriptors only, so route the
+other kinds elsewhere:
+
+```ts
+import { FullnodeScanAdapter, IndexerAccountAdapter, RoutingAdapter, StreamdClient } from "@streamd/core";
+
+const streamd = new StreamdClient({
+  adapter: new RoutingAdapter({
+    account: new IndexerAccountAdapter(aptos, { apiKey: process.env.APTOS_API_KEY }),
+    default: new FullnodeScanAdapter(aptos),
+  }),
+});
+```
+
+- **Indexer lag.** Reads stop at the version the Indexer has processed, usually about a
+  second behind the chain; `getHeadVersion` reports it, and a subscription with no start
+  begins there.
+- **Pruning.** The Indexer lists history the fullnode has pruned, so `fromVersion` is
+  raised to the fullnode's oldest version (`getEarliestVersion`). A cursor older than that
+  fails with status 410 rather than skipping history.
+- **Rate limits.** Anonymous Indexer access is rate limited per IP; a limit hit rejects as a
+  `StreamdNetworkError` with status 429. Pass `apiKey` (sent as a bearer token) for more.
+- **Options.** `indexerUrl` (default: the `Aptos` network's Indexer), `apiKey`, `fetch`, and
+  `maxScan`, the most transactions read per call (default 100). `offset` is refused, and
+  pages are never `final`, so `CachingAdapter` passes them through.
 
 To log or time requests, wrap any adapter with `withHooks`. `onRequest` runs
 before each `fetchEvents` call and `onResponse` after it settles, with the
