@@ -109,7 +109,7 @@ const byIdentity = (a: StreamdEvent, b: StreamdEvent) =>
  * assets and owners are read through `adapter.view` inside the page fetch, so
  * a failed read fails the page and a listener retries it.
  *
- * ponytail: pairs within one page; a transaction split across pages (never on
+ * Pairing sees one page, so a transaction split across pages (never on
  * `FullnodeScanAdapter`) pairs per page.
  */
 export function transferSource(adapter: EventAdapter, asset?: string): EventAdapter {
