@@ -3,6 +3,7 @@ export { CachingAdapter } from "./adapters/caching.js";
 export { FallbackAdapter } from "./adapters/fallback.js";
 export { FullnodeScanAdapter } from "./adapters/fullnode.js";
 export { withHooks } from "./adapters/hooks.js";
+export { IndexerAccountAdapter } from "./adapters/indexer.js";
 export { MemoryAdapter } from "./adapters/memory.js";
 export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
 export { RoutingAdapter } from "./adapters/routing.js";
@@ -45,6 +46,7 @@ export type {
 } from "./conformance.js";
 export type { CachingAdapterOptions } from "./adapters/caching.js";
 export type { FullnodeScanAdapterOptions } from "./adapters/fullnode.js";
+export type { IndexerAccountAdapterOptions } from "./adapters/indexer.js";
 export type {
   AdapterHooks,
   AdapterRequest,
