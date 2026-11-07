@@ -30,3 +30,7 @@ export function withLatestFunctions<T extends object>(options: T, latest: () => 
   }
   return out as T;
 }
+
+export function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
+}
