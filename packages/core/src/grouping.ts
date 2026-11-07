@@ -20,12 +20,14 @@ import { isThenable } from "./filter.js";
 export interface TransactionHost {
   defaults: ListenerDefaults;
   onError: ((error: Error) => void) | undefined;
+  /** The client's adapter with shared polling off. */
+  unshared: EventAdapter;
   subscribe(
     descriptor: EventDescriptor,
     delivery: Delivery,
     options: SubscriptionOptions,
     id: string | undefined,
-    wrap: (source: EventAdapter) => EventAdapter,
+    wrap: ((source: EventAdapter) => EventAdapter) | undefined,
   ): Subscription;
 }
 
@@ -66,6 +68,17 @@ function lowest(bounds: (bigint | undefined)[]): bigint | undefined {
     if (low === undefined || b < low) low = b;
   }
   return low;
+}
+
+/**
+ * `source` calling `onFetch` as each fetch starts. Merged walks read their own
+ * pages rather than shared ones, since a shared page may come from a request
+ * that started before this one.
+ */
+function stamped(source: EventAdapter, onFetch: () => void): EventAdapter {
+  return Object.assign(Object.create(source) as EventAdapter, {
+    fetchEvents: (d: EventDescriptor, o: FetchOptions) => (onFetch(), source.fetchEvents(d, o)),
+  });
 }
 
 function groupOf(version: bigint, events: StreamdEvent[]): TransactionGroup {
@@ -202,13 +215,7 @@ export function startTransactions(
         },
       },
       walk === 0 ? options.id : undefined,
-      (source) =>
-        Object.assign(Object.create(source) as EventAdapter, {
-          fetchEvents: (d: EventDescriptor, o: FetchOptions) => {
-            known[walk] = seen;
-            return source.fetchEvents(d, o);
-          },
-        }),
+      single ? undefined : () => stamped(host.unshared, () => (known[walk] = seen)),
     );
     walks.push(sub);
   });

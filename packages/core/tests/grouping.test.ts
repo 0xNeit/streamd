@@ -345,6 +345,36 @@ describe("onTransaction, several descriptors", () => {
     });
   });
 
+  it("reads its own pages beside a subscription that shares a slower walk's requests", async () => {
+    // A growing ledger; A's replies take 400ms and answer from the ledger as it stood when asked.
+    const ledger: StreamdEvent[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => {
+        const after = o.cursor === undefined ? -1 : Number(o.cursor);
+        const page: EventPage = {
+          events: ledger.filter((e, i) => i > after && e.type === typeOf(d)),
+          nextCursor: String(ledger.length - 1),
+          hasMore: false,
+        };
+        return new Promise((r) => setTimeout(() => r(page), typeOf(d) === A ? 400 : 0));
+      },
+    };
+    const client = new StreamdClient({ adapter });
+    client.on(onA, () => {}, { pollInterval: 1000, fromVersion: 0n });
+    await advanceTimersByTimeAsync(700);
+    const log: string[] = [];
+    client.onTransaction([onA, onB], (g) => void log.push(shape([g])[0]!), {
+      pollInterval: 1000,
+      fromVersion: 1n,
+    });
+    await advanceTimersByTimeAsync(800);
+    ledger.push(ev(5, 0, A), ev(5, 1, B));
+    await advanceTimersByTimeAsync(2500);
+    client.destroy();
+
+    expect(log).toEqual(["5:0,1"]);
+  });
+
   it("drops a late copy of an event already delivered through another walk", async () => {
     const shared = ev(10, 0, B);
     const adapter = perDescriptor({
