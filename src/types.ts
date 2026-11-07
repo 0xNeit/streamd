@@ -640,6 +640,15 @@ export interface Subscription {
   readonly status: SubscriptionStatus;
 }
 
+/** What `stream()` returns: its live events, and where to resume them. */
+export interface EventStream<TData = unknown> extends AsyncIterableIterator<StreamdEvent<TData>> {
+  /**
+   * As `Subscription.cursor`, moving past a page only once the loop has asked
+   * past its last event; the `cursor` option until the loop first asks.
+   */
+  readonly cursor: string | undefined;
+}
+
 // ---- Callback ----
 
 /**

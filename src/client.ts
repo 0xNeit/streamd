@@ -5,6 +5,7 @@ import type {
   EventAdapter,
   EventCallback,
   EventDescriptor,
+  EventStream,
   EventFilter,
   EventsOfOptions,
   ListenerDefaults,
@@ -329,12 +330,13 @@ export class StreamdClient {
    * Leaving the loop unsubscribes. Each event holds back the next poll until
    * the loop asks for the following one, and the loop throws if polling gives
    * up (after `maxErrors`, or at once on invalid input) or `options.signal`
-   * aborts. Other errors go to `options.onError`.
+   * aborts. Other errors go to `options.onError`. Save `cursor` to resume
+   * later, as for `on()`.
    */
   stream<TData = unknown>(
     descriptor: EventDescriptor<TData>,
     options?: ListenerOptions,
-  ): AsyncIterableIterator<StreamdEvent<TData>> {
+  ): EventStream<TData> {
     // Registered only once the stream subscribes, so an unused stream costs nothing.
     const close = () => void stream.return?.();
     const stream = eventStream<TData>(
@@ -352,6 +354,7 @@ export class StreamdClient {
       },
       () => this.streams.delete(close),
       options?.signal,
+      options?.cursor,
     );
     return stream;
   }

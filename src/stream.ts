@@ -1,4 +1,4 @@
-import type { EventCallback, StreamdEvent, Subscription } from "./types.js";
+import type { EventCallback, EventStream, StreamdEvent, Subscription } from "./types.js";
 import { onAbort } from "./utils.js";
 
 type Subscribe<TData> = (
@@ -31,7 +31,8 @@ export function eventStream<TData>(
   subscribe: Subscribe<TData>,
   onClose: () => void = () => {},
   signal?: AbortSignal,
-): AsyncIterableIterator<StreamdEvent<TData>> {
+  startCursor?: string,
+): EventStream<TData> {
   let sub: Subscription | undefined;
   let waiter: Waiter<TData> | undefined;
   let release: (() => void) | undefined;
@@ -106,6 +107,9 @@ export function eventStream<TData>(
       failure = undefined;
       finish();
       return Promise.resolve(DONE);
+    },
+    get cursor() {
+      return sub === undefined ? startCursor : sub.cursor;
     },
     [Symbol.asyncIterator]() {
       return this;
