@@ -5,6 +5,7 @@ import type { AdapterCheckReport } from "../src/conformance.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
 import { FallbackAdapter } from "../src/adapters/fallback.js";
+import { RoutingAdapter } from "../src/adapters/routing.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import type {
   EventAdapter,
@@ -318,6 +319,7 @@ describe("checkAdapter optional methods", () => {
 
   it.each([
     ["FallbackAdapter", () => new FallbackAdapter([seeded()])],
+    ["RoutingAdapter", () => new RoutingAdapter({ default: seeded() })],
   ])("skips block for a %s over sources without getBlock", async (_label, make) => {
     const report = await checkAdapter(make(), desc, { fromVersion: 0n, blockHeight: 1n });
     expect(result(report, "block")).toEqual({ name: "block", status: "skip", message: "not implemented (optional)" } as never);
