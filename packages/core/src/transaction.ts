@@ -7,7 +7,7 @@ import type {
   TransactionEvents,
 } from "./types.js";
 import { StreamdError, StreamdTimeoutError, StreamdTransactionError } from "./errors.js";
-import { normalizeAddress } from "./filter.js";
+import { filterEvents, normalizeAddress } from "./filter.js";
 import { fieldDecoder } from "./decode.js";
 import type { RequestLimiter } from "./limiter.js";
 import { onAbort, raceAbort, sleep } from "./utils.js";
@@ -80,14 +80,14 @@ function eventMatcher(descriptor: EventDescriptor): (event: StreamdEvent) => boo
 export function narrower(
   descriptor: EventDescriptor | undefined,
   options: Pick<EventsOfOptions, "decode" | "where">,
-): (events: StreamdEvent[]) => StreamdEvent[] {
+): (events: StreamdEvent[]) => StreamdEvent[] | Promise<StreamdEvent[]> {
   const keep = descriptor === undefined ? undefined : eventMatcher(descriptor);
   const decode = fieldDecoder(options.decode);
   const where = options.where;
   return (events) => {
     if (keep !== undefined) events = events.filter(keep);
     if (decode !== undefined) events = events.map(decode);
-    return where === undefined ? events : events.filter(where);
+    return where === undefined ? events : filterEvents(events, where);
   };
 }
 
@@ -107,7 +107,7 @@ export async function eventsOf(
   requireTransactionHash(transactionHash);
   const narrow = narrower(descriptor, options);
   const events = await committedEvents(adapter, limiter, pollInterval, transactionHash, descriptor, options);
-  return narrow(events);
+  return raceAbort(Promise.resolve(narrow(events)), options.signal);
 }
 
 /**

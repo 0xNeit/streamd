@@ -303,7 +303,7 @@ export interface EventFilter {
 
 /** Options for `StreamdClient.eventsOf`. */
 export interface EventsOfOptions {
-  /** Keep only events satisfying this predicate, after `decode`. */
+  /** Keep only events satisfying this predicate, after `decode`; a rejection rejects the call. */
   where?: EventPredicate;
   /** Top-level `data` fields turned from decimal strings into `bigint`, as `EventFilter.decode`. */
   decode?: readonly string[];
