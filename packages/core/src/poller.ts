@@ -18,7 +18,7 @@ import {
   retryAfterHint,
 } from "./errors.js";
 import { CursorManager } from "./cursor.js";
-import { resolveFromVersion } from "./utils.js";
+import { raceAbort, resolveFromVersion } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
@@ -45,6 +45,9 @@ export function resolveMaxBackoff(maxBackoff: number | undefined): number {
   }
   return maxBackoff;
 }
+
+/** An event ready to deliver, and the view to read for it, if any. */
+type Prepared = { event: StreamdEvent; request?: ViewRequest };
 
 /** One event at a time, or `{ batch }` for each page's new events in one call. */
 export type Delivery = EventCallback | { batch: BatchCallback };
@@ -258,7 +261,7 @@ export class EventPoller {
       // not touch the cursor or the error budget the live run resumes with.
       if (!this.isCurrent(gen)) return;
 
-      const delivery = this.processPage(page, gen, viewer);
+      const delivery = this.processPage(page, gen, viewer, run);
       // A failed page is this poll's error alone; later polls must not inherit it.
       this.delivering = delivery.catch(() => {});
       await delivery;
@@ -325,29 +328,47 @@ export class EventPoller {
     );
   }
 
-  private async processPage(page: EventPage, gen: number, adapter: EventAdapter): Promise<void> {
+  private async processPage(
+    page: EventPage,
+    gen: number,
+    adapter: EventAdapter,
+    run: AbortSignal,
+  ): Promise<void> {
     const batch: StreamdEvent[] = [];
     const batched: StreamdEvent[] = [];
     // Dedups the batch's events until they are marked seen on delivery.
     const pending = new CursorManager(undefined, this.dedupWindow);
-    let viewFailure: unknown;
+    // A rejected predicate or failed view is the source's: it fails this poll
+    // with the event unmarked, so a network failure's retry delivers it rather
+    // than losing it.
+    let failure: unknown;
     for (const raw of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
       if (this.position.hasSeen(raw) || pending.hasSeen(raw)) continue;
-      const prepared = this.prepare(raw);
+      let prepared = this.prepare(raw);
+      if (prepared !== undefined && "verdict" in prepared) {
+        let matched: unknown;
+        try {
+          // Raced against the run, so a hung predicate never holds a restart.
+          matched = await raceAbort(Promise.resolve(prepared.verdict), run);
+        } catch (err) {
+          failure = err;
+          break;
+        }
+        if (!this.isCurrent(gen)) return;
+        prepared = this.admit(raw, prepared.event, matched);
+      }
       if (prepared === undefined) {
         if (!this.isCurrent(gen)) return;
         continue;
       }
       let event = prepared.event;
       if (prepared.request !== undefined) {
-        // A failed view is the source's: it fails this poll with the event
-        // unmarked, so a network failure's retry delivers it rather than losing it.
         try {
           event = await readState(adapter, this.descriptor, event, prepared.request);
         } catch (err) {
-          viewFailure = err;
+          failure = err;
           break;
         }
         if (!this.isCurrent(gen)) return;
@@ -371,7 +392,7 @@ export class EventPoller {
       }
     }
 
-    // Delivered even when a view failed: these events are marked seen, so a
+    // Delivered even when the page failed: these events are marked seen, so a
     // retried page would skip them.
     if (batch.length > 0 && this.isCurrent(gen)) {
       for (const raw of batched) this.see(raw);
@@ -382,7 +403,7 @@ export class EventPoller {
         this.reportHandlerError(batchError(batch, err));
       }
     }
-    if (viewFailure !== undefined) throw viewFailure;
+    if (failure !== undefined) throw failure;
 
     // A run stopped while a handler was pending must not move the cursor past
     // a page it did not finish: resuming from it delivers the page again.
@@ -397,20 +418,36 @@ export class EventPoller {
   }
 
   /**
-   * `raw` decoded, filtered and with its view request built, or `undefined`
-   * when it is not to be delivered. A skipped event is marked processed, so
-   * overlapping pages do not re-test it. A decode, predicate or builder bug
+   * `raw` decoded, filtered and with its view request built, `undefined` when
+   * it is not to be delivered, or the async predicate's pending `verdict` for
+   * `admit` once it settles. A skipped event is marked processed, so
+   * overlapping pages do not re-test it. A decode, predicate or builder throw
    * is the caller's, not the source's: reported without counting toward
    * maxErrors or abandoning the rest of the page.
    */
-  private prepare(raw: StreamdEvent): { event: StreamdEvent; request?: ViewRequest } | undefined {
+  private prepare(
+    raw: StreamdEvent,
+  ): Prepared | { event: StreamdEvent; verdict: PromiseLike<boolean> } | undefined {
     let event = raw;
+    let verdict: boolean | PromiseLike<boolean> = true;
     try {
       if (this.decode !== undefined) event = this.decode(raw);
-      if (this.where !== undefined && !this.where(event)) {
-        this.see(raw);
-        return undefined;
-      }
+      if (this.where !== undefined) verdict = this.where(event);
+    } catch (err) {
+      this.see(raw);
+      this.reportHandlerError(callbackError(event, err));
+      return undefined;
+    }
+    return isThenable(verdict) ? { event, verdict } : this.admit(raw, event, verdict);
+  }
+
+  /** `event` with its view request built when `matched`, else marked processed and skipped. */
+  private admit(raw: StreamdEvent, event: StreamdEvent, matched: unknown): Prepared | undefined {
+    if (!matched) {
+      this.see(raw);
+      return undefined;
+    }
+    try {
       const request =
         this.withState === undefined ? undefined : buildStateRequest(this.withState, event);
       return { event, request };

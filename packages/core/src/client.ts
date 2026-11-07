@@ -284,9 +284,10 @@ export class StreamdClient {
    * Rejects with `signal.reason` on abort, with `StreamdTimeoutError` if
    * `timeout` elapses first, when polling gives up after `maxErrors`, at once
    * when the adapter refuses the descriptor or options as invalid input, or on
-   * the first error thrown by `where`, even if a later event would have matched.
-   * A throwing `onCaughtUp`, an event that fails `decode` or a throwing
-   * `withState` builder goes to `onError` and is skipped, as for `on()`.
+   * the first error `where` throws synchronously, even if a later event would
+   * have matched. A rejected async `where` fails the poll and is retried, as
+   * for `on()`. A throwing `onCaughtUp`, an event that fails `decode` or a
+   * throwing `withState` builder goes to `onError` and is skipped, as for `on()`.
    */
   once<TData = unknown>(
     descriptor: EventDescriptor<TData>,
@@ -307,6 +308,7 @@ export class StreamdClient {
       const fail = (reason: unknown) => (close(), reject(reason));
       // A throwing predicate would skip every event and leave the promise
       // pending; other handler errors are per event, so waiting can still match.
+      // Only a synchronous throw counts: a rejection fails the poll and is retried.
       let whereThrew = false;
       const where = options?.where;
       const sub = this.subscribe(

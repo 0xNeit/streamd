@@ -243,6 +243,10 @@ export interface EventFilter {
    * Because `limit` counts matches, a restrictive predicate keeps the walk
    * going until it fills — potentially across an account's whole history.
    * Pair it with `maxPages` when you would rather cap the work than wait.
+   *
+   * An async predicate is awaited one event at a time. A throw or rejection
+   * rejects the query with its reason, without `retries`; `signal` aborts a
+   * pending one.
    */
   where?: EventPredicate;
   /**
@@ -458,6 +462,11 @@ export interface ListenerOptions {
   /**
    * Deliver only events satisfying this predicate. Applied client-side after
    * fetching. See `whereField`, `involvesAddress`, `every`, `some`, and `not`.
+   * An async predicate is awaited one event at a time; a throw skips the event
+   * and goes to `onError` without counting toward `maxErrors`, while a
+   * rejection fails the poll as a failed view does, so the next poll tests the
+   * event again. A `StreamdError` rejection that is not a network error stops
+   * the subscription at once.
    */
   where?: EventPredicate;
   /**
