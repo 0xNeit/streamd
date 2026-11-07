@@ -1,6 +1,7 @@
 import { parseArgs } from "node:util";
 import { requireAddress, requireEventType } from "@streamd/core";
 import type { EventDescriptor, MoveEventType } from "@streamd/core";
+import type { ModuleRef } from "./codegen.js";
 
 export type Network = "mainnet" | "testnet" | "devnet";
 
@@ -29,10 +30,19 @@ export interface ForwardOptions extends SourceOptions {
   headers: Record<string, string>;
 }
 
+export interface CodegenOptions {
+  modules: ModuleRef[];
+  network: Network;
+  nodeUrl?: string;
+  /** File to write; stdout when unset. */
+  out?: string;
+}
+
 export type ParsedCommand =
   | { command: "help" }
   | { command: "tail"; options: TailOptions }
-  | { command: "forward"; options: ForwardOptions };
+  | { command: "forward"; options: ForwardOptions }
+  | { command: "codegen"; options: CodegenOptions };
 
 /** Bad command-line input: reported with usage, exit code 2. */
 export class UsageError extends Error {
@@ -67,6 +77,15 @@ const FORWARD_OPTIONS = {
   header: { type: "string", multiple: true },
 } as const;
 
+const CODEGEN_OPTIONS = {
+  network: { type: "string" },
+  "node-url": { type: "string" },
+  out: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const MODULE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 const DEFAULT_CURSOR_FILE = "streamd-forward.cursor";
 const DEFAULT_RETRIES = 5;
 const MAX_RETRIES = 100;
@@ -83,10 +102,13 @@ export const USAGE = `Usage:
   streamd tail --account <address> --handle <struct> --field <name> [options]
   streamd forward --to <url> [options] <eventType>...
   streamd forward --to <url> --account <address> [...]
+  streamd codegen [--out <file>] <address>::<module>...
 
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array,
 saving its position to a cursor file once the webhook acknowledges it.
+codegen reads module ABIs and writes TypeScript types and defineEvent
+descriptors for their event structs.
 
 Options:
   --account <address>    events from transactions this account sent
@@ -102,6 +124,7 @@ Options:
   --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
   --timeout <ms>         forward: per-request timeout (default: ${DEFAULT_TIMEOUT})
   --header <h>           forward: request header 'Name: value', repeatable
+  --out <file>           codegen: write to this file instead of stdout
   -h, --help             show this help
 `;
 
@@ -266,6 +289,34 @@ function parseForward(args: string[]): ParsedCommand {
   return { command: "forward", options };
 }
 
+function moduleRef(raw: string): ModuleRef {
+  const [address = "", module = "", ...rest] = raw.split("::");
+  if (rest.length > 0 || !MODULE_NAME.test(module)) {
+    throw new UsageError(`expected <address>::<module>: ${raw}`);
+  }
+  wrap(() => requireAddress(address));
+  return { address, module };
+}
+
+function parseCodegen(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: CODEGEN_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (positionals.length === 0) throw new UsageError("codegen needs at least one <address>::<module>");
+  const options: CodegenOptions = {
+    modules: positionals.map(moduleRef),
+    network: network(values.network),
+  };
+  const url = nodeUrl(values["node-url"]);
+  if (url !== undefined) options.nodeUrl = url;
+  if (values.out !== undefined) {
+    if (values.out === "") throw new UsageError("--out must not be empty");
+    options.out = values.out;
+  }
+  return { command: "codegen", options };
+}
+
 /** Parses `argv` (without the node and script paths) into a command. */
 export function parseCommand(argv: readonly string[]): ParsedCommand {
   const [command, ...rest] = argv;
@@ -274,5 +325,6 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   }
   if (command === "tail") return parseTail(rest);
   if (command === "forward") return parseForward(rest);
+  if (command === "codegen") return parseCodegen(rest);
   throw new UsageError(`unknown command: ${command}`);
 }
