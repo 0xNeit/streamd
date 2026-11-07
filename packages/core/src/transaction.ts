@@ -77,9 +77,9 @@ function eventMatcher(descriptor: EventDescriptor): (event: StreamdEvent) => boo
  * adapter call; the returned function narrows a transaction's events by
  * them, then `where`, keeping transaction order.
  */
-function narrower(
+export function narrower(
   descriptor: EventDescriptor | undefined,
-  options: EventsOfOptions | PreviewEventsOptions,
+  options: Pick<EventsOfOptions, "decode" | "where">,
 ): (events: StreamdEvent[]) => StreamdEvent[] {
   const keep = descriptor === undefined ? undefined : eventMatcher(descriptor);
   const decode = fieldDecoder(options.decode);
@@ -94,9 +94,7 @@ function narrower(
 /**
  * Polls `adapter` every `pollInterval` ms until the transaction is committed,
  * then returns its events narrowed by `descriptor`, `decode` and `where`.
- * Input is refused before the first lookup. `timeout` bounds the caller's
- * wait, an in-flight lookup included, but the adapter gets no signal: a hung
- * lookup keeps its `maxConcurrentRequests` slot until it settles.
+ * Input is refused before the first lookup.
  */
 export async function eventsOf(
   adapter: EventAdapter,
@@ -106,8 +104,28 @@ export async function eventsOf(
   descriptor: EventDescriptor | undefined,
   options: EventsOfOptions,
 ): Promise<StreamdEvent[]> {
-  const hash = requireTransactionHash(transactionHash);
+  requireTransactionHash(transactionHash);
   const narrow = narrower(descriptor, options);
+  const events = await committedEvents(adapter, limiter, pollInterval, transactionHash, descriptor, options);
+  return narrow(events);
+}
+
+/**
+ * Polls `adapter` every `pollInterval` ms until the transaction is committed,
+ * then returns all its events; `descriptor` only routes the lookup. Rejects
+ * with `StreamdTransactionError` for a failed transaction. `timeout` bounds the
+ * caller's wait, an in-flight lookup included, but the adapter gets no signal:
+ * a hung lookup keeps its `maxConcurrentRequests` slot until it settles.
+ */
+export async function committedEvents(
+  adapter: EventAdapter,
+  limiter: RequestLimiter,
+  pollInterval: number,
+  transactionHash: string,
+  descriptor: EventDescriptor | undefined,
+  options: Pick<EventsOfOptions, "timeout" | "signal">,
+): Promise<StreamdEvent[]> {
+  const hash = requireTransactionHash(transactionHash);
   if (adapter.getTransactionEvents === undefined) {
     throw new StreamdError("eventsOf needs an adapter that implements getTransactionEvents");
   }
@@ -147,7 +165,7 @@ export async function eventsOf(
       found.vmStatus,
     );
   }
-  return narrow(found.events);
+  return found.events;
 }
 
 /**
