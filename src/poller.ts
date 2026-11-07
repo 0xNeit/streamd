@@ -323,6 +323,7 @@ export class EventPoller {
 
   private async processPage(page: EventPage, gen: number, adapter: EventAdapter): Promise<void> {
     const batch: StreamdEvent[] = [];
+    const batched: StreamdEvent[] = [];
     let viewFailure: unknown;
     for (const raw of page.events) {
       // The callback itself may have unsubscribed.
@@ -345,11 +346,13 @@ export class EventPoller {
         }
         if (!this.isCurrent(gen)) return;
       }
-      this.see(raw);
       if (this.onBatch !== undefined) {
+        // Marked seen only once handed over, so a batch a pause abandons is redelivered.
         batch.push(event);
+        batched.push(raw);
         continue;
       }
+      this.see(raw);
       try {
         // Awaited one event at a time, so a slow handler holds back the rest
         // of the page and the next poll rather than piling up work.
@@ -364,6 +367,7 @@ export class EventPoller {
     // Delivered even when a view failed: these events are marked seen, so a
     // retried page would skip them.
     if (batch.length > 0 && this.isCurrent(gen)) {
+      for (const raw of batched) this.see(raw);
       try {
         const result: unknown = this.onBatch!(batch);
         if (isThenable(result)) await result;

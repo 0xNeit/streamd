@@ -298,6 +298,24 @@ describe("withState on listeners", () => {
     expect(calls).toHaveLength(2);
   });
 
+  it("redelivers a batch abandoned by a pause during a view", async () => {
+    const { adapter, calls } = viewing([ev(1), ev(2), ev(3)], (c, n) =>
+      n === 2 ? new Promise(() => {}) : [String(c.version)],
+    );
+    const batches: bigint[][] = [];
+    const sub = new StreamdClient({ adapter }).onBatch(
+      pings,
+      (es) => void batches.push(es.map((e) => e.version)),
+      { fromVersion: 0n, pollInterval: 1, withState: balanceOf },
+    );
+    await until(() => calls.length === 2);
+    sub.pause();
+    sub.resume();
+    await until(() => batches.flat().length >= 3);
+    sub.unsubscribe();
+    expect(batches).toEqual([[1n, 2n, 3n]]);
+  });
+
   it("frees a hung view's request slot when the subscription ends", async () => {
     const { adapter, calls } = viewing([ev(1)], () => new Promise(() => {}));
     const client = new StreamdClient({ adapter, maxConcurrentRequests: 1 });
