@@ -1006,6 +1006,50 @@ streamd.on(
   must be committed and unpruned on the node `aptos` reaches, so `previewEvents`
   events, whose version is simulated, cannot be checked.
 
+## Asset transfers
+
+`transfers(callback, options?)` follows coin and fungible-asset movements as
+`{ from, to, asset, amount }`, and `getTransfers(filter?)` returns them for a
+past range. Each arrives as an event whose `data` is a `Transfer`:
+
+```ts
+const sub = streamd.transfers(
+  ({ data }) => console.log(`${data.amount} of ${data.asset}: ${data.from} -> ${data.to}`),
+  { asset: "0xa" }, // APT; omit for every asset
+);
+
+const recent = await streamd.getTransfers({ fromVersion: -10_000n, asset: "0xa" });
+```
+
+- **Sources.** One scan over `0x1::fungible_asset::Withdraw`/`Deposit` and
+  `0x1::coin::CoinWithdraw`/`CoinDeposit`. Coin events name the account and coin
+  type; fungible-asset events name only a store, so its asset
+  (`fungible_asset::store_metadata`) and owner (`object::owner`) are read through
+  the adapter's `view` at the event's version. A store's asset is cached; owners
+  are read per event. With `asset` set, other assets cost one metadata read per
+  store and no owner read.
+- **Pairing.** Within a transaction, in event order, a deposit pairs with the
+  most recent unpaired withdraw of the same asset and amount. A deposit with
+  none (a mint, or a fee-on-transfer token) has no `from`; a withdraw left over
+  (a burn) has no `to`. A coin withdraw and the fungible-asset deposit of its
+  paired asset report different `asset` strings and stay unpaired.
+- **Who.** `from` and `to` are the stores' direct owners, as ownership stood
+  once the transaction had run, so a store held by an object (a pool) reports
+  the object. A store the transaction deleted is read as it stood just before.
+  A store created and deleted within one transaction cannot be read at all, and
+  its legs are skipped.
+- **Identity.** A record keeps the deposit's `(version, eventIndex)`, or the
+  withdraw's when it stands alone, so cursors, dedup and `eventId` work as for
+  any event. `where`, `limit`, `cursor`, `onCursor` and the other options apply
+  to the records.
+- **Failures.** A failed read fails the poll, which retries with backoff as for
+  `on()`; a query rejects. At most 4 reads run at once per poll, inside the poll's
+  `maxConcurrentRequests` slot.
+- **Limits.** Pairing sees one page; `FullnodeScanAdapter` pages hold whole
+  transactions. Legacy coin handle events (`DepositEvent`/`WithdrawEvent`, from
+  before module events) are not read. A transfers subscription is not a
+  listener for `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+
 ## Data sources and their limits
 
 By default streamd reads from a fullnode with `FullnodeScanAdapter`:

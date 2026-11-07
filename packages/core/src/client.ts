@@ -21,6 +21,9 @@ import type {
   StreamdEvent,
   Subscription,
   SubscriptionOptions,
+  Transfer,
+  TransferFilter,
+  TransferListenerOptions,
 } from "./types.js";
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
 import { EventPoller, resolveMaxBackoff, type Delivery } from "./poller.js";
@@ -39,6 +42,7 @@ import { startReduction, type ReduceHost } from "./reduce.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { expectEvents } from "./expect.js";
 import { requireTransactionHash } from "./adapters/validate.js";
+import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -203,6 +207,7 @@ export class StreamdClient {
     options?: ListenerOptions,
     listener?: unknown,
     callerId?: string,
+    wrap?: (source: EventAdapter) => EventAdapter,
   ): Subscription {
     const id = callerId === undefined ? generateId() : this.claimId(callerId);
     let detach = () => {};
@@ -215,8 +220,9 @@ export class StreamdClient {
       detach();
     };
     const resolved = withDefaults(options, this.defaults);
+    const source = this.shared.view(resolved.pollInterval!);
     const poller = new EventPoller(
-      this.shared.view(resolved.pollInterval!),
+      wrap === undefined ? source : wrap(source),
       descriptor,
       delivery,
       {
@@ -397,6 +403,48 @@ export class StreamdClient {
     options?: ReduceOptions<S, TData>,
   ): Reduction<S> {
     return startReduction(this.reduceHost, descriptor, reducer, initial, options);
+  }
+
+  /**
+   * Follow coin and fungible-asset transfers as they land, each delivered as
+   * an event whose `data` is a `Transfer`, from one scan over
+   * `0x1::fungible_asset::Withdraw`/`Deposit` and `0x1::coin::CoinWithdraw`/`CoinDeposit`.
+   *
+   * Within a transaction, in event order, a deposit pairs with the most recent
+   * unpaired withdraw of the same asset and amount; a deposit with none has no
+   * `from`, and a withdraw left over has no `to`. A fungible-asset store's
+   * asset and owner are read through `EventAdapter.view` at the event's
+   * version (before it, when the transaction deleted the store), at most 4 at
+   * a time per poll; a leg whose store existed neither after nor before its
+   * transaction is skipped. A failed read fails the poll, which retries as
+   * for `on()`. The record keeps the deposit's identity, or the withdraw's
+   * when it stands alone. `asset` narrows to one fungible asset or coin type
+   * before any owner is read. Like `reduce()`, it is not a listener for
+   * `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+   */
+  transfers(
+    callback: EventCallback<Transfer>,
+    options: TransferListenerOptions = {},
+  ): Subscription {
+    const { asset, ...rest } = options;
+    return this.subscribe(
+      TRANSFER_DESCRIPTOR,
+      callback as EventCallback,
+      rest,
+      undefined,
+      rest.id,
+      (source) => transferSource(source, asset),
+    );
+  }
+
+  /**
+   * Past transfers, built as `transfers()` builds them, over the range and
+   * options `getEvents` takes; `where` and `limit` apply to the records.
+   */
+  async getTransfers(filter: TransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
+    const { asset, ...rest } = filter;
+    const query = new EventQuery(transferSource(this.adapter, asset), this.limiter);
+    return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
   /**
