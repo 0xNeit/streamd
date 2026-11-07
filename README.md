@@ -698,6 +698,14 @@ an endpoint that omits the surrounding transaction, so all three are
 `undefined` there. `timestamp` is `undefined` on genesis transactions, and
 `sender` on system transactions such as block metadata, which no account signs.
 
+Where the transaction is in hand and its payload is an entry function call, events also
+carry `entryFunction`: `{ function, typeArguments, arguments }`, with `function` written
+`address::module::name` and `arguments` as the fullnode renders them (u64 and wider as
+decimal strings). Every event of the transaction shares the same arrays. It is `undefined`
+on `handle` events, on system transactions, and on script, multisig and encrypted payloads,
+whose inner call is not read. The same holds for `eventsOf`, `previewEvents` and
+`IndexerAccountAdapter`, which map transactions the same way.
+
 Events emitted through a legacy `EventHandle` also carry `guid`
 (`{ creationNumber: bigint, accountAddress: string }`), on every descriptor kind.
 Module events have no handle, so `guid` is `undefined` on them.
@@ -903,7 +911,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, ofType, ofModule, fromSender, every, some, not } from "@streamd/core";
+import { involvesAddress, whereField, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -928,6 +936,11 @@ streamd.on(
   it narrows a `module` subscription to one wallet's own transactions. It
   needs `sender` on the event; events without one never match. `0x1` and
   `0x000...01` count as the same address.
+- `fromFunction(...functions)` matches events produced by a call to one of the
+  entry functions, each written `address::module::function`
+  (`fromFunction("0x1::aptos_account::transfer")`). It needs `entryFunction` on
+  the event; events without one never match. `0x1` and `0x000...01` count as the
+  same address.
 - `every(...predicates)`, `some(...predicates)`, and `not(predicate)` combine
   and negate filters. They test in order and stop at the first answer that
   decides, so put cheap checks before a lookup.
@@ -1421,6 +1434,8 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
 - **Exact integers.** Versions, sequence numbers, timestamps and guids round-trip as `bigint`
   up to u64 (u128 for `creationNumber`). Events are stored as `serializeEvent` writes them,
   so a `bigint` inside `data` comes back as a decimal string: query with `decode` to restore it.
+  `entryFunction` is kept in that stored JSON, with no column of its own, so it comes back on
+  reads but filtering on it happens in `where`, not in SQL.
 - **What `StoreAdapter` matches.** `module` by event type; `account` by the stored `sender`,
   so events stored without one (from `handle` descriptors) never match; `handle` by
   `creationNumber` against the stored `guid` (`listEventHandles` returns it), and a struct
@@ -1509,7 +1524,7 @@ streamd tail --account 0x1 --handle "0x1::coin::CoinStore<0x1::aptos_coin::Aptos
 | `-h`, `--help` | show usage |
 
 Each line carries `type`, `data`, `version`, `sequenceNumber`, `eventIndex`, and, when
-the source has them, `transactionHash`, `timestamp` and `sender`. Every `bigint`, including any inside
+the source has them, `transactionHash`, `timestamp`, `sender` and, last, `entryFunction`. Every `bigint`, including any inside
 `data`, is printed as a decimal string:
 
 ```json
