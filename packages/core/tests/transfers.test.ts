@@ -291,11 +291,17 @@ describe("transferSource", () => {
     expect(calls).toEqual([]);
   });
 
-  it("rejects the page on a network error from the token read", async () => {
-    const { adapter } = withViews([moved(1, 0, NFT, ALICE, BOB)], () => {
-      throw new StreamdNetworkError("unavailable", 503);
+  it("rejects the page on a network error from the token read, and reads again on retry", async () => {
+    let down = true;
+    const { adapter, calls } = withViews([moved(1, 0, NFT, ALICE, BOB)], () => {
+      if (down) throw new StreamdNetworkError("unavailable", 503);
+      return undefined;
     });
-    await expect(transferSource(adapter).fetchEvents(TRANSFER_DESCRIPTOR, all)).rejects.toBeInstanceOf(StreamdNetworkError);
+    const source = transferSource(adapter);
+    await expect(source.fetchEvents(TRANSFER_DESCRIPTOR, all)).rejects.toBeInstanceOf(StreamdNetworkError);
+    down = false;
+    expect(await transfers(source)).toEqual([{ at: "1:0", asset: NFT, amount: 1n, from: ALICE, to: BOB }]);
+    expect(calls).toHaveLength(2);
   });
 
   it("refuses an adapter without view and a malformed asset", () => {

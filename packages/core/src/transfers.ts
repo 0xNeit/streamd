@@ -79,7 +79,7 @@ function assetKey(asset: string): string {
 
 function requireAsset(asset: unknown): string {
   if (typeof asset !== "string" || asset === "") {
-    throw new StreamdError("asset must be a fungible-asset metadata address or a coin type");
+    throw new StreamdError("asset must be a fungible-asset metadata or token object address, a coin type, or a legacy token id");
   }
   if (!asset.includes("::")) return requireAddress(asset);
   if (COIN_TYPE.test(asset)) return assetKey(asset);
@@ -248,8 +248,8 @@ export function transferSource(adapter: EventAdapter, asset?: string): EventAdap
     );
     return legs
       .flatMap((txn) => {
-        const records = txn.filter((r): r is StreamdEvent<Transfer> => r !== undefined && !("owner" in r));
-        return [...records, ...pair(txn.filter((r): r is Leg => r !== undefined && "owner" in r))];
+        const records = txn.filter((r): r is StreamdEvent<Transfer> => r !== undefined && !("deposit" in r));
+        return [...records, ...pair(txn.filter((r): r is Leg => r !== undefined && "deposit" in r))];
       })
       .sort(byIdentity);
   };
