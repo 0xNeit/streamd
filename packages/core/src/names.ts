@@ -1,4 +1,4 @@
-import type { Aptos } from "@aptos-labs/ts-sdk";
+import { Network, type Aptos } from "@aptos-labs/ts-sdk";
 import { StreamdError } from "./errors.js";
 import { normalizeAddress } from "./filter.js";
 import { toStreamdError } from "./adapters/fullnode.js";
@@ -6,6 +6,8 @@ import { requireAddress } from "./adapters/validate.js";
 
 const LABEL = "[a-z\\d][a-z\\d-]{1,61}[a-z\\d]";
 const ANS_NAME = new RegExp(`^(?:${LABEL}\\.)?${LABEL}(?:\\.apt)?$`);
+// The networks the SDK knows an ANS router for; on any other it refuses before a request.
+const ANS_NETWORKS: readonly string[] = [Network.MAINNET, Network.TESTNET, Network.LOCAL];
 
 /**
  * The long-form address of `value` when it is one, `undefined` when it is a
@@ -20,6 +22,13 @@ export function addressOrName(value: string): string | undefined {
   return undefined;
 }
 
+/** Throws unless `aptos` can resolve names, so callers can refuse one at construction. */
+export function requireNameResolver(aptos: Aptos): void {
+  if (typeof (aptos as { getTargetAddress?: unknown } | null)?.getTargetAddress !== "function") {
+    throw new StreamdError("Resolving an Aptos name needs an Aptos instance");
+  }
+}
+
 /**
  * The long-form address an Aptos name (`alice.apt`, `sub.alice.apt`) points
  * to, read once through the ANS router at the node's head; an address is
@@ -32,16 +41,16 @@ export function addressOrName(value: string): string | undefined {
 export async function resolveName(aptos: Aptos, nameOrAddress: string): Promise<string> {
   const address = addressOrName(nameOrAddress);
   if (address !== undefined) return address;
-  if (typeof (aptos as { getTargetAddress?: unknown } | null)?.getTargetAddress !== "function") {
-    throw new StreamdError("resolveName needs an Aptos instance");
+  requireNameResolver(aptos);
+  const network = aptos.config?.network;
+  if (network !== undefined && !ANS_NETWORKS.includes(network)) {
+    throw new StreamdError(`Aptos name ${nameOrAddress} cannot be resolved: no ANS on network ${network}`);
   }
   let target;
   try {
     target = await aptos.getTargetAddress({ name: nameOrAddress });
   } catch (err) {
-    const status = (err as { status?: unknown } | null)?.status;
-    // No status: the SDK refused before any request, such as a network without ANS.
-    if (status === undefined || status === 400) {
+    if ((err as { status?: unknown } | null)?.status === 400) {
       throw new StreamdError(
         `Aptos name ${nameOrAddress} could not be resolved: ${err instanceof Error ? err.message : "unknown error"}`,
       );

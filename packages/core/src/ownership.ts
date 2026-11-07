@@ -2,7 +2,7 @@ import type { Aptos } from "@aptos-labs/ts-sdk";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
 import { normalizeAddress } from "./filter.js";
 import { RequestLimiter } from "./limiter.js";
-import { addressOrName, resolveName } from "./names.js";
+import { addressOrName, requireNameResolver, resolveName } from "./names.js";
 import type { EventPredicate, StreamdEvent } from "./types.js";
 
 const DEFAULT_FIELDS = ["store", "object", "token", "token_address"];
@@ -41,6 +41,7 @@ export function ownedBy(
   options: OwnedByOptions = {},
 ): EventPredicate {
   const address = addressOrName(wallet);
+  if (address === undefined) requireNameResolver(aptos);
   if (typeof (aptos as { viewJson?: unknown } | null)?.viewJson !== "function") {
     throw new StreamdError("ownedBy needs an Aptos instance");
   }

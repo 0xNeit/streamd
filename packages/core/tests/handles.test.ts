@@ -144,6 +144,15 @@ describe("listEventHandles", () => {
     expect(paths).toEqual([`accounts/${ADDR}/resources`]);
   });
 
+  it("rejects a failed resolution before reading resources", async () => {
+    const { aptos, paths } = serve(resources);
+    Object.assign(aptos, { getTargetAddress: async () => undefined });
+    const err = await listEventHandles(aptos, "gone.apt").catch((e) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect(paths).toEqual([]);
+  });
+
   it("rejects an invalid address before any request", async () => {
     const { aptos, paths } = serve(resources);
     const err = await listEventHandles(aptos, "not an address").catch((e) => e);

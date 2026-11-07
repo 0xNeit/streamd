@@ -1028,11 +1028,13 @@ Descriptors and the synchronous predicates take addresses only, so they stay
 synchronous and a descriptor's identity never depends on a lookup.
 
 - **Once, not per event.** A name that later points elsewhere is not followed;
-  resolve again to pick up the change.
+  resolve again to pick up the change. For history this means today's target:
+  `getEvents` with `ownedBy(aptos, "alice.apt")` checks past events against the
+  wallet the name points to now, not the one it pointed to then.
 - **Errors.** An unregistered or expired name, or one with no target address,
   rejects with a `StreamdError`, as does a malformed one before any request. A
   string starting `0x` is always read as an address. A node or transport failure
-  rejects with a `StreamdNetworkError`.
+  rejects with a `StreamdNetworkError`, so a listener retries it.
 - **Networks.** Names resolve on Aptos mainnet only. On testnet the SDK's
   router address resolves nothing, and the Movement presets are custom networks
   the SDK knows no ANS contract for, so names reject there with a `StreamdError`.

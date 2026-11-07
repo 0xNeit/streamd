@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { AccountAddress, type Aptos } from "@aptos-labs/ts-sdk";
+import { AccountAddress, Network, type Aptos } from "@aptos-labs/ts-sdk";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import { resolveName } from "../src/names.js";
 
@@ -44,15 +44,32 @@ describe("resolveName", () => {
     expect(err.message).toContain("gone.apt");
   });
 
-  it("rejects an SDK refusal and a 400 as plain StreamdErrors", async () => {
-    for (const thrown of [new Error("The ANS contract is not deployed to custom"), apiError(400)]) {
-      const { aptos } = fakeAptos(() => {
-        throw thrown;
-      });
-      const err = await resolveName(aptos, "alice.apt").catch((e) => e);
-      expect(err).toBeInstanceOf(StreamdError);
-      expect(err).not.toBeInstanceOf(StreamdNetworkError);
-    }
+  it("rejects a 400 as a plain StreamdError", async () => {
+    const { aptos } = fakeAptos(() => {
+      throw apiError(400);
+    });
+    const err = await resolveName(aptos, "alice.apt").catch((e) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  });
+
+  it("refuses a network without ANS before any read", async () => {
+    const { aptos, names } = fakeAptos(() => AccountAddress.ONE);
+    Object.assign(aptos, { config: { network: Network.CUSTOM } });
+    const err = await resolveName(aptos, "alice.apt").catch((e) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect(err.message).toContain("custom");
+    expect(names).toEqual([]);
+  });
+
+  it("rejects a transport failure with no status as a StreamdNetworkError", async () => {
+    const { aptos } = fakeAptos(() => {
+      throw new TypeError("fetch failed");
+    });
+    const err = await resolveName(aptos, "alice.apt").catch((e) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect(err.statusCode).toBeUndefined();
   });
 
   it("rejects other failures as a StreamdNetworkError with the status", async () => {

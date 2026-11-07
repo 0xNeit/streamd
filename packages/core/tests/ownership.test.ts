@@ -178,6 +178,7 @@ describe("ownedBy", () => {
     const { aptos } = fakeAptos(() => [true]);
     expect(() => ownedBy(aptos, "0xzz")).toThrow(StreamdError);
     expect(() => ownedBy(aptos, "no")).toThrow(StreamdError);
+    expect(() => ownedBy(aptos, "alice.apt")).toThrow("needs an Aptos instance");
     expect(() => ownedBy({} as Aptos, WALLET)).toThrow("needs an Aptos instance");
     expect(() => ownedBy(aptos, WALLET, { fields: [] })).toThrow("fields");
     expect(() => ownedBy(aptos, WALLET, { fields: [""] })).toThrow("fields");
