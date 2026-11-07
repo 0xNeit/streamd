@@ -124,7 +124,7 @@ export async function eventsOf(
   try {
     for (;;) {
       found = await raceAbort(
-        limiter.run(() => adapter.getTransactionEvents!(hash, descriptor), () => wait.signal.aborted),
+        limiter.run(() => adapter.getTransactionEvents!(hash, descriptor), wait.signal),
         wait.signal,
       );
       if (found !== undefined) break;

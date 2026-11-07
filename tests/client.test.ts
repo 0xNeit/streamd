@@ -1893,6 +1893,40 @@ describe("maxConcurrentRequests", () => {
     client.destroy();
   });
 
+  it("does not grow the queue across pause and resume while a fetch hangs", async () => {
+    const slow = slowAdapter();
+    const client = new StreamdClient({ adapter: slow.adapter, maxConcurrentRequests: 1 });
+    client.on(descriptor, () => {});
+    await advanceTimersByTimeAsync(0);
+    // A relative start queues a head read on every run before any fetch.
+    const sub = client.on(descriptor, () => {}, { fromVersion: -10n });
+    for (let i = 0; i < 200; i++) {
+      await advanceTimersByTimeAsync(0);
+      sub.pause();
+      sub.resume();
+    }
+    await advanceTimersByTimeAsync(0);
+    expect(client["limiter"]["queue"].length).toBe(1);
+    client.destroy();
+  });
+
+  it("destroy() rejects a query still queued behind a hung call", async () => {
+    const slow = slowAdapter();
+    const client = new StreamdClient({ adapter: slow.adapter, maxConcurrentRequests: 1 });
+    client.on(descriptor, () => {});
+    await advanceTimersByTimeAsync(0);
+    let outcome: unknown;
+    client.getEvents(descriptor).catch((e) => (outcome = e));
+    await advanceTimersByTimeAsync(0);
+    client.destroy();
+    await advanceTimersByTimeAsync(0);
+    expect(outcome).toBeInstanceOf(StreamdError);
+    expect(client["limiter"]["queue"].length).toBe(0);
+    slow.releaseAll();
+    await advanceTimersByTimeAsync(0);
+    expect(slow.calls).toEqual(["fetch"]);
+  });
+
   it("rejects a cap that is not a positive integer", () => {
     for (const bad of [0, -1, 1.5, NaN, Infinity, "2"]) {
       expect(
