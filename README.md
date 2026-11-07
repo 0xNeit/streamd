@@ -931,6 +931,8 @@ streamd.on(
 - `every(...predicates)`, `some(...predicates)`, and `not(predicate)` combine
   and negate filters. They test in order and stop at the first answer that
   decides, so put cheap checks before a lookup.
+- `ownedBy(aptos, wallet)` matches events naming a store or object the wallet
+  owns; see [Owned stores and objects](#owned-stores-and-objects).
 - Any `(event) => boolean` function works too, and so does one returning a
   Promise.
 
@@ -964,6 +966,45 @@ streamd.on(deposits, handler, { where: every(ofType(DEPOSIT), known) });
 - `once()` rejects at once on a throw, and retries a rejection like `on()`.
 - `eventsOf`, `previewEvents` and `expectEvents` await it and reject with its
   error.
+
+### Owned stores and objects
+
+Fungible-asset events name a store, not a wallet, and a wallet's stores are
+objects it owns. `ownedBy(aptos, wallet, options?)` matches events whose `data`
+names a store or object the wallet owns, directly or through objects it owns:
+
+```ts
+import { ownedBy, every, ofType } from "@streamd/core";
+
+streamd.on(
+  { kind: "module", eventType: ["0x1::fungible_asset::Deposit", "0x1::fungible_asset::Withdraw"] },
+  (event) => console.log(event),
+  { where: ownedBy(aptos, myWallet) },
+);
+```
+
+- **Fields.** It reads the top-level `store`, `object`, `token` and
+  `token_address` fields (`fungible_asset::Deposit`/`Withdraw`/`Frozen`,
+  `object::Transfer`, `0x4::collection::Mint`/`Burn`, `0x4::token::Mutation`),
+  in order, stopping at the first owned one. `fields` replaces the list. A value
+  counts when it is an address or an `Object<T>` rendered as `{ inner }`; an
+  event naming none does not match, and costs no read.
+- **At the event's version.** Each check is one `0x1::object::owns` view at
+  `event.version`, the state once that transaction had run, as `withState`
+  reads it. So a `Transfer` matches the wallet it went to, not the one it left.
+  An object that does not exist at that version, such as a store the same
+  transaction deleted, is not owned.
+- **Cost.** Answers are cached per object and version (1000 entries per
+  predicate), and `maxConcurrentRequests` (default 4) caps its reads in flight.
+  These reads go through `aptos`, not the client's adapter or its
+  `maxConcurrentRequests`. Put cheap filters first, as in
+  `every(ofType(DEPOSIT), ownedBy(aptos, myWallet))`.
+- **Failures.** A node or transport failure rejects with a
+  `StreamdNetworkError`, so a listener retries the event after backoff. Any
+  other rejected request, or an answer that is not a boolean, rejects with a
+  plain `StreamdError`, which stops a listener. A query rejects either way. The version
+  must be committed and unpruned on the node `aptos` reaches, so `previewEvents`
+  events, whose version is simulated, cannot be checked.
 
 ## Data sources and their limits
 
