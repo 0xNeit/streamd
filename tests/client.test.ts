@@ -605,6 +605,65 @@ describe("StreamdClient", () => {
     client.destroy();
   });
 
+  it("once() reports a throwing onCaughtUp and still resolves with the next match", async () => {
+    const pages: EventPage[] = [
+      { events: [], nextCursor: "1", hasMore: false },
+      { events: [{ type: "0x1::test::Event", data: {}, version: 1n, sequenceNumber: 0n, eventIndex: 0 }], nextCursor: "2", hasMore: false },
+    ];
+    let i = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async () => pages[i++] ?? { events: [], nextCursor: "2", hasMore: false }),
+    };
+    const onError = vi.fn();
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const promise = client.once(
+      { kind: "module", eventType: "0x1::test::Event" },
+      {
+        pollInterval: 100,
+        onError,
+        onCaughtUp: () => {
+          throw new Error("caught-up bug");
+        },
+      },
+    );
+    let outcome: unknown = "pending";
+    promise.then(
+      (e) => (outcome = e),
+      (err) => (outcome = err),
+    );
+
+    await advanceTimersByTimeAsync(100);
+    expect((outcome as StreamdEvent).version).toBe(1n);
+    expect(onError).toHaveBeenCalledTimes(1);
+    expect((onError.mock.calls[0]![0] as Error).message).toBe("onCaughtUp threw");
+    client.destroy();
+  });
+
+  it("once() skips an event that fails decode and resolves with the next one", async () => {
+    const bad: StreamdEvent = { type: "0x1::test::Event", data: { amount: "x" }, version: 1n, sequenceNumber: 0n, eventIndex: 0 };
+    const good: StreamdEvent = { type: "0x1::test::Event", data: { amount: "5" }, version: 2n, sequenceNumber: 0n, eventIndex: 0 };
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async () => ({ events: [bad, good], nextCursor: "3", hasMore: false })),
+    };
+    const onError = vi.fn();
+    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const promise = client.once(
+      { kind: "module", eventType: "0x1::test::Event" },
+      { pollInterval: 100, decode: ["amount"], onError },
+    );
+    let outcome: unknown = "pending";
+    promise.then(
+      (e) => (outcome = e),
+      (err) => (outcome = err),
+    );
+
+    await advanceTimersByTimeAsync(0);
+    expect((outcome as StreamdEvent).version).toBe(2n);
+    expect((outcome as StreamdEvent).data).toEqual({ amount: 5n });
+    expect(onError).toHaveBeenCalledTimes(1);
+    client.destroy();
+  });
+
   it("once() still rejects when the caller's onError throws", async () => {
     const event: StreamdEvent = {
       type: "0x1::test::Event",

@@ -174,7 +174,9 @@ for await (const event of streamd.stream(descriptor, { where: involvesAddress(wa
 next poll waits until the body asks for the following event, so a slow body slows the
 subscription down. The loop throws if polling gives up (after `maxErrors`, or at once on
 invalid input); other errors go to `onError`. `destroy()` ends any open loop. One loop
-per stream: the stream subscribes when the loop first asks for an event.
+per stream: the stream subscribes when the loop first asks for an event. Its `cursor`
+resumes like a subscription's (below), passing a page only once the loop has asked past
+its last event, so leaving the loop mid-page resumes at that page.
 
 ### Resume after a restart
 
@@ -349,7 +351,10 @@ const event = await streamd.once(
 ```
 
 The promise rejects with `StreamdTimeoutError` if `timeout` elapses first, if
-polling gives up after `maxErrors`, or straight away on invalid input.
+polling gives up after `maxErrors`, straight away on invalid input, or on the first
+throw from `where`, which would otherwise skip every event. A throwing `onCaughtUp`,
+an event that fails `decode`, or a throwing `withState` builder goes to `onError` and
+`once()` keeps waiting for a match.
 
 ### Events from a submitted transaction
 

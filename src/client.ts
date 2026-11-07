@@ -5,6 +5,7 @@ import type {
   EventAdapter,
   EventCallback,
   EventDescriptor,
+  EventStream,
   EventFilter,
   EventsOfOptions,
   ListenerDefaults,
@@ -24,7 +25,6 @@ import { EventPoller, resolveMaxBackoff, type Delivery } from "./poller.js";
 import { EventQuery } from "./query.js";
 import {
   StreamdError,
-  StreamdPollingError,
   StreamdTimeoutError,
 } from "./errors.js";
 import { descriptorKey, generateId, onAbort } from "./utils.js";
@@ -281,6 +281,8 @@ export class StreamdClient {
    * `timeout` elapses first, when polling gives up after `maxErrors`, at once
    * when the adapter refuses the descriptor or options as invalid input, or on
    * the first error thrown by `where`, even if a later event would have matched.
+   * A throwing `onCaughtUp`, an event that fails `decode` or a throwing
+   * `withState` builder goes to `onError` and is skipped, as for `on()`.
    */
   once<TData = unknown>(
     descriptor: EventDescriptor<TData>,
@@ -299,16 +301,31 @@ export class StreamdClient {
         sub.unsubscribe();
       };
       const fail = (reason: unknown) => (close(), reject(reason));
+      // A throwing predicate would skip every event and leave the promise
+      // pending; other handler errors are per event, so waiting can still match.
+      let whereThrew = false;
+      const where = options?.where;
       const sub = this.subscribe(
         descriptor,
         ((event: StreamdEvent<TData>) => (close(), resolve(event))) as EventCallback,
         {
           ...options,
+          where:
+            where === undefined
+              ? undefined
+              : (event) => {
+                  try {
+                    return where(event);
+                  } catch (err) {
+                    whereThrew = true;
+                    throw err;
+                  }
+                },
           signal: undefined,
           onError: (err) => {
             // Settle before the caller's handler runs, so a throw from it
             // cannot leave the promise pending.
-            if (!sub.active || !(err instanceof StreamdPollingError)) fail(err);
+            if (!sub.active || whereThrew) fail(err);
             (options?.onError ?? this.onError)?.(err);
           },
         },
@@ -329,12 +346,13 @@ export class StreamdClient {
    * Leaving the loop unsubscribes. Each event holds back the next poll until
    * the loop asks for the following one, and the loop throws if polling gives
    * up (after `maxErrors`, or at once on invalid input) or `options.signal`
-   * aborts. Other errors go to `options.onError`.
+   * aborts. Other errors go to `options.onError`. Save `cursor` to resume
+   * later, as for `on()`.
    */
   stream<TData = unknown>(
     descriptor: EventDescriptor<TData>,
     options?: ListenerOptions,
-  ): AsyncIterableIterator<StreamdEvent<TData>> {
+  ): EventStream<TData> {
     // Registered only once the stream subscribes, so an unused stream costs nothing.
     const close = () => void stream.return?.();
     const stream = eventStream<TData>(
@@ -352,6 +370,7 @@ export class StreamdClient {
       },
       () => this.streams.delete(close),
       options?.signal,
+      options?.cursor,
     );
     return stream;
   }

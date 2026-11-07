@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdClient } from "../src/client.js";
 import { defineEvent } from "../src/define.js";
-import type { EventDescriptor, StreamdEvent } from "../src/types.js";
+import type { EventDescriptor, EventStream, StreamdEvent } from "../src/types.js";
 
 type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
@@ -55,7 +55,7 @@ describe("defineEvent", () => {
     }
 
     const iter = client.stream(deposit, { fromVersion: 0n });
-    const streamed: Equals<typeof iter, AsyncIterableIterator<StreamdEvent<Deposit>>> = true;
+    const streamed: Equals<typeof iter, EventStream<Deposit>> = true;
     expect(streamed).toBe(true);
     await iter.return?.();
 
