@@ -999,8 +999,10 @@ streamd.on(
   These reads go through `aptos`, not the client's adapter or its
   `maxConcurrentRequests`. Put cheap filters first, as in
   `every(ofType(DEPOSIT), ownedBy(aptos, myWallet))`.
-- **Failures.** A failed read rejects with a `StreamdNetworkError`, so a
-  listener retries the event after backoff and a query rejects. The version
+- **Failures.** A node or transport failure rejects with a
+  `StreamdNetworkError`, so a listener retries the event after backoff. Any
+  other rejected request, or an answer that is not a boolean, rejects with a
+  plain `StreamdError`, which stops a listener. A query rejects either way. The version
   must be committed and unpruned on the node `aptos` reaches, so `previewEvents`
   events, whose version is simulated, cannot be checked.
 

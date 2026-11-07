@@ -3,6 +3,7 @@ import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { FullnodeScanAdapter } from "../../src/adapters/fullnode.js";
 import { StreamdClient } from "../../src/client.js";
 import { involvesAddress } from "../../src/filter.js";
+import { ownedBy } from "../../src/ownership.js";
 import type { EventDescriptor, StreamdEvent } from "../../src/types.js";
 
 /**
@@ -223,4 +224,19 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
 
     client.destroy();
   }, 60_000);
+});
+
+describe.skipIf(!enabled)("ownedBy (mainnet)", () => {
+  it("answers false for an object that does not exist, from the node's real abort", async () => {
+    const aptos = mainnet();
+    const version = BigInt((await aptos.getLedgerInfo()).ledger_version);
+    const event: StreamdEvent = {
+      type: "0x1::fungible_asset::Deposit",
+      data: { store: "0x1234", amount: "1" },
+      version,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+    };
+    expect(await ownedBy(aptos, "0x1")(event)).toBe(false);
+  }, 30_000);
 });
