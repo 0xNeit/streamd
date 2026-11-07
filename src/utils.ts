@@ -116,16 +116,13 @@ function isValidHandle(d: Parameters<typeof handlePath>[0]): boolean {
 
 /**
  * Value key for a descriptor: equal for descriptors that select the same
- * events, undefined for anything that is not one of the three kinds. A handle
- * descriptor the adapters refuse has no key, so it never shares, caches or
- * replays the answer of a valid one it would otherwise collide with.
+ * events, undefined for anything that is not one of the three kinds.
  */
 export function descriptorKey(d: EventDescriptor | undefined): string | undefined {
   switch (d?.kind) {
     case "module":
       return JSON.stringify(["module", typeSet(d.eventType)]);
     case "handle": {
-      if (!isValidHandle(d)) return undefined;
       const address = normalizeAddress(d.accountAddress) ?? d.accountAddress;
       return d.creationNumber !== undefined
         ? JSON.stringify(["handle", address, String(d.creationNumber)])
@@ -145,8 +142,11 @@ export function descriptorKey(d: EventDescriptor | undefined): string | undefine
 /**
  * Value key for one `fetchEvents` request: equal for the same descriptor and
  * the same defined options in any order, undefined when `d` is not a descriptor.
+ * A handle descriptor the adapters refuse has no key, so it never shares,
+ * caches or replays the answer of a valid one it would otherwise collide with.
  */
 export function fetchKey(d: EventDescriptor, options: FetchOptions): string | undefined {
+  if (d?.kind === "handle" && !isValidHandle(d)) return undefined;
   const selector = descriptorKey(d);
   if (selector === undefined) return undefined;
   const fields = Object.entries(options)

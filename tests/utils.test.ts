@@ -1,5 +1,6 @@
 import { describe, it, expect, spyOn } from "bun:test";
-import { descriptorKey, raceAbort } from "../src/utils.js";
+import { descriptorKey, fetchKey, raceAbort } from "../src/utils.js";
+import { StreamdClient } from "../src/client.js";
 import { SharedFetches } from "../src/shared.js";
 import { CachingAdapter } from "../src/adapters/caching.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
@@ -36,7 +37,7 @@ describe("descriptorKey", () => {
     ).toBe(JSON.stringify(["handle", LONG_0X1, "0x1::a::B", "f"]));
   });
 
-  it("gives no key to a handle descriptor the adapters refuse", () => {
+  it("gives no request key to a handle descriptor the adapters refuse", () => {
     const refused = [
       invalid,
       { kind: "handle", accountAddress: "0x1", creationNumber: 5 },
@@ -46,7 +47,19 @@ describe("descriptorKey", () => {
       { kind: "handle", accountAddress: "0x1", eventHandleStruct: "0x1::a::B", fieldName: "" },
       { kind: "handle", accountAddress: "0x1", eventHandleStruct: "0x1::a::B" },
     ] as unknown as EventDescriptor[];
-    for (const d of refused) expect(descriptorKey(d)).toBeUndefined();
+    for (const d of refused) expect(fetchKey(d, { fromVersion: 0n })).toBeUndefined();
+  });
+
+  it("still matches listeners on a handle descriptor a custom adapter accepts", () => {
+    const named = { kind: "handle", accountAddress: "alice.apt", creationNumber: 5n } as EventDescriptor;
+    const client = new StreamdClient({
+      adapter: { fetchEvents: async () => ({ events: [], nextCursor: "0", hasMore: false }) },
+    });
+    client.on(named, () => {});
+    expect(client.listenerCount(named)).toBe(1);
+    client.off(named);
+    expect(client.listenerCount()).toBe(0);
+    client.destroy();
   });
 
   it("does not let an invalid descriptor's shared fetch fail a valid one", async () => {
