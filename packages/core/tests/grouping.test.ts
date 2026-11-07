@@ -303,6 +303,48 @@ describe("onTransaction, several descriptors", () => {
     client.destroy();
   });
 
+  describe("a walk idle at the head without throughVersion", () => {
+    const empty: EventPage = { events: [], nextCursor: "c", hasMore: false };
+    const run = async (scripts: Record<string, EventPage[]>, ms: number) => {
+      const client = new StreamdClient({ adapter: perDescriptor(scripts) });
+      const log: string[] = [];
+      client.onTransaction([onA, onB], (g) => void log.push(shape([g])[0]!), { pollInterval: 1000 });
+      await advanceTimersByTimeAsync(ms);
+      client.destroy();
+      return log;
+    };
+
+    it("holds a transaction the other walk read until its own next fetch", async () => {
+      const log = await run(
+        {
+          [A]: [empty, empty, { events: [ev(5, 0, A)], nextCursor: "a", hasMore: false, throughVersion: 5n }],
+          [B]: [empty, { events: [ev(5, 1, B)], nextCursor: "b", hasMore: false, throughVersion: 5n }],
+        },
+        3000,
+      );
+      expect(log).toEqual(["5:0,1"]);
+    });
+
+    it("does not release a later version ahead of its own earlier one", async () => {
+      const log = await run(
+        {
+          [A]: [empty, empty, { events: [ev(5, 0, A)], nextCursor: "a", hasMore: false, throughVersion: 5n }],
+          [B]: [empty, { events: [ev(6, 0, B)], nextCursor: "b", hasMore: false, throughVersion: 6n }],
+        },
+        3000,
+      );
+      expect(log).toEqual(["5:0", "6:0"]);
+    });
+
+    it("lets the other walk's transactions through once it polls again", async () => {
+      const log = await run(
+        { [A]: [], [B]: [empty, { events: [ev(5, 1, B)], nextCursor: "b", hasMore: false }] },
+        2000,
+      );
+      expect(log).toEqual(["5:1"]);
+    });
+  });
+
   it("drops a late copy of an event already delivered through another walk", async () => {
     const shared = ev(10, 0, B);
     const adapter = perDescriptor({

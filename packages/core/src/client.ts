@@ -174,7 +174,8 @@ export class StreamdClient {
     this.transactionHost = {
       defaults: this.defaults,
       onError: this.onError,
-      subscribe: (d, delivery, options, id) => this.subscribe(d, delivery, options, undefined, id),
+      subscribe: (d, delivery, options, id, wrap) =>
+        this.subscribe(d, delivery, options, undefined, id, wrap),
     };
   }
 
