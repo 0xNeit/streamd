@@ -176,4 +176,27 @@ describe("runTail with a stub client", () => {
     expect(errors).toEqual(["streamd: first", "streamd: second"]);
     expect(released).toBe(true);
   });
+  it("leaves unset fromVersion and pollInterval out of the stream options", async () => {
+    const { seen, io } = stub(async function* () {});
+    const unset: TailOptions = { descriptor: { kind: "module", eventType: TYPE }, network: "mainnet" };
+    expect(await runTail(unset, io)).toBe(0);
+    expect(seen[0]).not.toHaveProperty("fromVersion");
+    expect(seen[0]).not.toHaveProperty("pollInterval");
+  });
+
+  it("passes fromVersion and pollInterval through unchanged", async () => {
+    const { seen, io } = stub(async function* () {});
+    expect(await runTail(options({ fromVersion: 7n, pollInterval: 2500 }), io)).toBe(0);
+    expect(seen[0]?.fromVersion).toBe(7n);
+    expect(seen[0]?.pollInterval).toBe(2500);
+  });
+
+  it("reports a write failure with its cause and exits 1 when not aborted", async () => {
+    const { errors, io } = stub(async function* () {
+      yield ev(1);
+    });
+    io.write = () => Promise.reject(new Error("write failed", { cause: new Error("EIO") }));
+    expect(await runTail(options(), io)).toBe(1);
+    expect(errors).toEqual(["streamd: write failed: EIO"]);
+  });
 });
