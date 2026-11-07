@@ -391,3 +391,13 @@ describe("previewEvents", () => {
     expect(peak).toBe(1);
   });
 });
+
+describe("eventsOf with a resource descriptor", () => {
+  it("rejects before any lookup", async () => {
+    const { adapter, calls } = lookup();
+    await expect(
+      client(adapter).eventsOf(HASH, { kind: "resource", accountAddress: SENDER, resourceType: PING }),
+    ).rejects.toThrow("not write sets");
+    expect(calls).toHaveLength(0);
+  });
+});

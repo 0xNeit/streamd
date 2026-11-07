@@ -225,6 +225,13 @@ export function requireEventType(value: unknown): string {
   return value;
 }
 
+export function requireResourceType(value: unknown): string {
+  if (typeof value !== "string" || !MOVE_EVENT_TYPE.test(value)) {
+    throw new StreamdError(`Not a valid Move resource type: ${String(value)}`);
+  }
+  return value;
+}
+
 export function moduleTypeFilter(
   eventType: ModuleEventDescriptor["eventType"],
 ): (type: string) => boolean {

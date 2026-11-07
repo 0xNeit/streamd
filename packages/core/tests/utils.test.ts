@@ -135,3 +135,23 @@ describe("raceAbort", () => {
     await expect(raced).rejects.toThrow("stopped");
   });
 });
+
+describe("descriptorKey for resource descriptors", () => {
+  const TYPE = "0x1::account::Account";
+
+  it("is equal across address spellings and distinct by type", () => {
+    const short = descriptorKey({ kind: "resource", accountAddress: "0x1", resourceType: TYPE });
+    expect(short).toBe(JSON.stringify(["resource", LONG_0X1, TYPE]));
+    expect(descriptorKey({ kind: "resource", accountAddress: LONG_0X1, resourceType: TYPE })).toBe(short);
+    expect(
+      descriptorKey({ kind: "resource", accountAddress: "0x1", resourceType: "0x1::coin::CoinInfo" }),
+    ).not.toBe(short);
+  });
+
+  it("matches a listener by value", () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter() });
+    client.on({ kind: "resource", accountAddress: "0x1", resourceType: TYPE }, () => {});
+    expect(client.listenerCount({ kind: "resource", accountAddress: LONG_0X1, resourceType: TYPE })).toBe(1);
+    client.destroy();
+  });
+});

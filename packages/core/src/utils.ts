@@ -118,7 +118,7 @@ function isValidHandle(d: Parameters<typeof handlePath>[0]): boolean {
 
 /**
  * Value key for a descriptor: equal for descriptors that select the same
- * events, undefined for anything that is not one of the three kinds.
+ * events, undefined for anything that is not one of the four kinds.
  */
 export function descriptorKey(d: EventDescriptor | undefined): string | undefined {
   switch (d?.kind) {
@@ -135,6 +135,12 @@ export function descriptorKey(d: EventDescriptor | undefined): string | undefine
         "account",
         normalizeAddress(d.accountAddress) ?? d.accountAddress,
         d.eventTypes === undefined ? null : typeSet(d.eventTypes),
+      ]);
+    case "resource":
+      return JSON.stringify([
+        "resource",
+        normalizeAddress(d.accountAddress) ?? d.accountAddress,
+        d.resourceType,
       ]);
     default:
       return undefined;

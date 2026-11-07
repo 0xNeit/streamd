@@ -355,6 +355,8 @@ export class FullnodeScanAdapter implements EventAdapter {
         return this.fetchHandleEvents(descriptor, options);
       case "account":
         return this.fetchAccountEvents(descriptor, options);
+      case "resource":
+        throw new StreamdError("FullnodeScanAdapter does not serve resource descriptors yet");
       default:
         return this.fetchModuleEvents(descriptor, options);
     }

@@ -100,6 +100,7 @@ export type {
   ReduceOptions,
   Reducer,
   Reduction,
+  ResourceDescriptor,
   StreamdConfig,
   StreamdEvent,
   Subscription,

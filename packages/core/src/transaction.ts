@@ -61,6 +61,10 @@ function eventMatcher(descriptor: EventDescriptor): (event: StreamdEvent) => boo
         event.guid.creationNumber === creationNumber &&
         normalizeAddress(event.guid.accountAddress) === owner;
     }
+    case "resource":
+      throw new StreamdError(
+        "Transaction lookups carry events, not write sets, so a resource descriptor cannot narrow them",
+      );
     default:
       throw new StreamdError(
         `Unknown descriptor kind: ${String((descriptor as { kind?: unknown } | null)?.kind)}`,
