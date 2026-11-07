@@ -64,7 +64,11 @@ function descriptorWhere(descriptor: EventDescriptor): Where {
 function parseCursor(cursor: string): Position {
   const match = typeof cursor === "string" ? CURSOR.exec(cursor) : null;
   if (match === null) throw new StreamdError(`Not a cursor this adapter issued: ${String(cursor)}`);
-  return { version: BigInt(match[1]!), eventIndex: Number(match[2]) };
+  const eventIndex = Number(match[2]);
+  if (!Number.isSafeInteger(eventIndex)) {
+    throw new StreamdError(`Not a cursor this adapter issued: ${cursor}`);
+  }
+  return { version: BigInt(match[1]!), eventIndex };
 }
 
 function startOf(options: FetchOptions): Position {
@@ -128,8 +132,7 @@ export class StoreAdapter implements EventAdapter {
       nextCursor: last === undefined ? startCursor : `${last.version}:${last.eventIndex}`,
       hasMore: rows.length > limit,
     };
-    // A later event may share the last one's version, so only the versions below it are settled.
-    if (last !== undefined && last.version > 0n) page.throughVersion = last.version - 1n;
+    // No throughVersion: another writer may still add rows below the cursor.
     if (options.orderBy === "desc") events.reverse();
     return page;
   }

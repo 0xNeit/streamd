@@ -1127,10 +1127,13 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
 ```
 
 - **No gaps, no duplicates.** Rows are keyed on `(version, eventIndex)` and a repeated write
-  replaces its row. The saved cursor is the one from before the batch, so a restart reads the
-  last batch again and the upsert absorbs it. A failed write reaches `onError` and ends the
-  subscription before its cursor moves on; start it again to retry. `store.write(events,
-  { name, cursor })` and `store.readCursor(name)` are there for wiring your own.
+  replaces its row. Each batch is written with the cursor from before it, then the cursor
+  after it is saved, so a restart in between reads the batch again and the upsert absorbs it.
+  A failed write reaches `onError` and ends the subscription before its cursor moves on;
+  start it again to retry. Give each descriptor its own `name`, and set `PRAGMA busy_timeout`
+  when another connection writes the same file, since a busy database is a failed write.
+  `store.write(events, { name, cursor })` (a savepoint, so it works inside your own
+  transaction) and `store.readCursor(name)` are there for wiring your own.
 - **Exact integers.** Versions, sequence numbers, timestamps and guids round-trip as `bigint`
   up to u64 (u128 for `creationNumber`). Events are stored as `serializeEvent` writes them,
   so a `bigint` inside `data` comes back as a decimal string: query with `decode` to restore it.
@@ -1138,7 +1141,9 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   so events stored without one (from `handle` descriptors) never match; `handle` by
   `creationNumber` against the stored `guid` (`listEventHandles` returns it), and a struct
   and field handle is refused with a `StreamdError`. It sees only what was stored, from
-  whichever subscription stored it.
+  whichever subscription stored it. Following the store with `on()` is gap-free only while
+  rows arrive in version order, since its cursor is a position in the table; it sets no
+  `throughVersion` for the same reason.
 - **Head and earliest** are the highest and lowest stored versions across the whole store,
   `0n` when empty, so relative `fromVersion` and `toVersion: "head"` count from what is
   stored. With no `cursor` or `fromVersion` a fetch starts at the earliest stored event.

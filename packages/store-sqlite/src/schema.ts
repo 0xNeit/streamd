@@ -59,14 +59,22 @@ export function ensureSchema(db: SqliteDatabase): void {
   db.exec(SCHEMA);
 }
 
-/** Runs `work` in one transaction, rolled back if it throws. */
+/**
+ * Runs `work` atomically, rolled back if it throws. A savepoint, so it also
+ * works inside a transaction the caller already holds.
+ */
 export function transaction(db: SqliteDatabase, work: () => void): void {
-  db.exec("BEGIN IMMEDIATE");
+  db.exec("SAVEPOINT streamd_write");
   try {
     work();
-    db.exec("COMMIT");
+    db.exec("RELEASE streamd_write");
   } catch (err) {
-    db.exec("ROLLBACK");
+    try {
+      db.exec("ROLLBACK TO streamd_write");
+      db.exec("RELEASE streamd_write");
+    } catch {
+      // SQLite may already have rolled back on its own; the write's error is the one to report.
+    }
     throw err;
   }
 }

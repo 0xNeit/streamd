@@ -1,4 +1,4 @@
-import { StreamdError, normalizeAddress, serializeEvent } from "@streamd/core";
+import { StreamdError, normalizeAddress, parseEvent, serializeEvent } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
 import { ensureSchema, transaction, versionKey } from "./schema.js";
 import type { SqliteDatabase, SqliteStatement } from "./schema.js";
@@ -14,6 +14,9 @@ function rowOf(event: StreamdEvent): unknown[] {
   if (!Number.isSafeInteger(event.eventIndex) || event.eventIndex < 0) {
     throw new StreamdError(`Not a valid eventIndex: ${String(event.eventIndex)}`);
   }
+  const json = serializeEvent(event);
+  // Refused now rather than stored, where it would fail every read of its range.
+  parseEvent(json);
   const sender = event.sender === undefined ? null : (normalizeAddress(event.sender) ?? null);
   const guidAddress = event.guid && (normalizeAddress(event.guid.accountAddress) ?? null);
   return [
@@ -23,7 +26,7 @@ function rowOf(event: StreamdEvent): unknown[] {
     sender,
     guidAddress ?? null,
     guidAddress ? event.guid!.creationNumber.toString() : null,
-    serializeEvent(event),
+    json,
   ];
 }
 

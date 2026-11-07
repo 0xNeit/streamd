@@ -10,8 +10,8 @@ export interface StoreEventsOptions extends SubscriptionOptions {
  * An `onBatch` subscription writing each batch to `store` together with the
  * subscription's cursor, in one transaction. It resumes from the cursor saved
  * under `options.name` unless `options.cursor` is given. The saved cursor is
- * the one before the batch, so a restart reads the last batch again and the
- * upsert absorbs it. A failed write reaches `onError` and ends the
+ * the one before the batch, then the one after it once the poller has moved
+ * on; a restart between the two reads the batch again and the upsert absorbs it. A failed write reaches `onError` and ends the
  * subscription before its cursor moves past the batch; start it again to retry.
  */
 export function storeEvents(
@@ -35,6 +35,16 @@ export function storeEvents(
         queueMicrotask(() => subscription.unsubscribe());
         throw err;
       }
+      // The poller moves its cursor past this page as soon as this returns,
+      // so a microtask sees the cursor after it. Saving that one means a
+      // relative or head start never re-resolves after the first batch.
+      queueMicrotask(() => {
+        try {
+          store.write([], { name, cursor: subscription.cursor });
+        } catch {
+          // The cursor saved with the batch stands; resuming there only redelivers it.
+        }
+      });
     },
     { ...listener, cursor },
   );

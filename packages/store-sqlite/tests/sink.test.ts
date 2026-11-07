@@ -58,6 +58,24 @@ describe("storeEvents", () => {
     expect(await stored(db)).toEqual(history(9).map(eventId));
   });
 
+  it("saves the cursor after the first batch, so a relative start resumes without a gap", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    // One batch only: the cursor saved with it is the one from before the first page.
+    const options = { name: "swaps", batchSize: 2, pollInterval: 5, fromVersion: -1n };
+    const first = new StreamdClient({ adapter: new MemoryAdapter(history(10)) });
+    const sub = await caughtUp((onCaughtUp) => storeEvents(first, store, swaps, { ...options, onCaughtUp }));
+    sub.unsubscribe();
+    first.destroy();
+    expect(await stored(db)).toEqual(["9:0", "10:0"]);
+
+    const second = new StreamdClient({ adapter: new MemoryAdapter(history(30)) });
+    const resumed = await caughtUp((onCaughtUp) => storeEvents(second, store, swaps, { ...options, onCaughtUp }));
+    resumed.unsubscribe();
+    second.destroy();
+    expect(await stored(db)).toEqual(history(30).slice(8).map(eventId));
+  });
+
   it("an explicit cursor wins over the saved one", async () => {
     const store = new SqliteEventStore(new Database(":memory:"));
     store.write([], { name: "swaps", cursor: "4" });
@@ -90,8 +108,9 @@ describe("storeEvents", () => {
     expect((error.cause as Error).message).toContain("disk full");
     expect(client.listenerCount()).toBe(0);
     expect(await stored(db)).toEqual(["1:0", "2:0"]);
-    // Saved with the first batch, before it: a restart reads the batches from there again.
-    expect(store.readCursor("swaps")).toBeUndefined();
+    // Saved after the first batch, so a restart reads from the failed one again.
+    const savedAfterFirst = store.readCursor("swaps");
+    expect(savedAfterFirst).toBe("2");
     client.destroy();
 
     db.exec("DROP TRIGGER boom");

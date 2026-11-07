@@ -79,6 +79,33 @@ describe("SqliteEventStore", () => {
     expect(() => new SqliteEventStore({} as never)).toThrow(StreamdError);
   });
 
+  it("reports the write's own error when SQLite has already rolled back", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    db.exec(`CREATE TRIGGER boom BEFORE INSERT ON streamd_events BEGIN SELECT RAISE(ROLLBACK, 'real cause'); END`);
+    expect(() => store.write([ev(1n)], { name: "s", cursor: "c" })).toThrow("real cause");
+    expect(store.readCursor("s")).toBeUndefined();
+  });
+
+  it("writes inside a transaction the caller holds, and rolls back only its own part", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    db.exec("BEGIN");
+    store.write([ev(1n)]);
+    expect(() => store.write([ev(2n), { ...ev(3n), type: 5 as never }])).toThrow(StreamdError);
+    db.exec("COMMIT");
+    expect(rows(db).map((e) => e.version)).toEqual([1n]);
+  });
+
+  it("refuses an event it could not read back", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    for (const bad of [{ sequenceNumber: "x" }, { type: "" }, { timestamp: 5 }]) {
+      expect(() => store.write([ev(1n), ev(2n, 0, bad as never)])).toThrow(StreamdError);
+    }
+    expect(rows(db)).toEqual([]);
+  });
+
   it("reopens an existing database without losing rows", () => {
     const db = new Database(":memory:");
     new SqliteEventStore(db).write([ev(5n)], { name: "s", cursor: "c" });

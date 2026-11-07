@@ -62,7 +62,7 @@ describe("StoreAdapter", () => {
     const first = await adapter.fetchEvents(swaps, { fromVersion: 3n, toVersion: 8n, limit: 2 });
     expect(ids(first.events)).toEqual(["3:0", "4:0"]);
     expect(first.hasMore).toBe(true);
-    expect(first.throughVersion).toBe(3n);
+    expect(first.throughVersion).toBeUndefined();
     const rest = await adapter.fetchEvents(swaps, { cursor: first.nextCursor, fromVersion: 1n, toVersion: 8n, limit: 10 });
     expect(ids(rest.events)).toEqual(["5:0", "6:0", "7:0", "8:0"]);
     expect(rest.hasMore).toBe(false);
@@ -96,6 +96,7 @@ describe("StoreAdapter", () => {
     const refused = [
       adapter.fetchEvents(swaps, { cursor: "12" }),
       adapter.fetchEvents(swaps, { cursor: "1:x" }),
+      adapter.fetchEvents(swaps, { cursor: "1:99999999999999999999" }),
       adapter.fetchEvents({ kind: "handle", accountAddress: A, eventHandleStruct: "0x1::m::S", fieldName: "f" }, {}),
       adapter.fetchEvents({ kind: "module", eventType: [] }, {}),
       adapter.fetchEvents({ kind: "module", eventType: "not a type" as never }, {}),
