@@ -507,8 +507,6 @@ describe("FullnodeScanAdapter page finality", () => {
   const ten = Array.from({ length: 10 }, (_, i) => txn(i));
   const moduleFinal = async (head: number, options: Record<string, unknown>) => {
     const { aptos } = fakeNode(chain(head, ten));
-    // The SDK caches ledger info per network for 10s, across instances.
-    aptos.getLedgerInfo = async () => ({ ledger_version: String(head) }) as never;
     const adapter = new FullnodeScanAdapter(aptos, { scanBatch: 2 });
     return (await adapter.fetchEvents(moduleDesc, options)).final;
   };
@@ -560,7 +558,6 @@ describe("FullnodeScanAdapter scan progress", () => {
   const ten = Array.from({ length: 10 }, (_, i) => txn(i, i % 3 === 0 ? [TYPE] : [OTHER]));
   const moduleThrough = async (head: number, options: Record<string, unknown>) => {
     const { aptos } = fakeNode(chain(head, ten.slice(0, head + 1)));
-    aptos.getLedgerInfo = async () => ({ ledger_version: String(head) }) as never;
     const adapter = new FullnodeScanAdapter(aptos, { scanBatch: 2 });
     return (await adapter.fetchEvents(moduleDesc, options)).throughVersion;
   };
@@ -730,28 +727,31 @@ describe("FullnodeScanAdapter earliest version", () => {
   });
 });
 
+describe("FullnodeScanAdapter ledger reads", () => {
+  it("reads each custom network's own head, uncached", async () => {
+    const a = fakeNode(chain(100, []), {}, Network.CUSTOM);
+    const b = fakeNode(chain(200, []), {}, Network.CUSTOM);
+    expect(await new FullnodeScanAdapter(a.aptos).getHeadVersion()).toBe(100n);
+    expect(await new FullnodeScanAdapter(b.aptos).getHeadVersion()).toBe(200n);
+    expect(await new FullnodeScanAdapter(a.aptos).getHeadVersion()).toBe(100n);
+    expect(a.calls).toHaveLength(2);
+  });
+});
+
 describe("FullnodeScanAdapter block heights", () => {
   it("reports the oldest and newest block heights from one ledger read", async () => {
-    const { aptos } = fakeNode(() => {
-      throw new Error("no HTTP expected");
-    });
-    let reads = 0;
-    aptos.getLedgerInfo = async () => {
-      reads++;
-      return { oldest_block_height: "1142401405", block_height: "1165817595" } as never;
-    };
+    const { aptos, calls } = fakeNode(() => ({
+      data: { oldest_block_height: "1142401405", block_height: "1165817595" },
+    }));
     expect(await new FullnodeScanAdapter(aptos).getBlockHeights()).toEqual({
       oldest: 1142401405n,
       newest: 1165817595n,
     });
-    expect(reads).toBe(1);
+    expect(calls.map((c) => c.path)).toEqual([""]);
   });
 
   it("surfaces a failed ledger read as StreamdNetworkError with its status", async () => {
     const { aptos } = fakeNode(() => ({ status: 429, data: { message: "slow down" } }));
-    aptos.getLedgerInfo = async () => {
-      throw Object.assign(new Error("Too Many Requests"), { status: 429 });
-    };
     const err = await new FullnodeScanAdapter(aptos).getBlockHeights().catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(StreamdNetworkError);
