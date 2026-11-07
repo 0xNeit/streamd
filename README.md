@@ -204,6 +204,52 @@ option is refused. `pause()` holds the remaining transactions until `resume()`; 
 that gives up ends the others; `onCaughtUp` fires once every walk has caught up. Like
 `reduce()`, it is not counted by `listenerCount()` or stopped by `off()`.
 
+### Watch lists
+
+```ts
+const watch = streamd.watch([alice, bob], (event, address) => {
+  console.log(address, event.type, event.version);
+});
+
+watch.add(carol); // starts following carol
+watch.remove(bob); // stops bob's walk at once
+watch.addresses; // [alice, carol], as passed
+```
+
+`watch` follows each address with its own `account` walk (`{ kind: "account",
+accountAddress }`) and calls your handler with the event and the watched address it came
+from, as you spelled it. Each walk goes through the client's shared polling and
+`maxConcurrentRequests` like any `on()` subscription, and walks deliver independently, so
+there is no order across addresses.
+
+What a walk sees is what the adapter yields for an `account` descriptor. On
+`FullnodeScanAdapter` that is every event of the transactions the address sent, orderless
+transactions excepted: a deposit someone else sent to the address is not seen. Use
+`IndexerAccountAdapter` (alone, or for `account` through a `RoutingAdapter`) to see every
+transaction touching the address, received ones included; an event in a transaction
+between two watched addresses then arrives once for each. Narrow further with `where`, for
+example `ownedBy` or `involvesAddress`.
+
+Addresses are checked when given (`StreamdError` for one that is not an Aptos address) and
+deduplicated by value, so `0x1` and its long form are one walk. `add(address)` returns
+`false` for an address already watched or a watch that has ended; the new walk starts
+where `on()` without a start option does (the account's next transaction on the fullnode
+and Indexer adapters), since a `fromVersion` or `fromTime` given to `watch` applies only
+to the addresses given with it. `remove(address)` stops that walk as `unsubscribe()` does:
+a handler in progress finishes and nothing further of its page is delivered.
+
+Options are `on()`'s, applied to each walk, without `cursor` (an account cursor belongs to
+one address) or `id`; `cursor` is `undefined`. `pause()` and `resume()` apply to every walk,
+and one added while paused starts paused. A walk that gives up after `maxErrors` drops its
+address, its errors having gone to `onError`, and the others carry on. `onCaughtUp` fires
+once, when every address given to `watch` has caught up. Like `onTransaction()`, it is not
+counted by `listenerCount()` or stopped by `off()`; `unsubscribe()`, the `signal` or
+`destroy()` ends it.
+
+Every list size uses one walk per address. A single chain scan filtered by the watched set
+would be cheaper for long lists, but no source here can scan every transaction without an
+event type yet, so that path waits for one that can.
+
 ### Iterate live events
 
 ```ts

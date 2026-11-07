@@ -872,6 +872,35 @@ export type TransactionCallback<TData = unknown> = (
   group: TransactionGroup<TData>,
 ) => void;
 
+/**
+ * Called once per event a watched address's walk delivers, with that address
+ * as the caller passed it. Otherwise as `EventCallback`.
+ */
+export type WatchCallback<TData = unknown> = (
+  event: StreamdEvent<TData>,
+  address: string,
+) => void;
+
+/**
+ * Options for `watch()`, applied to each address's walk. `fromVersion` and
+ * `fromTime` apply only to the addresses given to `watch()`, not to `add()`.
+ * No `cursor` (an account cursor belongs to one address) and no `id`.
+ */
+export type WatchOptions = Omit<SubscriptionOptions, "id" | "cursor">;
+
+/** What `watch()` returns: a `Subscription` over every walk, grown and shrunk at runtime. */
+export interface Watch extends Subscription {
+  /**
+   * Start following `address`, where `on()` without a start option would.
+   * `false` when it is already watched or the watch has ended.
+   */
+  add(address: string): boolean;
+  /** Stop following `address` at once; `false` when it was not watched. */
+  remove(address: string): boolean;
+  /** The watched addresses, in the order added, as passed. */
+  readonly addresses: readonly string[];
+}
+
 // ---- Adapter interface ----
 
 /**
