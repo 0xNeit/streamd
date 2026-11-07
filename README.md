@@ -191,10 +191,9 @@ transactions whole only when a committed transaction's events are all visible at
 adapter should set `throughVersion` if it can.
 
 Several descriptors are merged: each is polled as its own walk, a transaction is released
-once every walk has passed it, and an event two descriptors both match arrives once. With
-several descriptors, every adapter in play should report `throughVersion`: a walk without
-it that has caught up cannot hold the others back, so a transaction can then arrive in two
-calls.
+once every walk has passed it, and an event two descriptors both match arrives once. A walk
+that has caught up without `throughVersion` vouches only for what was committed when its
+fetch started, so a transaction another walk has just read waits for that walk's next poll.
 
 Options and the returned `Subscription` are `onBatch`'s. `batchSize` is each walk's page
 size, so one call may hold more events. With one descriptor, `cursor` moves only past a
