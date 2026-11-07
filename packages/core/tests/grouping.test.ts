@@ -232,3 +232,156 @@ function mockedCursor(adapter: EventAdapter): string | undefined {
     .mock.calls;
   return calls[0]?.[1].cursor;
 }
+
+describe("onTransaction, several descriptors", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const A = "0x1::test::A";
+  const B = "0x1::test::B";
+  const onA: EventDescriptor = { kind: "module", eventType: A };
+  const onB: EventDescriptor = { kind: "module", eventType: B };
+  const typeOf = (d: EventDescriptor) => (d.kind === "module" ? d.eventType : undefined);
+
+  /** Serves each descriptor its own script of pages, then empty caught-up pages. */
+  function perDescriptor(scripts: Record<string, EventPage[]>): EventAdapter {
+    const at: Record<string, number> = {};
+    return {
+      fetchEvents: vi.fn(async (d: EventDescriptor) => {
+        const key = String(typeOf(d));
+        const i = (at[key] = (at[key] ?? -1) + 1);
+        return scripts[key]![i] ?? { events: [], nextCursor: "end", hasMore: false };
+      }),
+    };
+  }
+
+  it("merges the walks, one call per transaction in eventIndex order", async () => {
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([ev(10, 0, A), ev(10, 1, B), ev(10, 2, A), ev(11, 0, B)]),
+    });
+    const groups: TransactionGroup[] = [];
+    client.onTransaction([onA, onB], (g) => void groups.push(g), { batchSize: 1 });
+    await advanceTimersByTimeAsync(20);
+    client.destroy();
+
+    expect(shape(groups)).toEqual(["10:0,1,2", "11:0"]);
+    expect(groups[0]!.events.map((e) => e.type)).toEqual([A, B, A]);
+  });
+
+  it("delivers an event matched by two descriptors once", async () => {
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([ev(10, 0, A), ev(10, 1, B)]),
+    });
+    const groups: TransactionGroup[] = [];
+    client.onTransaction([onA, { kind: "module", eventType: [A, B] }], (g) => void groups.push(g));
+    await advanceTimersByTimeAsync(10);
+    client.destroy();
+
+    expect(shape(groups)).toEqual(["10:0,1"]);
+  });
+
+  it("releases only up to the walk that has settled least", async () => {
+    const adapter = perDescriptor({
+      [A]: [
+        { events: [ev(10, 0, A)], nextCursor: "a1", hasMore: false, throughVersion: 10n },
+        { events: [ev(20, 0, A)], nextCursor: "a2", hasMore: false, throughVersion: 20n },
+      ],
+      [B]: [{ events: [ev(10, 1, B), ev(20, 1, B)], nextCursor: "b1", hasMore: false, throughVersion: 20n }],
+    });
+    const client = new StreamdClient({ adapter });
+    const log: string[] = [];
+    const sub = client.onTransaction([onA, onB], (g) => void log.push(shape([g])[0]!), {
+      pollInterval: 1000,
+    });
+    await advanceTimersByTimeAsync(0);
+    expect(log).toEqual(["10:0,1"]);
+    await advanceTimersByTimeAsync(1000);
+    expect(log).toEqual(["10:0,1", "20:0,1"]);
+    expect(sub.cursor).toBeUndefined();
+    expect(sub.status.cursor).toBeUndefined();
+    expect(sub.status.active).toBe(true);
+    client.destroy();
+  });
+
+  it("drops a late copy of an event already delivered through another walk", async () => {
+    const shared = ev(10, 0, B);
+    const adapter = perDescriptor({
+      [`${A},${B}`]: [
+        { events: [], nextCursor: "a1", hasMore: false },
+        { events: [shared], nextCursor: "a2", hasMore: false },
+      ],
+      [B]: [{ events: [shared], nextCursor: "b1", hasMore: false }],
+    });
+    const client = new StreamdClient({ adapter });
+    const log: string[] = [];
+    client.onTransaction([{ kind: "module", eventType: [A, B] }, onB], (g) => void log.push(shape([g])[0]!), {
+      pollInterval: 1000,
+    });
+    await advanceTimersByTimeAsync(2000);
+    client.destroy();
+
+    expect(log).toEqual(["10:0"]);
+  });
+
+  it("releases nothing until every walk has finished a page", async () => {
+    let releaseB: (() => void) | undefined;
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async (d: EventDescriptor) => {
+        if (typeOf(d) === B) await new Promise<void>((r) => (releaseB = r));
+        return typeOf(d) === A
+          ? { events: [ev(10, 0, A)], nextCursor: "a", hasMore: false, throughVersion: 10n }
+          : { events: [], nextCursor: "b", hasMore: false, throughVersion: 10n };
+      }),
+    };
+    const client = new StreamdClient({ adapter });
+    const log: bigint[] = [];
+    client.onTransaction([onA, onB], (g) => void log.push(g.version), { pollInterval: 1000 });
+    await advanceTimersByTimeAsync(0);
+    expect(log).toEqual([]);
+    releaseB!();
+    await advanceTimersByTimeAsync(0);
+    expect(log).toEqual([10n]);
+    client.destroy();
+  });
+
+  it("ends every walk when one gives up", async () => {
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async (d: EventDescriptor) => {
+        if (typeOf(d) === B) throw new StreamdNetworkError("down");
+        return { events: [], nextCursor: "a", hasMore: false };
+      }),
+    };
+    const client = new StreamdClient({ adapter });
+    const errors: Error[] = [];
+    const sub = client.onTransaction([onA, onB], () => {}, {
+      maxErrors: 2,
+      maxBackoff: 10,
+      pollInterval: 10,
+      onError: (e) => void errors.push(e),
+    });
+    await advanceTimersByTimeAsync(100);
+    const calls = (adapter.fetchEvents as unknown as { mock: { calls: unknown[] } }).mock.calls.length;
+    await advanceTimersByTimeAsync(100);
+
+    expect(sub.active).toBe(false);
+    expect(errors).toHaveLength(2);
+    expect((adapter.fetchEvents as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBe(calls);
+  });
+
+  it("fires onCaughtUp once every walk has caught up", async () => {
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([ev(10, 0, A), ev(11, 0, B)]),
+    });
+    const caught = vi.fn();
+    client.onTransaction([onA, onB], () => {}, { onCaughtUp: caught });
+    await advanceTimersByTimeAsync(10);
+    client.destroy();
+
+    expect(caught).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses the cursor option", () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter() });
+    expect(() => client.onTransaction([onA, onB], () => {}, { cursor: "1" })).toThrow(StreamdError);
+  });
+});
