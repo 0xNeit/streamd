@@ -1,8 +1,19 @@
 import { once } from "node:events";
-import { AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { StreamdClient } from "@streamd/core";
+import { writeFile } from "node:fs/promises";
+import { AptosConfig, getAptosFullNode, Network } from "@aptos-labs/ts-sdk";
+import { StreamdClient, StreamdError } from "@streamd/core";
+import { parseModuleAbi } from "./abi.js";
+import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
-import type { ForwardOptions, ParsedCommand, SourceOptions, TailOptions } from "./args.js";
+import type {
+  CodegenOptions,
+  ForwardOptions,
+  ParsedCommand,
+  SourceOptions,
+  TailOptions,
+} from "./args.js";
+import { generateEventTypes } from "./codegen.js";
+import { message } from "./format.js";
 import { runForward } from "./forward.js";
 import { runTail } from "./tail.js";
 
@@ -74,6 +85,34 @@ async function tail(options: TailOptions): Promise<number> {
   }
 }
 
+async function codegen(options: CodegenOptions): Promise<number> {
+  const aptosConfig = new AptosConfig({
+    network: NETWORKS[options.network],
+    fullnode: options.nodeUrl,
+  });
+  // Both parts were validated as an address and an identifier before reaching the path.
+  const load = async (address: string, module: string): Promise<ModuleAbi> => {
+    let data: object;
+    try {
+      ({ data } = await getAptosFullNode<{}, object>({
+        aptosConfig,
+        originMethod: "codegen",
+        path: `accounts/${address}/module/${module}`,
+      }));
+    } catch (err) {
+      if ((err as { status?: unknown } | null)?.status === 404) {
+        throw new StreamdError(`Module ${address}::${module} not found`);
+      }
+      throw new StreamdError(`Fullnode request for module ${address}::${module} failed: ${message(err)}`);
+    }
+    return parseModuleAbi(data);
+  };
+  const source = await generateEventTypes(options.modules, load);
+  if (options.out === undefined) process.stdout.write(source);
+  else await writeFile(options.out, source);
+  return 0;
+}
+
 async function main(argv: string[]): Promise<number> {
   const parsed = parse(argv);
   if (parsed === undefined) return 2;
@@ -81,6 +120,7 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return 0;
   }
+  if (parsed.command === "codegen") return codegen(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 

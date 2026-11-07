@@ -1,0 +1,179 @@
+{
+ "abi": {
+  "address": "0x00000000000000000000000000000000000000000000000000000000000cafe0",
+  "name": "dex",
+  "structs": [
+   {
+    "name": "OrderEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "Placed",
+      "fields": [
+       {
+        "name": "order_id",
+        "type": "u128"
+       },
+       {
+        "name": "time_in_force",
+        "type": "0x5::order_book_types::TimeInForce"
+       },
+       {
+        "name": "trigger",
+        "type": "0x1::option::Option<0x5::order_book_types::TriggerCondition>"
+       }
+      ]
+     },
+     {
+      "name": "Filled",
+      "fields": [
+       {
+        "name": "order_id",
+        "type": "u128"
+       },
+       {
+        "name": "pnl",
+        "type": "i64"
+       },
+       {
+        "name": "delta",
+        "type": "i32"
+       }
+      ]
+     },
+     {
+      "name": "Cancelled",
+      "fields": []
+     }
+    ]
+   },
+   {
+    "name": "Swap",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": []
+     },
+     {
+      "constraints": []
+     }
+    ],
+    "fields": [
+     {
+      "name": "pool",
+      "type": "0x1::object::Object<T0>"
+     },
+     {
+      "name": "amount_in",
+      "type": "u64"
+     },
+     {
+      "name": "amount_out",
+      "type": "u64"
+     },
+     {
+      "name": "path",
+      "type": "vector<address>"
+     },
+     {
+      "name": "memo",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "fills",
+      "type": "vector<vector<u16>>"
+     },
+     {
+      "name": "fee",
+      "type": "0x00000000000000000000000000000000000000000000000000000000000cafe0::dex::Fee"
+     },
+     {
+      "name": "snapshot",
+      "type": "0x000000000000000000000000000000000000000000000000000000000000beef::math::Snapshot<u64>"
+     },
+     {
+      "name": "last",
+      "type": "0x1::option::Option<T1>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Deposit",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "amount",
+      "type": "u64"
+     },
+     {
+      "name": "note",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Fee",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "bps",
+      "type": "u16"
+     },
+     {
+      "name": "recipient",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Unused",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "callback",
+      "type": "|u64|u64 has copy"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

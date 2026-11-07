@@ -1235,6 +1235,55 @@ cursor; `1` when a batch fails past its retries, the subscription stops on an er
 cursor file cannot be read or written; `2` for invalid arguments. Run it under a supervisor
 that restarts on `1`.
 
+### Generate event types
+
+`streamd codegen` reads module ABIs from the fullnode and writes a TypeScript file with a type
+and a `defineEvent` descriptor for every `#[event]` struct, plus types for the structs those
+events reference, fetched from whichever modules and accounts declare them.
+
+```sh
+streamd codegen --out src/events.ts 0x1::fungible_asset 0x1::coin
+```
+
+```ts
+import { FungibleAsset_Deposit, Coin_Deposit } from "./events.js";
+
+client.on(FungibleAsset_Deposit, (e) => console.log(e.data.store, e.data.amount));
+// generic events take their type arguments in the fullnode's own form
+client.on(Coin_Deposit("0x1::aptos_coin::AptosCoin"), (e) => console.log(e.data.account));
+```
+
+Each type describes the JSON the fullnode returns:
+
+| Move | TypeScript |
+| --- | --- |
+| `u8`, `u16`, `u32`, `i8`, `i16`, `i32` | `number` |
+| `u64`, `u128`, `u256`, `i64`, `i128`, `i256` | `string` (decimal; name the field in `decode` for a `bigint` at runtime) |
+| `bool` | `boolean` |
+| `address`, `vector<u8>` (hex), `0x1::string::String` | `string` |
+| `vector<T>` | `T[]` |
+| `0x1::option::Option<T>` | `{ vec: [] \| [T] }` |
+| `0x1::object::Object<T>` | `{ inner: string }` |
+| other structs | a generated interface |
+| enums | a union discriminated on `__variant__`, with that variant's fields beside it |
+| type parameters `T0`, `T1` | type parameters, defaulting to `unknown` |
+
+Signed integers follow the unsigned rule; none had been seen as event fields when this was
+written. A struct keeps its Move name unless two modules share it, in which case both become
+`<Module>_<Struct>` (`Coin_Deposit`, `FungibleAsset_Deposit`), with the address appended if
+that still collides. A descriptor shares its type's name; a generic event's descriptor is a
+function of its type arguments, since module descriptors match the full type string. The
+output reflects the ABI at generation time, so regenerate after a module upgrade.
+
+| Option | Meaning |
+| --- | --- |
+| `--out <file>` | write to this file instead of stdout |
+
+`--network` and `--node-url` work as for `tail`. Exit codes: `0` once the file is written;
+`1` when a module or a struct it references is missing, a module declares no events, an ABI
+is malformed, or a field type is unsupported (such as a function type); `2` for invalid
+arguments.
+
 ## Development
 
 ```sh
