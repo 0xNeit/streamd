@@ -215,7 +215,7 @@ export function startTransactions(
         },
       },
       walk === 0 ? options.id : undefined,
-      single ? undefined : () => stamped(host.unshared, () => (known[walk] = seen)),
+      (source) => stamped(single ? source : host.unshared, () => (known[walk] = seen)),
     );
     walks.push(sub);
   });

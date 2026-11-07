@@ -71,6 +71,21 @@ describe("onTransaction, one descriptor", () => {
     expect(log).toEqual(["10:0,1,2", "11:0,1"]);
   });
 
+  it("releases a held version on a caught-up page that reports no throughVersion", async () => {
+    // A full handle page settles below its last version; the next, empty one reports nothing.
+    const adapter = scripted([
+      { events: [ev(4, 0), ev(4, 1)], nextCursor: "2", hasMore: true, throughVersion: 3n },
+    ]);
+    const client = new StreamdClient({ adapter });
+    const log: string[] = [];
+    const sub = client.onTransaction(descriptor, (g) => void log.push(shape([g])[0]!));
+    await advanceTimersByTimeAsync(10);
+
+    expect(log).toEqual(["4:0,1"]);
+    expect(sub.cursor).toBe("end");
+    client.destroy();
+  });
+
   it("moves cursor only past a page that left nothing held", async () => {
     const adapter = scripted([
       { events: [ev(10, 0), ev(10, 1)], nextCursor: "a", hasMore: false, throughVersion: 9n },
