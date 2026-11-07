@@ -181,15 +181,13 @@ describe("IndexerAccountAdapter bounds", () => {
   });
 
   it("reads the earliest version from the fullnode", async () => {
-    const { adapter, aptos } = adapterWith(() => processed(1));
-    aptos.getLedgerInfo = async () => ({ oldest_ledger_version: "77" }) as never;
-    expect(await adapter.getEarliestVersion()).toBe(77n);
-    aptos.getLedgerInfo = async () => ({ oldest_ledger_version: "x" }) as never;
-    await expect(adapter.getEarliestVersion()).rejects.toBeInstanceOf(StreamdError);
-    aptos.getLedgerInfo = async () => {
-      throw Object.assign(new Error("down"), { status: 503 });
-    };
-    const err = (await adapter.getEarliestVersion().catch((e: unknown) => e)) as StreamdNetworkError;
+    const indexer = fakeIndexer(() => processed(1));
+    const earliest = (reply: { status?: number; data: unknown }) =>
+      new IndexerAccountAdapter(fakeNode(() => reply).aptos, { indexerUrl: URL_, fetch: indexer.fetch })
+        .getEarliestVersion();
+    expect(await earliest({ data: { oldest_ledger_version: "77" } })).toBe(77n);
+    await expect(earliest({ data: { oldest_ledger_version: "x" } })).rejects.toBeInstanceOf(StreamdError);
+    const err = (await earliest({ status: 503, data: { message: "down" } }).catch((e: unknown) => e)) as StreamdNetworkError;
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect(err.statusCode).toBe(503);
   });
@@ -231,11 +229,11 @@ function chain(versions: number[], indexed: number, oldest = 0) {
     return { data: { account_transactions: rows } };
   });
   const node = fakeNode((path) => {
+    if (path === "") return { data: { oldest_ledger_version: String(oldest) } };
     const v = Number(path.replace("transactions/by_version/", ""));
     const found = state.txns.get(v);
     return found === undefined ? { status: 404, data: { message: "not found" } } : { data: found };
   });
-  node.aptos.getLedgerInfo = async () => ({ oldest_ledger_version: String(oldest) }) as never;
   const make = (options = {}) =>
     new IndexerAccountAdapter(node.aptos, { indexerUrl: URL_, fetch: indexer.fetch, ...options });
   return { make, state, calls: indexer.calls, paths: node.paths };
@@ -252,7 +250,7 @@ describe("IndexerAccountAdapter fetchEvents", () => {
     expect(page).toMatchObject({ nextCursor: "51", hasMore: false, throughVersion: 50n });
     expect(page.final).toBeUndefined();
     expect(page.events[0]).toMatchObject({ type: DEPOSIT, sender: "0xdef", timestamp: 1700000000000000n });
-    expect(paths).toEqual(["transactions/by_version/10", "transactions/by_version/20"]);
+    expect(paths).toEqual(["", "transactions/by_version/10", "transactions/by_version/20"]);
     // The processed version is read in its own request, before any listing.
     expect(calls[0]!.query).toContain("processor_status");
     expect(calls[1]!.variables).toEqual({ address: PADDED, from: "0", to: "50", limit: 100 });
@@ -280,7 +278,7 @@ describe("IndexerAccountAdapter fetchEvents", () => {
     const adapter = make({ maxScan: 2 });
     const page = await adapter.fetchEvents({ ...account, eventTypes: ["0x1::none::None"] }, { fromVersion: 0n });
     expect(page).toMatchObject({ events: [], nextCursor: "21", hasMore: true, throughVersion: 20n });
-    expect(paths).toHaveLength(2);
+    expect(paths.filter((p) => p !== "")).toHaveLength(2);
   });
 
   it("pages the listing past a full Indexer page", async () => {

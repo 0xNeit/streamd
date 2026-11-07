@@ -8,7 +8,7 @@ import type {
   StreamdEvent,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError, parseRetryAfter } from "../errors.js";
-import { toStreamdError, toStreamdEvents, type TransactionWithEvents } from "./fullnode.js";
+import { readLedgerInfo, toStreamdError, toStreamdEvents, type TransactionWithEvents } from "./fullnode.js";
 import { DEFAULT_LIMIT, isObject, parseCursor, requireAddress } from "./validate.js";
 
 const PROCESSOR = "account_transactions_processor";
@@ -252,7 +252,7 @@ export class IndexerAccountAdapter implements EventAdapter {
   async getEarliestVersion(): Promise<bigint> {
     let oldest: unknown;
     try {
-      oldest = (await this.aptos.getLedgerInfo()).oldest_ledger_version;
+      oldest = (await readLedgerInfo(this.aptos)).oldest_ledger_version;
     } catch (err) {
       throw toStreamdError(err, "oldest ledger version");
     }

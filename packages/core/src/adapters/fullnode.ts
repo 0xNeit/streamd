@@ -1,4 +1,4 @@
-import { getAptosFullNode, type Aptos } from "@aptos-labs/ts-sdk";
+import { getAptosFullNode, type Aptos, type LedgerInfo } from "@aptos-labs/ts-sdk";
 import type {
   AccountEventDescriptor,
   BlockHeights,
@@ -120,6 +120,20 @@ export function toStreamdError(err: unknown, what: string): StreamdError {
   );
 }
 
+/**
+ * The fullnode's ledger info, read fresh. Not `aptos.getLedgerInfo()`: the SDK
+ * memoizes it for 10s keyed by network name alone, so every `Network.CUSTOM`
+ * instance in a process shares one answer, and the head lags by up to 10s.
+ */
+export async function readLedgerInfo(aptos: Aptos): Promise<LedgerInfo> {
+  const { data } = await getAptosFullNode<{}, LedgerInfo>({
+    aptosConfig: aptos.config,
+    originMethod: "getLedgerInfo",
+    path: "",
+  });
+  return data;
+}
+
 export interface FullnodeScanAdapterOptions {
   /** Transactions per underlying REST call (default: 100). */
   scanBatch?: number;
@@ -191,7 +205,7 @@ export class FullnodeScanAdapter implements EventAdapter {
   /** The fullnode's oldest unpruned ledger version, whatever the descriptor. */
   async getEarliestVersion(): Promise<bigint> {
     try {
-      const info = await this.aptos.getLedgerInfo();
+      const info = await readLedgerInfo(this.aptos);
       return BigInt(info.oldest_ledger_version);
     } catch (err) {
       throw toStreamdError(err, "oldest ledger version");
@@ -201,7 +215,7 @@ export class FullnodeScanAdapter implements EventAdapter {
   /** The fullnode's oldest unpruned and newest block heights, whatever the descriptor. */
   async getBlockHeights(): Promise<BlockHeights> {
     try {
-      const info = await this.aptos.getLedgerInfo();
+      const info = await readLedgerInfo(this.aptos);
       return { oldest: BigInt(info.oldest_block_height), newest: BigInt(info.block_height) };
     } catch (err) {
       throw toStreamdError(err, "block heights");
@@ -629,7 +643,7 @@ export class FullnodeScanAdapter implements EventAdapter {
   }
 
   private async ledgerVersion(): Promise<bigint> {
-    const info = await this.aptos.getLedgerInfo();
+    const info = await readLedgerInfo(this.aptos);
     return BigInt(info.ledger_version);
   }
 

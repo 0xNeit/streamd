@@ -1105,6 +1105,83 @@ const streamd = new StreamdClient({
 });
 ```
 
+## Networks
+
+streamd runs against any network that serves the Aptos fullnode REST API. For
+Aptos mainnet, testnet, devnet and localnet, use the SDK's own `Network`, which
+already knows their fullnode and Indexer URLs:
+
+```ts
+import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+
+const aptos = new Aptos(new AptosConfig({ network: Network.TESTNET }));
+```
+
+For other Aptos-compatible chains, `networks` holds presets streamd has been
+verified against. Each is shaped as SDK settings, so it passes straight to
+`AptosConfig`, and `IndexerAccountAdapter` picks up its Indexer:
+
+```ts
+import { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
+import { IndexerAccountAdapter, StreamdClient, networks } from "@streamd/core";
+
+const aptos = new Aptos(new AptosConfig({ ...networks.movementMainnet, clientConfig: { http2: false } }));
+const streamd = new StreamdClient({ aptos });
+const received = new IndexerAccountAdapter(aptos);
+```
+
+| Preset | Chain id | Fullnode | Indexer |
+| --- | --- | --- | --- |
+| `movementMainnet` | 126 | `https://mainnet.movementnetwork.xyz/v1` | `https://indexer.mainnet.movementnetwork.xyz/v1/graphql` |
+| `movementTestnet` | 250 | `https://testnet.movementnetwork.xyz/v1` | `https://indexer.testnet.movementnetwork.xyz/v1/graphql` |
+
+The SDK prints `Note: using CUSTOM network will require queries to lookup
+ChainId` for every `AptosConfig` built on a preset; it is informational.
+
+### What differs, as measured
+
+Measured on 2026-11-07 with anonymous, read-only requests (about 80 in all)
+against each network's public endpoint. Each network was exercised on ledger
+info, `getHeadVersion` and `getEarliestVersion`, module `getEvents`, the `account` path, the `0x1` `new_block_events` handle,
+`fromBlock`/`toBlock`, `fromTime`, `checkAdapter` on `FullnodeScanAdapter`,
+and the Indexer's processed version.
+
+| | Aptos testnet | Aptos devnet | Movement mainnet | Movement testnet |
+| --- | --- | --- | --- | --- |
+| Chain id | 2 | 226, which changes when devnet resets; the SDK lists none | 126 | 250 |
+| Oldest version kept | 213,894,770 of 363,694,761 (pruned) | 0 (full history) | 0 (full history) | 0 (full history) |
+| Oldest block kept | 17,651,703 of 25,994,004 | 0 | 0 | 0 |
+| Indexer | yes (SDK default) | yes (SDK default) | yes | yes |
+| `checkAdapter` | ok | ok | ok | ok |
+| Handle from sequence 0 | refused, 410 `version_pruned` (oldest sequence 17,640,121) | ok | ok | ok |
+| `fromTime` | failed once: the oldest block was pruned mid-search (410 `block_pruned`) | ok | ok | ok |
+| Transfer events | not sampled | `0x1::fungible_asset::Withdraw`/`Deposit` | legacy `0x1::coin::WithdrawEvent`/`DepositEvent` | legacy `0x1::coin::WithdrawEvent`/`DepositEvent` |
+| Block close | not sampled | `block_epilogue_transaction` | `state_checkpoint_transaction` | not sampled |
+| Traffic | busy | 2 user transactions in the last 100 versions | none in the last 100 versions | low |
+| Rate limiting | no 429 seen | no 429, no rate-limit headers | no 429, no rate-limit headers | no 429, no rate-limit headers |
+
+Notes from the same run:
+
+- **Orderless transactions on Aptos testnet.** The busy sender sampled there
+  reported `sequence_number` 0 and `/accounts/{address}/transactions` returned
+  nothing for it, so the `account` path sees none of its transactions.
+  `IndexerAccountAdapter` listed them.
+- **Low-traffic chains.** On devnet and both Movement networks a module query
+  over the last 100 versions found no `FeeStatement` at all; on both Movement
+  networks the same query at a known user transaction found one. Widen `fromVersion` or raise `maxScan` there.
+- **Movement fullnodes** report `git_hash` `4be787e` and no `encryption_key` in
+  ledger info, and keep every version from genesis, so `fromVersion: "earliest"`
+  is version 0.
+- **Movement testnet's Indexer** answers at both
+  `indexer.testnet.movementnetwork.xyz` and `hasura.testnet.movementnetwork.xyz`
+  with the same data; the preset uses the first, which Movement's Indexer docs name.
+- **Not verified:** Aptos localnet (`Network.LOCAL`), since none was running.
+- **SDK ledger cache.** `@aptos-labs/ts-sdk` caches `aptos.getLedgerInfo()` for
+  10 seconds keyed by network name, so every `Network.CUSTOM` instance in one
+  process shares it: a Movement testnet instance reported chain id 126.
+  streamd's adapters read ledger info directly and are not affected; your own
+  `getLedgerInfo()` calls are.
+
 ## Store events in SQLite
 
 `@streamd/store-sqlite` keeps events in a SQLite database you open with whichever driver your
