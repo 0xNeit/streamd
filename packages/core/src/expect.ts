@@ -9,7 +9,7 @@ import type {
 import { StreamdAssertionError } from "./errors.js";
 import type { RequestLimiter } from "./limiter.js";
 import { committedEvents, narrower } from "./transaction.js";
-import { descriptorKey } from "./utils.js";
+import { descriptorKey, raceAbort } from "./utils.js";
 
 function bigintToString(_key: string, value: unknown): unknown {
   return typeof value === "bigint" ? value.toString() : value;
@@ -42,7 +42,7 @@ export function expectEvents(
       options,
     );
     const what = `${descriptorKey(descriptor)}${where === undefined ? "" : " matching where"}`;
-    return { all, matched: narrow(all), what };
+    return { all, matched: await raceAbort(Promise.resolve(narrow(all)), options.signal), what };
   };
   return {
     async toEmit<TData>(descriptor: EventDescriptor<TData>, where?: EventPredicate) {

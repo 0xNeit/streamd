@@ -2727,3 +2727,164 @@ describe("caller-supplied subscription ids", () => {
     ).toThrow(/Unsupported listener default: id/);
   });
 });
+
+describe("async where on listeners", () => {
+  const type = "0x1::test::Ping";
+  const pings: EventDescriptor = { kind: "module", eventType: type };
+  const ping = (version: number): StreamdEvent => ({
+    type,
+    data: {},
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 0,
+  });
+  const seeded = () => new MemoryAdapter([1, 2, 3, 4].map(ping));
+  const even = async (e: StreamdEvent) => e.version % 2n === 0n;
+  const opts = { fromVersion: 0n, pollInterval: 1 };
+  const until = async (done: () => boolean) => {
+    for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 2));
+    expect(done()).toBe(true);
+  };
+
+  it("delivers matches in order through on, onBatch, once, stream and reduce", async () => {
+    const client = new StreamdClient({ adapter: seeded() });
+    let inFlight = 0;
+    let most = 0;
+    const slowEven = async (e: StreamdEvent) => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise((r) => setTimeout(r, Number(5n - e.version)));
+      inFlight--;
+      return e.version % 2n === 0n;
+    };
+    const seen: bigint[] = [];
+    const sub = client.on(pings, (e) => void seen.push(e.version), { ...opts, where: slowEven });
+    const batches: bigint[][] = [];
+    const batchSub = client.onBatch(pings, (es) => void batches.push(es.map((e) => e.version)), {
+      ...opts,
+      where: even,
+    });
+    await until(() => seen.length === 2 && batches.length === 1);
+    sub.unsubscribe();
+    batchSub.unsubscribe();
+    expect(seen).toEqual([2n, 4n]);
+    expect(batches).toEqual([[2n, 4n]]);
+    expect(most).toBe(1);
+
+    expect((await client.once(pings, { ...opts, where: even })).version).toBe(2n);
+    for await (const e of client.stream(pings, { ...opts, where: even })) {
+      expect(e.version).toBe(2n);
+      break;
+    }
+    const r = client.reduce(pings, (n: bigint, e) => n + e.version, 0n, { ...opts, where: even });
+    expect(await r.ready).toBe(6n);
+    r.unsubscribe();
+  });
+
+  it("fails the poll on a rejection and tests the event again on the retry", async () => {
+    let calls = 0;
+    const tested: bigint[] = [];
+    const errors: Error[] = [];
+    const seen: bigint[] = [];
+    const sub = new StreamdClient({ adapter: seeded() }).on(pings, (e) => void seen.push(e.version), {
+      ...opts,
+      onError: (err) => errors.push(err),
+      where: async (e) => {
+        tested.push(e.version);
+        if (++calls === 3) throw new StreamdNetworkError("lookup flaked", 503);
+        return true;
+      },
+    });
+    await until(() => seen.length === 4);
+    expect(sub.active).toBe(true);
+    sub.unsubscribe();
+    expect(seen).toEqual([1n, 2n, 3n, 4n]);
+    expect(tested).toEqual([1n, 2n, 3n, 3n, 4n]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(StreamdPollingError);
+    expect((errors[0] as StreamdError).cause).toBeInstanceOf(StreamdNetworkError);
+  });
+
+  it("delivers a partial batch before a rejection fails the poll", async () => {
+    let calls = 0;
+    const batches: bigint[][] = [];
+    const sub = new StreamdClient({ adapter: seeded() }).onBatch(
+      pings,
+      (es) => void batches.push(es.map((e) => e.version)),
+      {
+        ...opts,
+        onError: () => {},
+        where: async () => {
+          if (++calls === 3) throw new Error("lookup flaked");
+          return true;
+        },
+      },
+    );
+    await until(() => batches.flat().length === 4);
+    sub.unsubscribe();
+    expect(batches).toEqual([[1n, 2n], [3n, 4n]]);
+  });
+
+  it("stops at once on a StreamdError rejection, which once() rejects with", async () => {
+    const refused = new StreamdError("not resolvable");
+    const errors: Error[] = [];
+    const client = new StreamdClient({ adapter: seeded() });
+    const sub = client.on(pings, () => {}, {
+      ...opts,
+      onError: (err) => errors.push(err),
+      where: () => Promise.reject(refused),
+    });
+    await until(() => !sub.active);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as StreamdError).cause).toBe(refused);
+
+    const failed = client.once(pings, { ...opts, where: () => Promise.reject(refused) });
+    await expect(failed).rejects.toBeInstanceOf(StreamdPollingError);
+  });
+
+  it("keeps a synchronous throw the caller's: reported, skipped, not counted", async () => {
+    const errors: Error[] = [];
+    const seen: bigint[] = [];
+    const sub = new StreamdClient({ adapter: seeded() }).on(pings, (e) => void seen.push(e.version), {
+      ...opts,
+      onError: (err) => errors.push(err),
+      where: (e) => {
+        if (e.version === 1n) throw new Error("predicate bug");
+        return Promise.resolve(true);
+      },
+    });
+    await until(() => seen.length === 3);
+    sub.unsubscribe();
+    expect(seen).toEqual([2n, 3n, 4n]);
+    expect(errors).toHaveLength(1);
+    expect(sub.status.consecutiveErrors).toBe(0);
+  });
+
+  it("abandons a pending predicate on pause and on stop", async () => {
+    let calls = 0;
+    const seen: bigint[] = [];
+    const sub = new StreamdClient({ adapter: seeded() }).on(pings, (e) => void seen.push(e.version), {
+      ...opts,
+      where: () => (++calls === 1 ? new Promise<boolean>(() => {}) : Promise.resolve(true)),
+    });
+    await until(() => calls === 1);
+    sub.pause();
+    sub.resume();
+    await until(() => seen.length === 4);
+    expect(seen).toEqual([1n, 2n, 3n, 4n]);
+    sub.unsubscribe();
+
+    let resolve!: (matched: boolean) => void;
+    const delivered: bigint[] = [];
+    const stopped = new StreamdClient({ adapter: seeded() }).on(
+      pings,
+      (e) => void delivered.push(e.version),
+      { ...opts, where: () => new Promise<boolean>((r) => (resolve = r)) },
+    );
+    await until(() => resolve !== undefined);
+    stopped.unsubscribe();
+    resolve(true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(delivered).toEqual([]);
+  });
+});

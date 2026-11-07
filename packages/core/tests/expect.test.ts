@@ -116,6 +116,18 @@ describe("expectEvents", () => {
     expect(err.events).toEqual(EVENTS);
   });
 
+  it("awaits an async where, rejecting with its reason", async () => {
+    const { adapter } = lookup(committed(EVENTS));
+    const tx = client(adapter).expectEvents(HASH);
+    const last = await tx.toEmit({ kind: "module", eventType: PING }, async (e) => e.eventIndex === 2);
+    expect(last).toEqual([EVENTS[2]!]);
+    await tx.notToEmit({ kind: "module", eventType: PING }, async () => false);
+    const boom = new Error("lookup failed");
+    await expect(
+      tx.toEmit({ kind: "module", eventType: PING }, () => Promise.reject(boom)),
+    ).rejects.toBe(boom);
+  });
+
   it("looks nothing up until an assertion runs", () => {
     const { adapter, calls } = lookup(committed(EVENTS));
     client(adapter).expectEvents(HASH);

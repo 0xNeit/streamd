@@ -58,6 +58,14 @@ describe("useEvents", () => {
     await unmount(root);
   });
 
+  it("filters with an async where", async () => {
+    const t = setup();
+    const where = async (e: { version: bigint }) => e.version !== 2n;
+    const root = await render(t.el(TYPE, { ...FAST, where }));
+    await waitFor(() => expect(t.versions()).toEqual([1n, 3n]));
+    await unmount(root);
+  });
+
   it("keeps one subscription for an equal inline descriptor and swaps it for a different one", async () => {
     const t = setup([ev(1n), ev(2n, OTHER)]);
     const root = await render(t.el(TYPE));
