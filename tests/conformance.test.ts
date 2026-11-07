@@ -351,6 +351,7 @@ describe("checkAdapter optional methods", () => {
   it.each([
     ["a height mismatch", { ...block, height: 4n }, "returned height 4"],
     ["an inverted range", { ...block, firstVersion: 13n }, "firstVersion is above lastVersion"],
+    ["a negative firstVersion", { ...block, firstVersion: -1n }, "firstVersion is negative"],
     ["a number timestamp", { ...block, timestamp: 1 }, "timestamp is not a bigint"],
   ])("fails block on %s", async (_label, reply, message) => {
     const report = await checkAdapter(broken({ getBlock: async () => reply as BlockInfo }), desc, {

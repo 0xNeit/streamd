@@ -1,7 +1,7 @@
 import type { EventAdapter, EventDescriptor, FetchOptions } from "./types.js";
 import { StreamdError } from "./errors.js";
 import { normalizeAddress } from "./filter.js";
-import { handlePath } from "./adapters/validate.js";
+import { handlePath, requireVersion } from "./adapters/validate.js";
 
 let nextId = 0;
 
@@ -85,7 +85,7 @@ export async function resolveFromVersion(
         'fromVersion "earliest" needs an adapter that implements getEarliestVersion',
       );
     }
-    return adapter.getEarliestVersion(descriptor);
+    return requireVersion("getEarliestVersion", await adapter.getEarliestVersion(descriptor));
   }
   if (typeof fromVersion !== "bigint") {
     throw new StreamdError(
@@ -97,7 +97,9 @@ export async function resolveFromVersion(
       "A negative fromVersion needs an adapter that implements getHeadVersion",
     );
   }
-  const start = (head ?? (await adapter.getHeadVersion!(descriptor))) + fromVersion;
+  const start =
+    (head ?? requireVersion("getHeadVersion", await adapter.getHeadVersion!(descriptor))) +
+    fromVersion;
   return start < 0n ? 0n : start;
 }
 

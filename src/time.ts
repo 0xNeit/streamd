@@ -1,5 +1,6 @@
 import type { EventAdapter, EventDescriptor } from "./types.js";
 import { StreamdError } from "./errors.js";
+import { requireBlock, requireBlockHeights } from "./adapters/validate.js";
 
 /** Rejects a `fromTime` that is malformed or clashes with another start option. */
 export function validateFromTime(options: {
@@ -43,10 +44,12 @@ export async function resolveFromTime(
   if (adapter.getBlockHeights === undefined || adapter.getBlock === undefined) {
     throw new StreamdError("fromTime needs an adapter that implements getBlockHeights and getBlock");
   }
-  const { oldest, newest } = await adapter.getBlockHeights(descriptor);
-  let lo = { ...(await adapter.getBlock(descriptor, oldest)), height: oldest };
+  const getBlock = adapter.getBlock.bind(adapter);
+  const blockAt = async (height: bigint) => requireBlock(await getBlock(descriptor, height), height);
+  const { oldest, newest } = requireBlockHeights(await adapter.getBlockHeights(descriptor));
+  let lo = await blockAt(oldest);
   if (lo.timestamp >= fromTime) return lo.firstVersion;
-  let hi = { ...(await adapter.getBlock(descriptor, newest)), height: newest };
+  let hi = await blockAt(newest);
   if (hi.timestamp < fromTime) return hi.lastVersion + 1n;
 
   // Invariant: lo.timestamp < fromTime <= hi.timestamp, so the span is positive.
@@ -59,7 +62,7 @@ export async function resolveFromTime(
         : lo.height + span / 2n;
     const height =
       guess <= lo.height ? lo.height + 1n : guess >= hi.height ? hi.height - 1n : guess;
-    const block = { ...(await adapter.getBlock(descriptor, height)), height };
+    const block = await blockAt(height);
     if (block.timestamp < fromTime) lo = block;
     else hi = block;
   }
