@@ -1142,7 +1142,7 @@ describe("FullnodeScanAdapter view", () => {
       new FullnodeScanAdapter(pruned.aptos),
       new FullnodeScanAdapter(archive.aptos),
     ]);
-    expect(await adapter.view({ function: BALANCE }, 5n)).toEqual(["7"]);
+    expect(await adapter.view!({ function: BALANCE }, 5n)).toEqual(["7"]);
   });
 
   it("sends the values it checked and refuses unserialisable arguments", async () => {
