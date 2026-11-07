@@ -176,6 +176,7 @@ describe("runTail with a stub client", () => {
     expect(errors).toEqual(["streamd: first", "streamd: second"]);
     expect(released).toBe(true);
   });
+
   it("leaves unset fromVersion and pollInterval out of the stream options", async () => {
     const { seen, io } = stub(async function* () {});
     const unset: TailOptions = { descriptor: { kind: "module", eventType: TYPE }, network: "mainnet" };
