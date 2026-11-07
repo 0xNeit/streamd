@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { Account, Aptos, AptosConfig, Network, parseTypeTag } from "@aptos-labs/ts-sdk";
 import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
+import { StreamdClient } from "../src/client.js";
 import { FallbackAdapter } from "../src/adapters/fallback.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import { checkDescriptor } from "../src/preflight.js";
@@ -1219,4 +1220,84 @@ describe("FullnodeScanAdapter errors and the API key", () => {
       }
     });
   }
+});
+
+describe("FullnodeScanAdapter resource changes", () => {
+  const RESOURCE = "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>";
+  const OWNER = `0x${"0".repeat(60)}cafe`;
+  const STRANGER = `0x${"be".repeat(32)}`;
+  const resourceDesc: EventDescriptor = { kind: "resource", accountAddress: OWNER, resourceType: RESOURCE };
+
+  function write(address: string, type = RESOURCE, data: unknown = { coin: { value: "1" } }) {
+    return { type: "write_resource", address, state_key_hash: "0x00", data: { type, data } };
+  }
+
+  function changed(version: number, changes: unknown[], events: string[] = []) {
+    return {
+      ...txn(version, events),
+      hash: `0x${String(version).padStart(64, "0")}`,
+      sender: "0xbeef",
+      timestamp: "1700000000000000",
+      changes,
+    };
+  }
+
+  it("delivers writes and deletes of the resource, indexed past the events", async () => {
+    const txns = [
+      changed(0, [write(STRANGER), write(OWNER)], [TYPE, TYPE]),
+      changed(1, [write(OWNER, OTHER), { type: "delete_resource", address: OWNER, resource: RESOURCE }]),
+      changed(2, [{ type: "write_table_item", handle: "0x1", key: "0x", value: "0x" }]),
+    ];
+    const { aptos } = fakeNode(chain(100, txns as never));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(resourceDesc, {
+      fromVersion: 0n,
+      toVersion: 2n,
+    });
+
+    expect(page.events).toEqual([
+      {
+        type: RESOURCE,
+        data: { coin: { value: "1" } },
+        version: 0n,
+        sequenceNumber: 0n,
+        eventIndex: 3,
+        transactionHash: txns[0]!.hash,
+        sender: "0xbeef",
+        timestamp: 1700000000000000n,
+      },
+      {
+        type: RESOURCE,
+        data: null,
+        version: 1n,
+        sequenceNumber: 0n,
+        eventIndex: 1,
+        transactionHash: txns[1]!.hash,
+        sender: "0xbeef",
+        timestamp: 1700000000000000n,
+      },
+    ]);
+    expect(page.nextCursor).toBe("3");
+    expect(page.throughVersion).toBe(2n);
+  });
+
+  it("serves getEvents through the client from a transaction with no events", async () => {
+    const { aptos } = fakeNode(chain(100, [changed(4, [write(OWNER)])] as never));
+    const client = new StreamdClient({ aptos });
+    const events = await client.getEvents(resourceDesc, { fromVersion: 4n, toVersion: 4n });
+    expect(events.map((e) => [e.version, e.eventIndex])).toEqual([[4n, 0]]);
+  });
+
+  it("refuses a bad address or resource type before any request", async () => {
+    const { aptos, calls } = fakeNode(chain(100, []));
+    const adapter = new FullnodeScanAdapter(aptos);
+    for (const bad of [
+      { ...resourceDesc, accountAddress: "nope" },
+      { ...resourceDesc, resourceType: "CoinStore" },
+    ] as EventDescriptor[]) {
+      const err = await adapter.fetchEvents(bad, { fromVersion: 0n }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+    expect(calls).toHaveLength(0);
+  });
 });

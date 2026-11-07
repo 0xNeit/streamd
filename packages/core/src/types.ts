@@ -71,11 +71,29 @@ export interface AccountEventDescriptor {
   eventTypes?: string[];
 }
 
+/**
+ * Every write or delete of one resource at one address, read from each
+ * transaction's write set, so it fires whether or not any event does.
+ *
+ * Each change arrives as a `StreamdEvent`: `type` is the resource's Move type,
+ * `data` its value once the transaction ran, or `null` when the transaction
+ * deleted it. `eventIndex` is the transaction's event count plus the change's
+ * position in its write set, so a change never shares an id with an event.
+ */
+export interface ResourceDescriptor {
+  kind: "resource";
+  /** Account or object address holding the resource. */
+  accountAddress: string;
+  /** The resource's Move type as the fullnode writes it, e.g. `"0x1::account::Account"`. */
+  resourceType: MoveEventType;
+}
+
 export type EventDescriptor<TData = unknown> =
   | ModuleEventDescriptor<TData>
   | HandleEventDescriptor
   | CreationNumberEventDescriptor
-  | AccountEventDescriptor;
+  | AccountEventDescriptor
+  | ResourceDescriptor;
 
 // ---- Parsed event ----
 

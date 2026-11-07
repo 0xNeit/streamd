@@ -637,6 +637,7 @@ Every call takes an event descriptor:
 | `module` | Module events of one or more Move types | `{ kind: "module", eventType: "0x1::coin::WithdrawEvent" }` or `{ kind: "module", eventType: ["0x1::fungible_asset::Withdraw", "0x1::fungible_asset::Deposit"] }` |
 | `handle` | A legacy `EventHandle` on an account | `{ kind: "handle", accountAddress, eventHandleStruct, fieldName }` or, by its guid, `{ kind: "handle", accountAddress, creationNumber: 3n }` |
 | `account` | Events from transactions an account **sent** | `{ kind: "account", accountAddress, eventTypes?: [...] }` |
+| `resource` | Every write or delete of one resource, even when no event fires | `{ kind: "resource", accountAddress, resourceType: "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>" }` |
 
 When `module.eventType` is an array of Move types, `FullnodeScanAdapter` serves
 all of them in a single transaction scan per page, delivering matches in
@@ -651,6 +652,22 @@ events as the struct and field form, through the fullnode's
 `account` only sees transactions the account signed. If someone else's
 transaction deposits into the account, that event belongs to the sender's
 transaction and won't appear.
+
+`resource` reads each transaction's write set rather than its events, so it sees
+every transaction that changed the resource, whoever sent it. Each change arrives
+as a `StreamdEvent`: `type` is the resource type, `data` is the resource's value
+once the transaction ran, or `null` when the transaction deleted it, and
+`sequenceNumber` is `0n`. `resourceType` is matched exactly as the fullnode writes
+it, with special addresses short (`0x1`) and others in full; `accountAddress` may
+be written either way. `eventsOf()` and `previewEvents()` refuse it, since a
+transaction lookup carries events, not write sets.
+
+```ts
+streamd.on(
+  { kind: "resource", accountAddress: "0x1", resourceType: "0x1::block::BlockResource" },
+  (change) => console.log(change.version, change.data),
+);
+```
 
 Each delivered `StreamdEvent` carries `type`, `data`, `version` (`bigint`),
 `sequenceNumber` (`bigint`), and `eventIndex` (`number`). Where the source
@@ -857,7 +874,9 @@ streamd.on(descriptor, (event) => {
 `handle` events from `FullnodeScanAdapter` use the handle's sequence number as
 `eventIndex`, because that endpoint does not say where an event sits in its
 transaction, so their ids stay unique per handle but are not transaction
-positions.
+positions. A `resource` change's `eventIndex` is the transaction's event count
+plus the change's position in its write set, so a change never shares an id with
+an event of the same transaction.
 
 ## Filtering
 
@@ -909,6 +928,8 @@ By default streamd reads from a fullnode with `FullnodeScanAdapter`:
   transactions and keeps the matches. That's fine for following the chain
   head, but not for deep history: fullnodes prune old data, and a rare event
   type means scanning every transaction in between.
+- **Resource changes** use the same transaction scan, reading write sets
+  instead of events, so they share its cost and its limits.
 
 For deep history, implement `EventAdapter` against your own index (a
 self-hosted processor or third-party indexer) and pass it in:

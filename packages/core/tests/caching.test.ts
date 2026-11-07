@@ -110,7 +110,7 @@ describe("CachingAdapter", () => {
   it("passes a descriptor of unknown kind through uncached", async () => {
     const { adapter, calls } = counting();
     const cache = new CachingAdapter(adapter);
-    const odd = { kind: "resource" } as unknown as EventDescriptor;
+    const odd = { kind: "table" } as unknown as EventDescriptor;
     await cache.fetchEvents(odd, {});
     await cache.fetchEvents(odd, {});
     expect(calls).toHaveLength(2);
