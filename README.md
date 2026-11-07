@@ -272,6 +272,45 @@ gives up. `signal`, `unsubscribe()` and `destroy()` stop it at any stage without
 `onError`. `ready` never surfaces as an unhandled rejection, so ignoring it is safe. Like
 `once()` and `stream()`, a reduction is not counted by `listenerCount()`.
 
+### Replay history
+
+`replay()` feeds a past range through an `on()` callback, so a handler written for live
+events can be backtested unchanged. (It is unrelated to `replayAdapter`, which answers
+recorded adapter calls offline.)
+
+```ts
+const run = streamd.replay(swaps, handleSwap, {
+  fromVersion: 3_000_000_000n,
+  toVersion: 3_001_000_000n,
+  speed: 60, // an hour of chain time per minute; omit for as fast as possible
+});
+const delivered = await run.done;
+```
+
+The callback contract is `on()`'s: each call is awaited before the next event, and a throw
+or rejection goes to `onError` (or the client's) while delivery carries on. The range and
+narrowing options are those of `getEvents`, applied the same way: `fromVersion`,
+`toVersion`, `fromTime`, `fromBlock`, `toBlock`, `limit`, `offset`, `where`, `decode` (or
+the client's `defaults.decode`), `withState`, `maxPages`, `retries`, `onCursor` and
+`signal`; `batchSize` sets the page size. A list of descriptors is replayed merged, as
+`getEvents` merges it. `orderBy` and listener-only options are refused.
+
+`speed` omitted or `Infinity` delivers as fast as the callbacks settle. A positive number
+replays chain time scaled by it: before an event with a `timestamp`, the replay waits for
+its gap from the previous timestamped event divided by `speed`, less the time already spent
+since that delivery, so slow fetches and handlers do not stretch it. An event without a
+`timestamp` is delivered at once.
+
+The replay ends where `getEvents` would: at `toVersion`, or with no `toVersion` when the
+source reports nothing more (`toVersion: "head"` pins it to the head at the start). Then
+`onCaughtUp` is called once and `done` resolves with the number of events delivered. A
+failed query (after `retries`) goes to `onError` and `done` rejects with it; `signal`
+rejects it with the signal's reason, and `unsubscribe()` or `destroy()` with a
+`StreamdError`. `done` never surfaces as an unhandled rejection. `pause()` holds delivery
+before the next event and `resume()` carries on. To go live afterwards, take the cursor
+from `onCursor` and pass it to `on()` as `cursor`. Like `reduce()`, a replay is not counted
+by `listenerCount()` or stopped by `off()`.
+
 ### Start relative to the head
 
 ```ts

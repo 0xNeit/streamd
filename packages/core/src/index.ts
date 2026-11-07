@@ -113,6 +113,8 @@ export type {
   ReduceOptions,
   Reducer,
   Reduction,
+  Replay,
+  ReplayOptions,
   ResourceDescriptor,
   StreamdConfig,
   StreamdEvent,
