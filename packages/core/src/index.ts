@@ -88,6 +88,7 @@ export type {
   EventGuid,
   EventPage,
   EventPredicate,
+  SyncEventPredicate,
   EventExpectation,
   EventsOfOptions,
   ExpectEventsOptions,

@@ -23,6 +23,7 @@ import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
 import { buildStateRequest, readState, validateWithState } from "./state.js";
+import { isThenable } from "./filter.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
 const DEFAULT_BATCH_SIZE = 25;
@@ -434,14 +435,6 @@ export class EventPoller {
   private reportHandlerError(error: StreamdError): void {
     if (this._active || this._paused) this.report(error);
   }
-}
-
-function isThenable(value: unknown): value is PromiseLike<unknown> {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    typeof (value as { then?: unknown }).then === "function"
-  );
 }
 
 function callbackError(event: StreamdEvent, cause: unknown): StreamdError {

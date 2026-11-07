@@ -187,8 +187,17 @@ export interface EventGuid {
  * Used for anything the chain APIs can't filter on, most importantly fields
  * or addresses inside a module event's `data`. See `whereField`,
  * `involvesAddress`, `ofType`, `ofModule`, `every`, `some`, and `not`.
+ *
+ * It may return a Promise, to look something up before deciding. Predicates
+ * run one at a time in event order, outside `maxConcurrentRequests`, and only
+ * a returned thenable is awaited. A synchronous throw is the caller's bug
+ * (a query rejects; a listener reports it and skips the event); a rejection
+ * rejects a query and fails a listener's poll, so the event is tested again.
  */
-export type EventPredicate = (event: StreamdEvent) => boolean;
+export type EventPredicate = (event: StreamdEvent) => boolean | PromiseLike<boolean>;
+
+/** A predicate that always answers synchronously, as every built-in leaf predicate does. */
+export type SyncEventPredicate = (event: StreamdEvent) => boolean;
 
 export interface EventFilter {
   /**

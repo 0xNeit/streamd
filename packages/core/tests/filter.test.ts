@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { StreamdError } from "../src/errors.js";
 import {
   every,
+  filterEvents,
   fromSender,
   involvesAddress,
   normalizeAddress,
@@ -11,7 +12,7 @@ import {
   some,
   whereField,
 } from "../src/filter.js";
-import type { StreamdEvent } from "../src/types.js";
+import type { EventPredicate, StreamdEvent, SyncEventPredicate } from "../src/types.js";
 
 const LONG_ONE =
   "0x0000000000000000000000000000000000000000000000000000000000000001";
@@ -370,5 +371,98 @@ describe("predicate combinators", () => {
       expect(() => not(bad as never)).toThrow(StreamdError);
       expect(() => not(bad as never)).toThrow(/Predicate must be a function/);
     }
+  });
+});
+
+describe("async predicates", () => {
+  const A = ev({ owner: "0x1" }, "0x1::a::A");
+  const B = ev({ owner: "0x2" }, "0x1::b::B");
+  const yes: EventPredicate = async () => true;
+  const no: EventPredicate = async () => false;
+
+  it("keeps a combination of synchronous predicates synchronous", () => {
+    // Typed as sync, so the result is usable without awaiting.
+    const sync: SyncEventPredicate = every(ofType("0x1::a::A"), not(some(ofType("0x1::b::B"))));
+    expect(sync(A)).toBe(true);
+    expect(sync(B)).toBe(false);
+  });
+
+  it("every and some resolve once an async child is reached", async () => {
+    const all = every(ofType("0x1::a::A"), yes);
+    const result = all(A);
+    expect(result).toBeInstanceOf(Promise);
+    expect(await result).toBe(true);
+    expect(await every(yes, no)(A)).toBe(false);
+    expect(await some(no, yes)(A)).toBe(true);
+    expect(await some(no, no)(A)).toBe(false);
+    expect(await not(no)(A)).toBe(true);
+    expect(await not(yes)(A)).toBe(false);
+  });
+
+  it("short-circuits in order, so an earlier answer spares a later lookup", async () => {
+    const calls: string[] = [];
+    const lookup = (name: string, answer: boolean): EventPredicate => async () => {
+      calls.push(name);
+      return answer;
+    };
+    // A sync false first never reaches the lookup and stays synchronous.
+    expect(every(ofType("0x1::b::B"), lookup("never", true))(A)).toBe(false);
+    expect(some(ofType("0x1::a::A"), lookup("never", false))(A)).toBe(true);
+    expect(await every(lookup("first", false), lookup("second", true))(A)).toBe(false);
+    expect(await some(lookup("third", true), lookup("fourth", true))(A)).toBe(true);
+    expect(await every(lookup("fifth", true), ofType("0x1::b::B"), lookup("sixth", true))(A)).toBe(
+      false,
+    );
+    expect(calls).toEqual(["first", "third", "fifth"]);
+  });
+
+  it("propagates a rejection, and a synchronous throw synchronously", async () => {
+    const boom = new Error("lookup failed");
+    const rejects: EventPredicate = () => Promise.reject(boom);
+    await expect(every(yes, rejects)(A)).rejects.toBe(boom);
+    await expect(not(rejects)(A)).rejects.toBe(boom);
+    const throws: EventPredicate = () => {
+      throw boom;
+    };
+    expect(() => some(ofType("0x1::z::Z"), throws)(A)).toThrow(boom);
+  });
+});
+
+describe("filterEvents", () => {
+  const events = [1n, 2n, 3n, 4n].map((version) => ({ ...ev({}), version }));
+
+  it("filters synchronously when the predicate is synchronous", () => {
+    const kept = filterEvents(events, (e) => e.version % 2n === 0n);
+    expect(Array.isArray(kept)).toBe(true);
+    expect((kept as StreamdEvent[]).map((e) => e.version)).toEqual([2n, 4n]);
+  });
+
+  it("awaits an async predicate one event at a time, keeping order", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const kept = filterEvents(events, async (e) => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      // Later events settle sooner, which must not reorder the result.
+      await new Promise((r) => setTimeout(r, Number(5n - e.version)));
+      inFlight--;
+      return e.version !== 3n;
+    });
+    expect(kept).toBeInstanceOf(Promise);
+    expect((await kept).map((e) => e.version)).toEqual([1n, 2n, 4n]);
+    expect(most).toBe(1);
+  });
+
+  it("goes async only from the first thenable, and rejects with its reason", async () => {
+    const seen: bigint[] = [];
+    const mixed = filterEvents(events, (e) => {
+      seen.push(e.version);
+      return e.version < 3n ? true : Promise.resolve(false);
+    });
+    expect((await mixed).map((e) => e.version)).toEqual([1n, 2n]);
+    expect(seen).toEqual([1n, 2n, 3n, 4n]);
+
+    const boom = new Error("lookup failed");
+    await expect(filterEvents(events, () => Promise.reject(boom))).rejects.toBe(boom);
   });
 });

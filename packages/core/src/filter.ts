@@ -1,6 +1,6 @@
 import { AccountAddress } from "@aptos-labs/ts-sdk";
 import { StreamdError } from "./errors.js";
-import type { EventPredicate, StreamdEvent } from "./types.js";
+import type { EventPredicate, StreamdEvent, SyncEventPredicate } from "./types.js";
 
 const HEX_ADDRESS = /^0x[0-9a-fA-F]{1,64}$/;
 const ARRAY_INDEX = /^(0|[1-9]\d*)$/;
@@ -55,7 +55,7 @@ export interface InvolvesAddressOptions {
 export function involvesAddress(
   address: string,
   options: InvolvesAddressOptions = {},
-): EventPredicate {
+): SyncEventPredicate {
   const target = normalizeAddress(address);
   if (target === undefined) {
     throw new TypeError(`Not a valid Aptos address: ${address}`);
@@ -77,7 +77,7 @@ export function involvesAddress(
  * canonical long form. Events without a `sender` (see `StreamdEvent.sender`)
  * never match.
  */
-export function fromSender(address: string): EventPredicate {
+export function fromSender(address: string): SyncEventPredicate {
   const target = normalizeAddress(address);
   if (target === undefined) {
     throw new TypeError(`Not a valid Aptos address: ${address}`);
@@ -87,7 +87,7 @@ export function fromSender(address: string): EventPredicate {
 }
 
 /** Matches events whose type is exactly one of `types`. */
-export function ofType(...types: string[]): EventPredicate {
+export function ofType(...types: string[]): SyncEventPredicate {
   const set = new Set(types);
   return (event) => set.has(event.type);
 }
@@ -97,7 +97,7 @@ export function ofType(...types: string[]): EventPredicate {
  * `address::module` (e.g. `"0x1::coin"`), whatever the struct or its generics.
  * Addresses compare in canonical long form.
  */
-export function ofModule(...modules: string[]): EventPredicate {
+export function ofModule(...modules: string[]): SyncEventPredicate {
   const keys = new Set(modules.map(parseModuleId));
   return (event) => {
     const [address, module, struct] = event.type.split("::");
@@ -118,7 +118,7 @@ export function ofModule(...modules: string[]): EventPredicate {
 export function whereField(
   path: FieldPath,
   value: FieldValue,
-): EventPredicate {
+): SyncEventPredicate {
   const segments = parseFieldPath(path);
   validateFieldValue(value);
   const normalizedTarget =
@@ -139,22 +139,100 @@ export function whereField(
   };
 }
 
-/** Combines predicates; an event must satisfy all of them. */
+/**
+ * Combines predicates; an event must satisfy all of them. They run in order
+ * and stop at the first that fails, so put cheap synchronous ones before a
+ * lookup. The result is synchronous unless a predicate it reaches is not.
+ */
+export function every(...predicates: SyncEventPredicate[]): SyncEventPredicate;
+export function every(...predicates: EventPredicate[]): EventPredicate;
 export function every(...predicates: EventPredicate[]): EventPredicate {
-  return (event) => predicates.every((p) => p(event));
+  return (event) => settle(predicates, event, false, 0);
 }
 
-/** Combines predicates; an event must satisfy at least one. */
+/**
+ * Combines predicates; an event must satisfy at least one. They run in order
+ * and stop at the first that passes, synchronously unless one reached is not.
+ */
+export function some(...predicates: SyncEventPredicate[]): SyncEventPredicate;
+export function some(...predicates: EventPredicate[]): EventPredicate;
 export function some(...predicates: EventPredicate[]): EventPredicate {
-  return (event) => predicates.some((p) => p(event));
+  return (event) => settle(predicates, event, true, 0);
 }
 
 /** Negates `predicate`; an event matches when `predicate(event)` is false. */
+export function not(predicate: SyncEventPredicate): SyncEventPredicate;
+export function not(predicate: EventPredicate): EventPredicate;
 export function not(predicate: EventPredicate): EventPredicate {
   if (typeof predicate !== "function") {
     throw new StreamdError("Predicate must be a function");
   }
-  return (event) => !predicate(event);
+  return (event) => {
+    const result = predicate(event);
+    return isThenable(result) ? Promise.resolve(result).then((r) => !r) : !result;
+  };
+}
+
+/**
+ * `predicates` from `from` on, stopping at the first whose answer is `decisive`
+ * (false for `every`, true for `some`). Stays synchronous until one returns a
+ * thenable, then continues from there once it settles.
+ */
+function settle(
+  predicates: readonly EventPredicate[],
+  event: StreamdEvent,
+  decisive: boolean,
+  from: number,
+): boolean | Promise<boolean> {
+  for (let i = from; i < predicates.length; i++) {
+    const result = predicates[i]!(event);
+    if (isThenable(result)) {
+      return Promise.resolve(result).then((r) =>
+        Boolean(r) === decisive ? decisive : settle(predicates, event, decisive, i + 1),
+      );
+    }
+    if (Boolean(result) === decisive) return decisive;
+  }
+  return !decisive;
+}
+
+/**
+ * The events `where` keeps, in order, tested one at a time. Synchronous
+ * unless `where` returns a thenable, so a plain predicate costs no await.
+ */
+export function filterEvents<T extends StreamdEvent>(
+  events: readonly T[],
+  where: EventPredicate,
+): T[] | Promise<T[]> {
+  const kept: T[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const result = where(events[i]!);
+    if (isThenable(result)) return finishAsync(events, where, kept, i, result);
+    if (result) kept.push(events[i]!);
+  }
+  return kept;
+}
+
+async function finishAsync<T extends StreamdEvent>(
+  events: readonly T[],
+  where: EventPredicate,
+  kept: T[],
+  from: number,
+  pending: PromiseLike<boolean>,
+): Promise<T[]> {
+  if (await pending) kept.push(events[from]!);
+  for (let i = from + 1; i < events.length; i++) {
+    if (await where(events[i]!)) kept.push(events[i]!);
+  }
+  return kept;
+}
+
+export function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { then?: unknown }).then === "function"
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
