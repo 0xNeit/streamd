@@ -84,6 +84,7 @@ export type {
   BlockHeights,
   BlockInfo,
   CreationNumberEventDescriptor,
+  EntryFunctionCall,
   EventAdapter,
   EventCallback,
   EventDescriptor,

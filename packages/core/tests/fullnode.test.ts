@@ -212,6 +212,40 @@ describe("FullnodeScanAdapter module scan", () => {
     expect(page.events[2]?.sender).toBe(SENDER);
   });
 
+  it("populates entryFunction from entry function payloads only", async () => {
+    const payload = {
+      type: "entry_function_payload",
+      function: "0x1::aptos_account::transfer",
+      type_arguments: [],
+      arguments: ["0x" + "c".repeat(64), "100"],
+    };
+    const txns = [
+      { ...txn(0), payload },
+      { ...txn(1, [TYPE, OTHER, TYPE]), payload: { ...payload, type_arguments: ["0x1::aptos_coin::AptosCoin"] } },
+      { ...txn(2), payload: { type: "script_payload", code: { bytecode: "0x" }, type_arguments: [], arguments: [] } },
+      { ...txn(3), payload: { type: "multisig_payload", multisig_address: "0x2", transaction_payload: payload } },
+      { ...txn(4), type: "block_metadata_transaction" },
+      { ...txn(5), payload: { ...payload, function: 7 } },
+      { ...txn(6), payload: { ...payload, type_arguments: [1] } },
+      { ...txn(7), payload: { ...payload, arguments: "100" } },
+    ];
+    const { aptos } = fakeNode(chain(7, txns));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(moduleDesc, {
+      fromVersion: 0n,
+      toVersion: 7n,
+    });
+
+    expect(page.events.map((e) => e.version)).toEqual([0n, 1n, 1n, 2n, 3n, 4n, 5n, 6n, 7n]);
+    expect(page.events[0]?.entryFunction).toEqual({
+      function: "0x1::aptos_account::transfer",
+      typeArguments: [],
+      arguments: ["0x" + "c".repeat(64), "100"],
+    });
+    expect(page.events[1]?.entryFunction?.typeArguments).toEqual(["0x1::aptos_coin::AptosCoin"]);
+    expect(page.events[2]?.entryFunction).toEqual(page.events[1]!.entryFunction!);
+    for (const event of page.events.slice(3)) expect("entryFunction" in event).toBe(false);
+  });
+
   it("reports hasMore when it stops on the scan budget", async () => {
     const txns = Array.from({ length: 50 }, (_, i) => txn(i, [OTHER]));
     const { aptos, calls } = fakeNode(chain(100, txns));
@@ -307,6 +341,15 @@ describe("FullnodeScanAdapter account walk", () => {
 
     expect(page.events.map((e) => e.sender)).toEqual([ACCOUNT]);
   });
+
+  it("populates entryFunction on account events", async () => {
+    const payload = { type: "entry_function_payload", function: "0x1::coin::transfer", type_arguments: [], arguments: [] };
+    const history = [{ ...txn(5), payload }];
+    const { aptos } = fakeNode(account(history));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(accountDesc, { offset: 0 });
+
+    expect(page.events.map((e) => e.entryFunction?.function)).toEqual(["0x1::coin::transfer"]);
+  });
 });
 
 const HANDLE_PATH = `accounts/0x${"0".repeat(63)}1/events/0x1%3A%3Atest%3A%3AStore/pings`;
@@ -361,6 +404,7 @@ describe("FullnodeScanAdapter handle events", () => {
     expect("transactionHash" in first.events[0]!).toBe(false);
     expect("timestamp" in first.events[0]!).toBe(false);
     expect("sender" in first.events[0]!).toBe(false);
+    expect("entryFunction" in first.events[0]!).toBe(false);
   });
 
   it("requests a short address in its long form", async () => {
@@ -846,6 +890,18 @@ describe("FullnodeScanAdapter transaction lookup", () => {
         },
       ],
     });
+  });
+
+  it("carries the transaction's entry function on a looked-up transaction", async () => {
+    const payload = { type: "entry_function_payload", function: "0x1::test::ping", type_arguments: [], arguments: ["1"] };
+    const { aptos } = fakeNode(() => ({ data: { ...committed, payload } }));
+    const found = await new FullnodeScanAdapter(aptos).getTransactionEvents(HASH);
+
+    const calls = found!.events.map((e) => e.entryFunction);
+    expect(calls).toEqual([
+      { function: "0x1::test::ping", typeArguments: [], arguments: ["1"] },
+      { function: "0x1::test::ping", typeArguments: [], arguments: ["1"] },
+    ]);
   });
 
   it("reports a failed transaction with its vm status", async () => {
