@@ -133,3 +133,71 @@ describe("runTail", () => {
     expect(maxPending).toBe(1);
   });
 });
+
+describe("runTail with a stub client", () => {
+  type StreamOptions = Parameters<StreamdClient["stream"]>[1];
+
+  function stub(run: (opts: StreamOptions) => AsyncGenerator<StreamdEvent>) {
+    const seen: StreamOptions[] = [];
+    const errors: string[] = [];
+    const io = {
+      client: {
+        stream: ((_descriptor: unknown, opts: StreamOptions) => {
+          seen.push(opts);
+          return run(opts);
+        }) as unknown as StreamdClient["stream"],
+      },
+      write: (_line: string): void | Promise<void> => {},
+      error: (message: string) => {
+        errors.push(message);
+      },
+    };
+    return { seen, errors, io };
+  }
+
+  it("does not hold on to errors reported before the latest one", async () => {
+    let first: WeakRef<Error> | undefined;
+    const reportTwo = (opts: StreamOptions) => {
+      const err = new Error("first");
+      first = new WeakRef(err);
+      opts?.onError?.(err);
+      opts?.onError?.(new Error("second"));
+    };
+    const { errors, io } = stub(async function* (opts) {
+      reportTwo(opts);
+      yield ev(1);
+    });
+    let released: boolean | undefined;
+    io.write = () => {
+      Bun.gc(true);
+      released = first!.deref() === undefined;
+    };
+    expect(await runTail(options({ limit: 1 }), io)).toBe(0);
+    expect(errors).toEqual(["streamd: first", "streamd: second"]);
+    expect(released).toBe(true);
+  });
+
+  it("leaves unset fromVersion and pollInterval out of the stream options", async () => {
+    const { seen, io } = stub(async function* () {});
+    const unset: TailOptions = { descriptor: { kind: "module", eventType: TYPE }, network: "mainnet" };
+    expect(await runTail(unset, io)).toBe(0);
+    expect(seen[0]).not.toHaveProperty("fromVersion");
+    expect(seen[0]).not.toHaveProperty("pollInterval");
+  });
+
+  it("passes fromVersion and pollInterval through unchanged", async () => {
+    const { seen, io } = stub(async function* () {});
+    expect(await runTail(options({ fromVersion: 7n, pollInterval: 2500 }), io)).toBe(0);
+    expect(seen[0]?.fromVersion).toBe(7n);
+    expect(seen[0]?.pollInterval).toBe(2500);
+  });
+
+  it("reports a write failure with its cause and exits 1 when not aborted", async () => {
+    const { errors, io } = stub(async function* () {
+      yield ev(1);
+    });
+    io.write = () => Promise.reject(new Error("write failed", { cause: new Error("EIO") }));
+    expect(await runTail(options(), io)).toBe(1);
+    expect(errors).toEqual(["streamd: write failed: EIO"]);
+  });
+});
