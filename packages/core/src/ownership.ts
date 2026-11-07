@@ -7,7 +7,7 @@ import type { EventPredicate, StreamdEvent } from "./types.js";
 
 const DEFAULT_FIELDS = ["store", "object", "token", "token_address"];
 const DEFAULT_MAX_CONCURRENT = 4;
-// ponytail: fixed size, make it an option if a long backfill over many stores thrashes it.
+// Entries are per (object, version), so overflowing only costs a repeat read.
 const CACHE_SIZE = 1000;
 const VM_ABORTED = 4016;
 
