@@ -191,9 +191,13 @@ transactions whole only when a committed transaction's events are all visible at
 adapter should set `throughVersion` if it can.
 
 Several descriptors are merged: each is polled as its own walk, a transaction is released
-once every walk has passed it, and an event two descriptors both match arrives once. A walk
-that has caught up without `throughVersion` vouches only for what was committed when its
-fetch started, so a transaction another walk has just read waits for that walk's next poll.
+once every walk has passed it, and an event two descriptors both match arrives once. Merged
+walks do not share polling with other subscriptions. A walk that has caught up without
+`throughVersion` vouches for what the other walks had reached when its fetch started, so a
+transaction another walk has just read waits for that walk's next poll. That assumes every
+source is as current as the others: a source that lags (an Indexer behind the fullnode, a
+node below the head) and reports no `throughVersion` can split a transaction into two calls,
+so such a source should report it.
 
 Options and the returned `Subscription` are `onBatch`'s. `batchSize` is each walk's page
 size, so one call may hold more events. With one descriptor, `cursor` moves only past a
