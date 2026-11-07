@@ -1,0 +1,39 @@
+{
+  "name": "@streamd/store-sqlite",
+  "version": "0.1.0",
+  "description": "Persist streamd events to SQLite and query them back through an EventAdapter",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@streamd/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@aptos-labs/ts-sdk": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@aptos-labs/ts-sdk": "^6.3.1"
+  },
+  "license": "MIT"
+}

@@ -30,11 +30,13 @@ bun install
 bun run build
 ```
 
-The repository is a Turborepo monorepo on Bun workspaces with two packages:
+The repository is a Turborepo monorepo on Bun workspaces with three packages:
 
 - `@streamd/core` (`packages/core`) - the library. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer
   dependency, and it ships ESM, CommonJS and TypeScript types.
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core`.
+- `@streamd/store-sqlite` (`packages/store-sqlite`) - opt-in persistence: events written to a
+  SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
 
 ## Usage
 
@@ -1100,6 +1102,56 @@ const streamd = new StreamdClient({
   ]),
 });
 ```
+
+## Store events in SQLite
+
+`@streamd/store-sqlite` keeps events in a SQLite database you open with whichever driver your
+runtime has: `bun:sqlite`'s `Database`, `better-sqlite3`, or Node's `node:sqlite`
+`DatabaseSync`. It has no SQLite dependency of its own, and core never depends on it.
+
+```ts
+import { Database } from "bun:sqlite";
+import { StreamdClient } from "@streamd/core";
+import { SqliteEventStore, StoreAdapter, storeEvents } from "@streamd/store-sqlite";
+
+const db = new Database("events.db");
+const store = new SqliteEventStore(db);
+
+// Follows the chain, writing each batch and the subscription's cursor in one transaction.
+// After a restart the same call resumes from the cursor saved under "swaps".
+storeEvents(streamd, store, descriptor, { name: "swaps", fromVersion: -100_000n });
+
+// Elsewhere, queries answered from the database instead of the fullnode.
+const local = new StreamdClient({ adapter: new StoreAdapter(db) });
+const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersion: "head" });
+```
+
+- **No gaps, no duplicates.** Rows are keyed on `(version, eventIndex)` and a repeated write
+  replaces its row. Each batch is written with the cursor from before it, then the cursor
+  after it is saved, so a restart in between reads the batch again and the upsert absorbs it.
+  The cursor is also saved when the subscription first catches up, which pins a relative or
+  head start; until then a restart re-resolves it, so pass an absolute `fromVersion` to leave
+  no window at all.
+  A failed write reaches `onError` and ends the subscription before its cursor moves on;
+  start it again to retry. Give each descriptor its own `name`, and set `PRAGMA busy_timeout`
+  when another connection writes the same file, since a busy database is a failed write.
+  `store.write(events, { name, cursor })` (a savepoint, so it works inside your own
+  transaction) and `store.readCursor(name)` are there for wiring your own.
+- **Exact integers.** Versions, sequence numbers, timestamps and guids round-trip as `bigint`
+  up to u64 (u128 for `creationNumber`). Events are stored as `serializeEvent` writes them,
+  so a `bigint` inside `data` comes back as a decimal string: query with `decode` to restore it.
+- **What `StoreAdapter` matches.** `module` by event type; `account` by the stored `sender`,
+  so events stored without one (from `handle` descriptors) never match; `handle` by
+  `creationNumber` against the stored `guid` (`listEventHandles` returns it), and a struct
+  and field handle is refused with a `StreamdError`. It sees only what was stored, from
+  whichever subscription stored it. Following the store with `on()` is gap-free only while
+  rows arrive in version order, since its cursor is a position in the table; it sets no
+  `throughVersion` for the same reason.
+- **Head and earliest** are the highest and lowest stored versions across the whole store,
+  `0n` when empty, so relative `fromVersion` and `toVersion: "head"` count from what is
+  stored. With no `cursor` or `fromVersion` a fetch starts at the earliest stored event.
+- It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
+  first use.
 
 ## Command line
 

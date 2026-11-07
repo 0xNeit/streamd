@@ -1,0 +1,80 @@
+import { StreamdError } from "@streamd/core";
+
+/** One prepared statement, with positional parameters. */
+export interface SqliteStatement {
+  run(...params: unknown[]): unknown;
+  all(...params: unknown[]): unknown[];
+  get(...params: unknown[]): unknown;
+}
+
+/**
+ * The part of a SQLite connection the store uses. `bun:sqlite`'s `Database`,
+ * `better-sqlite3`'s `Database` and `node:sqlite`'s `DatabaseSync` all fit it,
+ * so the caller brings whichever driver their runtime has.
+ */
+export interface SqliteDatabase {
+  exec(sql: string): unknown;
+  prepare(sql: string): SqliteStatement;
+}
+
+const U64_MAX = 2n ** 64n - 1n;
+const VERSION_DIGITS = 20;
+
+// Zero-padded text sorts numerically for every u64, and no driver ever sees
+// an integer it would round to a double.
+export function versionKey(version: bigint): string {
+  if (typeof version !== "bigint" || version < 0n || version > U64_MAX) {
+    throw new StreamdError(`Not a valid ledger version: ${String(version)} (expected a u64 bigint)`);
+  }
+  return version.toString().padStart(VERSION_DIGITS, "0");
+}
+
+const SCHEMA = `
+CREATE TABLE IF NOT EXISTS streamd_events (
+  version TEXT NOT NULL,
+  event_index INTEGER NOT NULL,
+  type TEXT NOT NULL,
+  sender TEXT,
+  guid_address TEXT,
+  guid_creation TEXT,
+  event TEXT NOT NULL,
+  PRIMARY KEY (version, event_index)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS streamd_events_type ON streamd_events (type, version, event_index);
+CREATE INDEX IF NOT EXISTS streamd_events_sender ON streamd_events (sender, version, event_index)
+  WHERE sender IS NOT NULL;
+CREATE INDEX IF NOT EXISTS streamd_events_guid
+  ON streamd_events (guid_address, guid_creation, version, event_index)
+  WHERE guid_address IS NOT NULL;
+CREATE TABLE IF NOT EXISTS streamd_cursors (
+  name TEXT PRIMARY KEY,
+  cursor TEXT NOT NULL
+);
+`;
+
+export function ensureSchema(db: SqliteDatabase): void {
+  if (typeof db?.exec !== "function" || typeof db.prepare !== "function") {
+    throw new StreamdError("Expected a SQLite database with exec() and prepare()");
+  }
+  db.exec(SCHEMA);
+}
+
+/**
+ * Runs `work` atomically, rolled back if it throws. A savepoint, so it also
+ * works inside a transaction the caller already holds.
+ */
+export function transaction(db: SqliteDatabase, work: () => void): void {
+  db.exec("SAVEPOINT streamd_write");
+  try {
+    work();
+    db.exec("RELEASE streamd_write");
+  } catch (err) {
+    try {
+      db.exec("ROLLBACK TO streamd_write");
+      db.exec("RELEASE streamd_write");
+    } catch {
+      // SQLite may already have rolled back on its own; the write's error is the one to report.
+    }
+    throw err;
+  }
+}

@@ -36,6 +36,19 @@
         "@aptos-labs/ts-sdk": ">=1.0.0",
       },
     },
+    "packages/store-sqlite": {
+      "name": "@streamd/store-sqlite",
+      "version": "0.1.0",
+      "dependencies": {
+        "@streamd/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@aptos-labs/ts-sdk": "^6.3.1",
+      },
+      "peerDependencies": {
+        "@aptos-labs/ts-sdk": ">=1.0.0",
+      },
+    },
   },
   "packages": {
     "@aptos-labs/aptos-cli": ["@aptos-labs/aptos-cli@1.1.1", "", { "dependencies": { "commander": "^12.1.0" }, "bin": { "aptos": "dist/aptos.js" } }, "sha512-sB7CokCM6s76SLJmccysbnFR+MDik6udKfj2+9ZsmTLV0/t73veIeCDKbvWJmbW267ibx4HiGbPI7L+1+yjEbQ=="],
@@ -59,6 +72,8 @@
     "@streamd/cli": ["@streamd/cli@workspace:packages/cli"],
 
     "@streamd/core": ["@streamd/core@workspace:packages/core"],
+
+    "@streamd/store-sqlite": ["@streamd/store-sqlite@workspace:packages/store-sqlite"],
 
     "@szmarczak/http-timer": ["@szmarczak/http-timer@4.0.6", "", { "dependencies": { "defer-to-connect": "^2.0.0" } }, "sha512-4BAffykYOgO+5nzBWYwE3W90sBgLJoUPRWWcL8wlyiM8IB8ipJz3UMJ9KXQd1RKQXpKp8Tutn80HZtWsu2u76w=="],
 
