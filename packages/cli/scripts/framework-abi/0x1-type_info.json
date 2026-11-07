@@ -1,0 +1,35 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "type_info",
+  "structs": [
+   {
+    "name": "TypeInfo",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account_address",
+      "type": "address"
+     },
+     {
+      "name": "module_name",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "struct_name",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

@@ -1,0 +1,986 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "stake",
+  "structs": [
+   {
+    "name": "AddStake",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_added",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AddStakeEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_added",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AllowedValidators",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "accounts",
+      "type": "vector<address>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AptosCoinCapabilities",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "mint_cap",
+      "type": "0x1::coin::MintCapability<0x1::aptos_coin::AptosCoin>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DistributeRewards",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "rewards_amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DistributeRewardsEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "rewards_amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DistributeTransactionFee",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "fee_amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "IncreaseLockup",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "old_locked_until_secs",
+      "type": "u64"
+     },
+     {
+      "name": "new_locked_until_secs",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "IncreaseLockupEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "old_locked_until_secs",
+      "type": "u64"
+     },
+     {
+      "name": "new_locked_until_secs",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "IndividualValidatorPerformance",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "successful_proposals",
+      "type": "u64"
+     },
+     {
+      "name": "failed_proposals",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "JoinValidatorSet",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "JoinValidatorSetEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LeaveValidatorSet",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LeaveValidatorSetEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "OwnerCapability",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PendingTransactionFee",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pending_fee_by_validator",
+      "type": "0x1::big_ordered_map::BigOrderedMap<u64, 0x1::aggregator_v2::Aggregator<u64>>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PrecomputedValidatorSet",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "validator_set",
+      "type": "0x1::stake::ValidatorSet"
+     },
+     {
+      "name": "is_liveness_fallback",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ReactivateStake",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ReactivateStakeEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RegisterValidatorCandidate",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RegisterValidatorCandidateEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RotateConsensusKey",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "old_consensus_pubkey",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "new_consensus_pubkey",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RotateConsensusKeyEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "old_consensus_pubkey",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "new_consensus_pubkey",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SetOperator",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "old_operator",
+      "type": "address"
+     },
+     {
+      "name": "new_operator",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SetOperatorEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "old_operator",
+      "type": "address"
+     },
+     {
+      "name": "new_operator",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "StakeManagementPermission",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "StakePool",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "active",
+      "type": "0x1::coin::Coin<0x1::aptos_coin::AptosCoin>"
+     },
+     {
+      "name": "inactive",
+      "type": "0x1::coin::Coin<0x1::aptos_coin::AptosCoin>"
+     },
+     {
+      "name": "pending_active",
+      "type": "0x1::coin::Coin<0x1::aptos_coin::AptosCoin>"
+     },
+     {
+      "name": "pending_inactive",
+      "type": "0x1::coin::Coin<0x1::aptos_coin::AptosCoin>"
+     },
+     {
+      "name": "locked_until_secs",
+      "type": "u64"
+     },
+     {
+      "name": "operator_address",
+      "type": "address"
+     },
+     {
+      "name": "delegated_voter",
+      "type": "address"
+     },
+     {
+      "name": "initialize_validator_events",
+      "type": "0x1::event::EventHandle<0x1::stake::RegisterValidatorCandidateEvent>"
+     },
+     {
+      "name": "set_operator_events",
+      "type": "0x1::event::EventHandle<0x1::stake::SetOperatorEvent>"
+     },
+     {
+      "name": "add_stake_events",
+      "type": "0x1::event::EventHandle<0x1::stake::AddStakeEvent>"
+     },
+     {
+      "name": "reactivate_stake_events",
+      "type": "0x1::event::EventHandle<0x1::stake::ReactivateStakeEvent>"
+     },
+     {
+      "name": "rotate_consensus_key_events",
+      "type": "0x1::event::EventHandle<0x1::stake::RotateConsensusKeyEvent>"
+     },
+     {
+      "name": "update_network_and_fullnode_addresses_events",
+      "type": "0x1::event::EventHandle<0x1::stake::UpdateNetworkAndFullnodeAddressesEvent>"
+     },
+     {
+      "name": "increase_lockup_events",
+      "type": "0x1::event::EventHandle<0x1::stake::IncreaseLockupEvent>"
+     },
+     {
+      "name": "join_validator_set_events",
+      "type": "0x1::event::EventHandle<0x1::stake::JoinValidatorSetEvent>"
+     },
+     {
+      "name": "distribute_rewards_events",
+      "type": "0x1::event::EventHandle<0x1::stake::DistributeRewardsEvent>"
+     },
+     {
+      "name": "unlock_stake_events",
+      "type": "0x1::event::EventHandle<0x1::stake::UnlockStakeEvent>"
+     },
+     {
+      "name": "withdraw_stake_events",
+      "type": "0x1::event::EventHandle<0x1::stake::WithdrawStakeEvent>"
+     },
+     {
+      "name": "leave_validator_set_events",
+      "type": "0x1::event::EventHandle<0x1::stake::LeaveValidatorSetEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "TransactionFeeConfig",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V0",
+      "fields": [
+       {
+        "name": "max_fee_octa_allowed_per_epoch_per_pool",
+        "type": "u64"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "UnlockStake",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_unlocked",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UnlockStakeEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_unlocked",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UpdateNetworkAndFullnodeAddresses",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "old_network_addresses",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "new_network_addresses",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "old_fullnode_addresses",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "new_fullnode_addresses",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UpdateNetworkAndFullnodeAddressesEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "old_network_addresses",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "new_network_addresses",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "old_fullnode_addresses",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "new_fullnode_addresses",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ValidatorConfig",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "consensus_pubkey",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "network_addresses",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "fullnode_addresses",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "validator_index",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ValidatorFees",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "fees_table",
+      "type": "0x1::table::Table<address, 0x1::coin::Coin<0x1::aptos_coin::AptosCoin>>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ValidatorInfo",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "addr",
+      "type": "address"
+     },
+     {
+      "name": "voting_power",
+      "type": "u64"
+     },
+     {
+      "name": "config",
+      "type": "0x1::stake::ValidatorConfig"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ValidatorPerformance",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "validators",
+      "type": "vector<0x1::stake::IndividualValidatorPerformance>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ValidatorSet",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "consensus_scheme",
+      "type": "u8"
+     },
+     {
+      "name": "active_validators",
+      "type": "vector<0x1::stake::ValidatorInfo>"
+     },
+     {
+      "name": "pending_inactive",
+      "type": "vector<0x1::stake::ValidatorInfo>"
+     },
+     {
+      "name": "pending_active",
+      "type": "vector<0x1::stake::ValidatorInfo>"
+     },
+     {
+      "name": "total_voting_power",
+      "type": "u128"
+     },
+     {
+      "name": "total_joining_power",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ValidatorSetLivenessFallback",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "minimum_stake",
+      "type": "u64"
+     },
+     {
+      "name": "emergency_validator_count",
+      "type": "u64"
+     },
+     {
+      "name": "total_emergency_voting_power",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "WithdrawStake",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_withdrawn",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "WithdrawStakeEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_withdrawn",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

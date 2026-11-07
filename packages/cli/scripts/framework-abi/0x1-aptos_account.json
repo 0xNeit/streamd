@@ -1,0 +1,69 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "aptos_account",
+  "structs": [
+   {
+    "name": "DirectCoinTransferConfigUpdated",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account",
+      "type": "address"
+     },
+     {
+      "name": "new_allow_direct_transfers",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DirectCoinTransferConfigUpdatedEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "new_allow_direct_transfers",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DirectTransferConfig",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "allow_arbitrary_coin_transfers",
+      "type": "bool"
+     },
+     {
+      "name": "update_coin_transfer_events",
+      "type": "0x1::event::EventHandle<0x1::aptos_account::DirectCoinTransferConfigUpdatedEvent>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}
