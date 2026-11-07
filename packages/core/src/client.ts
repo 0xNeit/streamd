@@ -415,7 +415,7 @@ export class StreamdClient {
    * `from`, and a withdraw left over has no `to`. A fungible-asset store's
    * asset and owner are read through `EventAdapter.view` at the event's
    * version (before it, when the transaction deleted the store), at most 4 at
-   * a time per poll; a leg whose store existed neither after nor before its
+   * a time per subscription and outside `maxConcurrentRequests`; a leg whose store existed neither after nor before its
    * transaction is skipped. A failed read fails the poll, which retries as
    * for `on()`. The record keeps the deposit's identity, or the withdraw's
    * when it stands alone. `asset` narrows to one fungible asset or coin type

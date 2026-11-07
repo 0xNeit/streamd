@@ -1027,7 +1027,7 @@ const recent = await streamd.getTransfers({ fromVersion: -10_000n, asset: "0xa" 
   (`fungible_asset::store_metadata`) and owner (`object::owner`) are read through
   the adapter's `view` at the event's version. A store's asset is cached; owners
   are read per event. With `asset` set, other assets cost one metadata read per
-  store and no owner read.
+  store and no owner read; a coin type costs no store reads at all.
 - **Pairing.** Within a transaction, in event order, a deposit pairs with the
   most recent unpaired withdraw of the same asset and amount. A deposit with
   none (a mint, or a fee-on-transfer token) has no `from`; a withdraw left over
@@ -1043,8 +1043,8 @@ const recent = await streamd.getTransfers({ fromVersion: -10_000n, asset: "0xa" 
   any event. `where`, `limit`, `cursor`, `onCursor` and the other options apply
   to the records.
 - **Failures.** A failed read fails the poll, which retries with backoff as for
-  `on()`; a query rejects. At most 4 reads run at once per poll, inside the poll's
-  `maxConcurrentRequests` slot.
+  `on()`; a query rejects. Each subscription or query keeps at most 4 reads in
+  flight, on top of `maxConcurrentRequests`, while its page fetch holds one slot.
 - **Limits.** Pairing sees one page; `FullnodeScanAdapter` pages hold whole
   transactions. Legacy coin handle events (`DepositEvent`/`WithdrawEvent`, from
   before module events) are not read. A transfers subscription is not a

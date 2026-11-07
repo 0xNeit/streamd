@@ -149,7 +149,9 @@ describe("transferSource", () => {
     const { adapter, calls } = withViews(events);
     expect((await transfers(transferSource(adapter, "0xa"))).map((t) => t.at)).toEqual(["2:0"]);
     expect(calls.filter((c) => c.function === OWNER).map((c) => c.store)).toEqual([store("b1")]);
-    expect((await transfers(transferSource(withViews(events).adapter, "0x01::aptos_coin::AptosCoin"))).map((t) => t.at)).toEqual(["3:0"]);
+    const coinOnly = withViews(events);
+    expect((await transfers(transferSource(coinOnly.adapter, "0x01::aptos_coin::AptosCoin"))).map((t) => t.at)).toEqual(["3:0"]);
+    expect(coinOnly.calls).toEqual([]);
   });
 
   it("reads a store's metadata once across pages", async () => {
@@ -204,5 +206,7 @@ describe("transferSource", () => {
     expect(() => transferSource(adapter, "nope")).toThrow(StreamdError);
     expect(() => transferSource(adapter, "0x1::coin")).toThrow(StreamdError);
     expect(() => transferSource(adapter, "")).toThrow(StreamdError);
+    expect(() => transferSource(adapter, "0x1::a::b junk")).toThrow(StreamdError);
+    expect(() => transferSource(adapter, "0x1::lp::LP<0x1::aptos_coin::AptosCoin>")).not.toThrow();
   });
 });

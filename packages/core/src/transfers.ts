@@ -51,7 +51,7 @@ function requireAsset(asset: unknown): string {
     throw new StreamdError("asset must be a fungible-asset metadata address or a coin type");
   }
   if (!asset.includes("::")) return requireAddress(asset);
-  if (!/^0x[0-9a-fA-F]+::\w+::\w+/.test(asset)) {
+  if (!/^0x[0-9a-fA-F]+::\w+::\w+(<.+>)?$/.test(asset)) {
     throw new StreamdError(`Not a valid coin type: ${asset}`);
   }
   return assetKey(asset);
@@ -168,6 +168,8 @@ export function transferSource(adapter: EventAdapter, asset?: string): EventAdap
       if (wanted !== undefined && assetKey(parsed.coinType) !== wanted) return undefined;
       return { event, deposit, amount, asset: parsed.coinType, owner: parsed.account };
     }
+    // A coin type never names a fungible asset, so its filter needs no store read.
+    if (wanted?.includes("::")) return undefined;
     const asset = await assetOf(parsed.store, event.version);
     if (asset === undefined || (wanted !== undefined && asset !== wanted)) return undefined;
     const owner = await read("0x1::object::owner", parsed.store, event.version);
