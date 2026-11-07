@@ -847,6 +847,60 @@ export type BatchCallback<TData = unknown> = (
   events: StreamdEvent<TData>[],
 ) => void;
 
+/**
+ * One transaction's matching events, as `onTransaction()` delivers them.
+ * `events` are in `eventIndex` order and never empty; each optional field is
+ * taken from the first event carrying it.
+ */
+export interface TransactionGroup<TData = unknown> {
+  /** The transaction's version, shared by every event in `events`. */
+  version: bigint;
+  transactionHash?: string;
+  sender?: string;
+  timestamp?: bigint;
+  entryFunction?: EntryFunctionCall;
+  events: StreamdEvent<TData>[];
+}
+
+/**
+ * Called once per transaction with its matching events, in version order.
+ * Otherwise as `EventCallback`: a returned promise is awaited before the next
+ * transaction, and a throw or rejection goes to `onError` without counting
+ * toward `maxErrors`.
+ */
+export type TransactionCallback<TData = unknown> = (
+  group: TransactionGroup<TData>,
+) => void;
+
+/**
+ * Called once per event a watched address's walk delivers, with that address
+ * as the caller passed it. Otherwise as `EventCallback`.
+ */
+export type WatchCallback<TData = unknown> = (
+  event: StreamdEvent<TData>,
+  address: string,
+) => void;
+
+/**
+ * Options for `watch()`, applied to each address's walk. `fromVersion` and
+ * `fromTime` apply only to the addresses given to `watch()`, not to `add()`.
+ * No `cursor` (an account cursor belongs to one address) and no `id`.
+ */
+export type WatchOptions = Omit<SubscriptionOptions, "id" | "cursor">;
+
+/** What `watch()` returns: a `Subscription` over every walk, grown and shrunk at runtime. */
+export interface Watch extends Subscription {
+  /**
+   * Start following `address`, where `on()` without a start option would.
+   * `false` when it is already watched or the watch has ended.
+   */
+  add(address: string): boolean;
+  /** Stop following `address` at once; `false` when it was not watched. */
+  remove(address: string): boolean;
+  /** The watched addresses, in the order added, as passed. */
+  readonly addresses: readonly string[];
+}
+
 // ---- Adapter interface ----
 
 /**

@@ -168,6 +168,91 @@ handler is awaited before the cursor moves past the page, so a crash or a stop m
 redelivers the whole page on resume. A throw or rejection goes to `onError` without counting
 toward `maxErrors`, and polling moves on to the next page.
 
+### Group by transaction
+
+```ts
+const sub = streamd.onTransaction([swaps, deposits], async (tx) => {
+  // tx: { version, transactionHash?, sender?, timestamp?, entryFunction?, events }
+  await db.insertTransaction(tx.version, tx.events);
+});
+```
+
+`onTransaction` calls your handler once per transaction with every matching event it
+emitted, in `eventIndex` order, and transactions in version order. `decode`, `where` and
+`withState` apply per event first, so a transaction with no match is not delivered. The
+optional fields come from the first event carrying them; `handle` events carry none.
+
+Adapter pages can end partway through a transaction (handle events and `MemoryAdapter`
+page by event), so events are held by version until the page's `throughVersion` passes
+it. An adapter that does not report `throughVersion` releases every version below the
+highest one a page reached, and the highest once it reports nothing more. That keeps
+transactions whole only when a committed transaction's events are all visible at once:
+`StoreAdapter` cannot promise this while another writer is still adding rows, and a custom
+adapter should set `throughVersion` if it can.
+
+Several descriptors are merged: each is polled as its own walk, a transaction is released
+once every walk has passed it, and an event two descriptors both match arrives once. Merged
+walks do not share polling with other subscriptions. A walk that has caught up without
+`throughVersion` vouches for what the other walks had reached when its fetch started, so a
+transaction another walk has just read waits for that walk's next poll. That assumes every
+source is as current as the others: a source that lags (an Indexer behind the fullnode, a
+node below the head) and reports no `throughVersion` can split a transaction into two calls,
+so such a source should report it.
+
+Options and the returned `Subscription` are `onBatch`'s. `batchSize` is each walk's page
+size, so one call may hold more events. With one descriptor, `cursor` moves only past a
+page that left nothing held: resuming from it never splits a transaction, though it can
+repeat ones delivered after it. With several, `cursor` is `undefined` and the `cursor`
+option is refused. `pause()` holds the remaining transactions until `resume()`; a walk
+that gives up ends the others; `onCaughtUp` fires once every walk has caught up. Like
+`reduce()`, it is not counted by `listenerCount()` or stopped by `off()`.
+
+### Watch lists
+
+```ts
+const watch = streamd.watch([alice, bob], (event, address) => {
+  console.log(address, event.type, event.version);
+});
+
+watch.add(carol); // starts following carol
+watch.remove(bob); // stops bob's walk at once
+watch.addresses; // [alice, carol], as passed
+```
+
+`watch` follows each address with its own `account` walk (`{ kind: "account",
+accountAddress }`) and calls your handler with the event and the watched address it came
+from, as you spelled it. Each walk goes through the client's shared polling and
+`maxConcurrentRequests` like any `on()` subscription, and walks deliver independently, so
+there is no order across addresses.
+
+What a walk sees is what the adapter yields for an `account` descriptor. On
+`FullnodeScanAdapter` that is every event of the transactions the address sent, orderless
+transactions excepted: a deposit someone else sent to the address is not seen. Use
+`IndexerAccountAdapter` (alone, or for `account` through a `RoutingAdapter`) to see every
+transaction touching the address, received ones included; an event in a transaction
+between two watched addresses then arrives once for each. Narrow further with `where`, for
+example `ownedBy` or `involvesAddress`.
+
+Addresses are checked when given (`StreamdError` for one that is not an Aptos address) and
+deduplicated by value, so `0x1` and its long form are one walk. `add(address)` returns
+`false` for an address already watched or a watch that has ended; the new walk starts
+where `on()` without a start option does (the account's next transaction on the fullnode
+and Indexer adapters), since a `fromVersion` or `fromTime` given to `watch` applies only
+to the addresses given with it. `remove(address)` stops that walk as `unsubscribe()` does:
+a handler in progress finishes and nothing further of its page is delivered.
+
+Options are `on()`'s, applied to each walk, without `cursor` (an account cursor belongs to
+one address) or `id`; `cursor` is `undefined`. `pause()` and `resume()` apply to every walk,
+and one added while paused starts paused. A walk that gives up after `maxErrors` drops its
+address, its errors having gone to `onError`, and the others carry on. `onCaughtUp` fires
+once, when every address given to `watch` has caught up. Like `onTransaction()`, it is not
+counted by `listenerCount()` or stopped by `off()`; `unsubscribe()`, the `signal` or
+`destroy()` ends it.
+
+Every list size uses one walk per address. A single chain scan filtered by the watched set
+would be cheaper for long lists, but no source here can scan every transaction without an
+event type yet, so that path waits for one that can.
+
 ### Iterate live events
 
 ```ts
@@ -1231,6 +1316,38 @@ if (!report.ok) console.table(report.results.filter((r) => r.status === "fail"))
 `fromVersion` is where the walk starts (omit it to start where the adapter
 does, usually the head), and `blockHeight` lets it check `getBlock`; a rule
 whose method or input is missing is `skip`.
+
+To check that two sources agree, `compareAdapters(a, b, descriptor, range)` walks both over
+the same version range and reports, by `eventId`, what only `a` returned (`missing`), what
+only `b` returned (`extra`), and what both returned but disagree on (`different`, with the
+fields named). Like `checkAdapter` it only reads, reports instead of throwing, and needs no
+test runner:
+
+```ts
+import { compareAdapters, FullnodeScanAdapter } from "@streamd/core";
+
+const report = await compareAdapters(
+  myIndexAdapter,
+  new FullnodeScanAdapter(aptos),
+  { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
+  { fromVersion: 1_000_000n, toVersion: 1_001_000n, maxPages: 10 },
+);
+if (!report.ok) console.log(report.window, report.missing, report.extra, report.different);
+```
+
+- **Window.** Only versions both walks provably finished are compared: up to each walk's
+  `throughVersion`, or, for a source that sets none, the last version it returned (one below
+  it when `maxPages` cut the walk). `report.window` says what that was, `report.coverage`
+  how far each side got; when they share nothing, `window` is `undefined` and `ok` is false.
+  Pick a settled range: a source that lags the head (the Indexer does) covers less.
+- **Difference.** `type`, `data` (deep, bigint-safe, key order ignored) and
+  `sequenceNumber` always; `guid`, `transactionHash`, `timestamp`, `sender` and
+  `entryFunction` only when both sides set them, with addresses compared normalized.
+  `state` is never compared.
+- **Bounds.** At most `maxPages` (default 10) fetches of `limit` (default 25) per source;
+  each list keeps `maxReported` (default 100) entries, and `truncated` says one was cut.
+- **Failures.** A source that rejects or returns a malformed page lands in `report.errors`;
+  what it returned before that is still compared. Only invalid arguments reject.
 
 Combine sources with `RoutingAdapter` (by descriptor `kind`, with an optional
 `default` for the rest) and `FallbackAdapter` (try sources in order on each

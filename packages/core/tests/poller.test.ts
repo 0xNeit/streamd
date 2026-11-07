@@ -2520,3 +2520,90 @@ describe("EventPoller time start", () => {
     expect(adapter.fetchEvents).not.toHaveBeenCalled();
   });
 });
+
+describe("EventPoller page delivery", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const versions = (events: StreamdEvent[]) => events.map((e) => Number(e.version));
+
+  it("hands over every finished page, empty ones included, with the page itself", async () => {
+    const pages: EventPage[] = [
+      { ...page([makeEvent(1), makeEvent(2)], 2, true), throughVersion: 1n },
+      { ...page([], 3, false), throughVersion: 5n },
+    ];
+    const adapter = createMockAdapter(pages);
+    const seen: [number[], bigint | undefined, string | undefined][] = [];
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      { page: (es, p) => void seen.push([versions(es), p.throughVersion, p.nextCursor]) },
+      { pollInterval: 1000, where: (e) => e.version !== 2n },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(10);
+    poller.stop();
+
+    expect(seen).toEqual([
+      [[1], 1n, "2"],
+      [[], 5n, "3"],
+    ]);
+    expect(poller.cursor).toBe("3");
+  });
+
+  it("hands over nothing from a failed page, and the retry delivers its events", async () => {
+    const events = [makeEvent(1), makeEvent(2)];
+    let calls = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async () => page(events, 2)),
+      view: vi.fn(async () => {
+        calls++;
+        if (calls === 2) throw new StreamdNetworkError("view down");
+        return [];
+      }),
+    };
+    const handed: number[][] = [];
+    const errors: Error[] = [];
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      { page: (es) => void handed.push(versions(es)) },
+      {
+        pollInterval: 1000,
+        withState: () => ({ function: "0x1::m::f", typeArguments: [], functionArguments: [] }),
+        onError: (e) => void errors.push(e),
+      },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(handed).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(poller.cursor).toBeUndefined();
+
+    await advanceTimersByTimeAsync(2000);
+    poller.stop();
+    expect(handed[0]).toEqual([1, 2]);
+  });
+
+  it("reports a throwing page callback without failing the poll", async () => {
+    const adapter = createMockAdapter([page([makeEvent(1)], 1)]);
+    const errors: Error[] = [];
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      {
+        page: () => {
+          throw new Error("boom");
+        },
+      },
+      { pollInterval: 1000, onError: (e) => void errors.push(e) },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    poller.stop();
+
+    expect(errors.map((e) => e.message)).toEqual(["Page callback threw"]);
+    expect(poller.cursor).toBe("1");
+    expect(poller.status.consecutiveErrors).toBe(0);
+  });
+});

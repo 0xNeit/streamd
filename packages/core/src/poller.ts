@@ -49,8 +49,18 @@ export function resolveMaxBackoff(maxBackoff: number | undefined): number {
 /** An event ready to deliver, and the view to read for it, if any. */
 type Prepared = { event: StreamdEvent; request?: ViewRequest };
 
-/** One event at a time, or `{ batch }` for each page's new events in one call. */
-export type Delivery = EventCallback | { batch: BatchCallback };
+/**
+ * Called once per finished page, empty or not, with its new events that
+ * passed `where`, and the page itself for its bounds. Awaited before the
+ * cursor moves past the page; nothing is handed over from a failed page.
+ */
+export type PageCallback = (events: StreamdEvent[], page: EventPage) => void | Promise<void>;
+
+/**
+ * One event at a time, `{ batch }` for each page's new events in one call, or
+ * `{ page }` for every finished page.
+ */
+export type Delivery = EventCallback | { batch: BatchCallback } | { page: PageCallback };
 
 export class EventPoller {
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -74,6 +84,7 @@ export class EventPoller {
   private readonly dedupWindow?: number;
   private readonly callback?: EventCallback;
   private readonly onBatch?: BatchCallback;
+  private readonly onPage?: PageCallback;
 
   private readonly pollInterval: number;
   private readonly batchSize: number;
@@ -99,7 +110,8 @@ export class EventPoller {
     private readonly limiter = new RequestLimiter(),
   ) {
     if (typeof delivery === "function") this.callback = delivery;
-    else this.onBatch = delivery.batch;
+    else if ("batch" in delivery) this.onBatch = delivery.batch;
+    else this.onPage = delivery.page;
     this.pollInterval = options.pollInterval ?? DEFAULT_POLL_INTERVAL;
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.maxErrors = options.maxErrors ?? DEFAULT_MAX_ERRORS;
@@ -373,7 +385,7 @@ export class EventPoller {
         }
         if (!this.isCurrent(gen)) return;
       }
-      if (this.onBatch !== undefined) {
+      if (this.callback === undefined) {
         // Marked seen only once handed over, so a batch a pause abandons is redelivered.
         batch.push(event);
         batched.push(raw);
@@ -392,9 +404,11 @@ export class EventPoller {
       }
     }
 
-    // Delivered even when the page failed: these events are marked seen, so a
-    // retried page would skip them.
-    if (batch.length > 0 && this.isCurrent(gen)) {
+    if (this.onPage !== undefined) {
+      await this.handOver(batch, batched, page, gen, failure);
+    } else if (batch.length > 0 && this.isCurrent(gen)) {
+      // Delivered even when the page failed: these events are marked seen, so a
+      // retried page would skip them.
       for (const raw of batched) this.see(raw);
       try {
         const result: unknown = this.onBatch!(batch);
@@ -414,6 +428,28 @@ export class EventPoller {
     // the scan window would re-read the same transactions forever.
     if (page.nextCursor !== undefined) {
       this.position.token = page.nextCursor;
+    }
+  }
+
+  /**
+   * A failed page hands over nothing and leaves its events unmarked, so the
+   * retry re-reads them: the page callback needs whole pages to know what is
+   * settled.
+   */
+  private async handOver(
+    events: StreamdEvent[],
+    raws: StreamdEvent[],
+    page: EventPage,
+    gen: number,
+    failure: unknown,
+  ): Promise<void> {
+    if (failure !== undefined || !this.isCurrent(gen)) return;
+    for (const raw of raws) this.see(raw);
+    try {
+      const result: unknown = this.onPage!(events, page);
+      if (isThenable(result)) await result;
+    } catch (err) {
+      this.reportHandlerError(new StreamdError("Page callback threw", err));
     }
   }
 
