@@ -1,0 +1,912 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "delegation_pool",
+  "structs": [
+   {
+    "name": "CreateProposal",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "voter",
+      "type": "address"
+     },
+     {
+      "name": "delegation_pool",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CreateProposalEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "voter",
+      "type": "address"
+     },
+     {
+      "name": "delegation_pool",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Vote",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "voter",
+      "type": "address"
+     },
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "delegation_pool",
+      "type": "address"
+     },
+     {
+      "name": "num_votes",
+      "type": "u64"
+     },
+     {
+      "name": "should_pass",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "VoteEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "voter",
+      "type": "address"
+     },
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "delegation_pool",
+      "type": "address"
+     },
+     {
+      "name": "num_votes",
+      "type": "u64"
+     },
+     {
+      "name": "should_pass",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AddStake",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_added",
+      "type": "u64"
+     },
+     {
+      "name": "add_stake_fee",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AddStakeEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_added",
+      "type": "u64"
+     },
+     {
+      "name": "add_stake_fee",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ReactivateStake",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_reactivated",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ReactivateStakeEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_reactivated",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UnlockStake",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_unlocked",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UnlockStakeEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_unlocked",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "WithdrawStake",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_withdrawn",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "WithdrawStakeEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator_address",
+      "type": "address"
+     },
+     {
+      "name": "amount_withdrawn",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AllowlistDelegator",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "BeneficiaryForOperator",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "beneficiary_for_operator",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CommissionPercentageChange",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "owner",
+      "type": "address"
+     },
+     {
+      "name": "commission_percentage_next_lockup_cycle",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DelegateVotingPower",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator",
+      "type": "address"
+     },
+     {
+      "name": "voter",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DelegateVotingPowerEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator",
+      "type": "address"
+     },
+     {
+      "name": "voter",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DelegatedVotes",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "active_shares",
+      "type": "u128"
+     },
+     {
+      "name": "pending_inactive_shares",
+      "type": "u128"
+     },
+     {
+      "name": "active_shares_next_lockup",
+      "type": "u128"
+     },
+     {
+      "name": "last_locked_until_secs",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DelegationPermission",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "DelegationPoolManagementPermission",
+      "fields": []
+     },
+     {
+      "name": "StakeManagementPermission",
+      "fields": []
+     }
+    ]
+   },
+   {
+    "name": "DelegationPool",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "active_shares",
+      "type": "0x1::pool_u64_unbound::Pool"
+     },
+     {
+      "name": "observed_lockup_cycle",
+      "type": "0x1::delegation_pool::ObservedLockupCycle"
+     },
+     {
+      "name": "inactive_shares",
+      "type": "0x1::table::Table<0x1::delegation_pool::ObservedLockupCycle, 0x1::pool_u64_unbound::Pool>"
+     },
+     {
+      "name": "pending_withdrawals",
+      "type": "0x1::table::Table<address, 0x1::delegation_pool::ObservedLockupCycle>"
+     },
+     {
+      "name": "stake_pool_signer_cap",
+      "type": "0x1::account::SignerCapability"
+     },
+     {
+      "name": "total_coins_inactive",
+      "type": "u64"
+     },
+     {
+      "name": "operator_commission_percentage",
+      "type": "u64"
+     },
+     {
+      "name": "add_stake_events",
+      "type": "0x1::event::EventHandle<0x1::delegation_pool::AddStakeEvent>"
+     },
+     {
+      "name": "reactivate_stake_events",
+      "type": "0x1::event::EventHandle<0x1::delegation_pool::ReactivateStakeEvent>"
+     },
+     {
+      "name": "unlock_stake_events",
+      "type": "0x1::event::EventHandle<0x1::delegation_pool::UnlockStakeEvent>"
+     },
+     {
+      "name": "withdraw_stake_events",
+      "type": "0x1::event::EventHandle<0x1::delegation_pool::WithdrawStakeEvent>"
+     },
+     {
+      "name": "distribute_commission_events",
+      "type": "0x1::event::EventHandle<0x1::delegation_pool::DistributeCommissionEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DelegationPoolAllowlisting",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "allowlist",
+      "type": "0x1::smart_table::SmartTable<address, bool>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DelegationPoolOwnership",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DisableDelegatorsAllowlisting",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DistributeCommission",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "beneficiary",
+      "type": "address"
+     },
+     {
+      "name": "commission_active",
+      "type": "u64"
+     },
+     {
+      "name": "commission_pending_inactive",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DistributeCommissionEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "commission_active",
+      "type": "u64"
+     },
+     {
+      "name": "commission_pending_inactive",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "EnableDelegatorsAllowlisting",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "EvictDelegator",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "GovernanceRecords",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "votes",
+      "type": "0x1::smart_table::SmartTable<0x1::delegation_pool::VotingRecordKey, u64>"
+     },
+     {
+      "name": "votes_per_proposal",
+      "type": "0x1::smart_table::SmartTable<u64, u64>"
+     },
+     {
+      "name": "vote_delegation",
+      "type": "0x1::smart_table::SmartTable<address, 0x1::delegation_pool::VoteDelegation>"
+     },
+     {
+      "name": "delegated_votes",
+      "type": "0x1::smart_table::SmartTable<address, 0x1::delegation_pool::DelegatedVotes>"
+     },
+     {
+      "name": "vote_events",
+      "type": "0x1::event::EventHandle<0x1::delegation_pool::VoteEvent>"
+     },
+     {
+      "name": "create_proposal_events",
+      "type": "0x1::event::EventHandle<0x1::delegation_pool::CreateProposalEvent>"
+     },
+     {
+      "name": "delegate_voting_power_events",
+      "type": "0x1::event::EventHandle<0x1::delegation_pool::DelegateVotingPowerEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "NextCommissionPercentage",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "commission_percentage_next_lockup_cycle",
+      "type": "u64"
+     },
+     {
+      "name": "effective_after_secs",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ObservedLockupCycle",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "index",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RemoveDelegatorFromAllowlist",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "delegator_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SetBeneficiaryForOperator",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "old_beneficiary",
+      "type": "address"
+     },
+     {
+      "name": "new_beneficiary",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "VoteDelegation",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "voter",
+      "type": "address"
+     },
+     {
+      "name": "pending_voter",
+      "type": "address"
+     },
+     {
+      "name": "last_locked_until_secs",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "VotingRecordKey",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "voter",
+      "type": "address"
+     },
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}
