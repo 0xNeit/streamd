@@ -1,0 +1,30 @@
+{
+ "abi": {
+  "address": "0x000000000000000000000000000000000000000000000000000000000000beef",
+  "name": "math",
+  "structs": [
+   {
+    "name": "Snapshot",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": []
+     }
+    ],
+    "fields": [
+     {
+      "name": "value",
+      "type": "T0"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

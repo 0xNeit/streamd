@@ -1,0 +1,176 @@
+{
+ "abi": {
+  "address": "0x5",
+  "name": "order_book_types",
+  "structs": [
+   {
+    "name": "AccountClientOrderId",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account",
+      "type": "address"
+     },
+     {
+      "name": "client_order_id",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DecreasingIdx",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "idx",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "IncreasingIdx",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "idx",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "OrderId",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "order_id",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "OrderType",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "type",
+      "type": "u16"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "TimeInForce",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "GTC",
+      "fields": []
+     },
+     {
+      "name": "POST_ONLY",
+      "fields": []
+     },
+     {
+      "name": "IOC",
+      "fields": []
+     }
+    ]
+   },
+   {
+    "name": "TriggerCondition",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "PriceMoveAbove",
+      "fields": [
+       {
+        "name": "_0",
+        "type": "u64"
+       }
+      ]
+     },
+     {
+      "name": "PriceMoveBelow",
+      "fields": [
+       {
+        "name": "_0",
+        "type": "u64"
+       }
+      ]
+     },
+     {
+      "name": "TimeBased",
+      "fields": [
+       {
+        "name": "_0",
+        "type": "u64"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}
