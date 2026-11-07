@@ -15,7 +15,7 @@ export interface TailIO {
 /**
  * Follows `options.descriptor`, writing each event as a JSON line, and
  * resolves to the process exit code: 0 when the limit is reached or the
- * signal aborts, 1 when the subscription stopped on an error.
+ * signal aborts, 1 when the subscription stopped on an error or a write failed.
  */
 export async function runTail(options: TailOptions, io: TailIO): Promise<number> {
   let lastReported: unknown;

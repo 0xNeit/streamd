@@ -1106,8 +1106,8 @@ To pick up where a run stopped, pass the last printed `version` plus one as
 
 Polling errors are reported on stderr and tailing continues until the subscription gives
 up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes
-(as when piped into `head`); `1` when the subscription stopped on an error; `2` for invalid
-arguments; `130` on a second Ctrl-C.
+(as when piped into `head`); `1` when the subscription stopped on an error, or output could not
+be written; `2` for invalid arguments; `130` on a second Ctrl-C.
 
 ### Forward events to a webhook
 
