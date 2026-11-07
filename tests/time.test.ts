@@ -92,6 +92,21 @@ describe("resolveFromTime", () => {
     }
   });
 
+  it("reads block heights once, so a getter cannot change them after the check", async () => {
+    const { adapter } = chain(uniform);
+    let reads = 0;
+    const heights = {
+      newest: 999n,
+      get oldest() {
+        return ++reads > 1 ? 5000n : 0n;
+      },
+    };
+    const flipping = { ...adapter, getBlockHeights: async () => heights };
+
+    expect(await resolveFromTime(flipping, descriptor, 1_250_000n)).toBe(expected(uniform, 1_250_000n));
+    expect(reads).toBe(1);
+  });
+
   it("stops between lookups once its caller has given up", async () => {
     const { adapter, looked } = chain(uniform);
     const err = await resolveFromTime(adapter, descriptor, 50_000_123n, () => true).catch(
