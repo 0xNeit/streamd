@@ -1,0 +1,42 @@
+{
+  "name": "@streamd/core",
+  "version": "0.1.0",
+  "description": "Event subscriptions and historical queries for blockchains, starting with Aptos",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "streamd": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build.ts",
+    "demo": "bun examples/demo.ts",
+    "test": "bun test",
+    "test:watch": "bun test --watch",
+    "test:integration": "STREAMD_INTEGRATION=1 bun test tests/integration",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@aptos-labs/ts-sdk": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@aptos-labs/ts-sdk": "^6.3.1"
+  },
+  "license": "MIT"
+}

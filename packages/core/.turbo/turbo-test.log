@@ -1,0 +1,1082 @@
+$ bun test
+bun test v1.4.3 (c6da4a4d3)
+
+tests/decode.test.ts:
+(pass) fieldDecoder > returns undefined when no fields are named [0.09ms]
+(pass) fieldDecoder > rejects an option that is not a list of non-empty names [0.12ms]
+(pass) fieldDecoder > turns named decimal strings into bigint, u128-sized included [0.16ms]
+(pass) fieldDecoder > keeps bigint values and leaves absent fields absent [0.02ms]
+(pass) fieldDecoder > returns the event untouched when no named field is present or data is not an object [0.03ms]
+(pass) fieldDecoder > throws a StreamdError for a named field that is not an unsigned integer string [0.09ms]
+(pass) fieldDecoder > does not mutate the input event [0.02ms]
+
+tests/recording.test.ts:
+(pass) recordingAdapter > records each call with a JSON-safe result [0.75ms]
+(pass) recordingAdapter > keys requests like CachingAdapter, ignoring option order and undefined fields [0.28ms]
+(pass) recordingAdapter > exposes only the optional methods the source has [0.01ms]
+(pass) recordingAdapter > passes failures through unrecorded [0.09ms]
+(pass) recordingAdapter > does not record a call whose descriptor has no key [0.03ms]
+(pass) recordingAdapter > is unaffected by mutating a returned page [0.05ms]
+(pass) recordingAdapter > rejects something that is not an adapter [0.02ms]
+(pass) replayAdapter > replays a query offline from the JSON text [1.38ms]
+(pass) replayAdapter > replays a live subscription, head version included [6.10ms]
+(pass) replayAdapter > replays the optional methods and keeps page flags [0.32ms]
+(pass) replayAdapter > serves repeated identical requests in recorded order, then repeats the last [0.11ms]
+(pass) replayAdapter > records identical concurrent calls in the order they started [0.11ms]
+(pass) replayAdapter > drops a failed call and leaves a pending one out until it settles [0.10ms]
+(pass) replayAdapter > rejects an unrecorded request with a StreamdError that is not a network error [0.17ms]
+(pass) replayAdapter > returns a fresh events array each time [0.08ms]
+(pass) replayAdapter > accepts an empty recording [0.04ms]
+(pass) replayAdapter > throws a StreamdError for bad JSON [0.05ms]
+(pass) replayAdapter > throws a StreamdError for a non-object
+(pass) replayAdapter > throws a StreamdError for a wrong format tag
+(pass) replayAdapter > throws a StreamdError for an unknown version [0.02ms]
+(pass) replayAdapter > throws a StreamdError for calls that are not an array
+(pass) replayAdapter > throws a StreamdError for a bigint version
+(pass) replayAdapter > throws a StreamdError for a string version
+(pass) replayAdapter > throws a StreamdError for a null-prototype version
+(pass) replayAdapter > throws a StreamdError for a bigint method
+(pass) replayAdapter > throws a StreamdError for a method with a throwing toString [0.01ms]
+(pass) replayAdapter > throws a StreamdError for a call without a key
+(pass) replayAdapter > throws a StreamdError for an unknown method
+(pass) replayAdapter > throws a StreamdError for a page without events
+(pass) replayAdapter > throws a StreamdError for a page without hasMore
+(pass) replayAdapter > throws a StreamdError for a non-string cursor
+(pass) replayAdapter > throws a StreamdError for a non-boolean final
+(pass) replayAdapter > throws a StreamdError for a negative throughVersion
+(pass) replayAdapter > throws a StreamdError for a bad event
+(pass) replayAdapter > throws a StreamdError for a missing event
+(pass) replayAdapter > throws a StreamdError for a numeric head
+(pass) replayAdapter > throws a StreamdError for a block missing a field
+(pass) replayAdapter > throws a StreamdError for non-object heights
+(pass) recording transaction lookups > replays found and not-found lookups, bigints included, through eventsOf [0.56ms]
+(pass) recording transaction lookups > has no getTransactionEvents when the source or the recording lacks it [0.02ms]
+(pass) recording transaction lookups > refuses a malformed recorded lookup [0.07ms]
+(pass) recordingAdapter simulation > passes simulateTransactionEvents through unrecorded, and replay never has it [0.07ms]
+(pass) recordingAdapter view > records views by request and version, and replays them offline [0.23ms]
+(pass) recordingAdapter view > refuses a recorded view whose result is not an array [0.03ms]
+(pass) recordingAdapter view > serves withState offline from a recording [0.49ms]
+
+tests/define.test.ts:
+(pass) defineEvent > returns a plain module descriptor [0.02ms]
+(pass) defineEvent > keeps a list of event types as one descriptor [0.01ms]
+(pass) defineEvent > infers data from the descriptor in client methods [1.63ms]
+(pass) defineEvent > types a merged list by its shared payload, or an explicit union [0.49ms]
+(pass) defineEvent > leaves plain descriptors as before [0.08ms]
+(pass) defineEvent > rejects an explicit type argument that contradicts the descriptor [0.04ms]
+
+tests/fallback.test.ts:
+(pass) FallbackAdapter > returns the first adapter's result without calling later adapters when the primary succeeds [0.27ms]
+(pass) FallbackAdapter > falls back across adapters per call on StreamdNetworkError or generic Error and tries primary again next call [0.16ms]
+(pass) FallbackAdapter > rethrows the last adapter's error when every adapter fails [0.07ms]
+(pass) FallbackAdapter > rethrows invalid-input StreamdError immediately without calling backup adapters [0.11ms]
+(pass) FallbackAdapter > isolates options per attempt and copies the adapters array on construction [0.09ms]
+(pass) FallbackAdapter > validates the adapters list in the constructor [0.07ms]
+(pass) FallbackAdapter page finality > keeps final on the first source's page and drops it on a backup's [0.08ms]
+(pass) FallbackAdapter head version > skips adapters that cannot report a head [0.04ms]
+(pass) FallbackAdapter head version > falls back on a network error [0.04ms]
+(pass) FallbackAdapter head version > rethrows invalid input without trying later adapters [0.06ms]
+(pass) FallbackAdapter head version > leaves getHeadVersion undefined when no adapter can report a head [0.01ms]
+(pass) FallbackAdapter earliest version > skips adapters that cannot report one [0.05ms]
+(pass) FallbackAdapter earliest version > falls back on a network error [0.04ms]
+(pass) FallbackAdapter earliest version > rethrows invalid input without trying later adapters [0.04ms]
+(pass) FallbackAdapter earliest version > leaves getEarliestVersion undefined when no adapter can report one [0.01ms]
+(pass) FallbackAdapter block heights > skips adapters without block heights and falls back on a network error [0.07ms]
+(pass) FallbackAdapter block heights > leaves getBlockHeights undefined when no adapter reports block heights
+(pass) FallbackAdapter blocks > skips adapters without blocks and falls back on a network error [0.06ms]
+(pass) FallbackAdapter blocks > leaves getBlock undefined when no adapter reports blocks
+(pass) FallbackAdapter scan progress > keeps throughVersion from whichever source answered [0.04ms]
+(pass) FallbackAdapter transaction lookup > skips sources without it and falls back past a network failure [0.06ms]
+(pass) FallbackAdapter transaction lookup > leaves getTransactionEvents undefined when no source looks transactions up
+(pass) FallbackAdapter simulation > skips sources without it and falls back past a network failure [0.07ms]
+(pass) FallbackAdapter simulation > leaves simulateTransactionEvents undefined when no source simulates transactions
+(pass) FallbackAdapter view > falls back on a network error to the next source that runs views [0.06ms]
+(pass) FallbackAdapter view > leaves view undefined when no source runs views
+(pass) FallbackAdapter optional method fields > has no own property for a method no source has [0.01ms]
+
+tests/errors.test.ts:
+(pass) parseRetryAfter > reads delta-seconds as milliseconds [0.03ms]
+(pass) parseRetryAfter > reads each HTTP-date format as the time until it [1.84ms]
+(pass) parseRetryAfter > gives 0 for a date already past [0.01ms]
+(pass) parseRetryAfter > is undefined for an absent or malformed value [0.03ms]
+(pass) retryAfterHint > returns a finite non-negative hint from a network error [0.04ms]
+(pass) retryAfterHint > ignores missing, invalid, and non-network hints [0.03ms]
+
+tests/query.test.ts:
+(pass) EventQuery paging > stops when the adapter returns the cursor it was given [0.13ms]
+(pass) EventQuery paging > seeds only the first request from fromVersion and offset [0.15ms]
+(pass) EventQuery paging > rejects a pre-aborted getEvents with the signal reason without fetching [0.10ms]
+(pass) EventQuery paging > rejects during a pending fetch before that fetch resolves, and never passes signal to the adapter [0.14ms]
+(pass) EventQuery paging > stops fetching further pages when aborted between getEventPages pages, and detaches per page [0.11ms]
+(pass) EventQuery relative start > seeds the first request from the head, clamped at 0 [0.25ms]
+(pass) EventQuery relative start > reads no head for a non-negative fromVersion [0.05ms]
+(pass) EventQuery relative start > rejects when the adapter cannot report a head [0.05ms]
+(pass) EventQuery relative start > rejects with the signal's reason when aborted during the head read [0.08ms]
+(pass) EventQuery head snapshot > ends at the head read once before the first page [0.21ms]
+(pass) EventQuery head snapshot > reuses the one head read for a negative fromVersion [0.08ms]
+(pass) EventQuery head snapshot > keeps a negative fromVersion relative to the head under a fixed toVersion [0.04ms]
+(pass) EventQuery head snapshot > bounds a descending walk to the snapshot [0.09ms]
+(pass) EventQuery head snapshot > rejects without fetching when the adapter cannot report a head [0.04ms]
+(pass) EventQuery head snapshot > reads no head when no page is fetched [0.10ms]
+(pass) EventQuery head snapshot > rejects {
+  toVersion: "head",
+  toBlock: 1n,
+} as invalid input [0.03ms]
+(pass) EventQuery head snapshot > rejects {
+  toVersion: "latest",
+} as invalid input
+(pass) EventQuery head snapshot > reports no resume cursor, like any version bound [0.06ms]
+(pass) EventQuery earliest start > seeds the first request from the adapter's earliest version [0.08ms]
+(pass) EventQuery earliest start > rejects when the adapter cannot report an earliest version [0.04ms]
+(pass) EventQuery earliest start > rejects a fromVersion that is neither a bigint nor earliest [0.05ms]
+(pass) EventQuery earliest start > rejects with the signal's reason when aborted during the read [0.07ms]
+(pass) EventQuery block range > turns fromBlock and toBlock into an inclusive version range [0.19ms]
+(pass) EventQuery block range > keeps the other bound when only one block bound is set [0.08ms]
+(pass) EventQuery block range > looks blocks up once per query, not per page [0.06ms]
+(pass) EventQuery block range > looks nothing up when no fetch happens [0.04ms]
+(pass) EventQuery block range > rejects {
+  fromBlock: 1n,
+  fromVersion: 5n,
+} before any adapter call [0.04ms]
+(pass) EventQuery block range > rejects {
+  fromBlock: 1n,
+  fromVersion: "earliest",
+} before any adapter call
+(pass) EventQuery block range > rejects {
+  toBlock: 1n,
+  toVersion: 5n,
+} before any adapter call
+(pass) EventQuery block range > rejects {
+  fromBlock: 3n,
+  toBlock: 2n,
+} before any adapter call
+(pass) EventQuery block range > rejects {
+  fromBlock: -1n,
+} before any adapter call
+(pass) EventQuery block range > rejects {
+  toBlock: 2,
+} before any adapter call
+(pass) EventQuery block range > rejects when the adapter cannot look blocks up [0.05ms]
+(pass) EventQuery block range > applies the range to a descending query and to iterateEvents [0.23ms]
+(pass) EventQuery block range > propagates the adapter's error for a block it cannot serve [0.05ms]
+(pass) EventQuery decode > returns decoded data, filters on it, and never passes decode to the adapter [0.10ms]
+(pass) EventQuery decode > rejects when a named field cannot be decoded [0.08ms]
+(pass) EventQuery orderBy desc > returns the last N across pages, newest first, asking the adapter for asc [0.12ms]
+(pass) EventQuery orderBy desc > counts limit after where [0.06ms]
+(pass) EventQuery orderBy desc > returns the whole range reversed without a limit [0.04ms]
+(pass) EventQuery orderBy desc > makes no fetch for limit 0 [0.03ms]
+(pass) EventQuery orderBy desc > caps the walk with maxPages and returns the latest of what was walked [0.03ms]
+(pass) EventQuery orderBy desc > yields getEventPages in pageSize chunks, newest first [0.07ms]
+(pass) EventQuery orderBy desc > rejects an unknown orderBy before fetching [0.04ms]
+(pass) EventQuery orderBy desc > leaves ascending unchanged [0.05ms]
+(pass) EventQuery fromTime > starts at the first block stamped at or after the time, keeping toVersion [0.45ms]
+(pass) EventQuery fromTime > combines with toBlock [0.10ms]
+(pass) EventQuery fromTime > searches once per query, not per page, and not when no fetch happens [0.15ms]
+(pass) EventQuery fromTime > rejects {
+  fromTime: 1n,
+  fromVersion: 5n,
+} before any adapter call [0.06ms]
+(pass) EventQuery fromTime > rejects {
+  fromTime: 1n,
+  fromBlock: 2n,
+} before any adapter call [0.01ms]
+(pass) EventQuery fromTime > rejects {
+  fromTime: -1n,
+} before any adapter call [0.01ms]
+(pass) EventQuery fromTime > rejects without retrying when the adapter cannot search blocks [0.08ms]
+(pass) EventQuery fromTime > applies to a descending query [0.08ms]
+(pass) EventQuery retries > retries a network failure from the same cursor, waiting 1s then 2s [2.33ms]
+(pass) EventQuery retries > rejects with the last error once retries are spent [43.38ms]
+(pass) EventQuery retries > gives each page its own budget [0.24ms]
+(pass) EventQuery retries > does not retry a StreamdError that is not a network failure [0.07ms]
+(pass) EventQuery retries > does not retry when retries is omitted [0.06ms]
+(pass) EventQuery retries > retries a failed head read for a relative start [0.11ms]
+(pass) EventQuery retries > retries a failed head read for a head snapshot [0.08ms]
+(pass) EventQuery retries > retries a block lookup that fails partway through a fromTime search [0.20ms]
+(pass) EventQuery retries > retries a failed earliest read [0.07ms]
+(pass) EventQuery retries > retries a failed block lookup [0.08ms]
+(pass) EventQuery retries > retries a failed middle page of a descending walk [0.12ms]
+(pass) EventQuery retries > rejects with the signal reason when aborted during the wait, with no further call [0.48ms]
+(pass) EventQuery retries > waits a Retry-After hint instead of the backoff, capped at 60s [0.33ms]
+(pass) EventQuery retries > rejects with the signal reason when aborted during a hinted wait [0.09ms]
+(pass) EventQuery retries > rejects an invalid retries value without fetching [0.10ms]
+(pass) EventQuery iterateEvents > yields the events of getEventPages one at a time, across options [0.63ms]
+(pass) EventQuery iterateEvents > fetches nothing further after the loop breaks [0.11ms]
+(pass) EventQuery iterateEvents > rejects the next event with the reason when aborted mid-page [0.12ms]
+(pass) EventQuery iterateEvents > rejects invalid input as getEventPages does [0.05ms]
+(pass) EventQuery iterateEvents > retries a network failure, then keeps yielding [0.64ms]
+(pass) EventQuery onCursor > reports the cursor after a full walk [0.14ms]
+(pass) EventQuery onCursor > reports the cursor after the last page maxPages read [0.05ms]
+(pass) EventQuery onCursor > reports the cursor when limit is met exactly at a page end [0.04ms]
+(pass) EventQuery onCursor > reports the cursor past events where filtered out [0.11ms]
+(pass) EventQuery onCursor > reports the end of the walked range for desc [0.10ms]
+(pass) EventQuery onCursor > reports undefined when limit drops events of the last page [0.07ms]
+(pass) EventQuery onCursor > reports undefined when no page is read [0.05ms]
+(pass) EventQuery onCursor > reports undefined when a version bound ended the walk [0.13ms]
+(pass) EventQuery onCursor > reports undefined when the last page has no cursor [0.05ms]
+(pass) EventQuery onCursor > is called once from getEvents and iterateEvents [0.09ms]
+(pass) EventQuery onCursor > is not called when the loop is left early or the query rejects [0.10ms]
+(pass) EventQuery onCursor > never passes onCursor to the adapter [0.05ms]
+(pass) EventQuery over several descriptors > merges every descriptor's events in (version, eventIndex) order [0.13ms]
+(pass) EventQuery over several descriptors > returns an event two descriptors select once [0.17ms]
+(pass) EventQuery over several descriptors > pages the merged history by pageSize [0.09ms]
+(pass) EventQuery over several descriptors > counts limit over the merge, after where [0.07ms]
+(pass) EventQuery over several descriptors > applies maxPages to each descriptor's walk [0.08ms]
+(pass) EventQuery over several descriptors > returns the last matches newest first for orderBy desc [0.05ms]
+(pass) EventQuery over several descriptors > reads the head once for every descriptor [0.07ms]
+(pass) EventQuery over several descriptors > resolves fromVersion earliest for each descriptor [0.07ms]
+(pass) EventQuery over several descriptors > rejects an empty list, onCursor and offset without fetching [0.07ms]
+(pass) EventQuery bound lookups > rejects a snake_case block without fetching or retrying [0.08ms]
+(pass) EventQuery bound lookups > rejects an inverted block without fetching or retrying [0.03ms]
+(pass) EventQuery bound lookups > rejects a negative firstVersion without fetching or retrying [0.02ms]
+(pass) EventQuery bound lookups > rejects another block's height without fetching or retrying [0.02ms]
+(pass) EventQuery bound lookups > rejects a negative earliest without fetching or retrying [0.02ms]
+(pass) EventQuery bound lookups > rejects a string earliest without fetching or retrying [0.01ms]
+(pass) EventQuery bound lookups > rejects a string head for toVersion without fetching or retrying [0.01ms]
+(pass) EventQuery bound lookups > rejects a string head for a negative start without fetching or retrying [0.02ms]
+(pass) EventQuery bound lookups > checks a block's fields as read once, so a getter cannot change them after [0.14ms]
+
+tests/utils.test.ts:
+(pass) descriptorKey > keeps the key of valid handle descriptors [0.06ms]
+(pass) descriptorKey > gives no request key to a handle descriptor the adapters refuse [0.12ms]
+(pass) descriptorKey > still matches listeners on a handle descriptor a custom adapter accepts [0.14ms]
+(pass) descriptorKey > does not let an invalid descriptor's shared fetch fail a valid one [5.86ms]
+(pass) descriptorKey > does not serve an invalid descriptor a cached page [0.27ms]
+(pass) descriptorKey > does not replay a valid descriptor's page to an invalid one [0.14ms]
+(pass) raceAbort > rejects with the reason of an already-aborted signal and absorbs the inner rejection [1.14ms]
+(pass) raceAbort > rejects with the promise's error under a live signal and detaches its listener [0.10ms]
+(pass) raceAbort > keeps the abort reason when the promise rejects after the signal aborted [0.06ms]
+
+tests/serialize.test.ts:
+(pass) serializeEvent / parseEvent > round-trips every top-level field, decoding named data fields [0.10ms]
+(pass) serializeEvent / parseEvent > round-trips an event without optional fields or data [0.05ms]
+(pass) serializeEvent / parseEvent > leaves data bigints as strings unless named, and nested ones always [0.05ms]
+(pass) serializeEvent / parseEvent > ignores extra keys [0.02ms]
+(pass) serializeEvent / parseEvent > rejects text that is not JSON, with the parse error as cause [0.03ms]
+(pass) serializeEvent / parseEvent > rejects an array [0.03ms]
+(pass) serializeEvent / parseEvent > rejects null
+(pass) serializeEvent / parseEvent > rejects a missing type
+(pass) serializeEvent / parseEvent > rejects an empty type
+(pass) serializeEvent / parseEvent > rejects a numeric version
+(pass) serializeEvent / parseEvent > rejects a negative version
+(pass) serializeEvent / parseEvent > rejects a missing sequenceNumber
+(pass) serializeEvent / parseEvent > rejects a fractional eventIndex
+(pass) serializeEvent / parseEvent > rejects a negative eventIndex
+(pass) serializeEvent / parseEvent > rejects a string eventIndex
+(pass) serializeEvent / parseEvent > rejects a numeric transactionHash
+(pass) serializeEvent / parseEvent > rejects a hex timestamp
+(pass) serializeEvent / parseEvent > rejects a numeric sender
+(pass) serializeEvent / parseEvent > rejects a string guid
+(pass) serializeEvent / parseEvent > rejects a null guid
+(pass) serializeEvent / parseEvent > rejects a guid without accountAddress
+(pass) serializeEvent / parseEvent > rejects a numeric guid creationNumber
+(pass) serializeEvent / parseEvent > rejects a decode field that is not a decimal string [0.03ms]
+(pass) serializeEvent / parseEvent > rejects a decode option that is not a list of names [0.03ms]
+(pass) public surface > exports serializeEvent and parseEvent from the package entry [0.83ms]
+(pass) serializeEvent state > round-trips state and refuses one that is not an array [0.11ms]
+
+tests/merge.test.ts:
+(pass) mergeEvents > interleaves walks by version, then eventIndex [0.24ms]
+(pass) mergeEvents > yields an event returned by more than one walk once [0.06ms]
+(pass) mergeEvents > counts limit after dedup and pulls no page it does not need [0.05ms]
+(pass) mergeEvents > handles empty walks and empty pages [0.04ms]
+(pass) mergeEvents > rejects with a walk's error and closes the others [0.04ms]
+(pass) mergeEvents > closes every walk when the consumer leaves early [0.08ms]
+
+tests/limiter.test.ts:
+(pass) RequestLimiter > never runs more than max tasks at once, starting queued ones in FIFO order [3.60ms]
+(pass) RequestLimiter > frees the slot of a task that rejects or throws synchronously [1.29ms]
+(pass) RequestLimiter > frees the slot of a started task once its signal aborts [2.26ms]
+(pass) RequestLimiter > drops a queued task as soon as its drop signal aborts, with the abort reason [4.29ms]
+(pass) RequestLimiter > rejects a task queued with an already-aborted drop signal without queueing it [1.20ms]
+(pass) RequestLimiter > clear() rejects every queued task and leaves running ones alone [2.39ms]
+(pass) RequestLimiter > starts every task at once when unlimited [1.18ms]
+(pass) RequestLimiter > wrap routes fetchEvents and getHeadVersion through the limit [1.26ms]
+(pass) RequestLimiter > wrap leaves getHeadVersion undefined when the inner adapter has none [0.02ms]
+(pass) RequestLimiter > wrap queues getEarliestVersion behind the limit [1.22ms]
+(pass) RequestLimiter > wrap leaves getEarliestVersion undefined when the inner adapter has none
+(pass) RequestLimiter > wrap queues getBlock behind the limit and passes its arguments [1.23ms]
+(pass) RequestLimiter > wrap leaves getBlock undefined when the inner adapter has none [0.01ms]
+(pass) RequestLimiter > wrap queues getBlockHeights behind the limit [1.23ms]
+(pass) RequestLimiter.wrap transaction lookups > runs getTransactionEvents through the cap, only when the adapter has it [4.64ms]
+(pass) RequestLimiter.wrap simulations > runs simulateTransactionEvents through the cap, only when the adapter has it [4.50ms]
+(pass) RequestLimiter.wrap views > runs view through the cap, only when the adapter has it [0.14ms]
+
+tests/filter.test.ts:
+(pass) normalizeAddress > expands short forms to the canonical long form [0.04ms]
+(pass) normalizeAddress > rejects non-addresses [0.01ms]
+(pass) involvesAddress > matches across differing address spellings [0.15ms]
+(pass) involvesAddress > searches nested objects and arrays [0.07ms]
+(pass) involvesAddress > does not match unrelated addresses [0.02ms]
+(pass) involvesAddress > restricts the search when fields are given [0.04ms]
+(pass) involvesAddress > honours maxDepth [0.02ms]
+(pass) involvesAddress > tolerates non-object payloads [0.01ms]
+(pass) involvesAddress > rejects an invalid target address up front [0.02ms]
+(pass) whereField > matches a top-level field with address normalisation [0.15ms]
+(pass) whereField > traverses nested objects and arrays via dotted string or segment array [0.09ms]
+(pass) whereField > treats array path segments as literal keys without splitting on dots [0.02ms]
+(pass) whereField > matches non-address strings, numbers, bigints, booleans, and null [0.06ms]
+(pass) whereField > returns false for missing paths, non-object payloads, out-of-bounds indices, and prototype keys [0.07ms]
+(pass) whereField > throws StreamdError up front on invalid paths or values [0.10ms]
+(pass) ofModule > matches every struct in the module, generics included [0.07ms]
+(pass) ofModule > ignores the module when it only appears inside generics [0.02ms]
+(pass) ofModule > treats short and long address spellings as the same [0.02ms]
+(pass) ofModule > does not match another address, a prefixed module, or a different case [0.03ms]
+(pass) ofModule > matches any of several modules, and nothing when given none [0.03ms]
+(pass) ofModule > returns false for malformed event types [0.02ms]
+(pass) ofModule > rejects arguments that are not address::module [0.04ms]
+(pass) fromSender > matches the sender in either address spelling [0.04ms]
+(pass) fromSender > does not match another sender, a missing one, or a non-address [0.02ms]
+(pass) fromSender > ignores addresses that appear only in the payload
+(pass) fromSender > rejects an invalid address
+(pass) predicate combinators > ofType matches exact event types [0.02ms]
+(pass) predicate combinators > every requires all predicates [0.04ms]
+(pass) predicate combinators > some requires at least one predicate [0.03ms]
+(pass) predicate combinators > not negates a predicate and composes with every, some, ofType, involvesAddress, whereField, and nested not [0.08ms]
+(pass) predicate combinators > not passes the exact event to the inner predicate and propagates throws [0.05ms]
+(pass) predicate combinators > not throws StreamdError up front when given a non-function [0.06ms]
+
+tests/reduce.test.ts:
+(pass) reduce > folds the history, then each live event exactly once [1.78ms]
+(pass) reduce > reaches the same value however the events split across backfill and live [22.64ms]
+(pass) reduce > reports ready with the backfilled value even when no events arrive live [0.14ms]
+(pass) reduce > applies where and decode to both halves [0.66ms]
+(pass) reduce > uses the client's decode default for the backfill as well as live [0.62ms]
+(pass) reduce > follows from the query's end cursor [0.14ms]
+(pass) reduce > without a cursor, follows from the last folded version and folds nothing twice [0.12ms]
+(pass) reduce > stops when there is neither a cursor nor a folded event to follow from [0.16ms]
+(pass) reduce > refuses options that leave no exact point to follow from [0.09ms]
+(pass) reduce failure and stop paths > stops when the reducer throws during the backfill [1.11ms]
+(pass) reduce failure and stop paths > stops when the reducer throws on a live event [1.11ms]
+(pass) reduce failure and stop paths > keeps folding when onChange throws, reporting it [0.65ms]
+(pass) reduce failure and stop paths > stops and reports when the backfill query rejects [0.08ms]
+(pass) reduce failure and stop paths > goes inactive when live polling gives up after maxErrors [2.72ms]
+(pass) reduce failure and stop paths > rejects ready with the signal's reason when aborted mid-backfill, without onError [0.19ms]
+(pass) reduce failure and stop paths > never fetches with an already-aborted signal [0.06ms]
+(pass) reduce failure and stop paths > rejects ready when unsubscribed mid-backfill, and never folds or follows [1.09ms]
+(pass) reduce failure and stop paths > stops following on abort, unsubscribe, dispose and destroy [3.45ms]
+(pass) reduce failure and stop paths > ends a reduction still backfilling on destroy() [0.15ms]
+(pass) reduce failure and stop paths > leaves no unhandled rejection when ready is never awaited [0.16ms]
+(pass) reduce failure and stop paths > is not a listener, and its live half shares polling with an identical on() [0.20ms]
+(pass) reduce typing > types event.data from a defineEvent descriptor and the state from initial [0.10ms]
+
+tests/transaction.test.ts:
+(pass) eventsOf > waits through lookups that find nothing, then resolves with every event [203.13ms]
+(pass) eventsOf > filters by module type, account sender and handle guid [0.49ms]
+(pass) eventsOf > passes the descriptor to the adapter for routing [0.06ms]
+(pass) eventsOf > decodes before where [0.09ms]
+(pass) eventsOf > rejects a failed transaction with its vm status [0.11ms]
+(pass) eventsOf > rejects with StreamdTimeoutError when the transaction never lands [272.12ms]
+(pass) eventsOf > times out while a lookup hangs [20.44ms]
+(pass) eventsOf > rejects with the signal's reason, before or during the wait [12.71ms]
+(pass) eventsOf > rejects at once with a lookup error [0.28ms]
+(pass) eventsOf > refuses bad input before any lookup [0.36ms]
+(pass) eventsOf > refuses an adapter without getTransactionEvents [0.10ms]
+(pass) eventsOf > goes through maxConcurrentRequests [17.27ms]
+(pass) eventsOf > works offline over a MemoryAdapter [0.81ms]
+(pass) eventsOf > matches event-side addresses in short form [0.38ms]
+(pass) eventsOf > waits at least 100ms between lookups whatever pollInterval says [604.90ms]
+(pass) eventsOf > clears its timer and abort listener once settled [0.47ms]
+(pass) eventsOf > drops a lookup still queued when the wait times out [27.12ms]
+(pass) previewEvents > passes the transaction, key and descriptor to the adapter and resolves with every event [1.29ms]
+(pass) previewEvents > filters by each descriptor kind, decoding before where [0.84ms]
+(pass) previewEvents > rejects a failed simulation with its vm status and no hash [0.18ms]
+(pass) previewEvents > rejects with a simulation error as it is [0.10ms]
+(pass) previewEvents > refuses bad input and a missing adapter method before any call [0.45ms]
+(pass) previewEvents > goes through maxConcurrentRequests [11.49ms]
+
+tests/conformance.test.ts:
+(pass) checkAdapter walk > passes a MemoryAdapter on every rule [2.51ms]
+(pass) checkAdapter walk > skips from-version when no fromVersion is given [0.22ms]
+(pass) checkAdapter walk > walks at most maxPages, plus the two extra fetches [0.14ms]
+(pass) checkAdapter walk > asks with fromVersion first, then with the cursor alone [0.22ms]
+(pass) checkAdapter walk > fails fetch on a rejection and judges the pages before it [0.23ms]
+(pass) checkAdapter walk > fails fetch on a synchronous throw and skips the page rules [0.14ms]
+(pass) checkAdapter walk > fails page-shape on a null page [0.12ms]
+(pass) checkAdapter walk > fails page-shape on missing hasMore [0.05ms]
+(pass) checkAdapter walk > fails page-shape on a numeric cursor [0.03ms]
+(pass) checkAdapter walk > fails page-shape on a number version [0.03ms]
+(pass) checkAdapter walk > fails page-shape on a fractional eventIndex [0.02ms]
+(pass) checkAdapter walk > fails page-shape on a string timestamp [0.02ms]
+(pass) checkAdapter walk > fails page-shape on a numeric sender [0.03ms]
+(pass) checkAdapter walk > fails page-shape on a number guid creationNumber [0.02ms]
+(pass) checkAdapter walk > accepts a page over the limit, as the contract allows [0.09ms]
+(pass) checkAdapter walk > fails from-version on an event below it [0.08ms]
+(pass) checkAdapter walk > fails order on descending events within a page [0.08ms]
+(pass) checkAdapter walk > fails order on an event repeated across pages [0.12ms]
+(pass) checkAdapter walk > fails cursor-advance on hasMore without a cursor or with a stalled one [0.21ms]
+(pass) checkAdapter walk > skips through-version when no page sets it [0.08ms]
+(pass) checkAdapter walk > fails through-version when it falls or a later event is not above it [0.26ms]
+(pass) checkAdapter walk > fails page-shape on a throughVersion that is not a non-negative bigint [0.21ms]
+(pass) checkAdapter walk > rejects a non-adapter with StreamdError [0.05ms]
+(pass) checkAdapter walk > rejects a zero limit with StreamdError before any call [0.06ms]
+(pass) checkAdapter walk > rejects a fractional maxPages with StreamdError before any call [0.01ms]
+(pass) checkAdapter walk > rejects a negative fromVersion with StreamdError before any call
+(pass) checkAdapter walk > rejects a number fromVersion with StreamdError before any call
+(pass) checkAdapter walk > rejects null options with StreamdError before any call
+(pass) checkAdapter cursor rules > fails cursor-precedence when fromVersion beats the cursor [0.22ms]
+(pass) checkAdapter cursor rules > asks page 2's cursor with the walk's start, or 0n without one [0.11ms]
+(pass) checkAdapter cursor rules > skips cursor-precedence on a one-page walk [0.11ms]
+(pass) checkAdapter cursor rules > fails foreign-cursor when the adapter accepts it [0.18ms]
+(pass) checkAdapter cursor rules > fails foreign-cursor when the adapter rejects as a network error [0.09ms]
+(pass) checkAdapter cursor rules > fails foreign-cursor when the adapter rejects with a plain Error [0.08ms]
+(pass) checkAdapter optional methods > skips every optional rule a bare adapter lacks [0.18ms]
+(pass) checkAdapter optional methods > skips block for a FallbackAdapter over sources without getBlock [0.16ms]
+(pass) checkAdapter optional methods > skips block for a RoutingAdapter over sources without getBlock [0.38ms]
+(pass) checkAdapter optional methods > judges head below a seen event [0.17ms]
+(pass) checkAdapter optional methods > judges head not a bigint [0.07ms]
+(pass) checkAdapter optional methods > judges head rejecting [0.07ms]
+(pass) checkAdapter optional methods > judges earliest above a seen event [0.06ms]
+(pass) checkAdapter optional methods > fails earliest-version when it is above head [0.13ms]
+(pass) checkAdapter optional methods > skips block without blockHeight and passes a matching block [0.18ms]
+(pass) checkAdapter optional methods > fails block on a height mismatch [0.11ms]
+(pass) checkAdapter optional methods > fails block on an inverted range [0.14ms]
+(pass) checkAdapter optional methods > fails block on a negative firstVersion [0.04ms]
+(pass) checkAdapter optional methods > fails block on a number timestamp [0.03ms]
+(pass) checkAdapter optional methods > stays within maxPages + 2 fetches and one call per optional method [0.20ms]
+Note: using CUSTOM network will require queries to lookup ChainId
+(pass) checkAdapter against FullnodeScanAdapter > passes every rule on a module descriptor [1.91ms]
+
+tests/routing.test.ts:
+(pass) RoutingAdapter > routes module, handle, and account descriptors to their configured adapters and forwards options [0.19ms]
+(pass) RoutingAdapter > falls back to the default route for descriptor kinds not explicitly configured [0.12ms]
+(pass) RoutingAdapter > copies route references on construction so later mutations of the routes object have no effect [0.06ms]
+(pass) RoutingAdapter > rejects unconfigured descriptor kinds with a plain StreamdError, not StreamdNetworkError [0.08ms]
+(pass) RoutingAdapter > rejects unknown or prototype-named descriptor kinds even when a default adapter is set [0.11ms]
+(pass) RoutingAdapter > validates routes in the constructor and throws StreamdError on empty or invalid routes [0.14ms]
+(pass) RoutingAdapter head version > asks the adapter routed for the descriptor's kind [0.05ms]
+(pass) RoutingAdapter head version > throws StreamdError when the routed adapter cannot report a head [0.06ms]
+(pass) RoutingAdapter block heights > asks the adapter routed for the descriptor's kind [0.06ms]
+(pass) RoutingAdapter block heights > throws StreamdError when the routed adapter cannot report block heights [0.05ms]
+(pass) RoutingAdapter earliest version > asks the adapter routed for the descriptor's kind [0.05ms]
+(pass) RoutingAdapter earliest version > throws StreamdError when the routed adapter cannot report one [0.04ms]
+(pass) RoutingAdapter blocks > asks the adapter routed for the descriptor's kind [0.05ms]
+(pass) RoutingAdapter blocks > throws StreamdError when the routed adapter cannot report blocks [0.04ms]
+(pass) RoutingAdapter transaction lookup > routes by the descriptor's kind, and to default without a descriptor [0.07ms]
+(pass) RoutingAdapter transaction lookup > refuses when no route serves the lookup [0.05ms]
+(pass) RoutingAdapter simulation > routes by the descriptor's kind, and to default without a descriptor [0.07ms]
+(pass) RoutingAdapter simulation > refuses when no route serves the simulation [0.04ms]
+(pass) RoutingAdapter view > routes by descriptor kind, else to the default, and forwards every argument [0.07ms]
+(pass) RoutingAdapter view > refuses when no adapter runs views or none is routable [0.06ms]
+(pass) RoutingAdapter optional method fields > has no own property for a method no route has [0.02ms]
+
+tests/fullnode.test.ts:
+(pass) FullnodeScanAdapter module scan > starts at the chain head when there is no cursor or fromVersion [0.22ms]
+(pass) FullnodeScanAdapter module scan > stops at toVersion and resumes from the next version [0.09ms]
+(pass) FullnodeScanAdapter module scan > keeps only the descriptor's type and records each event's index [0.08ms]
+(pass) FullnodeScanAdapter module scan > matches multiple eventTypes in one transaction scan and preserves order [0.11ms]
+(pass) FullnodeScanAdapter module scan > populates transactionHash and timestamp on module events when present on the transaction [0.10ms]
+(pass) FullnodeScanAdapter module scan > populates sender on module events from user transactions only [0.07ms]
+(pass) FullnodeScanAdapter module scan > reports hasMore when it stops on the scan budget [0.10ms]
+(pass) FullnodeScanAdapter account walk > reports no more once the history is exhausted [0.38ms]
+(pass) FullnodeScanAdapter account walk > resolves its start from cursor, then offset, then a version filter, then the tip [0.26ms]
+(pass) FullnodeScanAdapter account walk > populates transactionHash and timestamp on account events [0.09ms]
+(pass) FullnodeScanAdapter account walk > populates sender on account events [0.05ms]
+(pass) FullnodeScanAdapter handle events > advances the cursor by what the node returned, not by what survived filtering [0.18ms]
+(pass) FullnodeScanAdapter handle events > gives an event the same index whichever page it arrives on [0.10ms]
+(pass) FullnodeScanAdapter handle events > requests a short address in its long form [0.05ms]
+(pass) FullnodeScanAdapter handle events > refuses an address that is not one, before any request [0.04ms]
+(pass) FullnodeScanAdapter handle events > sends the configured headers and API key [0.06ms]
+(pass) FullnodeScanAdapter handle events by creation number > reads the creation-number endpoint and pages like the field form [0.14ms]
+(pass) FullnodeScanAdapter handle events by creation number > refuses both forms as input, before any request [0.05ms]
+(pass) FullnodeScanAdapter handle events by creation number > refuses a negative creationNumber as input, before any request [0.02ms]
+(pass) FullnodeScanAdapter handle events by creation number > refuses a number creationNumber as input, before any request
+(pass) FullnodeScanAdapter handle events by creation number > refuses a string creationNumber as input, before any request
+(pass) FullnodeScanAdapter handle events by creation number > refuses an over-u64 creationNumber as input, before any request
+(pass) FullnodeScanAdapter handle events by creation number > refuses no form at all as input, before any request
+(pass) FullnodeScanAdapter handle events by creation number > refuses an empty fieldName as input, before any request [0.01ms]
+(pass) FullnodeScanAdapter handle events by creation number > accepts the largest u64 creation number [0.05ms]
+(pass) FullnodeScanAdapter guids > carries a legacy event's guid and none for the zero guid on the module scan [0.12ms]
+(pass) FullnodeScanAdapter guids > carries guids on the account walk [0.08ms]
+(pass) FullnodeScanAdapter guids > keeps creation number 0 at a real account and drops a malformed guid [0.07ms]
+(pass) FullnodeScanAdapter guids > carries the handle's guid on handle events [0.05ms]
+(pass) FullnodeScanAdapter page finality > marks a module page final only when its scan stayed below the head [0.29ms]
+(pass) FullnodeScanAdapter page finality > never marks a module page final when its start came from the head [0.04ms]
+(pass) FullnodeScanAdapter page finality > marks an account page final only when every batch came back full [0.17ms]
+(pass) FullnodeScanAdapter page finality > never marks an account page final when its start came from the latest sequence number [0.04ms]
+(pass) FullnodeScanAdapter page finality > marks a handle page final only when the node returned a full page [0.16ms]
+(pass) FullnodeScanAdapter scan progress > reports the last module version scanned, matches or not [0.20ms]
+(pass) FullnodeScanAdapter scan progress > leaves module progress unset when nothing was scanned [0.04ms]
+(pass) FullnodeScanAdapter scan progress > reports the version of the last account transaction examined [0.39ms]
+(pass) FullnodeScanAdapter scan progress > settles a full handle page only below its last event's version [0.26ms]
+(pass) FullnodeScanAdapter scan progress > never reports a negative handle version [0.04ms]
+(pass) FullnodeScanAdapter errors > surfaces a failed module request as StreamdNetworkError with its status [0.37ms]
+(pass) FullnodeScanAdapter errors > surfaces a failed account request as StreamdNetworkError with its status [0.06ms]
+(pass) FullnodeScanAdapter errors > surfaces a failed handle request as StreamdNetworkError with its status [0.04ms]
+(pass) FullnodeScanAdapter errors > refuses a bad handle address as input, not as a network failure [0.10ms]
+(pass) FullnodeScanAdapter errors > refuses a bad account address as input, not as a network failure [0.02ms]
+(pass) FullnodeScanAdapter errors > refuses a bad empty module eventType array as input, not as a network failure [0.01ms]
+(pass) FullnodeScanAdapter errors > refuses a bad empty module eventType string as input, not as a network failure [0.01ms]
+(pass) FullnodeScanAdapter errors > refuses a bad two-segment module eventType as input, not as a network failure [0.03ms]
+(pass) FullnodeScanAdapter errors > refuses a bad four-segment module eventType as input, not as a network failure
+(pass) FullnodeScanAdapter errors > refuses a bad module eventType array with bad entry as input, not as a network failure
+(pass) FullnodeScanAdapter errors > refuses a bad module cursor as input, not as a network failure
+(pass) FullnodeScanAdapter errors > refuses a bad account cursor as input, not as a network failure
+(pass) FullnodeScanAdapter errors > refuses a bad handle cursor as input, not as a network failure
+(pass) FullnodeScanAdapter errors > refuses a bad account offset as input, not as a network failure
+(pass) FullnodeScanAdapter errors > refuses a bad handle offset as input, not as a network failure
+(pass) FullnodeScanAdapter head version > reports the ledger version [0.08ms]
+(pass) FullnodeScanAdapter head version > surfaces a failed ledger read as StreamdNetworkError with its status [0.08ms]
+(pass) FullnodeScanAdapter earliest version > reports the oldest unpruned ledger version [0.06ms]
+(pass) FullnodeScanAdapter earliest version > surfaces a failed ledger read as StreamdNetworkError with its status [0.06ms]
+(pass) FullnodeScanAdapter block heights > reports the oldest and newest block heights from one ledger read [0.15ms]
+(pass) FullnodeScanAdapter block heights > surfaces a failed ledger read as StreamdNetworkError with its status [0.09ms]
+(pass) FullnodeScanAdapter blocks > maps a block to bigints without fetching its transactions [0.08ms]
+(pass) FullnodeScanAdapter blocks > surfaces a pruned block as StreamdNetworkError with its status [0.06ms]
+(pass) FullnodeScanAdapter transaction lookup > maps a committed transaction's events as the scan does [0.23ms]
+(pass) FullnodeScanAdapter transaction lookup > reports a failed transaction with its vm status [0.10ms]
+(pass) FullnodeScanAdapter transaction lookup > gives undefined for an unknown or pending transaction [0.06ms]
+(pass) FullnodeScanAdapter transaction lookup > refuses a malformed hash before any request [0.15ms]
+(pass) FullnodeScanAdapter transaction lookup > rejects a server error as StreamdNetworkError and a malformed reply as StreamdError [0.14ms]
+(pass) FullnodeScanAdapter simulation > POSTs to the simulate endpoint and maps the events without a transaction hash [13.50ms]
+(pass) FullnodeScanAdapter simulation > reports a failed simulation's vm status [0.95ms]
+(pass) FullnodeScanAdapter simulation > refuses a malformed response [2.92ms]
+(pass) FullnodeScanAdapter simulation > refuses a non-transaction or multi-agent one before any request [0.32ms]
+(pass) FullnodeScanAdapter simulation > sends the signer's public key for the auth-key check [0.57ms]
+(pass) FullnodeScanAdapter simulation > rejects a node error with its status and no cause [0.26ms]
+(pass) FullnodeScanAdapter view > POSTs one JSON view at the ledger version and returns its values [0.24ms]
+(pass) FullnodeScanAdapter view > sends empty type arguments and arguments when omitted [0.05ms]
+(pass) FullnodeScanAdapter view > refuses malformed requests and versions before any request [0.16ms]
+(pass) FullnodeScanAdapter view > never echoes arguments and shows only the start of a bad function id [0.05ms]
+(pass) FullnodeScanAdapter view > refuses an aborting view as invalid input, with no cause [0.06ms]
+(pass) FullnodeScanAdapter view > rejects a pruned version and other node errors as network errors with status and no cause [0.09ms]
+(pass) FullnodeScanAdapter view > lets FallbackAdapter answer a pruned view from another node [0.07ms]
+(pass) FullnodeScanAdapter view > sends the values it checked and refuses unserialisable arguments [0.08ms]
+(pass) FullnodeScanAdapter errors and the API key > keeps the API key out of every error from a 400 [1.08ms]
+(pass) FullnodeScanAdapter errors and the API key > keeps the API key out of every error from a 500 [0.23ms]
+
+tests/caching.test.ts:
+(pass) CachingAdapter > serves a final page from the source once, then from the cache [0.10ms]
+(pass) CachingAdapter > passes through pages that are not final, without storing them [0.08ms]
+(pass) CachingAdapter > stores nothing for a MemoryAdapter, whose pages are never final [0.04ms]
+(pass) CachingAdapter > does not store a failure [0.06ms]
+(pass) CachingAdapter > keys pages apart by every option and by what the descriptor selects [0.17ms]
+(pass) CachingAdapter > shares an entry between descriptors that select the same events [0.09ms]
+(pass) CachingAdapter > passes a descriptor of unknown kind through uncached [0.04ms]
+(pass) CachingAdapter > drops the least recently used page past maxEntries [0.09ms]
+(pass) CachingAdapter > keeps what it serves safe from a caller that mutates a result [0.06ms]
+(pass) CachingAdapter > forwards the optional methods, uncached, only when the source has them [0.11ms]
+(pass) CachingAdapter > rejects an invalid adapter or maxEntries [0.05ms]
+(pass) CachingAdapter transaction lookup > passes getTransactionEvents through, only when the source has it [0.06ms]
+(pass) CachingAdapter simulation > passes simulateTransactionEvents through uncached, only when the source has it [0.06ms]
+(pass) CachingAdapter view > passes view through uncached, only when the source has it [0.06ms]
+
+tests/shared.test.ts:
+(pass) SharedFetches > serves identical concurrent and within-interval calls from one request [0.20ms]
+(pass) SharedFetches > shares across descriptors with the same value [0.07ms]
+(pass) SharedFetches > requests again once the page is a poll interval old [0.04ms]
+(pass) SharedFetches > never shares a start at the head [0.04ms]
+(pass) SharedFetches > shares an absolute start, keyed by its version [0.05ms]
+(pass) SharedFetches > keeps calls apart that differ in descriptor, any option, or interval [0.12ms]
+(pass) SharedFetches > hands a failure to the calls already waiting, then requests again [0.08ms]
+(pass) SharedFetches > turns a synchronous throw into a rejection [0.05ms]
+(pass) SharedFetches > passes the optional methods through, and only those the adapter has [0.05ms]
+(pass) SharedFetches > joins a backfill page in flight but does not keep it [0.06ms]
+(pass) SharedFetches > keeps a slow request joinable past its interval [0.06ms]
+(pass) SharedFetches > never shares under an interval a timer cannot honour [0.08ms]
+(pass) SharedFetches > forgets every kept page on clear() [0.04ms]
+(pass) SharedFetches view > passes view through to the adapter [0.04ms]
+
+tests/hooks.test.ts:
+(pass) withHooks > calls onRequest, then the adapter, then onResponse with the page, and returns it unchanged [0.08ms]
+(pass) withHooks > reports a failed fetch to onResponse and rethrows the same error [0.05ms]
+(pass) withHooks > rejects the fetch when a hook throws [0.06ms]
+(pass) withHooks > works with no hooks set [0.05ms]
+(pass) withHooks > reads the hooks once, when wrapping [0.04ms]
+(pass) withHooks > delegates getHeadVersion when the wrapped adapter has one, without calling hooks [0.04ms]
+(pass) withHooks > has no getHeadVersion when the wrapped adapter lacks one [0.01ms]
+(pass) withHooks > delegates getEarliestVersion when the wrapped adapter has one, without calling hooks [0.03ms]
+(pass) withHooks > has no getEarliestVersion when the wrapped adapter lacks one
+(pass) withHooks > delegates getBlock when the wrapped adapter has one, without calling hooks [0.05ms]
+(pass) withHooks > has no getBlock when the wrapped adapter lacks one
+(pass) withHooks > delegates getBlockHeights when the wrapped adapter has one, without calling hooks [0.04ms]
+(pass) withHooks > has no getBlockHeights when the wrapped adapter lacks one
+(pass) withHooks > refuses an invalid adapter, hooks object, or hook [0.04ms]
+(pass) withHooks transaction lookup > passes getTransactionEvents through unhooked, only when the source has it [0.07ms]
+(pass) withHooks simulation > passes simulateTransactionEvents through unhooked, only when the source has it [0.05ms]
+(pass) withHooks view > passes view through unhooked, only when the source has it [0.07ms]
+
+tests/preflight.test.ts:
+(pass) checkDescriptor > reports each status and ok across a list sharing one module request [0.26ms]
+(pass) checkDescriptor > is ok for event and legacy types, checking a generic type by its outer struct [0.06ms]
+(pass) checkDescriptor > accepts a single type string [0.04ms]
+(pass) checkDescriptor > rejects bad input as StreamdError before any request [0.14ms]
+(pass) checkDescriptor > rejects a failed request as StreamdNetworkError with its status [0.07ms]
+(pass) checkDescriptor > rejects a module response without an ABI as StreamdError [0.04ms]
+(pass) checkDescriptor > reads a struct with no is_event as not declaring #[event] [0.05ms]
+(pass) checkDescriptor > rejects malformed ABI struct entries as StreamdError [0.10ms]
+(pass) checkDescriptor > does not answer one node's check from another's [0.06ms]
+
+tests/state.test.ts:
+(pass) withState on queries > attaches the view result read at each event's version [0.22ms]
+(pass) withState on queries > runs after decode, so decoded fields reach the request [0.07ms]
+(pass) withState on queries > delivers an event without state when the builder returns undefined [0.07ms]
+(pass) withState on queries > calls only for events that pass where, limit and orderBy [0.12ms]
+(pass) withState on queries > does not change the adapter's events [0.04ms]
+(pass) withState on queries > routes a merge's view calls by its first descriptor [0.10ms]
+(pass) withState on queries > works through getEventPages and iterateEvents [0.18ms]
+(pass) withState on queries > retries a failed view with the query's retries [1.28ms]
+(pass) withState on queries > rejects on a builder throw, an invalid request, a failed or malformed view [0.40ms]
+(pass) withState on queries > refuses a non-function withState and an adapter without view [0.09ms]
+(pass) withState on queries > keeps withState out of the adapter's fetch options [0.08ms]
+(pass) withState on queries > goes through maxConcurrentRequests [22.54ms]
+(pass) withState on listeners > delivers state through on, onBatch, once and stream [5.03ms]
+(pass) withState on listeners > reports a builder throw or invalid request and skips the event [2.29ms]
+(pass) withState on listeners > fails the poll on a failed view and delivers the event on the retry [4.35ms]
+(pass) withState on listeners > abandons a hung view on pause, so resume reads the event again [4.39ms]
+(pass) withState on listeners > redelivers a batch abandoned by a pause during a view [4.38ms]
+(pass) withState on listeners > frees a hung view's request slot when the subscription ends [2.29ms]
+(pass) withState on listeners > delivers a partial batch before failing the poll [4.30ms]
+(pass) withState on listeners > stops on an adapter without view [2.19ms]
+(pass) withState on listeners > refuses a non-function withState when subscribing [0.05ms]
+(pass) withState edge cases > does not retry a throwing builder on queries [0.10ms]
+(pass) withState edge cases > stops a subscription at once on a view refused as invalid input [2.17ms]
+(pass) withState edge cases > delivers nothing through on once unsubscribed during a view [23.22ms]
+(pass) withState edge cases > delivers nothing through onBatch once unsubscribed during a view [23.18ms]
+
+tests/stream.test.ts:
+(pass) StreamdClient.stream > yields events in order and unsubscribes when the loop breaks [0.68ms]
+(pass) StreamdClient.stream > reports a cursor that resumes a later stream after the last finished page [0.35ms]
+(pass) StreamdClient.stream > holds the next poll while the loop body is still on an event [0.46ms]
+(pass) StreamdClient.stream > throws out of the loop when polling gives up on invalid input [0.20ms]
+(pass) StreamdClient.stream > is done after the failure has been reported [0.10ms]
+(pass) StreamdClient.stream > passes non-fatal errors to onError and keeps going [0.28ms]
+(pass) StreamdClient.stream > ends an open loop when the client is destroyed [0.09ms]
+(pass) StreamdClient.stream > lets the held handler finish when the loop breaks [0.12ms]
+(pass) StreamdClient.stream > is done after return() [0.04ms]
+(pass) StreamdClient.stream > refuses a second next() while one is pending [0.07ms]
+(pass) StreamdClient.stream > does not subscribe until the loop asks for an event [0.28ms]
+(pass) StreamdClient.stream > rejects a pending next() with the signal reason on abort [0.38ms]
+(pass) StreamdClient.stream > rejects the following next() once when aborted during the loop body, then is done [0.09ms]
+(pass) StreamdClient.stream > rejects the first next() without subscribing when the signal is already aborted [0.06ms]
+(pass) StreamdClient.stream > detaches its abort listener when the loop exits and clears a held abort on return() [0.10ms]
+(pass) StreamdClient.stream > falls back to config.onError when stream() omits options.onError, and prefers options.onError when set [0.44ms]
+(pass) StreamdClient.stream > still rejects the stream when a throwing config.onError runs on a fatal error [0.15ms]
+
+tests/memory.test.ts:
+(pass) MemoryAdapter > returns an empty terminal page when constructed with no events [0.03ms]
+(pass) MemoryAdapter > copies and sorts input events by ascending (version, eventIndex) without mutating caller arrays [0.07ms]
+(pass) MemoryAdapter > matches single and multi-type module descriptors and deduplicates repeated types [0.06ms]
+(pass) MemoryAdapter > matches account descriptors with and without eventTypes, and handle descriptors [0.12ms]
+(pass) MemoryAdapter > pages by cursor across same-version events and sets hasMore accurately [0.06ms]
+(pass) MemoryAdapter > defaults limit to 25 and reports hasMore only when a 26th event remains [0.10ms]
+(pass) MemoryAdapter > advances nextCursor past non-matching events even when events is empty [0.03ms]
+(pass) MemoryAdapter > honours cursor in preference to fromVersion and offset [0.04ms]
+(pass) MemoryAdapter > filters by fromVersion and toVersion and stops with hasMore false at toVersion [0.06ms]
+(pass) MemoryAdapter > combines offset with fromVersion when cursor is omitted, and handles out-of-range cursors and limit 0 [0.05ms]
+(pass) MemoryAdapter > reverses page order when orderBy is desc [0.03ms]
+(pass) MemoryAdapter > invalid input rejection > refuses a bad handle address with StreamdError, not StreamdNetworkError [0.04ms]
+(pass) MemoryAdapter > invalid input rejection > refuses a bad handle with both forms with StreamdError, not StreamdNetworkError [0.01ms]
+(pass) MemoryAdapter > invalid input rejection > refuses a bad negative creationNumber with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad account address with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad empty module eventType array with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad empty module eventType string with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad two-segment module eventType with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad four-segment module eventType with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad module eventType array with bad entry and limit 0 with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad unknown descriptor kind with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad non-numeric cursor with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad empty cursor with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad negative cursor with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad negative offset with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad fractional offset with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad negative limit with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad fractional limit with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter > invalid input rejection > refuses a bad NaN limit with StreamdError, not StreamdNetworkError
+(pass) MemoryAdapter head version > reports the highest seeded version [0.02ms]
+(pass) MemoryAdapter head version > reports 0n when empty [0.03ms]
+(pass) MemoryAdapter earliest version > reports the lowest seeded version [0.02ms]
+(pass) MemoryAdapter earliest version > reports 0n when empty [0.02ms]
+(pass) MemoryAdapter scan progress > settles only below the next unexamined event [0.05ms]
+(pass) MemoryAdapter scan progress > reports the last seeded version once every event was examined [0.03ms]
+(pass) MemoryAdapter scan progress > leaves it unset when nothing was examined [0.04ms]
+(pass) MemoryAdapter transaction lookup > serves the seeded events carrying the hash, in order, as a successful transaction [0.04ms]
+(pass) MemoryAdapter transaction lookup > gives undefined for an unseeded hash and refuses a malformed one [0.03ms]
+
+tests/cursor.test.ts:
+(pass) CursorManager > tracks the adapter resume token [0.01ms]
+(pass) CursorManager > starts with no token
+(pass) CursorManager > deduplicates seen events [0.03ms]
+(pass) CursorManager > keys on eventIndex, not sequenceNumber [0.01ms]
+(pass) CursorManager > evicts oldest entries when exceeding window size [0.27ms]
+(pass) CursorManager > does not double-mark the same event or evict other entries [0.03ms]
+(pass) CursorManager > respects a custom dedupWindow size [0.02ms]
+(pass) CursorManager > disables deduplication when dedupWindow is 0
+(pass) CursorManager > throws StreamdError when dedupWindow is invalid [0.08ms]
+(pass) eventId > joins version and eventIndex
+(pass) eventId > accepts a parsed event and a bare pair [0.03ms]
+(pass) eventId > ignores sequenceNumber [0.01ms]
+
+tests/time.test.ts:
+(pass) resolveFromTime > finds the first block stamped at or after the time, in few lookups [0.29ms]
+(pass) resolveFromTime > matches a linear scan on uneven block times and runs of equal stamps [0.62ms]
+(pass) resolveFromTime > clamps a time before the oldest block to that block, in one lookup [0.03ms]
+(pass) resolveFromTime > starts just past the head for a future time [0.03ms]
+(pass) resolveFromTime > handles a single served block [0.03ms]
+(pass) resolveFromTime > rejects an adapter missing either method, naming both [0.07ms]
+(pass) resolveFromTime > refuses malformed block heights and a block that answers another height [0.13ms]
+(pass) resolveFromTime > reads block heights once, so a getter cannot change them after the check [0.06ms]
+(pass) resolveFromTime > stops between lookups once its caller has given up [0.04ms]
+(pass) validateFromTime > accepts a non-negative bigint alone or with no start [0.02ms]
+(pass) validateFromTime > rejects {
+  fromTime: -1n,
+} [0.01ms]
+(pass) validateFromTime > rejects {
+  fromTime: 5,
+}
+(pass) validateFromTime > rejects {
+  fromTime: 1n,
+  fromVersion: 3n,
+}
+(pass) validateFromTime > rejects {
+  fromTime: 1n,
+  fromVersion: "earliest",
+}
+(pass) validateFromTime > rejects {
+  fromTime: 1n,
+  fromBlock: 3n,
+}
+
+tests/poller.test.ts:
+(pass) EventPoller > calls callback for each new event [0.14ms]
+(pass) EventPoller > deduplicates events repeated across pages [0.11ms]
+(pass) EventPoller > evicts older events once dedupWindow is exceeded and disables dedup when dedupWindow is 0 [0.22ms]
+(pass) EventPoller > throws StreamdError when constructed with an invalid dedupWindow [0.04ms]
+(pass) EventPoller > distinguishes events sharing a version by eventIndex [0.04ms]
+(pass) EventPoller > advances past pages containing no matching events [0.08ms]
+(pass) EventPoller > seeds the first poll from fromVersion, then follows the cursor [0.06ms]
+(pass) EventPoller > resumes from a given cursor instead of fromVersion [0.04ms]
+(pass) EventPoller > reports the cursor of the last page it finished [0.10ms]
+(pass) EventPoller > enters catch-up mode when the adapter reports more data [0.07ms]
+(pass) EventPoller > stops after max consecutive errors [0.38ms]
+(pass) EventPoller > backoff > doubles the wait after each consecutive failure [0.83ms]
+(pass) EventPoller > backoff > starts a restart after an auto-stop with a fresh error budget and backoff [0.28ms]
+(pass) EventPoller > backoff > never waits longer than a minute [0.06ms]
+(pass) EventPoller > backoff > starts backing off from the poll interval again after a success [0.56ms]
+(pass) EventPoller > backoff > caps backoff at a custom maxBackoff smaller or larger than the 60s default [0.53ms]
+(pass) EventPoller > backoff > honours maxBackoff below pollInterval (including 0) and still resets to pollInterval on success [0.30ms]
+(pass) EventPoller > backoff > Retry-After hints > waits the hint instead of the doubled interval, then resumes the sequence [0.57ms]
+(pass) EventPoller > backoff > Retry-After hints > caps a hint at maxBackoff and retries at once on a hint of 0 [2.20ms]
+(pass) EventPoller > backoff > Retry-After hints > ignores an invalid hint [0.44ms]
+(pass) EventPoller > backoff > Retry-After hints > still counts a hinted failure toward maxErrors [0.13ms]
+(pass) EventPoller > backoff > throws StreamdError when constructed with an invalid maxBackoff [0.09ms]
+(pass) EventPoller > invalid input > stops on the first plain StreamdError from the adapter [0.59ms]
+(pass) EventPoller > invalid input > still retries a StreamdNetworkError [0.56ms]
+(pass) EventPoller > invalid input > still retries an error that is not a StreamdError [0.55ms]
+(pass) EventPoller > is already inactive when the final error is reported [0.17ms]
+(pass) EventPoller > keeps polling until maxErrors and surfaces each onError throw [0.45ms]
+(pass) EventPoller > does not count a throwing callback and onError as a polling failure [0.22ms]
+(pass) EventPoller > counts only consecutive failures toward maxErrors [0.60ms]
+(pass) EventPoller > resets error count on successful poll [0.26ms]
+(pass) EventPoller > ignores start() while already running [0.04ms]
+(pass) EventPoller > stop prevents further polling [0.56ms]
+(pass) EventPoller > delivers nothing from a fetch that resolves after stop [0.12ms]
+(pass) EventPoller > resumes from the old cursor after a fetch that resolved post-stop [0.12ms]
+(pass) EventPoller > runs one poll chain after stop() and start() during an in-flight fetch [0.28ms]
+(pass) EventPoller > ignores a fetch that fails after stop() and start() [0.28ms]
+(pass) EventPoller > runs one poll chain when the callback restarts the poller [0.26ms]
+(pass) EventPoller > runs one poll chain when onError restarts the poller [0.61ms]
+(pass) EventPoller > reports nothing from a fetch that fails after stop [0.06ms]
+(pass) EventPoller > isolates a throwing callback from the rest of the page [0.23ms]
+(pass) EventPoller > reports nothing when the callback unsubscribes and then throws [0.06ms]
+(pass) EventPoller > async handlers > waits for a handler before the next event and the next poll [0.28ms]
+(pass) EventPoller > async handlers > holds the cursor until the page's handlers settle [0.05ms]
+(pass) EventPoller > async handlers > leaves the cursor alone when stopped during a handler [0.14ms]
+(pass) EventPoller > async handlers > does not deliver alongside a pending handler after stop() and start() [0.27ms]
+(pass) EventPoller > async handlers > keeps the held cursor when a restarted page's last handler settles late [0.05ms]
+(pass) EventPoller > async handlers > recovers on the next poll after a malformed page [0.23ms]
+(pass) EventPoller > async handlers > reports a rejected handler and carries on with the page [0.08ms]
+(pass) EventPoller > reports a rejecting async callback through onError [0.07ms]
+(pass) EventPoller > reports nothing from an async callback that rejects after stop [0.08ms]
+(pass) EventPoller > reports a late async rejection from before a restart [0.06ms]
+(pass) EventPoller > reports a callback that restarts the poller and then throws [0.05ms]
+(pass) EventPoller > isolates a throwing where predicate from the rest of the page [0.22ms]
+(pass) EventPoller > stops delivering the page when stopped from the callback [0.21ms]
+(pass) EventPoller signal > stops polling when the signal aborts, without reporting an error [0.42ms]
+(pass) EventPoller signal > never starts on an already-aborted signal [0.09ms]
+(pass) EventPoller signal > detaches from the signal when stopped [0.05ms]
+(pass) EventPoller status > reports initial status before start, after start with a seeded cursor, and on a pre-aborted signal [0.06ms]
+(pass) EventPoller status > tracks lastVersion, cursor, and lastSuccessAt across empty, filtered, multi-event, and out-of-order pages [0.23ms]
+(pass) EventPoller status > tracks consecutiveErrors across failures and resets on a successful poll while ignoring callback errors [0.29ms]
+(pass) EventPoller status > holds cursor and lastSuccessAt while an async handler is pending and when stopped mid-page [0.16ms]
+(pass) EventPoller status > leaves status untouched when a fetch resolves or rejects after stop, and returns an isolated snapshot [0.12ms]
+(pass) EventPoller pause and resume > stops fetching while paused and resumes from the held cursor [0.61ms]
+(pass) EventPoller pause and resume > discards a fetch that resolves while paused [0.09ms]
+(pass) EventPoller pause and resume > stops the page when paused from the callback and skips delivered events on resume [0.08ms]
+(pass) EventPoller pause and resume > seeds from fromVersion when resumed before any page finished [0.10ms]
+(pass) EventPoller pause and resume > ignores pause() when not active and resume() unless paused [0.30ms]
+(pass) EventPoller pause and resume > does not revive a poller that gave up after maxErrors [0.11ms]
+(pass) EventPoller pause and resume > ends on abort while paused [0.12ms]
+(pass) EventPoller pause and resume > reports a pending handler that rejects while paused [0.08ms]
+(pass) EventPoller pause and resume > cancels the pending poll timer, so an immediate resume runs one polling loop [0.59ms]
+(pass) EventPoller pause and resume > never has two fetches in flight when paused and resumed during one [0.40ms]
+(pass) EventPoller pause and resume > carries consecutiveErrors across a pause and retries at once on resume [0.07ms]
+(pass) EventPoller onCaughtUp > fires once after the backlog is delivered, not before [1.58ms]
+(pass) EventPoller onCaughtUp > is not called for a failed poll [0.07ms]
+(pass) EventPoller onCaughtUp > reports a throw through onError and keeps polling [0.58ms]
+(pass) EventPoller onCaughtUp > schedules no further poll when it stops the poller [1.06ms]
+(pass) EventPoller onCaughtUp > fires after resume when a pause came before it [1.18ms]
+(pass) EventPoller batch delivery > delivers an event a page repeats once, unless dedupWindow is 0 [0.23ms]
+(pass) EventPoller batch delivery > delivers each page's new, filtered events in one call, in order [0.13ms]
+(pass) EventPoller batch delivery > skips the call for a page with nothing new but still advances [0.07ms]
+(pass) EventPoller batch delivery > holds the cursor and the next poll until the batch settles [0.31ms]
+(pass) EventPoller batch delivery > reports a rejected batch without spending the error budget [0.65ms]
+(pass) EventPoller batch delivery > drops only the event whose where predicate throws [0.09ms]
+(pass) EventPoller batch delivery > leaves the cursor alone when stopped during a pending batch [0.06ms]
+(pass) EventPoller relative start > starts a negative fromVersion that many versions before the head [0.12ms]
+(pass) EventPoller relative start > clamps at version 0 [0.05ms]
+(pass) EventPoller relative start > reads no head for a non-negative fromVersion or a cursor [0.12ms]
+(pass) EventPoller relative start > stops as invalid input when the adapter cannot report a head [0.22ms]
+(pass) EventPoller relative start > retries a head read that failed on the network [0.23ms]
+(pass) EventPoller relative start > reuses the resolved start when the fetch after it fails [0.22ms]
+(pass) EventPoller earliest start > starts at the adapter's earliest version [0.13ms]
+(pass) EventPoller earliest start > reads no earliest version when a cursor is given or fromVersion is a bigint [0.10ms]
+(pass) EventPoller earliest start > stops as invalid input when the adapter cannot report an earliest version [0.06ms]
+(pass) EventPoller earliest start > stops as invalid input when the earliest version is malformed [0.05ms]
+(pass) EventPoller earliest start > stops as invalid input on a fromVersion that is neither a bigint nor earliest [0.04ms]
+(pass) EventPoller earliest start > retries an earliest read that failed on the network [0.15ms]
+(pass) EventPoller earliest start > reuses the resolved start when the fetch after it fails [0.16ms]
+(pass) EventPoller decode > delivers decoded data, and where sees the same decoded event [0.12ms]
+(pass) EventPoller decode > reports an undecodable event through onError, skips it, and keeps polling [0.09ms]
+(pass) EventPoller decode > rejects an invalid decode option at construction [0.03ms]
+(pass) EventPoller time start > starts at the first block stamped at or after fromTime, searching once [0.34ms]
+(pass) EventPoller time start > does not search when a cursor is given [0.05ms]
+(pass) EventPoller time start > throws from the constructor on a conflicting or malformed fromTime [0.04ms]
+(pass) EventPoller time start > stops as invalid input when the adapter cannot search blocks [0.06ms]
+(pass) EventPoller time start > restarts the search on a later poll after a network failure partway through [0.21ms]
+(pass) EventPoller time start > abandons a search once the subscription stops [0.08ms]
+
+tests/client.test.ts:
+(pass) StreamdClient > creates subscriptions with on() [0.10ms]
+(pass) StreamdClient > destroy stops all subscriptions [0.04ms]
+(pass) StreamdClient > on() forgets a subscription whose signal aborts [0.36ms]
+(pass) StreamdClient > on() with an already-aborted signal never polls [0.10ms]
+(pass) StreamdClient > on() detaches from the signal on unsubscribe [0.03ms]
+(pass) StreamdClient > uses the injected adapter instead of the fullnode default [0.09ms]
+(pass) StreamdClient > getEvents pages past windows with no matches [0.05ms]
+(pass) StreamdClient > getEvents through withHooks reports each page fetch once, and keeps relative starts working [0.16ms]
+(pass) StreamdClient > getEvents honours the overall limit across pages [0.08ms]
+(pass) StreamdClient > getEvents applies `where` and counts limit after filtering [0.09ms]
+(pass) StreamdClient > does not forward `where` to the adapter [0.05ms]
+(pass) StreamdClient > on() delivers only events matching `where` [0.08ms]
+(pass) StreamdClient > filters getEvents and on() by nested payload field via whereField [0.15ms]
+(pass) StreamdClient > filters getEvents, getEventPages, on(), once(), and stream() with not() [0.57ms]
+(pass) StreamdClient > maxPages bounds a walk whose predicate matches nothing [0.09ms]
+(pass) StreamdClient > resumes a new client from a cursor saved after destroy() [0.13ms]
+(pass) StreamdClient > accepts an account descriptor [0.07ms]
+(pass) StreamdClient > once() resolves with the first event [0.06ms]
+(pass) StreamdClient > once() rejects when polling exhausts its error budget [0.24ms]
+(pass) StreamdClient > on() forgets a subscription that stopped itself after maxErrors [0.20ms]
+(pass) StreamdClient > once() forgets its subscription when polling gives up [0.21ms]
+(pass) StreamdClient > once() rejects on the first poll when the descriptor is invalid [0.15ms]
+(pass) StreamdClient > once() rejects when its where predicate throws [0.14ms]
+(pass) StreamdClient > once() reports a throwing onCaughtUp and still resolves with the next match [0.41ms]
+(pass) StreamdClient > once() skips an event that fails decode and resolves with the next one [0.15ms]
+(pass) StreamdClient > once() still rejects when the caller's onError throws [0.14ms]
+(pass) StreamdClient > once() rejects with the signal reason on abort and stops fetching [0.37ms]
+(pass) StreamdClient > once() with an already-aborted signal rejects without fetching [0.13ms]
+(pass) StreamdClient > once() rejects with StreamdTimeoutError when the timeout elapses [0.50ms]
+(pass) StreamdClient > once() clears its timer and detaches its abort listener when an event arrives [0.67ms]
+(pass) StreamdClient > once() rejects an invalid timeout with StreamdError before subscribing [0.12ms]
+(pass) StreamdClient > delivers transactionHash and timestamp on events through getEvents and on() [0.16ms]
+(pass) StreamdClient > filters a backlog by transaction sender with fromSender [0.12ms]
+(pass) StreamdClient > supports multi-type module descriptors across getEvents, on, once, and stream [0.23ms]
+(pass) StreamdClient > client-wide onError > routes on() polling and callback errors to config.onError when options.onError is omitted [0.24ms]
+(pass) StreamdClient > client-wide onError > prefers per-subscription options.onError over config.onError in on() and once() [0.22ms]
+(pass) StreamdClient > client-wide onError > routes once() transient and fatal errors to config.onError once per error [0.34ms]
+(pass) StreamdClient > client-wide onError > does not call config.onError on abort or once() timeout [0.24ms]
+(pass) StreamdClient > client-wide onError > rethrows a throwing config.onError on a microtask without stalling on() or once() [0.25ms]
+(pass) StreamdClient > MemoryAdapter offline usage > throws StreamdError when constructed with neither aptos nor adapter [0.05ms]
+(pass) StreamdClient > MemoryAdapter offline usage > drives getEvents, getEventPages, on, once, stream, and cursor resume offline without an Aptos instance [0.92ms]
+(pass) StreamdClient > RoutingAdapter and FallbackAdapter composition > composes RoutingAdapter and FallbackAdapter across getEvents, on, once, and stream [3.16ms]
+(pass) StreamdClient > sub.status > exposes status across polling, transient and fatal errors, unsubscribe, destroy, and abort [0.53ms]
+(pass) StreamdClient > maxBackoff and dedupWindow options > forwards maxBackoff and dedupWindow through on(), once(), and stream() [0.52ms]
+(pass) StreamdClient > maxBackoff and dedupWindow options > rejects or throws StreamdError on invalid maxBackoff or dedupWindow across on(), once(), and stream() [0.28ms]
+(pass) Subscription pause and resume > stops delivery while paused and delivers what arrived meanwhile on resume [0.70ms]
+(pass) Subscription pause and resume > ends a paused subscription on unsubscribe, destroy, or abort [0.42ms]
+(pass) Subscription pause and resume > keeps a paused subscription when a pending handler fails while paused [0.12ms]
+(pass) onCaughtUp > fires once on() has delivered the backlog [0.40ms]
+(pass) onBatch > delivers the backlog one page at a time and stops on destroy() [0.39ms]
+(pass) StreamdClient relative start > on() with a negative fromVersion delivers from that many versions before the head [0.08ms]
+(pass) StreamdClient relative start > getEvents() with a negative fromVersion starts that many versions before the head [0.06ms]
+(pass) StreamdClient earliest start > on() with fromVersion earliest delivers from the oldest available version [0.07ms]
+(pass) StreamdClient earliest start > getEvents() with fromVersion earliest reads from the oldest version, in either order [0.08ms]
+(pass) StreamdClient block range > getEvents() with fromBlock and toBlock returns only that range, through the limiter [0.10ms]
+(pass) StreamdClient fromTime queries > getEvents() with fromTime starts at the first block stamped at or after it [0.10ms]
+(pass) StreamdClient fromTime queries > on() delivers from the resolved block, and rejects fromTime with fromVersion [1.39ms]
+(pass) StreamdClient latest-first queries > getEvents() with orderBy desc returns the most recent events across pages [0.21ms]
+(pass) StreamdClient query retries > getEvents() with retries recovers from a failed page [0.68ms]
+(pass) StreamdClient query retries > a query waiting to retry does not hold a maxConcurrentRequests slot [0.63ms]
+(pass) maxConcurrentRequests > caps adapter calls across subscriptions and queries, counting getHeadVersion [0.30ms]
+(pass) maxConcurrentRequests > never calls the adapter for a subscription unsubscribed while queued [0.11ms]
+(pass) maxConcurrentRequests > rejects a query aborted while queued without calling the adapter for it [0.09ms]
+(pass) maxConcurrentRequests > does not grow the queue across pause and resume while a fetch hangs [1.03ms]
+(pass) maxConcurrentRequests > destroy() rejects a query still queued behind a hung call [0.11ms]
+(pass) maxConcurrentRequests > rejects a cap that is not a positive integer [0.10ms]
+(pass) StreamdClient decode > delivers named integer fields as bigint through on() [0.17ms]
+(pass) listener management > counts on() and onBatch() subscriptions, in total and per descriptor [0.11ms]
+(pass) listener management > does not count once() or stream() [0.11ms]
+(pass) listener management > matches descriptors by value [0.13ms]
+(pass) listener management > keys a handle by creation number apart from its struct and field form [0.06ms]
+(pass) listener management > counts paused subscriptions and drops ended ones [0.28ms]
+(pass) off and removeAllListeners > off(d, cb) stops only the earliest match [0.08ms]
+(pass) off and removeAllListeners > off(d, cb) removes an onBatch() subscription by its batch callback [0.03ms]
+(pass) off and removeAllListeners > off(d) stops every listener on d and nothing else [0.04ms]
+(pass) off and removeAllListeners > off() with a descriptor that is not one of the three kinds is a no-op [0.03ms]
+(pass) off and removeAllListeners > removeAllListeners(d) stops only that descriptor's listeners [0.03ms]
+(pass) off and removeAllListeners > removeAllListeners() leaves once() and stream() running [0.16ms]
+(pass) off and removeAllListeners > destroy() clears the listener count [0.03ms]
+(pass) off and removeAllListeners > off() after destroy() and re-subscribing stops the live subscription [0.03ms]
+(pass) off and removeAllListeners > destroy() detaches on()'s listener from the signal [0.05ms]
+(pass) iterateEvents > yields single events, and two interleaved loops share a one-request cap [0.16ms]
+(pass) client-wide listener defaults > applies defaults to on() and lets a call override one field [0.71ms]
+(pass) client-wide listener defaults > prefers defaults.pollInterval over defaultPollInterval, and a call's over both [0.66ms]
+(pass) client-wide listener defaults > applies a default decode, replaced by a call's own [0.13ms]
+(pass) client-wide listener defaults > applies defaults to onBatch(), once() and stream() [0.31ms]
+(pass) client-wide listener defaults > keeps listener tracking working for subscriptions made with defaults [0.03ms]
+(pass) client-wide listener defaults > rejects invalid or unsupported defaults at construction [0.13ms]
+(pass) shared polling > serves identical subscriptions from one fetch per interval, each receiving every event [1.39ms]
+(pass) shared polling > fetches separately for a different batchSize or pollInterval [1.87ms]
+(pass) shared polling > never shares a start at the head, then shares once the cursors coincide [0.64ms]
+(pass) shared polling > keeps the other subscription polling when one unsubscribes or pauses [0.45ms]
+(pass) shared polling > gives each subscription its own error budget and StreamdPollingError on a shared failure [0.66ms]
+(pass) disposal > stops a subscription and drops it from the listeners at scope exit [0.08ms]
+(pass) disposal > is a no-op after unsubscribe or a second dispose [0.03ms]
+(pass) disposal > leaves a subscription sharing its fetches polling [0.45ms]
+(pass) disposal > destroys the client at scope exit [0.04ms]
+(pass) backfill, then follow > resumes on() from the query's end cursor with no gap and no repeat [0.19ms]
+(pass) backfill, then follow > follows a filtered paged backfill with onBatch [0.17ms]
+(pass) caller-supplied subscription ids > uses the given id on on() and onBatch(), and generates one otherwise [0.10ms]
+(pass) caller-supplied subscription ids > refuses an empty or non-string id [0.07ms]
+(pass) caller-supplied subscription ids > refuses an id a live subscription holds, leaving that one polling [0.20ms]
+(pass) caller-supplied subscription ids > frees the id when the subscription ends, however it ends [0.08ms]
+(pass) caller-supplied subscription ids > frees the id once polling gives up after maxErrors [0.19ms]
+(pass) caller-supplied subscription ids > does not let an ended subscription's unsubscribe() drop the one that reused its id [0.06ms]
+(pass) caller-supplied subscription ids > gives a never-polling subscription the id without holding it [0.03ms]
+(pass) caller-supplied subscription ids > refuses id as a client-wide default [0.03ms]
+
+tests/handles.test.ts:
+(pass) listEventHandles > returns a handle descriptor, count and guid for each top-level EventHandle field [0.19ms]
+(pass) listEventHandles > skips handles nested inside a struct field and malformed counters [0.06ms]
+(pass) listEventHandles > returns an empty list for an account with no resources [0.04ms]
+(pass) listEventHandles > normalizes a short address into the descriptor [0.06ms]
+(pass) listEventHandles > rejects an invalid address before any request [0.04ms]
+(pass) listEventHandles > rejects a failed request as StreamdNetworkError with its status [0.08ms]
+(pass) listEventHandles > yields descriptors FullnodeScanAdapter reads from the handle endpoint [0.08ms]
+
+tests/integration/fullnode.test.ts:
+(skip) FullnodeScanAdapter (mainnet) > advances the cursor past windows with no matches
+(skip) FullnodeScanAdapter (mainnet) > fetches module events in ascending version order
+(skip) FullnodeScanAdapter (mainnet) > fetches legacy handle events
+(skip) FullnodeScanAdapter (mainnet) > walks an account's history and filters by event type
+(skip) FullnodeScanAdapter (mainnet) > finds the account in its own events via involvesAddress
+(skip) FullnodeScanAdapter (mainnet) > maxPages bounds a filtered walk
+(skip) FullnodeScanAdapter (mainnet) > streams distinct, ascending events without stalling
+
+tests/cli/format.test.ts:
+(pass) formatEvent > serialises bigint fields as decimal strings in a fixed order [0.03ms]
+(pass) formatEvent > serialises bigints nested inside data [0.03ms]
+(pass) formatEvent > omits optional fields that are absent [0.02ms]
+(pass) formatEvent > produces exactly one line [0.02ms]
+
+tests/cli/args.test.ts:
+(pass) parseCommand help > returns help for [] [0.03ms]
+(pass) parseCommand help > returns help for ["-h"]
+(pass) parseCommand help > returns help for ["--help"]
+(pass) parseCommand help > returns help for ["tail","--help"] [0.06ms]
+(pass) parseCommand help > returns help for ["tail","0x1::coin::DepositEvent","-h"]
+(pass) parseCommand descriptors > builds a module descriptor from one or more event types [0.13ms]
+(pass) parseCommand descriptors > accepts generic event types [0.01ms]
+(pass) parseCommand descriptors > builds an account descriptor, with or without event types [0.03ms]
+(pass) parseCommand descriptors > builds a handle descriptor [0.02ms]
+(pass) parseCommand options > defaults to mainnet and leaves the rest unset [0.01ms]
+(pass) parseCommand options > parses every option [0.05ms]
+(pass) parseCommand options > accepts --flag=value form [0.01ms]
+(pass) parseCommand rejects > ["watch"] [0.06ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--bogus"] [0.03ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--cursor","1"] [0.02ms]
+(pass) parseCommand rejects > ["tail"] [0.02ms]
+(pass) parseCommand rejects > ["tail","not-a-type"] [0.02ms]
+(pass) parseCommand rejects > ["tail","--account","nope"] [0.01ms]
+(pass) parseCommand rejects > ["tail","--account","0x1","--handle","0x1::a::B"] [0.01ms]
+(pass) parseCommand rejects > ["tail","--handle","0x1::a::B","--field","f"] [0.01ms]
+(pass) parseCommand rejects > ["tail","--account","0x1","--field","f"]
+(pass) parseCommand rejects > ["tail","--account","0x1","--handle","0x1::a::B","--field","f","0x1::coin::DepositEvent"] [0.01ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--network","localnet"] [0.02ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--node-url","ftp://example.com"] [0.02ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--node-url","not a url"] [0.01ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--from-version","-1"] [0.03ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--from-version","1.5"] [0.02ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--poll-interval","-5"] [0.01ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--poll-interval","2147483648"] [0.01ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--limit","0"] [0.02ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--limit","2.5"] [0.01ms]
+(pass) parseCommand rejects > ["tail","0x1::coin::DepositEvent","--limit"]
+(pass) parseCommand forward > applies defaults [0.10ms]
+(pass) parseCommand forward > reads every flag [0.07ms]
+(pass) parseCommand forward > returns help [0.01ms]
+(pass) parseCommand forward > rejects ["forward","0x1::coin::DepositEvent"] [0.02ms]
+(pass) parseCommand forward > rejects ["forward","--to","https://hooks.example.com/in?token=s3cret"] [0.02ms]
+(pass) parseCommand forward > rejects ["forward","--to","https://hooks.example.com/in?token=s3cret","0x1::coin::DepositEvent","--limit","1"] [0.01ms]
+(pass) parseCommand forward > rejects ["tail","0x1::coin::DepositEvent","--to","https://hooks.example.com/in?token=s3cret"] [0.01ms]
+(pass) parseCommand forward > rejects ["forward","--to","https://hooks.example.com/in?token=s3cret","0x1::coin::DepositEvent","--retries","101"] [0.02ms]
+(pass) parseCommand forward > rejects ["forward","--to","https://hooks.example.com/in?token=s3cret","0x1::coin::DepositEvent","--timeout","0"] [0.02ms]
+(pass) parseCommand forward > rejects ["forward","--to","https://hooks.example.com/in?token=s3cret","0x1::coin::DepositEvent","--cursor-file",""] [0.02ms]
+(pass) parseCommand forward > rejects a non-http --to without echoing it: ftp://x.example/s3cret [0.03ms]
+(pass) parseCommand forward > rejects a non-http --to without echoing it: not a url s3cret [0.01ms]
+(pass) parseCommand forward > rejects a malformed --header without echoing it: "Authorization Bearer s3cret" [0.04ms]
+(pass) parseCommand forward > rejects a malformed --header without echoing it: ": s3cret" [0.01ms]
+(pass) parseCommand forward > rejects a malformed --header without echoing it: "Bad Name: s3cret" [0.01ms]
+(pass) parseCommand forward > rejects a malformed --header without echoing it: "X: a\ns3cret"
+(pass) parseCommand forward > rejects a malformed --header without echoing it: "X: s3€cret" [0.01ms]
+(pass) parseCommand forward > rejects a malformed --header without echoing it: "X: s3\u0007cret"
+
+tests/cli/forward.test.ts:
+(pass) runForward > POSTs a batch as a JSON array and checkpoints after the ack [6.82ms]
+(pass) runForward > resumes from the cursor file without redelivering [5.39ms]
+(pass) runForward > retries a 500 with backoff, then delivers [9.84ms]
+(pass) runForward > waits the Retry-After time on a 429 instead of the backoff [5.19ms]
+(pass) runForward > exits 1 past the retry bound, leaving no cursor [3.60ms]
+(pass) runForward > keeps the last acknowledged cursor when a later batch fails [4.21ms]
+(pass) runForward > exits 1 at once on a 400 for the first batch, leaving no cursor [2.63ms]
+(pass) runForward > aborts during a retry wait without advancing [3.07ms]
+(pass) runForward > exits 1 when the cursor file cannot be written [3.60ms]
+(pass) runForward > refuses to write through a link planted at the temp name [5.75ms]
+(pass) runForward > never prints the URL on a connection error [2.17ms]
+(pass) runForward > stops without advancing when the batch callback throws [2.59ms]
+(pass) runForward > sends a given content-type instead of the default [5.18ms]
+(pass) runForward > does not follow redirects [2.51ms]
+(pass) runForward > times out a request and never prints the URL or headers [23.13ms]
+(pass) runForward > abandons an in-flight POST on abort without advancing [3.43ms]
+(pass) runForward > exits 1 when polling stops on an error [2.04ms]
+(pass) runForward > exits 1 on an empty cursor file [1.09ms]
+(pass) runForward > exits 0 at once when the signal is already aborted [0.74ms]
+
+tests/cli/tail.test.ts:
+(pass) runTail > prints events as JSON lines in order and exits 0 at the limit [1.50ms]
+(pass) runTail > passes fromVersion through to the subscription [1.22ms]
+(pass) runTail > exits 0 when the signal aborts mid-stream [6.45ms]
+(pass) runTail > exits 0 with nothing written when the signal is already aborted [0.06ms]
+(pass) runTail > reports a fatal adapter error once and exits 1 [1.24ms]
+(pass) runTail > reports a transient error and keeps printing [3.50ms]
+(pass) runTail > exits 0 when a write fails because the signal aborted [1.23ms]
+(pass) runTail > awaits each write before taking the next event [12.54ms]
+(pass) runTail with a stub client > does not hold on to errors reported before the latest one [5.17ms]
+(pass) runTail with a stub client > leaves unset fromVersion and pollInterval out of the stream options [0.11ms]
+(pass) runTail with a stub client > passes fromVersion and pollInterval through unchanged [0.06ms]
+(pass) runTail with a stub client > reports a write failure with its cause and exits 1 when not aborted [0.09ms]
+
+7 tests skipped:
+(skip) FullnodeScanAdapter (mainnet) > advances the cursor past windows with no matches
+(skip) FullnodeScanAdapter (mainnet) > fetches module events in ascending version order
+(skip) FullnodeScanAdapter (mainnet) > fetches legacy handle events
+(skip) FullnodeScanAdapter (mainnet) > walks an account's history and filters by event type
+(skip) FullnodeScanAdapter (mainnet) > finds the account in its own events via involvesAddress
+(skip) FullnodeScanAdapter (mainnet) > maxPages bounds a filtered walk
+(skip) FullnodeScanAdapter (mainnet) > streams distinct, ascending events without stalling
+
+ 949 pass
+ 7 skip
+ 0 fail
+ 4034 expect() calls
+Ran 956 tests across 33 files. [1.80s]
