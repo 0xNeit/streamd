@@ -148,6 +148,17 @@ describe("descriptorKey for resource descriptors", () => {
     ).not.toBe(short);
   });
 
+  it("gives no request key to a resource descriptor the adapters refuse", () => {
+    const refused = [
+      { kind: "resource" },
+      { kind: "resource", accountAddress: "0x1" },
+      { kind: "resource", accountAddress: "nope", resourceType: TYPE },
+      { kind: "resource", accountAddress: "0x1", resourceType: "Account" },
+    ] as unknown as EventDescriptor[];
+    for (const d of refused) expect(fetchKey(d, { fromVersion: 0n })).toBeUndefined();
+    expect(fetchKey({ kind: "resource", accountAddress: "0x1", resourceType: TYPE }, {})).toBeDefined();
+  });
+
   it("matches a listener by value", () => {
     const client = new StreamdClient({ adapter: new MemoryAdapter() });
     client.on({ kind: "resource", accountAddress: "0x1", resourceType: TYPE }, () => {});

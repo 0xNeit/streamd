@@ -1,7 +1,7 @@
 import type { EventAdapter, EventDescriptor, FetchOptions } from "./types.js";
 import { StreamdError } from "./errors.js";
 import { normalizeAddress } from "./filter.js";
-import { handlePath, requireVersion } from "./adapters/validate.js";
+import { handlePath, requireAddress, requireResourceType, requireVersion } from "./adapters/validate.js";
 
 let nextId = 0;
 
@@ -107,12 +107,16 @@ function typeSet(types: unknown): unknown[] {
   return Array.isArray(types) ? [...new Set(types)].sort() : [types];
 }
 
-function isValidHandle(d: Parameters<typeof handlePath>[0]): boolean {
+function isRefused(d: EventDescriptor): boolean {
   try {
-    handlePath(d);
-    return true;
-  } catch {
+    if (d.kind === "handle") handlePath(d);
+    if (d.kind === "resource") {
+      requireAddress(d.accountAddress);
+      requireResourceType(d.resourceType);
+    }
     return false;
+  } catch {
+    return true;
   }
 }
 
@@ -150,11 +154,11 @@ export function descriptorKey(d: EventDescriptor | undefined): string | undefine
 /**
  * Value key for one `fetchEvents` request: equal for the same descriptor and
  * the same defined options in any order, undefined when `d` is not a descriptor.
- * A handle descriptor the adapters refuse has no key, so it never shares,
+ * A handle or resource descriptor the adapters refuse has no key, so it never shares,
  * caches or replays the answer of a valid one it would otherwise collide with.
  */
 export function fetchKey(d: EventDescriptor, options: FetchOptions): string | undefined {
-  if (d?.kind === "handle" && !isValidHandle(d)) return undefined;
+  if (d == null || isRefused(d)) return undefined;
   const selector = descriptorKey(d);
   if (selector === undefined) return undefined;
   const fields = Object.entries(options)
