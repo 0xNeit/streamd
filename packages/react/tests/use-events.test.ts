@@ -1,3 +1,4 @@
+import "./dom.js";
 import { describe, expect, it } from "bun:test";
 import { StrictMode, createElement } from "react";
 import { renderToString } from "react-dom/server";
@@ -55,6 +56,14 @@ describe("useEvents", () => {
     expect(t.last().status).toBe("live");
     t.adapter.events.push(ev(6n));
     await waitFor(() => expect(t.versions()).toEqual([4n, 5n, 6n]));
+    await unmount(root);
+  });
+
+  it("filters with an async where", async () => {
+    const t = setup();
+    const where = async (e: { version: bigint }) => e.version !== 2n;
+    const root = await render(t.el(TYPE, { ...FAST, where }));
+    await waitFor(() => expect(t.versions()).toEqual([1n, 3n]));
     await unmount(root);
   });
 

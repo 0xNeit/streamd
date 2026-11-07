@@ -19,13 +19,15 @@ export interface RoutingAdapterRoutes {
   handle?: EventAdapter;
   /** Adapter used for `{ kind: "account" }` descriptors. */
   account?: EventAdapter;
+  /** Adapter used for `{ kind: "resource" }` descriptors. */
+  resource?: EventAdapter;
   /** Fallback adapter used for any descriptor kind omitted above. */
   default?: EventAdapter;
 }
 
 /**
  * Composes `EventAdapter` instances by descriptor `kind` (`"module"`,
- * `"handle"`, `"account"`), with an optional `default` adapter for kinds not
+ * `"handle"`, `"account"`, `"resource"`), with an optional `default` adapter for kinds not
  * listed explicitly. Each optional method is defined only when some route or
  * the default has it, and still rejects for a kind whose adapter lacks it.
  */
@@ -33,6 +35,7 @@ export class RoutingAdapter implements EventAdapter {
   private readonly moduleAdapter?: EventAdapter;
   private readonly handleAdapter?: EventAdapter;
   private readonly accountAdapter?: EventAdapter;
+  private readonly resourceAdapter?: EventAdapter;
   private readonly defaultAdapter?: EventAdapter;
 
   declare getHeadVersion?: EventAdapter["getHeadVersion"];
@@ -65,6 +68,9 @@ export class RoutingAdapter implements EventAdapter {
         "RoutingAdapter.account",
       );
     }
+    if (routes.resource !== undefined) {
+      this.resourceAdapter = requireAdapter(routes.resource, "RoutingAdapter.resource");
+    }
     if (routes.default !== undefined) {
       this.defaultAdapter = requireAdapter(
         routes.default,
@@ -75,6 +81,7 @@ export class RoutingAdapter implements EventAdapter {
       this.moduleAdapter === undefined &&
       this.handleAdapter === undefined &&
       this.accountAdapter === undefined &&
+      this.resourceAdapter === undefined &&
       this.defaultAdapter === undefined
     ) {
       throw new StreamdError(
@@ -90,6 +97,7 @@ export class RoutingAdapter implements EventAdapter {
       this.moduleAdapter,
       this.handleAdapter,
       this.accountAdapter,
+      this.resourceAdapter,
       this.defaultAdapter,
     ];
     const served = (name: keyof EventAdapter) =>
@@ -233,6 +241,9 @@ export class RoutingAdapter implements EventAdapter {
         break;
       case "account":
         target = this.accountAdapter ?? this.defaultAdapter;
+        break;
+      case "resource":
+        target = this.resourceAdapter ?? this.defaultAdapter;
         break;
       default: {
         const unknown: never = descriptor;

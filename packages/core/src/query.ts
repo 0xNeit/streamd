@@ -11,6 +11,7 @@ import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
 import { StreamdError, StreamdNetworkError, retryAfterHint } from "./errors.js";
 import { mergeEvents, validateMerge } from "./merge.js";
+import { filterEvents } from "./filter.js";
 import { requireBlock, requireVersion } from "./adapters/validate.js";
 import { buildStateRequest, readState, validateWithState } from "./state.js";
 
@@ -386,10 +387,11 @@ export class EventQuery {
       // `where` runs here rather than in the adapter: predicates are functions
       // and cannot be pushed down to a remote source. `limit` counts what
       // survives it, so a restrictive predicate keeps paging rather than
-      // returning short.
+      // returning short. Only an async predicate's result is awaited.
       const decoded =
         decode === undefined ? page.events : page.events.map(decode);
-      const matched = where === undefined ? decoded : decoded.filter(where);
+      const filtered = where === undefined ? decoded : filterEvents(decoded, where);
+      const matched = Array.isArray(filtered) ? filtered : await raceAbort(filtered, signal);
 
       // Adapters may overshoot `limit` — a single transaction can emit several
       // matching events, and the scan adapter keeps them rather than dropping

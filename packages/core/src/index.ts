@@ -15,8 +15,11 @@ export { defineEvent } from "./define.js";
 export { listEventHandles } from "./handles.js";
 export { networks } from "./networks.js";
 export { checkDescriptor } from "./preflight.js";
+export { ownedBy } from "./ownership.js";
+export { resolveName } from "./names.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
 export {
+  StreamdAssertionError,
   StreamdError,
   StreamdNetworkError,
   StreamdPollingError,
@@ -27,6 +30,7 @@ export {
 
 export {
   every,
+  fromFunction,
   fromSender,
   involvesAddress,
   normalizeAddress,
@@ -61,6 +65,7 @@ export type {
 } from "./adapters/recording.js";
 export type { RoutingAdapterRoutes } from "./adapters/routing.js";
 export type { EventHandleInfo } from "./handles.js";
+export type { OwnedByOptions } from "./ownership.js";
 export type { NetworkPreset } from "./networks.js";
 export type {
   DescriptorCheck,
@@ -80,6 +85,7 @@ export type {
   BlockHeights,
   BlockInfo,
   CreationNumberEventDescriptor,
+  EntryFunctionCall,
   EventAdapter,
   EventCallback,
   EventDescriptor,
@@ -87,7 +93,10 @@ export type {
   EventGuid,
   EventPage,
   EventPredicate,
+  SyncEventPredicate,
+  EventExpectation,
   EventsOfOptions,
+  ExpectEventsOptions,
   EventStream,
   FetchOptions,
   HandleEventDescriptor,
@@ -97,9 +106,16 @@ export type {
   MoveEventType,
   OnceOptions,
   PreviewEventsOptions,
+  Transfer,
+  TransferFilter,
+  TransferListenerOptions,
+  TransferOptions,
   ReduceOptions,
   Reducer,
   Reduction,
+  Replay,
+  ReplayOptions,
+  ResourceDescriptor,
   StreamdConfig,
   StreamdEvent,
   Subscription,

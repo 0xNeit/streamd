@@ -13,6 +13,7 @@ import {
   moduleTypeFilter,
   parseCursor,
   requireAddress,
+  requireResourceType,
   requireTransactionHash,
   validateOffset,
 } from "./validate.js";
@@ -38,6 +39,11 @@ function descriptorFilter(
     case "handle":
       handlePath(descriptor);
       return () => true;
+    case "resource": {
+      requireAddress(descriptor.accountAddress);
+      const resourceType = requireResourceType(descriptor.resourceType);
+      return (type) => type === resourceType;
+    }
     default: {
       const unknown: never = descriptor;
       throw new StreamdError(

@@ -1,3 +1,4 @@
+import "./dom.js";
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
 import { MemoryAdapter, StreamdClient, StreamdError } from "@streamd/core";

@@ -272,6 +272,45 @@ gives up. `signal`, `unsubscribe()` and `destroy()` stop it at any stage without
 `onError`. `ready` never surfaces as an unhandled rejection, so ignoring it is safe. Like
 `once()` and `stream()`, a reduction is not counted by `listenerCount()`.
 
+### Replay history
+
+`replay()` feeds a past range through an `on()` callback, so a handler written for live
+events can be backtested unchanged. (It is unrelated to `replayAdapter`, which answers
+recorded adapter calls offline.)
+
+```ts
+const run = streamd.replay(swaps, handleSwap, {
+  fromVersion: 3_000_000_000n,
+  toVersion: 3_001_000_000n,
+  speed: 60, // an hour of chain time per minute; omit for as fast as possible
+});
+const delivered = await run.done;
+```
+
+The callback contract is `on()`'s: each call is awaited before the next event, and a throw
+or rejection goes to `onError` (or the client's) while delivery carries on. The range and
+narrowing options are those of `getEvents`, applied the same way: `fromVersion`,
+`toVersion`, `fromTime`, `fromBlock`, `toBlock`, `limit`, `offset`, `where`, `decode` (or
+the client's `defaults.decode`), `withState`, `maxPages`, `retries`, `onCursor` and
+`signal`; `batchSize` sets the page size. A list of descriptors is replayed merged, as
+`getEvents` merges it. `orderBy` and listener-only options are refused.
+
+`speed` omitted or `Infinity` delivers as fast as the callbacks settle. A positive number
+replays chain time scaled by it: before an event with a `timestamp`, the replay waits for
+its gap from the previous timestamped event divided by `speed`, less the time already spent
+since that delivery, so slow fetches and handlers do not stretch it. An event without a
+`timestamp` is delivered at once.
+
+The replay ends where `getEvents` would: at `toVersion`, or with no `toVersion` when the
+source reports nothing more (`toVersion: "head"` pins it to the head at the start). Then
+`onCaughtUp` is called once and `done` resolves with the number of events delivered. A
+failed query (after `retries`) goes to `onError` and `done` rejects with it; `signal`
+rejects it with the signal's reason, and `unsubscribe()` or `destroy()` with a
+`StreamdError`. `done` never surfaces as an unhandled rejection. `pause()` holds delivery
+before the next event and `resume()` carries on. To go live afterwards, take the cursor
+from `onCursor` and pass it to `on()` as `cursor`. Like `reduce()`, a replay is not counted
+by `listenerCount()` or stopped by `off()`.
+
 ### Start relative to the head
 
 ```ts
@@ -359,7 +398,8 @@ const event = await streamd.once(
 
 The promise rejects with `StreamdTimeoutError` if `timeout` elapses first, if
 polling gives up after `maxErrors`, straight away on invalid input, or on the first
-throw from `where`, which would otherwise skip every event. A throwing `onCaughtUp`,
+synchronous throw from `where`, which would otherwise skip every event (a rejected
+async `where` is retried, as for `on()`). A throwing `onCaughtUp`,
 an event that fails `decode`, or a throwing `withState` builder goes to `onError` and
 `once()` keeps waiting for a match.
 
@@ -391,6 +431,24 @@ told about a timeout or abort, so a lookup already in flight runs to completion 
 its `maxConcurrentRequests` slot until then. The hash must be
 `0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which
 `FullnodeScanAdapter` and `MemoryAdapter` have and the wrapping adapters pass through.
+
+### Assert a transaction's events in tests
+
+```ts
+const tx = streamd.expectEvents(hash, { decode: ["amount"] }); // options optional
+const [deposit] = await tx.toEmit(Deposit, whereField("amount", 100n));
+await tx.notToEmit({ kind: "module", eventType: "0x1::fungible_asset::Withdraw" });
+```
+
+For localnet and devnet integration tests under any runner. `toEmit(descriptor, where?)`
+resolves with the matching events, and `notToEmit(descriptor, where?)` with nothing. When an
+assertion does not hold it rejects with `StreamdAssertionError`, whose message lists every
+event the transaction emitted (index, type and data) and whose `events` holds them, so a
+failing test shows what happened instead of what did not. Each assertion waits for the
+transaction exactly as `eventsOf()` does and rejects as it does: a failed transaction with
+`StreamdTransactionError`, one not committed in `timeout` with `StreamdTimeoutError`.
+Nothing is looked up until an assertion runs. A malformed hash or `timeout` throws from
+`expectEvents()` itself.
 
 ### Preview a transaction's events before signing
 
@@ -637,6 +695,7 @@ Every call takes an event descriptor:
 | `module` | Module events of one or more Move types | `{ kind: "module", eventType: "0x1::coin::WithdrawEvent" }` or `{ kind: "module", eventType: ["0x1::fungible_asset::Withdraw", "0x1::fungible_asset::Deposit"] }` |
 | `handle` | A legacy `EventHandle` on an account | `{ kind: "handle", accountAddress, eventHandleStruct, fieldName }` or, by its guid, `{ kind: "handle", accountAddress, creationNumber: 3n }` |
 | `account` | Events from transactions an account **sent** | `{ kind: "account", accountAddress, eventTypes?: [...] }` |
+| `resource` | Every write or delete of one resource, even when no event fires | `{ kind: "resource", accountAddress, resourceType: "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>" }` |
 
 When `module.eventType` is an array of Move types, `FullnodeScanAdapter` serves
 all of them in a single transaction scan per page, delivering matches in
@@ -652,6 +711,22 @@ events as the struct and field form, through the fullnode's
 transaction deposits into the account, that event belongs to the sender's
 transaction and won't appear.
 
+`resource` reads each transaction's write set rather than its events, so it sees
+every transaction that changed the resource, whoever sent it. Each change arrives
+as a `StreamdEvent`: `type` is the resource type, `data` is the resource's value
+once the transaction ran, or `null` when the transaction deleted it, and
+`sequenceNumber` is `0n`. `resourceType` is matched exactly as the fullnode writes
+it, with special addresses short (`0x1`) and others in full; `accountAddress` may
+be written either way. `eventsOf()` and `previewEvents()` refuse it, since a
+transaction lookup carries events, not write sets.
+
+```ts
+streamd.on(
+  { kind: "resource", accountAddress: "0x1", resourceType: "0x1::block::BlockResource" },
+  (change) => console.log(change.version, change.data),
+);
+```
+
 Each delivered `StreamdEvent` carries `type`, `data`, `version` (`bigint`),
 `sequenceNumber` (`bigint`), and `eventIndex` (`number`). Where the source
 transaction is in hand (`module` and `account` descriptors on
@@ -662,13 +737,21 @@ an endpoint that omits the surrounding transaction, so all three are
 `undefined` there. `timestamp` is `undefined` on genesis transactions, and
 `sender` on system transactions such as block metadata, which no account signs.
 
+Where the transaction is in hand and its payload is an entry function call, events also
+carry `entryFunction`: `{ function, typeArguments, arguments }`, with `function` written
+`address::module::name` and `arguments` as the fullnode renders them (u64 and wider as
+decimal strings). Every event of the transaction shares the same arrays. It is `undefined`
+on `handle` events, on system transactions, and on script, multisig and encrypted payloads,
+whose inner call is not read. The same holds for `eventsOf`, `previewEvents` and
+`IndexerAccountAdapter`, which map transactions the same way.
+
 Events emitted through a legacy `EventHandle` also carry `guid`
 (`{ creationNumber: bigint, accountAddress: string }`), on every descriptor kind.
 Module events have no handle, so `guid` is `undefined` on them.
 
 ### Discover event handles
 
-`listEventHandles(aptos, address)` reads an account's resources and returns
+`listEventHandles(aptos, address)` (an address or an Aptos name) reads an account's resources and returns
 each `EventHandle` it finds as a ready-to-use `handle` descriptor, with the
 number of events emitted on it so far and its guid:
 
@@ -743,6 +826,26 @@ The type is your claim about the decoded JSON, not a runtime check: `u64`
 values still arrive as strings unless you name them in `decode` (below), in
 which case describe them as `bigint`. At runtime the descriptor is the same
 plain object you would write by hand.
+
+### Framework events
+
+`@streamd/core/framework` ships a typed descriptor for every `#[event]` struct in the common
+`0x1` framework modules: `account`, `aptos_account`, `block`, `coin`, `delegation_pool`,
+`fungible_asset`, `object`, `stake` and `transaction_fee`. They are generated by
+[`streamd codegen`](#generate-event-types), so names and field types follow its rules: a name
+two modules share is qualified as `<Module>_<Struct>`, and generic events take their type
+arguments.
+
+```ts
+import { FeeStatement, FungibleAsset_Deposit, Coin_Deposit } from "@streamd/core/framework";
+
+client.on(FungibleAsset_Deposit, (e) => console.log(e.data.store, e.data.amount));
+client.on(Coin_Deposit("0x1::aptos_coin::AptosCoin"), (e) => console.log(e.data.account));
+const fees = await client.getEvents(FeeStatement, { fromVersion: -1000n, limit: 10 });
+```
+
+The catalog reflects the framework ABIs it was generated from; legacy `EventHandle` events such
+as `0x1::coin::DepositEvent` are not `#[event]` structs and are not in it.
 
 ### Decode integers
 
@@ -857,7 +960,9 @@ streamd.on(descriptor, (event) => {
 `handle` events from `FullnodeScanAdapter` use the handle's sequence number as
 `eventIndex`, because that endpoint does not say where an event sits in its
 transaction, so their ids stay unique per handle but are not transaction
-positions.
+positions. A `resource` change's `eventIndex` is the transaction's event count
+plus the change's position in its write set, so a change never shares an id with
+an event of the same transaction.
 
 ## Filtering
 
@@ -865,7 +970,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, ofType, ofModule, fromSender, every, some, not } from "@streamd/core";
+import { involvesAddress, whereField, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -890,12 +995,179 @@ streamd.on(
   it narrows a `module` subscription to one wallet's own transactions. It
   needs `sender` on the event; events without one never match. `0x1` and
   `0x000...01` count as the same address.
+- `fromFunction(...functions)` matches events produced by a call to one of the
+  entry functions, each written `address::module::function`
+  (`fromFunction("0x1::aptos_account::transfer")`). It needs `entryFunction` on
+  the event; events without one never match. `0x1` and `0x000...01` count as the
+  same address.
 - `every(...predicates)`, `some(...predicates)`, and `not(predicate)` combine
-  and negate filters.
-- Any `(event) => boolean` function works too.
+  and negate filters. They test in order and stop at the first answer that
+  decides, so put cheap checks before a lookup.
+- `ownedBy(aptos, wallet)` matches events naming a store or object the wallet
+  owns; see [Owned stores and objects](#owned-stores-and-objects).
+- Any `(event) => boolean` function works too, and so does one returning a
+  Promise.
 
 `limit` counts events *after* filtering, so a filter that rarely matches keeps
 the query reading pages until it fills. Set `maxPages` to cap that work.
+
+### Async predicates
+
+A predicate may return a Promise, to look something up before deciding:
+
+```ts
+const known = async (event: StreamdEvent) => allowlist.has(await ownerOf(event));
+
+streamd.on(deposits, handler, { where: every(ofType(DEPOSIT), known) });
+```
+
+- **Order.** Events are tested one at a time, in order, and delivered in order.
+  Predicates are your code, so they do not count toward `maxConcurrentRequests`;
+  cache or bound your own lookups. Only a returned Promise is awaited, and
+  `every`, `some` and `not` over synchronous predicates stay synchronous
+  (typed `SyncEventPredicate`), so plain filters cost nothing extra.
+- **Queries** reject with the predicate's error, whether it throws or rejects.
+  `retries` does not repeat it, and `signal` aborts a pending one.
+- **Listeners** treat a throw as a bug in the predicate: it goes to `onError`
+  and the event is skipped, without counting toward `maxErrors`. A rejection is
+  treated like a failed fetch: events before it on the page are delivered, the
+  poll fails with backoff and counts toward `maxErrors`, and the next poll tests
+  the event again. Reject with a `StreamdError` (not a `StreamdNetworkError`) to
+  stop the subscription at once instead. Pausing or stopping never waits on a
+  pending predicate.
+- `once()` rejects at once on a throw, and retries a rejection like `on()`.
+- `eventsOf`, `previewEvents` and `expectEvents` await it and reject with its
+  error.
+
+### Owned stores and objects
+
+Fungible-asset events name a store, not a wallet, and a wallet's stores are
+objects it owns. `ownedBy(aptos, wallet, options?)` matches events whose `data`
+names a store or object the wallet owns, directly or through objects it owns:
+
+```ts
+import { ownedBy, every, ofType } from "@streamd/core";
+
+streamd.on(
+  { kind: "module", eventType: ["0x1::fungible_asset::Deposit", "0x1::fungible_asset::Withdraw"] },
+  (event) => console.log(event),
+  { where: ownedBy(aptos, myWallet) },
+);
+```
+
+- **Fields.** It reads the top-level `store`, `object`, `token` and
+  `token_address` fields (`fungible_asset::Deposit`/`Withdraw`/`Frozen`,
+  `object::Transfer`, `0x4::collection::Mint`/`Burn`, `0x4::token::Mutation`),
+  in order, stopping at the first owned one. `fields` replaces the list. A value
+  counts when it is an address or an `Object<T>` rendered as `{ inner }`; an
+  event naming none does not match, and costs no read.
+- **At the event's version.** Each check is one `0x1::object::owns` view at
+  `event.version`, the state once that transaction had run, as `withState`
+  reads it. So a `Transfer` matches the wallet it went to, not the one it left.
+  An object that does not exist at that version, such as a store the same
+  transaction deleted, is not owned.
+- **Cost.** Answers are cached per object and version (1000 entries per
+  predicate), and `maxConcurrentRequests` (default 4) caps its reads in flight.
+  These reads go through `aptos`, not the client's adapter or its
+  `maxConcurrentRequests`. Put cheap filters first, as in
+  `every(ofType(DEPOSIT), ownedBy(aptos, myWallet))`.
+- **Failures.** A node or transport failure rejects with a
+  `StreamdNetworkError`, so a listener retries the event after backoff. Any
+  other rejected request, or an answer that is not a boolean, rejects with a
+  plain `StreamdError`, which stops a listener. A query rejects either way. The version
+  must be committed and unpruned on the node `aptos` reaches, so `previewEvents`
+  events, whose version is simulated, cannot be checked.
+
+### Aptos names
+
+`resolveName(aptos, nameOrAddress)` turns an Aptos name (`alice.apt`,
+`sub.alice.apt`) into the long-form address it points to, read once through
+the ANS router at the node's head. An address comes back in long form with no
+read. Resolve up front, then pass the address anywhere one is taken:
+
+```ts
+import { involvesAddress, resolveName } from "@streamd/core";
+
+const alice = await resolveName(aptos, "alice.apt");
+streamd.on({ kind: "account", accountAddress: alice }, onEvent);
+streamd.on(DEPOSITS, onEvent, { where: involvesAddress(alice) });
+```
+
+`ownedBy(aptos, "alice.apt")` and `listEventHandles(aptos, "alice.apt")` take a
+name directly, since they already hold `aptos`: `ownedBy` resolves it on its
+first evaluation, once, and retries a failed resolution on the next.
+Descriptors and the synchronous predicates take addresses only, so they stay
+synchronous and a descriptor's identity never depends on a lookup.
+
+- **Once, not per event.** A name that later points elsewhere is not followed;
+  resolve again to pick up the change. For history this means today's target:
+  `getEvents` with `ownedBy(aptos, "alice.apt")` checks past events against the
+  wallet the name points to now, not the one it pointed to then.
+- **Errors.** An unregistered or expired name, or one with no target address,
+  rejects with a `StreamdError`, as does a malformed one before any request. A
+  string starting `0x` is always read as an address. A node or transport failure
+  rejects with a `StreamdNetworkError`, so a listener retries it.
+- **Networks.** Names resolve on Aptos mainnet only. On testnet the SDK's
+  router address resolves nothing, and the Movement presets are custom networks
+  the SDK knows no ANS contract for, so names reject there with a `StreamdError`.
+
+## Asset transfers
+
+`transfers(callback, options?)` follows coin, fungible-asset and token movements as
+`{ from, to, asset, amount }`, and `getTransfers(filter?)` returns them for a
+past range. Each arrives as an event whose `data` is a `Transfer`:
+
+```ts
+const sub = streamd.transfers(
+  ({ data }) => console.log(`${data.amount} of ${data.asset}: ${data.from} -> ${data.to}`),
+  { asset: "0xa" }, // APT; omit for every asset
+);
+
+const recent = await streamd.getTransfers({ fromVersion: -10_000n, asset: "0xa" });
+```
+
+- **Sources.** One scan over `0x1::fungible_asset::Withdraw`/`Deposit`,
+  `0x1::coin::CoinWithdraw`/`CoinDeposit`, `0x3::token::TokenWithdraw`/`TokenDeposit`
+  and `0x1::object::Transfer`. Coin events name the account and coin
+  type; fungible-asset events name only a store, so its asset
+  (`fungible_asset::store_metadata`) and owner (`object::owner`) are read through
+  the adapter's `view` at the event's version. A store's asset is cached; owners
+  are read per event. With `asset` set, other assets cost one metadata read per
+  store and no owner read; a coin type costs no store reads at all.
+- **Tokens.** `object::Transfer` fires for every object, so each object is
+  checked once (cached) with the `0x4::token::creator` view, which aborts unless
+  the object holds a `0x4::token::Token`; other objects are skipped, after a
+  second read as the object stood before the transaction. A token's record has
+  the object address as `asset`, `amount` 1n, and the event's `from` and `to`.
+  A legacy `0x3::token` withdraw and deposit pair like coin legs, with `asset`
+  `"<creator>::<collection>::<name>::<property_version>"` (creator in long
+  form, the rest as stored, so a name containing `::` reads ambiguously) and
+  the token amount. `asset` takes a token object address or a legacy id too;
+  other objects are then dropped before any read.
+- **Pairing.** Within a transaction, in event order, a deposit pairs with the
+  most recent unpaired withdraw of the same asset and amount. A deposit with
+  none (a mint, or a fee-on-transfer token) has no `from`; a withdraw left over
+  (a burn) has no `to`. A coin withdraw and the fungible-asset deposit of its
+  paired asset report different `asset` strings and stay unpaired.
+- **Who.** `from` and `to` are the stores' direct owners, as ownership stood
+  once the transaction had run, so a store held by an object (a pool) reports
+  the object. A store the transaction deleted is read as it stood just before.
+  A store created and deleted within one transaction cannot be read at all, and
+  its legs are skipped.
+- **Identity.** A record keeps the deposit's `(version, eventIndex)`, or the
+  withdraw's when it stands alone, so cursors, dedup and `eventId` work as for
+  any event. `where`, `limit`, `cursor`, `onCursor` and the other options apply
+  to the records.
+- **Failures.** A failed read fails the poll, which retries with backoff as for
+  `on()`; a query rejects. Each subscription or query keeps at most 4 reads in
+  flight, on top of `maxConcurrentRequests`, while its page fetch holds one slot.
+- **Limits.** Pairing sees one page; `FullnodeScanAdapter` pages hold whole
+  transactions. Legacy handle events (coin and `0x3::token`
+  `DepositEvent`/`WithdrawEvent`, `object::TransferEvent`, from before module
+  events) are not read. Token mints and burns emit no `object::Transfer`, so
+  they do not appear. A legacy token offer and its claim land in different
+  transactions and come out as a lone withdraw and a lone deposit. A transfers subscription is not a
+  listener for `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 
 ## Data sources and their limits
 
@@ -909,6 +1181,8 @@ By default streamd reads from a fullnode with `FullnodeScanAdapter`:
   transactions and keeps the matches. That's fine for following the chain
   head, but not for deep history: fullnodes prune old data, and a rare event
   type means scanning every transaction in between.
+- **Resource changes** use the same transaction scan, reading write sets
+  instead of events, so they share its cost and its limits.
 
 For deep history, implement `EventAdapter` against your own index (a
 self-hosted processor or third-party indexer) and pass it in:
@@ -1219,6 +1493,8 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
 - **Exact integers.** Versions, sequence numbers, timestamps and guids round-trip as `bigint`
   up to u64 (u128 for `creationNumber`). Events are stored as `serializeEvent` writes them,
   so a `bigint` inside `data` comes back as a decimal string: query with `decode` to restore it.
+  `entryFunction` is kept in that stored JSON, with no column of its own, so it comes back on
+  reads but filtering on it happens in `where`, not in SQL.
 - **What `StoreAdapter` matches.** `module` by event type; `account` by the stored `sender`,
   so events stored without one (from `handle` descriptors) never match; `handle` by
   `creationNumber` against the stored `guid` (`listEventHandles` returns it), and a struct
@@ -1307,7 +1583,7 @@ streamd tail --account 0x1 --handle "0x1::coin::CoinStore<0x1::aptos_coin::Aptos
 | `-h`, `--help` | show usage |
 
 Each line carries `type`, `data`, `version`, `sequenceNumber`, `eventIndex`, and, when
-the source has them, `transactionHash`, `timestamp` and `sender`. Every `bigint`, including any inside
+the source has them, `transactionHash`, `timestamp`, `sender` and, last, `entryFunction`. Every `bigint`, including any inside
 `data`, is printed as a decimal string:
 
 ```json
@@ -1419,6 +1695,7 @@ bun run typecheck
 bun run build              # each package into its own dist/
 bun run demo               # live demo against mainnet
 bun run test:integration   # @streamd/core integration tests, hits mainnet
+bun packages/cli/scripts/framework.ts  # regenerate @streamd/core/framework from its ABI snapshots
 ```
 
 ## License

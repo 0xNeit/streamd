@@ -1215,3 +1215,64 @@ describe("EventQuery bound lookups", () => {
     expect(reads).toBe(1);
   });
 });
+
+describe("EventQuery async where", () => {
+  const seeded = () => new MemoryAdapter([1, 2, 3, 4, 5, 6, 7, 8].map(event));
+  const even = async (e: { version: bigint }) => e.version % 2n === 0n;
+  const versions = (events: { version: bigint }[]) => events.map((e) => e.version);
+
+  it("keeps matching events in order, with limit counted after filtering", async () => {
+    const query = new EventQuery(seeded());
+    expect(versions(await query.getEvents(descriptor, { where: even }))).toEqual([2n, 4n, 6n, 8n]);
+    expect(versions(await query.getEvents(descriptor, { where: even, limit: 3 }))).toEqual([
+      2n,
+      4n,
+      6n,
+    ]);
+    const pages: bigint[][] = [];
+    for await (const page of query.getEventPages(descriptor, { where: even }, 3)) {
+      pages.push(versions(page));
+    }
+    expect(pages).toEqual([[2n], [4n, 6n], [8n]]);
+  });
+
+  it("filters merged queries and orderBy desc", async () => {
+    const query = new EventQuery(seeded());
+    const other: EventDescriptor = { kind: "account", accountAddress: "0x1" };
+    expect(versions(await query.getEvents([descriptor, other], { where: even }))).toEqual([
+      2n,
+      4n,
+      6n,
+      8n,
+    ]);
+    expect(
+      versions(await query.getEvents(descriptor, { where: even, orderBy: "desc", limit: 3 })),
+    ).toEqual([8n, 6n, 4n]);
+  });
+
+  it("rejects with the predicate's reason, without retrying it", async () => {
+    const boom = new Error("lookup failed");
+    const where = vi.fn(async () => {
+      throw boom;
+    });
+    const source = seeded();
+    const fetchEvents = vi.spyOn(source, "fetchEvents");
+    await expect(
+      new EventQuery(source).getEvents(descriptor, { where, retries: 3 }),
+    ).rejects.toBe(boom);
+    expect(where).toHaveBeenCalledTimes(1);
+    expect(fetchEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects with the signal's reason while a predicate is pending", async () => {
+    const controller = new AbortController();
+    const reason = new Error("stop");
+    const pending = new EventQuery(seeded()).getEvents(descriptor, {
+      where: () => new Promise<boolean>(() => {}),
+      signal: controller.signal,
+    });
+    await Promise.resolve();
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+  });
+});

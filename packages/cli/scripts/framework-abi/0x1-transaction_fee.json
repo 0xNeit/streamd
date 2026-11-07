@@ -1,0 +1,135 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "transaction_fee",
+  "structs": [
+   {
+    "name": "AptosCoinCapabilities",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "burn_cap",
+      "type": "0x1::coin::BurnCapability<0x1::aptos_coin::AptosCoin>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AptosCoinMintCapability",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "mint_cap",
+      "type": "0x1::coin::MintCapability<0x1::aptos_coin::AptosCoin>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AptosFABurnCapabilities",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "burn_ref",
+      "type": "0x1::fungible_asset::BurnRef"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AptosFAMintCapabilities",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "mint_ref",
+      "type": "0x1::fungible_asset::MintRef"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CollectedFeesPerBlock",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "amount",
+      "type": "0x1::coin::AggregatableCoin<0x1::aptos_coin::AptosCoin>"
+     },
+     {
+      "name": "proposer",
+      "type": "0x1::option::Option<address>"
+     },
+     {
+      "name": "burn_percentage",
+      "type": "u8"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FeeStatement",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "total_charge_gas_units",
+      "type": "u64"
+     },
+     {
+      "name": "execution_gas_units",
+      "type": "u64"
+     },
+     {
+      "name": "io_gas_units",
+      "type": "u64"
+     },
+     {
+      "name": "storage_fee_octas",
+      "type": "u64"
+     },
+     {
+      "name": "storage_fee_refund_octas",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

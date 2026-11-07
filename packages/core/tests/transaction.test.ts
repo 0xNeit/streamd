@@ -123,6 +123,24 @@ describe("eventsOf", () => {
     expect(EVENTS[1]!.data).toEqual({ amount: "20" });
   });
 
+  it("awaits an async where, rejecting with its reason or the signal's", async () => {
+    const c = client(lookup().adapter);
+    const events = await c.eventsOf(HASH, undefined, {
+      where: async (e) => e.eventIndex !== 1,
+    });
+    expect(events.map((e) => e.eventIndex)).toEqual([0, 2]);
+    const boom = new Error("lookup failed");
+    await expect(c.eventsOf(HASH, undefined, { where: () => Promise.reject(boom) })).rejects.toBe(boom);
+    const controller = new AbortController();
+    const pending = c.eventsOf(HASH, undefined, {
+      signal: controller.signal,
+      where: () => new Promise<boolean>(() => {}),
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    controller.abort(boom);
+    await expect(pending).rejects.toBe(boom);
+  });
+
   it("rejects a failed transaction with its vm status", async () => {
     const failed = { ...committed, success: false, vmStatus: "Move abort in 0x1::coin: 0x10006", events: [] };
     const err = await client(lookup(failed).adapter).eventsOf(HASH).catch((e: unknown) => e);
@@ -336,6 +354,16 @@ describe("previewEvents", () => {
     expect(decoded.map((e) => e.eventIndex)).toEqual([2]);
   });
 
+  it("awaits an async where, rejecting with its reason", async () => {
+    const c = client(simulator().adapter);
+    const kept = await c.previewEvents(TRANSACTION, undefined, { where: async (e) => e.eventIndex > 0 });
+    expect(kept.map((e) => e.eventIndex)).toEqual([1, 2]);
+    const boom = new Error("lookup failed");
+    await expect(
+      c.previewEvents(TRANSACTION, undefined, { where: () => Promise.reject(boom) }),
+    ).rejects.toBe(boom);
+  });
+
   it("rejects a failed simulation with its vm status and no hash", async () => {
     const failed = { ...simulatedRun, success: false, vmStatus: "Move abort: EINSUFFICIENT_BALANCE", events: [] };
     const err = await client(simulator(failed).adapter).previewEvents(TRANSACTION).catch((e: unknown) => e);
@@ -389,5 +417,15 @@ describe("previewEvents", () => {
     const c = client(adapter, { maxConcurrentRequests: 1 });
     await Promise.all([c.previewEvents(TRANSACTION), c.previewEvents(TRANSACTION)]);
     expect(peak).toBe(1);
+  });
+});
+
+describe("eventsOf with a resource descriptor", () => {
+  it("rejects before any lookup", async () => {
+    const { adapter, calls } = lookup();
+    await expect(
+      client(adapter).eventsOf(HASH, { kind: "resource", accountAddress: SENDER, resourceType: PING }),
+    ).rejects.toThrow("not write sets");
+    expect(calls).toHaveLength(0);
   });
 });

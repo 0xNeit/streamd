@@ -407,3 +407,29 @@ describe("RoutingAdapter optional method fields", () => {
     expect("getBlock" in adapter).toBe(false);
   });
 });
+
+describe("RoutingAdapter resource route", () => {
+  const resourceDesc: EventDescriptor = {
+    kind: "resource",
+    accountAddress: "0x1",
+    resourceType: PONG,
+  };
+
+  it("sends resource descriptors to the resource route, else the default", async () => {
+    const resource = new MemoryAdapter([ev(1, PONG)]);
+    const fallback = new MemoryAdapter([ev(2, PONG)]);
+    const routed = await new RoutingAdapter({ resource, default: fallback }).fetchEvents(resourceDesc, {
+      fromVersion: 0n,
+    });
+    expect(routed.events.map((e) => e.version)).toEqual([1n]);
+    const defaulted = await new RoutingAdapter({ default: fallback }).fetchEvents(resourceDesc, {
+      fromVersion: 0n,
+    });
+    expect(defaulted.events.map((e) => e.version)).toEqual([2n]);
+  });
+
+  it("rejects a resource descriptor with no route or default", async () => {
+    const adapter = new RoutingAdapter({ module: new MemoryAdapter() });
+    await expect(adapter.fetchEvents(resourceDesc, {})).rejects.toThrow('descriptor kind "resource"');
+  });
+});

@@ -7,7 +7,9 @@ import type {
   EventDescriptor,
   EventStream,
   EventFilter,
+  EventExpectation,
   EventsOfOptions,
+  ExpectEventsOptions,
   ListenerDefaults,
   ListenerOptions,
   OnceOptions,
@@ -15,10 +17,15 @@ import type {
   ReduceOptions,
   Reducer,
   Reduction,
+  Replay,
+  ReplayOptions,
   StreamdConfig,
   StreamdEvent,
   Subscription,
   SubscriptionOptions,
+  Transfer,
+  TransferFilter,
+  TransferListenerOptions,
 } from "./types.js";
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
 import { EventPoller, resolveMaxBackoff, type Delivery } from "./poller.js";
@@ -34,7 +41,11 @@ import { CursorManager } from "./cursor.js";
 import { fieldDecoder } from "./decode.js";
 import { SharedFetches } from "./shared.js";
 import { startReduction, type ReduceHost } from "./reduce.js";
+import { startReplay } from "./replay.js";
 import { eventsOf, previewEvents } from "./transaction.js";
+import { expectEvents } from "./expect.js";
+import { requireTransactionHash } from "./adapters/validate.js";
+import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -199,6 +210,7 @@ export class StreamdClient {
     options?: ListenerOptions,
     listener?: unknown,
     callerId?: string,
+    wrap?: (source: EventAdapter) => EventAdapter,
   ): Subscription {
     const id = callerId === undefined ? generateId() : this.claimId(callerId);
     let detach = () => {};
@@ -211,8 +223,9 @@ export class StreamdClient {
       detach();
     };
     const resolved = withDefaults(options, this.defaults);
+    const source = this.shared.view(resolved.pollInterval!);
     const poller = new EventPoller(
-      this.shared.view(resolved.pollInterval!),
+      wrap === undefined ? source : wrap(source),
       descriptor,
       delivery,
       {
@@ -280,9 +293,10 @@ export class StreamdClient {
    * Rejects with `signal.reason` on abort, with `StreamdTimeoutError` if
    * `timeout` elapses first, when polling gives up after `maxErrors`, at once
    * when the adapter refuses the descriptor or options as invalid input, or on
-   * the first error thrown by `where`, even if a later event would have matched.
-   * A throwing `onCaughtUp`, an event that fails `decode` or a throwing
-   * `withState` builder goes to `onError` and is skipped, as for `on()`.
+   * the first error `where` throws synchronously, even if a later event would
+   * have matched. A rejected async `where` fails the poll and is retried, as
+   * for `on()`. A throwing `onCaughtUp`, an event that fails `decode` or a
+   * throwing `withState` builder goes to `onError` and is skipped, as for `on()`.
    */
   once<TData = unknown>(
     descriptor: EventDescriptor<TData>,
@@ -303,6 +317,7 @@ export class StreamdClient {
       const fail = (reason: unknown) => (close(), reject(reason));
       // A throwing predicate would skip every event and leave the promise
       // pending; other handler errors are per event, so waiting can still match.
+      // Only a synchronous throw counts: a rejection fails the poll and is retried.
       let whereThrew = false;
       const where = options?.where;
       const sub = this.subscribe(
@@ -394,6 +409,68 @@ export class StreamdClient {
   }
 
   /**
+   * Feed a past range of events through an `on()` callback, in order, so a
+   * live handler can be backtested unchanged: each call is awaited before the
+   * next, and a throw or rejection goes to `onError` while delivery carries
+   * on. The range and narrowing options are `getEvents`'s, applied as it
+   * applies them; `speed` paces delivery by the events' `timestamp`s. `done`
+   * settles when the range is exhausted or a query fails. Like `reduce()`, it
+   * is not a listener for `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  replay<TData = unknown>(
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+    callback: EventCallback<TData>,
+    options?: ReplayOptions,
+  ): Replay {
+    return startReplay(this.reduceHost, descriptor, callback, options);
+  }
+
+  /**
+   * Follow coin, fungible-asset and token transfers as they land, each
+   * delivered as an event whose `data` is a `Transfer`, from one scan over
+   * `0x1::fungible_asset::Withdraw`/`Deposit`, `0x1::coin::CoinWithdraw`/`CoinDeposit`,
+   * `0x3::token::TokenWithdraw`/`TokenDeposit` and `0x1::object::Transfer`.
+   *
+   * Within a transaction, in event order, a deposit pairs with the most recent
+   * unpaired withdraw of the same asset and amount; a deposit with none has no
+   * `from`, and a withdraw left over has no `to`. A fungible-asset store's
+   * asset and owner are read through `EventAdapter.view` at the event's
+   * version (before it, when the transaction deleted the store), at most 4 at
+   * a time per subscription and outside `maxConcurrentRequests`; a leg whose store existed neither after nor before its
+   * transaction is skipped. A failed read fails the poll, which retries as
+   * for `on()`. The record keeps the deposit's identity, or the withdraw's
+   * when it stands alone. An `object::Transfer` is reported, unpaired and
+   * with `amount` 1, only when the object holds a `0x4::token::Token`,
+   * checked once per object by view. `asset` narrows to one fungible asset,
+   * coin type or token before any owner is read. Like `reduce()`, it is not a listener for
+   * `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+   */
+  transfers(
+    callback: EventCallback<Transfer>,
+    options: TransferListenerOptions = {},
+  ): Subscription {
+    const { asset, ...rest } = options;
+    return this.subscribe(
+      TRANSFER_DESCRIPTOR,
+      callback as EventCallback,
+      rest,
+      undefined,
+      rest.id,
+      (source) => transferSource(source, asset),
+    );
+  }
+
+  /**
+   * Past transfers, built as `transfers()` builds them, over the range and
+   * options `getEvents` takes; `where` and `limit` apply to the records.
+   */
+  async getTransfers(filter: TransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
+    const { asset, ...rest } = filter;
+    const query = new EventQuery(transferSource(this.adapter, asset), this.limiter);
+    return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
+  }
+
+  /**
    * Query historical events matching a descriptor and filter. Pass an array of
    * descriptors, of any kinds, to get their events merged into one history in
    * `(version, eventIndex)` order, each event once. Each descriptor is walked
@@ -460,6 +537,28 @@ export class StreamdClient {
       options,
     );
     return events as StreamdEvent<TData>[];
+  }
+
+  /**
+   * Assertions on the events of the transaction with this hash, for
+   * integration tests under any runner: `toEmit(descriptor, where?)` resolves
+   * with the matching events and `notToEmit(descriptor, where?)` with nothing,
+   * and either rejects with `StreamdAssertionError`, listing every event the
+   * transaction emitted, when it does not hold. Nothing is looked up until an
+   * assertion runs; each waits as `eventsOf` does and rejects as it does.
+   * Throws at once on a malformed hash or `timeout`.
+   */
+  expectEvents(transactionHash: string, options: ExpectEventsOptions = {}): EventExpectation {
+    requireTransactionHash(transactionHash);
+    const badTimeout = checkTimeout(options.timeout);
+    if (badTimeout !== undefined) throw badTimeout;
+    return expectEvents(
+      this.adapter,
+      this.limiter,
+      this.defaults.pollInterval!,
+      transactionHash,
+      options,
+    );
   }
 
   /**

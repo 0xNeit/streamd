@@ -1,0 +1,546 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "fungible_asset",
+  "structs": [
+   {
+    "name": "TransferRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Untransferable",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "BurnRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ConcurrentFungibleBalance",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "balance",
+      "type": "0x1::aggregator_v2::Aggregator<u64>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ConcurrentSupply",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "current",
+      "type": "0x1::aggregator_v2::Aggregator<u128>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Creation",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata",
+      "type": "address"
+     },
+     {
+      "name": "name",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "symbol",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "decimals",
+      "type": "u8"
+     },
+     {
+      "name": "icon_uri",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "project_uri",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "maximum_supply",
+      "type": "0x1::option::Option<u128>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Deposit",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "store",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DepositEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DeriveSupply",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dispatch_function",
+      "type": "0x1::option::Option<0x1::function_info::FunctionInfo>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DispatchFunctionStore",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "withdraw_function",
+      "type": "0x1::option::Option<0x1::function_info::FunctionInfo>"
+     },
+     {
+      "name": "deposit_function",
+      "type": "0x1::option::Option<0x1::function_info::FunctionInfo>"
+     },
+     {
+      "name": "derived_balance_function",
+      "type": "0x1::option::Option<0x1::function_info::FunctionInfo>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Frozen",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "store",
+      "type": "address"
+     },
+     {
+      "name": "frozen",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FrozenEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "frozen",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FungibleAsset",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FungibleAssetEvents",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "deposit_events",
+      "type": "0x1::event::EventHandle<0x1::fungible_asset::DepositEvent>"
+     },
+     {
+      "name": "withdraw_events",
+      "type": "0x1::event::EventHandle<0x1::fungible_asset::WithdrawEvent>"
+     },
+     {
+      "name": "frozen_events",
+      "type": "0x1::event::EventHandle<0x1::fungible_asset::FrozenEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FungibleStore",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "balance",
+      "type": "u64"
+     },
+     {
+      "name": "frozen",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FungibleStoreDeletion",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "store",
+      "type": "address"
+     },
+     {
+      "name": "owner",
+      "type": "address"
+     },
+     {
+      "name": "metadata",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Metadata",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "name",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "symbol",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "decimals",
+      "type": "u8"
+     },
+     {
+      "name": "icon_uri",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "project_uri",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "MintRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "MutateMetadataRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RawBalanceRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RawSupplyRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Supply",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "current",
+      "type": "u128"
+     },
+     {
+      "name": "maximum",
+      "type": "0x1::option::Option<u128>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Withdraw",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "store",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "WithdrawEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "WithdrawPermission",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "ByStore",
+      "fields": [
+       {
+        "name": "store_address",
+        "type": "address"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

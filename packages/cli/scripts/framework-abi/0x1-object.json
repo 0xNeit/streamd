@@ -1,0 +1,294 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "object",
+  "structs": [
+   {
+    "name": "ConstructorRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "self",
+      "type": "address"
+     },
+     {
+      "name": "can_delete",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DeleteRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "self",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DeriveRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "self",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ExtendRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "self",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LinearTransferRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "self",
+      "type": "address"
+     },
+     {
+      "name": "owner",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Object",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": []
+     }
+    ],
+    "fields": [
+     {
+      "name": "inner",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ObjectCore",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "guid_creation_num",
+      "type": "u64"
+     },
+     {
+      "name": "owner",
+      "type": "address"
+     },
+     {
+      "name": "allow_ungated_transfer",
+      "type": "bool"
+     },
+     {
+      "name": "transfer_events",
+      "type": "0x1::event::EventHandle<0x1::object::TransferEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ObjectGroup",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "TombStone",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "original_owner",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Transfer",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "object",
+      "type": "address"
+     },
+     {
+      "name": "from",
+      "type": "address"
+     },
+     {
+      "name": "to",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "TransferEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "object",
+      "type": "address"
+     },
+     {
+      "name": "from",
+      "type": "address"
+     },
+     {
+      "name": "to",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "TransferPermission",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "object",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "TransferRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "self",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Untransferable",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

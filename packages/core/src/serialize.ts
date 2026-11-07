@@ -1,6 +1,6 @@
 import { fieldDecoder, UNSIGNED_INTEGER } from "./decode.js";
 import { StreamdError } from "./errors.js";
-import type { EventGuid, StreamdEvent } from "./types.js";
+import type { EntryFunctionCall, EventGuid, StreamdEvent } from "./types.js";
 
 function bigintToString(_key: string, value: unknown): unknown {
   return typeof value === "bigint" ? value.toString() : value;
@@ -24,6 +24,7 @@ export function serializeEvent(event: StreamdEvent): string {
       sender: event.sender,
       guid: event.guid,
       state: event.state,
+      entryFunction: event.entryFunction,
     },
     bigintToString,
   );
@@ -51,6 +52,23 @@ function guidOf(value: unknown): EventGuid {
     throw new StreamdError('Cannot parse event: "guid" must be { creationNumber, accountAddress }');
   }
   return { creationNumber: unsigned(guid, "creationNumber"), accountAddress: guid.accountAddress };
+}
+
+function entryFunctionOf(value: unknown): EntryFunctionCall {
+  const call = value as Record<string, unknown> | null;
+  if (
+    typeof call !== "object" ||
+    call === null ||
+    typeof call.function !== "string" ||
+    !Array.isArray(call.typeArguments) ||
+    !call.typeArguments.every((t) => typeof t === "string") ||
+    !Array.isArray(call.arguments)
+  ) {
+    throw new StreamdError(
+      'Cannot parse event: "entryFunction" must be { function, typeArguments, arguments }',
+    );
+  }
+  return { function: call.function, typeArguments: call.typeArguments, arguments: call.arguments };
 }
 
 /**
@@ -107,5 +125,6 @@ export function parseEvent<TData = unknown>(
     }
     event.state = record.state;
   }
+  if (record.entryFunction !== undefined) event.entryFunction = entryFunctionOf(record.entryFunction);
   return (decode ? decode(event) : event) as StreamdEvent<TData>;
 }

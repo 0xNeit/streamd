@@ -71,11 +71,29 @@ export interface AccountEventDescriptor {
   eventTypes?: string[];
 }
 
+/**
+ * Every write or delete of one resource at one address, read from each
+ * transaction's write set, so it fires whether or not any event does.
+ *
+ * Each change arrives as a `StreamdEvent`: `type` is the resource's Move type,
+ * `data` its value once the transaction ran, or `null` when the transaction
+ * deleted it. `eventIndex` is the transaction's event count plus the change's
+ * position in its write set, so a change never shares an id with an event.
+ */
+export interface ResourceDescriptor {
+  kind: "resource";
+  /** Account or object address holding the resource. */
+  accountAddress: string;
+  /** The resource's Move type as the fullnode writes it, e.g. `"0x1::account::Account"`. */
+  resourceType: MoveEventType;
+}
+
 export type EventDescriptor<TData = unknown> =
   | ModuleEventDescriptor<TData>
   | HandleEventDescriptor
   | CreationNumberEventDescriptor
-  | AccountEventDescriptor;
+  | AccountEventDescriptor
+  | ResourceDescriptor;
 
 // ---- Parsed event ----
 
@@ -133,6 +151,25 @@ export interface StreamdEvent<TData = unknown> {
    * when `withState` built a request for this event.
    */
   state?: unknown[];
+  /**
+   * The entry function call that produced this event, when the source had the
+   * transaction in hand and its payload is an `entry_function_payload`.
+   * Omitted on `handle` events, on script, multisig and encrypted payloads, and
+   * on system transactions.
+   */
+  entryFunction?: EntryFunctionCall;
+}
+
+/**
+ * An entry function call as the fullnode reports it. `arguments` are JSON Move
+ * values (u64 and wider as decimal strings), and the events of one transaction
+ * share these arrays.
+ */
+export interface EntryFunctionCall {
+  /** `address::module::name`, the address as the fullnode writes it. */
+  function: string;
+  typeArguments: string[];
+  arguments: unknown[];
 }
 
 /**
@@ -169,8 +206,17 @@ export interface EventGuid {
  * Used for anything the chain APIs can't filter on, most importantly fields
  * or addresses inside a module event's `data`. See `whereField`,
  * `involvesAddress`, `ofType`, `ofModule`, `every`, `some`, and `not`.
+ *
+ * It may return a Promise, to look something up before deciding. Predicates
+ * run one at a time in event order, outside `maxConcurrentRequests`, and only
+ * a returned thenable is awaited. A synchronous throw is the caller's bug
+ * (a query rejects; a listener reports it and skips the event); a rejection
+ * rejects a query and fails a listener's poll, so the event is tested again.
  */
-export type EventPredicate = (event: StreamdEvent) => boolean;
+export type EventPredicate = (event: StreamdEvent) => boolean | PromiseLike<boolean>;
+
+/** A predicate that always answers synchronously, as every built-in leaf predicate does. */
+export type SyncEventPredicate = (event: StreamdEvent) => boolean;
 
 export interface EventFilter {
   /**
@@ -216,6 +262,10 @@ export interface EventFilter {
    * Because `limit` counts matches, a restrictive predicate keeps the walk
    * going until it fills — potentially across an account's whole history.
    * Pair it with `maxPages` when you would rather cap the work than wait.
+   *
+   * An async predicate is awaited one event at a time. A throw or rejection
+   * rejects the query with its reason, without `retries`; `signal` aborts a
+   * pending one.
    */
   where?: EventPredicate;
   /**
@@ -272,7 +322,7 @@ export interface EventFilter {
 
 /** Options for `StreamdClient.eventsOf`. */
 export interface EventsOfOptions {
-  /** Keep only events satisfying this predicate, after `decode`. */
+  /** Keep only events satisfying this predicate, after `decode`; a rejection rejects the call. */
   where?: EventPredicate;
   /** Top-level `data` fields turned from decimal strings into `bigint`, as `EventFilter.decode`. */
   decode?: readonly string[];
@@ -285,6 +335,25 @@ export interface EventsOfOptions {
   signal?: AbortSignal;
 }
 
+/** Options for `StreamdClient.expectEvents`. */
+export type ExpectEventsOptions = Pick<EventsOfOptions, "decode" | "timeout" | "signal">;
+
+/**
+ * Assertions on one transaction's events, from `StreamdClient.expectEvents`.
+ * Each waits for the transaction as `eventsOf` does, then narrows its events
+ * by the descriptor, the expectation's `decode`, then `where`. A failed
+ * assertion rejects with `StreamdAssertionError`.
+ */
+export interface EventExpectation {
+  /** Resolves with the matching events, in transaction order; rejects when there are none. */
+  toEmit<TData = unknown>(
+    descriptor: EventDescriptor<TData>,
+    where?: EventPredicate,
+  ): Promise<StreamdEvent<TData>[]>;
+  /** Resolves when no event matches; rejects naming the ones that do. */
+  notToEmit(descriptor: EventDescriptor, where?: EventPredicate): Promise<void>;
+}
+
 /** Options for `StreamdClient.previewEvents`. */
 export interface PreviewEventsOptions {
   /** The sender's public key, so the simulation checks its auth key; omitted, that check is skipped. */
@@ -294,6 +363,44 @@ export interface PreviewEventsOptions {
   /** Top-level `data` fields turned from decimal strings into `bigint`, as `EventFilter.decode`. */
   decode?: readonly string[];
 }
+
+/**
+ * One coin, fungible-asset or token movement, the `data` of the events
+ * `StreamdClient.transfers` and `getTransfers` deliver. A deposit paired with
+ * the withdraw that funded it carries both sides; a deposit nothing funded (a
+ * mint) has no `from`, and a withdraw nothing received (a burn) no `to`. A
+ * token object's transfer always carries both.
+ */
+export interface Transfer {
+  /**
+   * Fungible-asset metadata address in long form, the coin type as reported,
+   * a token object's address in long form, or a legacy token's id as
+   * `creator::collection::name::property_version` (creator in long form).
+   */
+  asset: string;
+  /** Base units; `1n` for a token object. */
+  amount: bigint;
+  /** Owner of the withdrawn store, the coin or token account, or the object's previous owner, in long form. */
+  from?: string;
+  /** Owner of the receiving store, the coin or token account, or the object's new owner, in long form. */
+  to?: string;
+}
+
+export interface TransferOptions {
+  /**
+   * Only transfers of this asset: a fungible-asset metadata address or
+   * token object address (any form, e.g. `"0xa"` for APT), a coin type
+   * (`"0x1::aptos_coin::AptosCoin"`), or a legacy token id
+   * (`"<creator>::<collection>::<name>::<property_version>"`).
+   */
+  asset?: string;
+}
+
+/** Options for `StreamdClient.transfers`. */
+export type TransferListenerOptions = SubscriptionOptions & TransferOptions;
+
+/** Filter for `StreamdClient.getTransfers`. */
+export type TransferFilter = EventFilter & TransferOptions;
 
 /**
  * What an adapter receives on each fetch.
@@ -412,6 +519,11 @@ export interface ListenerOptions {
   /**
    * Deliver only events satisfying this predicate. Applied client-side after
    * fetching. See `whereField`, `involvesAddress`, `every`, `some`, and `not`.
+   * An async predicate is awaited one event at a time; a throw skips the event
+   * and goes to `onError` without counting toward `maxErrors`, while a
+   * rejection fails the poll as a failed view does, so the next poll tests the
+   * event again. A `StreamdError` rejection that is not a network error stops
+   * the subscription at once.
    */
   where?: EventPredicate;
   /**
@@ -521,6 +633,64 @@ export interface Reduction<S> {
   /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
   readonly active: boolean;
   /** Stop folding, whether still backfilling or following. */
+  unsubscribe(): void;
+  /** `unsubscribe()`, for `using`. */
+  [Symbol.dispose](): void;
+}
+
+/**
+ * Options for `replay()`: the range and narrowing options `getEvents` takes,
+ * applied exactly as it applies them, plus pacing. `orderBy` is refused, since
+ * a replay runs forward.
+ */
+export interface ReplayOptions
+  extends Pick<
+      EventFilter,
+      | "fromVersion"
+      | "toVersion"
+      | "fromTime"
+      | "fromBlock"
+      | "toBlock"
+      | "limit"
+      | "offset"
+      | "where"
+      | "decode"
+      | "withState"
+      | "maxPages"
+      | "retries"
+      | "onCursor"
+      | "signal"
+    >,
+    Pick<ListenerOptions, "batchSize" | "onError" | "onCaughtUp"> {
+  /**
+   * Omitted or `Infinity`: deliver each event as soon as the previous
+   * callback settles. A positive number replays chain time scaled by it
+   * (`2` is twice as fast): an event carrying a `timestamp` waits for its gap
+   * from the previous timestamped event divided by `speed`, less the time
+   * already spent since that delivery. An event without a `timestamp` is
+   * delivered at once.
+   */
+  speed?: number;
+}
+
+/** A running `replay()`. */
+export interface Replay {
+  /**
+   * Resolves with the number of events delivered once the range is
+   * exhausted. Rejects with the query error, with `signal.reason` on abort,
+   * or with a `StreamdError` when unsubscribed first. Never an unhandled
+   * rejection.
+   */
+  readonly done: Promise<number>;
+  /** Whether events are still being delivered; `false` while paused. */
+  readonly active: boolean;
+  /** Whether delivery is paused; `false` once stopped. */
+  readonly paused: boolean;
+  /** Hold delivery before the next event. No-op unless active. */
+  pause(): void;
+  /** Undo `pause()`. No-op unless paused. */
+  resume(): void;
+  /** Stop delivering; `done` rejects. */
   unsubscribe(): void;
   /** `unsubscribe()`, for `using`. */
   [Symbol.dispose](): void;

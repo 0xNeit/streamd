@@ -432,3 +432,30 @@ describe("MemoryAdapter transaction lookup", () => {
     await expect(adapter.getTransactionEvents("0x1")).rejects.toBeInstanceOf(StreamdError);
   });
 });
+
+describe("MemoryAdapter resource descriptors", () => {
+  const resourceDesc: EventDescriptor = {
+    kind: "resource",
+    accountAddress: "0x1",
+    resourceType: PONG,
+  };
+
+  it("serves records of the resource's type", async () => {
+    const adapter = new MemoryAdapter([ev(1, 0, PING), ev(1, 1, PONG), ev(2, 0, PONG, null)]);
+    const page = await adapter.fetchEvents(resourceDesc, { fromVersion: 0n });
+    expect(page.events.map((e) => [e.version, e.data])).toEqual([
+      [1n, { v: 1, i: 1 }],
+      [2n, null],
+    ]);
+  });
+
+  it("refuses a bad address or resource type", async () => {
+    const adapter = new MemoryAdapter([ev(1)]);
+    for (const bad of [
+      { ...resourceDesc, accountAddress: "nope" },
+      { ...resourceDesc, resourceType: "not a type" },
+    ] as EventDescriptor[]) {
+      await expect(adapter.fetchEvents(bad)).rejects.toBeInstanceOf(StreamdError);
+    }
+  });
+});

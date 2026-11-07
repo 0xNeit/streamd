@@ -11,7 +11,8 @@ import { withHooks } from "../src/adapters/hooks.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { RoutingAdapter } from "../src/adapters/routing.js";
 import { StreamdClient } from "../src/client.js";
-import { every, fromSender, involvesAddress, not, whereField } from "../src/filter.js";
+import { every, fromFunction, fromSender, involvesAddress, not, ofType, whereField } from "../src/filter.js";
+import { ownedBy } from "../src/ownership.js";
 import type {
   EventAdapter,
   EventDescriptor,
@@ -19,6 +20,7 @@ import type {
   ListenerDefaults,
   ModuleEventDescriptor,
   StreamdEvent,
+  Transfer,
 } from "../src/types.js";
 import {
   StreamdError,
@@ -878,6 +880,26 @@ describe("StreamdClient", () => {
     const events = await client.getEvents(descriptor, {
       fromVersion: 0n,
       where: fromSender("0xa"),
+    });
+    expect(events.map((e) => e.version)).toEqual([1n, 4n]);
+    client.destroy();
+  });
+
+  it("filters a backlog by entry function with fromFunction", async () => {
+    const call = (fn: string) => ({ function: fn, typeArguments: [], arguments: [] });
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([
+        { ...makeEvent(1), entryFunction: call("0x1::aptos_account::transfer") },
+        { ...makeEvent(2), entryFunction: call("0x1::coin::transfer") },
+        makeEvent(3),
+        { ...makeEvent(4), entryFunction: call("0x" + "0".repeat(63) + "1::aptos_account::transfer") },
+      ]),
+    });
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    const events = await client.getEvents(descriptor, {
+      fromVersion: 0n,
+      where: fromFunction("0x1::aptos_account::transfer"),
     });
     expect(events.map((e) => e.version)).toEqual([1n, 4n]);
     client.destroy();
@@ -2725,5 +2747,306 @@ describe("caller-supplied subscription ids", () => {
           defaults: { id: "x" } as unknown as ListenerDefaults,
         }),
     ).toThrow(/Unsupported listener default: id/);
+  });
+});
+
+describe("async where on listeners", () => {
+  const type = "0x1::test::Ping";
+  const pings: EventDescriptor = { kind: "module", eventType: type };
+  const ping = (version: number): StreamdEvent => ({
+    type,
+    data: {},
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 0,
+  });
+  const seeded = () => new MemoryAdapter([1, 2, 3, 4].map(ping));
+  const even = async (e: StreamdEvent) => e.version % 2n === 0n;
+  const opts = { fromVersion: 0n, pollInterval: 1 };
+  const until = async (done: () => boolean) => {
+    for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setTimeout(r, 2));
+    expect(done()).toBe(true);
+  };
+
+  it("delivers matches in order through on, onBatch, once, stream and reduce", async () => {
+    const client = new StreamdClient({ adapter: seeded() });
+    let inFlight = 0;
+    let most = 0;
+    const slowEven = async (e: StreamdEvent) => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      await new Promise((r) => setTimeout(r, Number(5n - e.version)));
+      inFlight--;
+      return e.version % 2n === 0n;
+    };
+    const seen: bigint[] = [];
+    const sub = client.on(pings, (e) => void seen.push(e.version), { ...opts, where: slowEven });
+    const batches: bigint[][] = [];
+    const batchSub = client.onBatch(pings, (es) => void batches.push(es.map((e) => e.version)), {
+      ...opts,
+      where: even,
+    });
+    await until(() => seen.length === 2 && batches.length === 1);
+    sub.unsubscribe();
+    batchSub.unsubscribe();
+    expect(seen).toEqual([2n, 4n]);
+    expect(batches).toEqual([[2n, 4n]]);
+    expect(most).toBe(1);
+
+    expect((await client.once(pings, { ...opts, where: even })).version).toBe(2n);
+    for await (const e of client.stream(pings, { ...opts, where: even })) {
+      expect(e.version).toBe(2n);
+      break;
+    }
+    const r = client.reduce(pings, (n: bigint, e) => n + e.version, 0n, { ...opts, where: even });
+    expect(await r.ready).toBe(6n);
+    r.unsubscribe();
+  });
+
+  it("fails the poll on a rejection and tests the event again on the retry", async () => {
+    let calls = 0;
+    const tested: bigint[] = [];
+    const errors: Error[] = [];
+    const seen: bigint[] = [];
+    const sub = new StreamdClient({ adapter: seeded() }).on(pings, (e) => void seen.push(e.version), {
+      ...opts,
+      onError: (err) => errors.push(err),
+      where: async (e) => {
+        tested.push(e.version);
+        if (++calls === 3) throw new StreamdNetworkError("lookup flaked", 503);
+        return true;
+      },
+    });
+    await until(() => seen.length === 4);
+    expect(sub.active).toBe(true);
+    sub.unsubscribe();
+    expect(seen).toEqual([1n, 2n, 3n, 4n]);
+    expect(tested).toEqual([1n, 2n, 3n, 3n, 4n]);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(StreamdPollingError);
+    expect((errors[0] as StreamdError).cause).toBeInstanceOf(StreamdNetworkError);
+  });
+
+  it("delivers a partial batch before a rejection fails the poll", async () => {
+    let calls = 0;
+    const batches: bigint[][] = [];
+    const sub = new StreamdClient({ adapter: seeded() }).onBatch(
+      pings,
+      (es) => void batches.push(es.map((e) => e.version)),
+      {
+        ...opts,
+        onError: () => {},
+        where: async () => {
+          if (++calls === 3) throw new Error("lookup flaked");
+          return true;
+        },
+      },
+    );
+    await until(() => batches.flat().length === 4);
+    sub.unsubscribe();
+    expect(batches).toEqual([[1n, 2n], [3n, 4n]]);
+  });
+
+  it("stops at once on a StreamdError rejection, which once() rejects with", async () => {
+    const refused = new StreamdError("not resolvable");
+    const errors: Error[] = [];
+    const client = new StreamdClient({ adapter: seeded() });
+    const sub = client.on(pings, () => {}, {
+      ...opts,
+      onError: (err) => errors.push(err),
+      where: () => Promise.reject(refused),
+    });
+    await until(() => !sub.active);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as StreamdError).cause).toBe(refused);
+
+    const failed = client.once(pings, { ...opts, where: () => Promise.reject(refused) });
+    await expect(failed).rejects.toBeInstanceOf(StreamdPollingError);
+  });
+
+  it("keeps a synchronous throw the caller's: reported, skipped, not counted", async () => {
+    const errors: Error[] = [];
+    const seen: bigint[] = [];
+    const sub = new StreamdClient({ adapter: seeded() }).on(pings, (e) => void seen.push(e.version), {
+      ...opts,
+      onError: (err) => errors.push(err),
+      where: (e) => {
+        if (e.version === 1n) throw new Error("predicate bug");
+        return Promise.resolve(true);
+      },
+    });
+    await until(() => seen.length === 3);
+    sub.unsubscribe();
+    expect(seen).toEqual([2n, 3n, 4n]);
+    expect(errors).toHaveLength(1);
+    expect(sub.status.consecutiveErrors).toBe(0);
+  });
+
+  it("abandons a pending predicate on pause and on stop", async () => {
+    let calls = 0;
+    const seen: bigint[] = [];
+    const sub = new StreamdClient({ adapter: seeded() }).on(pings, (e) => void seen.push(e.version), {
+      ...opts,
+      where: () => (++calls === 1 ? new Promise<boolean>(() => {}) : Promise.resolve(true)),
+    });
+    await until(() => calls === 1);
+    sub.pause();
+    sub.resume();
+    await until(() => seen.length === 4);
+    expect(seen).toEqual([1n, 2n, 3n, 4n]);
+    sub.unsubscribe();
+
+    let resolve!: (matched: boolean) => void;
+    const delivered: bigint[] = [];
+    const stopped = new StreamdClient({ adapter: seeded() }).on(
+      pings,
+      (e) => void delivered.push(e.version),
+      { ...opts, where: () => new Promise<boolean>((r) => (resolve = r)) },
+    );
+    await until(() => resolve !== undefined);
+    stopped.unsubscribe();
+    resolve(true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(delivered).toEqual([]);
+  });
+});
+
+describe("ownedBy through the client", () => {
+  const DEPOSIT = "0x1::fungible_asset::Deposit";
+  const deposits: EventDescriptor = { kind: "module", eventType: DEPOSIT };
+  const wallet = `0x${"b0b".padStart(64, "0")}`;
+  const store = (n: number) => `0x${String(n).padStart(64, "0")}`;
+  const deposit = (version: number, type = DEPOSIT): StreamdEvent => ({
+    type,
+    data: { store: store(version), amount: "1" },
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 0,
+  });
+  const ownsStores = (owned: number[], fail?: () => boolean) =>
+    ({
+      viewJson: async ({ payload }: { payload: { functionArguments: string[] } }) => {
+        if (fail?.()) throw Object.assign(new Error("unavailable"), { status: 503 });
+        return [owned.map(store).includes(payload.functionArguments[0]!)];
+      },
+    }) as unknown as Aptos;
+
+  it("keeps only events on stores the wallet owns in a query", async () => {
+    const adapter = new MemoryAdapter([deposit(1), deposit(2), deposit(3, "0x1::other::Deposit"), deposit(4)]);
+    const events = await new StreamdClient({ adapter }).getEvents(deposits, {
+      fromVersion: 0n,
+      where: every(ofType(DEPOSIT), ownedBy(ownsStores([2, 3, 4]), wallet)),
+    });
+    expect(events.map((e) => e.version)).toEqual([2n, 4n]);
+  });
+
+  it("retries an event after a failed ownership read and delivers it once", async () => {
+    let reads = 0;
+    const errors: Error[] = [];
+    const seen: bigint[] = [];
+    const sub = new StreamdClient({ adapter: new MemoryAdapter([deposit(1), deposit(2)]) }).on(
+      deposits,
+      (e) => void seen.push(e.version),
+      {
+        fromVersion: 0n,
+        pollInterval: 1,
+        onError: (err) => errors.push(err),
+        where: ownedBy(ownsStores([1, 2], () => ++reads === 2), wallet),
+      },
+    );
+    for (let i = 0; i < 200 && seen.length < 2; i++) await new Promise((r) => setTimeout(r, 2));
+    sub.unsubscribe();
+    expect(seen).toEqual([1n, 2n]);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as StreamdError).cause).toBeInstanceOf(StreamdNetworkError);
+  });
+});
+
+describe("transfers through the client", () => {
+  const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
+  const [ALICE, BOB, USDC] = [long("a11ce"), long("b0b"), long("bae2")];
+  const owners: Record<string, string> = { [long("1")]: ALICE, [long("2")]: BOB, [long("3")]: BOB };
+  const fa = (version: number, eventIndex: number, side: string, store: number, amount = "5"): StreamdEvent => ({
+    type: `0x1::fungible_asset::${side}`,
+    data: { store: long(String(store)), amount },
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex,
+  });
+  const events = [fa(1, 0, "Withdraw", 1), fa(1, 1, "Deposit", 2), fa(2, 0, "Deposit", 3, "8")];
+  const withViews = (fail?: () => boolean): EventAdapter => {
+    const memory = new MemoryAdapter(events);
+    return {
+      fetchEvents: (d, o) => memory.fetchEvents(d, o),
+      view: async (request, _version) => {
+        if (fail?.()) throw new StreamdNetworkError("unavailable", 503);
+        const store = String(request.functionArguments![0]);
+        if (request.function === "0x1::object::owner") return [owners[store]];
+        return [{ inner: store === long("3") ? long("a") : USDC }];
+      },
+    };
+  };
+
+  it("returns paired records from getTransfers, narrowed by asset", async () => {
+    const client = new StreamdClient({ adapter: withViews() });
+    const all = await client.getTransfers({ fromVersion: 0n });
+    expect(all.map((e) => e.data)).toEqual([
+      { asset: USDC, amount: 5n, from: ALICE, to: BOB },
+      { asset: long("a"), amount: 8n, from: undefined, to: BOB },
+    ]);
+    const apt = await client.getTransfers({ fromVersion: 0n, asset: "0xa" });
+    expect(apt.map((e) => e.version)).toEqual([2n]);
+    await expect(client.getTransfers({ asset: "nope" })).rejects.toBeInstanceOf(StreamdError);
+  });
+
+  it("returns coin, token object and legacy token records together in identity order", async () => {
+    const NFT = long("deed");
+    const LEGACY_ID = { token_data_id: { creator: ALICE, collection: "Apes", name: "Ape #1" }, property_version: "0" };
+    const memory = new MemoryAdapter([
+      ...events,
+      { type: "0x1::object::Transfer", data: { object: NFT, from: ALICE, to: BOB }, version: 3n, sequenceNumber: 0n, eventIndex: 0 },
+      { type: "0x3::token::TokenWithdraw", data: { account: BOB, id: LEGACY_ID, amount: "1" }, version: 3n, sequenceNumber: 0n, eventIndex: 1 },
+      { type: "0x3::token::TokenDeposit", data: { account: ALICE, id: LEGACY_ID, amount: "1" }, version: 3n, sequenceNumber: 0n, eventIndex: 2 },
+    ]);
+    const views = withViews();
+    const client = new StreamdClient({
+      adapter: {
+        fetchEvents: (d, o) => memory.fetchEvents(d, o),
+        view: async (request, version) =>
+          request.function === "0x4::token::creator" ? [ALICE] : views.view!(request, version),
+      },
+    });
+    const records = await client.getTransfers({ fromVersion: 0n });
+    expect(records.map((e) => [`${e.version}:${e.eventIndex}`, e.data])).toEqual([
+      ["1:1", { asset: USDC, amount: 5n, from: ALICE, to: BOB }],
+      ["2:0", { asset: long("a"), amount: 8n, from: undefined, to: BOB }],
+      ["3:0", { asset: NFT, amount: 1n, from: ALICE, to: BOB }],
+      ["3:2", { asset: `${ALICE}::Apes::Ape #1::0`, amount: 1n, from: BOB, to: ALICE }],
+    ]);
+  });
+
+  it("follows live, retrying a poll whose view failed and delivering each transfer once", async () => {
+    let reads = 0;
+    const errors: Error[] = [];
+    const seen: Transfer[] = [];
+    const client = new StreamdClient({ adapter: withViews(() => ++reads === 1) });
+    const sub = client.transfers((e) => void seen.push(e.data), {
+      fromVersion: 0n,
+      pollInterval: 1,
+      onError: (err) => errors.push(err),
+    });
+    expect(client.listenerCount()).toBe(0);
+    for (let i = 0; i < 200 && seen.length < 2; i++) await new Promise((r) => setTimeout(r, 2));
+    expect(seen.map((t) => t.amount)).toEqual([5n, 8n]);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as StreamdError).cause).toBeInstanceOf(StreamdNetworkError);
+    expect(sub.status.consecutiveErrors).toBe(0);
+    client.destroy();
+    expect(sub.active).toBe(false);
+  });
+
+  it("refuses an adapter without view", () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter(events) });
+    expect(() => client.transfers(() => {})).toThrow(StreamdError);
   });
 });
