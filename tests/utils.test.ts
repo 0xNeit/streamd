@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, spyOn } from "bun:test";
 import { descriptorKey, raceAbort } from "../src/utils.js";
 import { SharedFetches } from "../src/shared.js";
 import { CachingAdapter } from "../src/adapters/caching.js";
@@ -83,5 +83,42 @@ describe("descriptorKey", () => {
     await expect(replay.fetchEvents(invalid, { fromVersion: 0n })).rejects.toThrow(
       "No recorded fetchEvents call",
     );
+  });
+});
+
+describe("raceAbort", () => {
+  it("rejects with the reason of an already-aborted signal and absorbs the inner rejection", async () => {
+    const unhandled: unknown[] = [];
+    const record = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", record);
+    try {
+      const controller = new AbortController();
+      controller.abort(new Error("stopped"));
+      await expect(raceAbort(Promise.reject(new Error("inner")), controller.signal)).rejects.toThrow(
+        "stopped",
+      );
+      await new Promise((r) => setTimeout(r, 0));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", record);
+    }
+  });
+
+  it("rejects with the promise's error under a live signal and detaches its listener", async () => {
+    const controller = new AbortController();
+    const remove = spyOn(controller.signal, "removeEventListener");
+    await expect(raceAbort(Promise.reject(new Error("fetch failed")), controller.signal)).rejects.toThrow(
+      "fetch failed",
+    );
+    expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
+  it("keeps the abort reason when the promise rejects after the signal aborted", async () => {
+    const controller = new AbortController();
+    let fail!: (err: Error) => void;
+    const raced = raceAbort(new Promise((_, reject) => (fail = reject)), controller.signal);
+    controller.abort(new Error("stopped"));
+    fail(new Error("fetch failed"));
+    await expect(raced).rejects.toThrow("stopped");
   });
 });
