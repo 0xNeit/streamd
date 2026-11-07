@@ -108,6 +108,39 @@ export function ofModule(...modules: string[]): SyncEventPredicate {
 }
 
 /**
+ * Matches events produced by a call to one of `functions`, each written
+ * `address::module::function` (e.g. `"0x1::aptos_account::transfer"`).
+ * Addresses compare in canonical long form. Events without an
+ * `entryFunction` (see `StreamdEvent.entryFunction`) never match.
+ */
+export function fromFunction(...functions: string[]): SyncEventPredicate {
+  const keys = new Set(
+    functions.map((id) => {
+      const key = functionKey(id);
+      if (key === undefined) {
+        throw new StreamdError(
+          `Function must be written address::module::function: ${JSON.stringify(id)}`,
+        );
+      }
+      return key;
+    }),
+  );
+  return (event) => {
+    const fn = event.entryFunction?.function;
+    if (typeof fn !== "string") return false;
+    const key = functionKey(fn);
+    return key !== undefined && keys.has(key);
+  };
+}
+
+function functionKey(id: unknown): string | undefined {
+  const parts = typeof id === "string" ? id.split("::") : [];
+  if (parts.length !== 3 || !parts.slice(1).every((p) => MOVE_IDENTIFIER.test(p))) return undefined;
+  const address = normalizeAddress(parts[0]);
+  return address === undefined ? undefined : `${address}::${parts[1]}::${parts[2]}`;
+}
+
+/**
  * Matches events whose payload has `value` at `path` inside `event.data`.
  *
  * `path` is either a dot-separated string (`"store"`, `"inner.owner"`,

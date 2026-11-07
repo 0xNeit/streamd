@@ -3,6 +3,7 @@ import { StreamdError } from "../src/errors.js";
 import {
   every,
   filterEvents,
+  fromFunction,
   fromSender,
   involvesAddress,
   normalizeAddress,
@@ -292,6 +293,40 @@ describe("fromSender", () => {
 
   it("rejects an invalid address", () => {
     expect(() => fromSender("not-an-address")).toThrow(TypeError);
+  });
+});
+
+describe("fromFunction", () => {
+  const calling = (fn: unknown): StreamdEvent =>
+    ({ ...ev({}), entryFunction: { function: fn, typeArguments: [], arguments: [] } }) as StreamdEvent;
+
+  it("matches the function in either address spelling", () => {
+    expect(fromFunction("0x1::aptos_account::transfer")(calling(`${LONG_ONE}::aptos_account::transfer`))).toBe(true);
+    expect(fromFunction(`${LONG_ONE}::coin::transfer`)(calling("0x1::coin::transfer"))).toBe(true);
+  });
+
+  it("matches any of several functions", () => {
+    const predicate = fromFunction("0x1::coin::transfer", "0x1::aptos_account::transfer");
+    expect(predicate(calling("0x1::aptos_account::transfer"))).toBe(true);
+    expect(predicate(calling("0x1::coin::transfer"))).toBe(true);
+    expect(predicate(calling("0x1::coin::register"))).toBe(false);
+  });
+
+  it("does not match another module, address or name, or a missing or malformed call", () => {
+    const predicate = fromFunction("0x1::coin::transfer");
+    expect(predicate(calling("0x1::aptos_account::transfer"))).toBe(false);
+    expect(predicate(calling("0x2::coin::transfer"))).toBe(false);
+    expect(predicate(calling("0x1::coin::transfer_coins"))).toBe(false);
+    expect(predicate(ev({}))).toBe(false);
+    expect(predicate(calling(7))).toBe(false);
+    expect(predicate(calling("0x1::coin"))).toBe(false);
+    expect(predicate(calling("nope::coin::transfer"))).toBe(false);
+  });
+
+  it("rejects a function not written address::module::function", () => {
+    for (const bad of ["0x1::coin", "coin::transfer::x", "0x1::coin::transfer::x", "0x1::1coin::transfer", "0x1::coin::", 42 as unknown as string]) {
+      expect(() => fromFunction(bad)).toThrow(StreamdError);
+    }
   });
 });
 

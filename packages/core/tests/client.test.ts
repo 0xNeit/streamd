@@ -11,7 +11,7 @@ import { withHooks } from "../src/adapters/hooks.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { RoutingAdapter } from "../src/adapters/routing.js";
 import { StreamdClient } from "../src/client.js";
-import { every, fromSender, involvesAddress, not, ofType, whereField } from "../src/filter.js";
+import { every, fromFunction, fromSender, involvesAddress, not, ofType, whereField } from "../src/filter.js";
 import { ownedBy } from "../src/ownership.js";
 import type {
   EventAdapter,
@@ -880,6 +880,26 @@ describe("StreamdClient", () => {
     const events = await client.getEvents(descriptor, {
       fromVersion: 0n,
       where: fromSender("0xa"),
+    });
+    expect(events.map((e) => e.version)).toEqual([1n, 4n]);
+    client.destroy();
+  });
+
+  it("filters a backlog by entry function with fromFunction", async () => {
+    const call = (fn: string) => ({ function: fn, typeArguments: [], arguments: [] });
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([
+        { ...makeEvent(1), entryFunction: call("0x1::aptos_account::transfer") },
+        { ...makeEvent(2), entryFunction: call("0x1::coin::transfer") },
+        makeEvent(3),
+        { ...makeEvent(4), entryFunction: call("0x" + "0".repeat(63) + "1::aptos_account::transfer") },
+      ]),
+    });
+    const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+    const events = await client.getEvents(descriptor, {
+      fromVersion: 0n,
+      where: fromFunction("0x1::aptos_account::transfer"),
     });
     expect(events.map((e) => e.version)).toEqual([1n, 4n]);
     client.destroy();

@@ -30,6 +30,7 @@ export {
 
 export {
   every,
+  fromFunction,
   fromSender,
   involvesAddress,
   normalizeAddress,
