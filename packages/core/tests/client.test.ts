@@ -20,6 +20,7 @@ import type {
   ListenerDefaults,
   ModuleEventDescriptor,
   StreamdEvent,
+  Transfer,
 } from "../src/types.js";
 import {
   StreamdError,
@@ -2938,5 +2939,68 @@ describe("ownedBy through the client", () => {
     expect(seen).toEqual([1n, 2n]);
     expect(errors).toHaveLength(1);
     expect((errors[0] as StreamdError).cause).toBeInstanceOf(StreamdNetworkError);
+  });
+});
+
+describe("transfers through the client", () => {
+  const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
+  const [ALICE, BOB, USDC] = [long("a11ce"), long("b0b"), long("bae2")];
+  const owners: Record<string, string> = { [long("1")]: ALICE, [long("2")]: BOB, [long("3")]: BOB };
+  const fa = (version: number, eventIndex: number, side: string, store: number, amount = "5"): StreamdEvent => ({
+    type: `0x1::fungible_asset::${side}`,
+    data: { store: long(String(store)), amount },
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex,
+  });
+  const events = [fa(1, 0, "Withdraw", 1), fa(1, 1, "Deposit", 2), fa(2, 0, "Deposit", 3, "8")];
+  const withViews = (fail?: () => boolean): EventAdapter => {
+    const memory = new MemoryAdapter(events);
+    return {
+      fetchEvents: (d, o) => memory.fetchEvents(d, o),
+      view: async (request, _version) => {
+        if (fail?.()) throw new StreamdNetworkError("unavailable", 503);
+        const store = String(request.functionArguments![0]);
+        if (request.function === "0x1::object::owner") return [owners[store]];
+        return [{ inner: store === long("3") ? long("a") : USDC }];
+      },
+    };
+  };
+
+  it("returns paired records from getTransfers, narrowed by asset", async () => {
+    const client = new StreamdClient({ adapter: withViews() });
+    const all = await client.getTransfers({ fromVersion: 0n });
+    expect(all.map((e) => e.data)).toEqual([
+      { asset: USDC, amount: 5n, from: ALICE, to: BOB },
+      { asset: long("a"), amount: 8n, from: undefined, to: BOB },
+    ]);
+    const apt = await client.getTransfers({ fromVersion: 0n, asset: "0xa" });
+    expect(apt.map((e) => e.version)).toEqual([2n]);
+    await expect(client.getTransfers({ asset: "nope" })).rejects.toBeInstanceOf(StreamdError);
+  });
+
+  it("follows live, retrying a poll whose view failed and delivering each transfer once", async () => {
+    let reads = 0;
+    const errors: Error[] = [];
+    const seen: Transfer[] = [];
+    const client = new StreamdClient({ adapter: withViews(() => ++reads === 1) });
+    const sub = client.transfers((e) => void seen.push(e.data), {
+      fromVersion: 0n,
+      pollInterval: 1,
+      onError: (err) => errors.push(err),
+    });
+    expect(client.listenerCount()).toBe(0);
+    for (let i = 0; i < 200 && seen.length < 2; i++) await new Promise((r) => setTimeout(r, 2));
+    expect(seen.map((t) => t.amount)).toEqual([5n, 8n]);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as StreamdError).cause).toBeInstanceOf(StreamdNetworkError);
+    expect(sub.status.consecutiveErrors).toBe(0);
+    client.destroy();
+    expect(sub.active).toBe(false);
+  });
+
+  it("refuses an adapter without view", () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter(events) });
+    expect(() => client.transfers(() => {})).toThrow(StreamdError);
   });
 });

@@ -346,6 +346,36 @@ export interface PreviewEventsOptions {
 }
 
 /**
+ * One coin or fungible-asset movement, the `data` of the events
+ * `StreamdClient.transfers` and `getTransfers` deliver. A deposit paired with
+ * the withdraw that funded it carries both sides; a deposit nothing funded (a
+ * mint) has no `from`, and a withdraw nothing received (a burn) no `to`.
+ */
+export interface Transfer {
+  /** Fungible-asset metadata address in long form, or the coin type as reported. */
+  asset: string;
+  amount: bigint;
+  /** Owner of the withdrawn store, or the coin account, in long form. */
+  from?: string;
+  /** Owner of the receiving store, or the coin account, in long form. */
+  to?: string;
+}
+
+export interface TransferOptions {
+  /**
+   * Only transfers of this asset: a fungible-asset metadata address (any
+   * form, e.g. `"0xa"` for APT) or a coin type (`"0x1::aptos_coin::AptosCoin"`).
+   */
+  asset?: string;
+}
+
+/** Options for `StreamdClient.transfers`. */
+export type TransferListenerOptions = SubscriptionOptions & TransferOptions;
+
+/** Filter for `StreamdClient.getTransfers`. */
+export type TransferFilter = EventFilter & TransferOptions;
+
+/**
  * What an adapter receives on each fetch.
  *
  * `where` is deliberately absent: predicates are functions, so they cannot be
