@@ -351,7 +351,10 @@ const event = await streamd.once(
 ```
 
 The promise rejects with `StreamdTimeoutError` if `timeout` elapses first, if
-polling gives up after `maxErrors`, or straight away on invalid input.
+polling gives up after `maxErrors`, straight away on invalid input, or on the first
+throw from `where`, which would otherwise skip every event. A throwing `onCaughtUp`,
+an event that fails `decode`, or a throwing `withState` builder goes to `onError` and
+`once()` keeps waiting for a match.
 
 ### Events from a submitted transaction
 
