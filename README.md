@@ -569,8 +569,10 @@ a negative `fromVersion`, the `getEarliestVersion` read behind `"earliest"`, and
 `getBlock` and `getBlockHeights` lookups behind `fromBlock`/`toBlock` and `fromTime`, and
 the lookups behind `eventsOf()` and the simulations behind `previewEvents()` all count. The unit is one adapter call, not one HTTP request:
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
-still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
-dropped without reaching the adapter. Omit the option for no limit.
+still waiting when its subscription stops or pauses, or its query's `signal` aborts, leaves
+the queue at once without reaching the adapter, and `destroy()` rejects every call still
+waiting. A call the adapter never settles holds its slot, so give a custom adapter its own
+timeouts. Omit the option for no limit.
 
 ### Shared polling
 

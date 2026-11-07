@@ -530,6 +530,7 @@ export class StreamdClient {
     for (const close of [...this.streams]) close();
     for (const { stop } of [...this.subscriptions.values()]) stop();
     this.shared.clear();
+    this.limiter.clear();
   }
 
   /** `destroy()`, so `using client = new StreamdClient(...)` cleans up at scope exit. */
