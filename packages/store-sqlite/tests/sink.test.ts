@@ -97,6 +97,21 @@ describe("storeEvents", () => {
     expect(await stored(db)).toEqual(history(30).slice(10).map(eventId));
   });
 
+  it("still calls onCaughtUp when saving the cursor there fails", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    db.exec(`CREATE TRIGGER boom BEFORE INSERT ON streamd_cursors BEGIN SELECT RAISE(ABORT, 'busy'); END`);
+    const client = new StreamdClient({ adapter: new MemoryAdapter(history(3)) });
+    const errors: Error[] = [];
+    const sub = await caughtUp((onCaughtUp) =>
+      storeEvents(client, store, swaps, { name: "swaps", fromVersion: -1n, where: () => false, onCaughtUp, onError: (e) => errors.push(e) }),
+    );
+    expect(sub.active).toBe(true);
+    expect(((errors[0]?.cause as Error) ?? errors[0])?.message).toContain("busy");
+    sub.unsubscribe();
+    client.destroy();
+  });
+
   it("an explicit cursor wins over the saved one", async () => {
     const store = new SqliteEventStore(new Database(":memory:"));
     store.write([], { name: "swaps", cursor: "4" });

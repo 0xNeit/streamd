@@ -53,9 +53,13 @@ export function storeEvents(
       ...listener,
       cursor,
       onCaughtUp: () => {
-        // Every page so far is stored, so the live cursor is safe to save.
-        store.write([], { name, cursor: subscription.cursor });
-        listener.onCaughtUp?.();
+        // Every page so far is stored, so the live cursor is safe to save. A
+        // failed save still reaches onError, and the caller still hears of it.
+        try {
+          store.write([], { name, cursor: subscription.cursor });
+        } finally {
+          listener.onCaughtUp?.();
+        }
       },
     },
   );
