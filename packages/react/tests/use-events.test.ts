@@ -1,3 +1,4 @@
+import "./dom.js";
 import { describe, expect, it } from "bun:test";
 import { StrictMode, createElement } from "react";
 import { renderToString } from "react-dom/server";
