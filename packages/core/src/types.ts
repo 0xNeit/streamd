@@ -303,6 +303,25 @@ export interface EventsOfOptions {
   signal?: AbortSignal;
 }
 
+/** Options for `StreamdClient.expectEvents`. */
+export type ExpectEventsOptions = Pick<EventsOfOptions, "decode" | "timeout" | "signal">;
+
+/**
+ * Assertions on one transaction's events, from `StreamdClient.expectEvents`.
+ * Each waits for the transaction as `eventsOf` does, then narrows its events
+ * by the descriptor, the expectation's `decode`, then `where`. A failed
+ * assertion rejects with `StreamdAssertionError`.
+ */
+export interface EventExpectation {
+  /** Resolves with the matching events, in transaction order; rejects when there are none. */
+  toEmit<TData = unknown>(
+    descriptor: EventDescriptor<TData>,
+    where?: EventPredicate,
+  ): Promise<StreamdEvent<TData>[]>;
+  /** Resolves when no event matches; rejects naming the ones that do. */
+  notToEmit(descriptor: EventDescriptor, where?: EventPredicate): Promise<void>;
+}
+
 /** Options for `StreamdClient.previewEvents`. */
 export interface PreviewEventsOptions {
   /** The sender's public key, so the simulation checks its auth key; omitted, that check is skipped. */

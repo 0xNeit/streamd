@@ -1,3 +1,5 @@
+import type { StreamdEvent } from "./types.js";
+
 export class StreamdError extends Error {
   constructor(
     message: string,
@@ -85,5 +87,20 @@ export class StreamdTransactionError extends StreamdError {
   ) {
     super(message);
     this.name = "StreamdTransactionError";
+  }
+}
+
+/**
+ * An `expectEvents` assertion that did not hold. `events` is every event the
+ * transaction emitted, before `decode`, and the message lists them.
+ */
+export class StreamdAssertionError extends StreamdError {
+  constructor(
+    message: string,
+    public readonly transactionHash: string,
+    public readonly events: StreamdEvent[],
+  ) {
+    super(message);
+    this.name = "StreamdAssertionError";
   }
 }

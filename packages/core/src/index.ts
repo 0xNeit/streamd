@@ -17,6 +17,7 @@ export { networks } from "./networks.js";
 export { checkDescriptor } from "./preflight.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
 export {
+  StreamdAssertionError,
   StreamdError,
   StreamdNetworkError,
   StreamdPollingError,
@@ -87,7 +88,9 @@ export type {
   EventGuid,
   EventPage,
   EventPredicate,
+  EventExpectation,
   EventsOfOptions,
+  ExpectEventsOptions,
   EventStream,
   FetchOptions,
   HandleEventDescriptor,
