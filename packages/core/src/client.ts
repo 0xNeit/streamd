@@ -7,7 +7,9 @@ import type {
   EventDescriptor,
   EventStream,
   EventFilter,
+  EventExpectation,
   EventsOfOptions,
+  ExpectEventsOptions,
   ListenerDefaults,
   ListenerOptions,
   OnceOptions,
@@ -35,6 +37,8 @@ import { fieldDecoder } from "./decode.js";
 import { SharedFetches } from "./shared.js";
 import { startReduction, type ReduceHost } from "./reduce.js";
 import { eventsOf, previewEvents } from "./transaction.js";
+import { expectEvents } from "./expect.js";
+import { requireTransactionHash } from "./adapters/validate.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -460,6 +464,28 @@ export class StreamdClient {
       options,
     );
     return events as StreamdEvent<TData>[];
+  }
+
+  /**
+   * Assertions on the events of the transaction with this hash, for
+   * integration tests under any runner: `toEmit(descriptor, where?)` resolves
+   * with the matching events and `notToEmit(descriptor, where?)` with nothing,
+   * and either rejects with `StreamdAssertionError`, listing every event the
+   * transaction emitted, when it does not hold. Nothing is looked up until an
+   * assertion runs; each waits as `eventsOf` does and rejects as it does.
+   * Throws at once on a malformed hash or `timeout`.
+   */
+  expectEvents(transactionHash: string, options: ExpectEventsOptions = {}): EventExpectation {
+    requireTransactionHash(transactionHash);
+    const badTimeout = checkTimeout(options.timeout);
+    if (badTimeout !== undefined) throw badTimeout;
+    return expectEvents(
+      this.adapter,
+      this.limiter,
+      this.defaults.pollInterval!,
+      transactionHash,
+      options,
+    );
   }
 
   /**

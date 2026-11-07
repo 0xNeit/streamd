@@ -392,6 +392,24 @@ its `maxConcurrentRequests` slot until then. The hash must be
 `0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which
 `FullnodeScanAdapter` and `MemoryAdapter` have and the wrapping adapters pass through.
 
+### Assert a transaction's events in tests
+
+```ts
+const tx = streamd.expectEvents(hash, { decode: ["amount"] }); // options optional
+const [deposit] = await tx.toEmit(Deposit, whereField("amount", 100n));
+await tx.notToEmit({ kind: "module", eventType: "0x1::fungible_asset::Withdraw" });
+```
+
+For localnet and devnet integration tests under any runner. `toEmit(descriptor, where?)`
+resolves with the matching events, and `notToEmit(descriptor, where?)` with nothing. When an
+assertion does not hold it rejects with `StreamdAssertionError`, whose message lists every
+event the transaction emitted (index, type and data) and whose `events` holds them, so a
+failing test shows what happened instead of what did not. Each assertion waits for the
+transaction exactly as `eventsOf()` does and rejects as it does: a failed transaction with
+`StreamdTransactionError`, one not committed in `timeout` with `StreamdTimeoutError`.
+Nothing is looked up until an assertion runs. A malformed hash or `timeout` throws from
+`expectEvents()` itself.
+
 ### Preview a transaction's events before signing
 
 ```ts
