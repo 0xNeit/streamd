@@ -359,7 +359,8 @@ const event = await streamd.once(
 
 The promise rejects with `StreamdTimeoutError` if `timeout` elapses first, if
 polling gives up after `maxErrors`, straight away on invalid input, or on the first
-throw from `where`, which would otherwise skip every event. A throwing `onCaughtUp`,
+synchronous throw from `where`, which would otherwise skip every event (a rejected
+async `where` is retried, as for `on()`). A throwing `onCaughtUp`,
 an event that fails `decode`, or a throwing `withState` builder goes to `onError` and
 `once()` keeps waiting for a match.
 
@@ -928,11 +929,41 @@ streamd.on(
   needs `sender` on the event; events without one never match. `0x1` and
   `0x000...01` count as the same address.
 - `every(...predicates)`, `some(...predicates)`, and `not(predicate)` combine
-  and negate filters.
-- Any `(event) => boolean` function works too.
+  and negate filters. They test in order and stop at the first answer that
+  decides, so put cheap checks before a lookup.
+- Any `(event) => boolean` function works too, and so does one returning a
+  Promise.
 
 `limit` counts events *after* filtering, so a filter that rarely matches keeps
 the query reading pages until it fills. Set `maxPages` to cap that work.
+
+### Async predicates
+
+A predicate may return a Promise, to look something up before deciding:
+
+```ts
+const known = async (event: StreamdEvent) => allowlist.has(await ownerOf(event));
+
+streamd.on(deposits, handler, { where: every(ofType(DEPOSIT), known) });
+```
+
+- **Order.** Events are tested one at a time, in order, and delivered in order.
+  Predicates are your code, so they do not count toward `maxConcurrentRequests`;
+  cache or bound your own lookups. Only a returned Promise is awaited, and
+  `every`, `some` and `not` over synchronous predicates stay synchronous
+  (typed `SyncEventPredicate`), so plain filters cost nothing extra.
+- **Queries** reject with the predicate's error, whether it throws or rejects.
+  `retries` does not repeat it, and `signal` aborts a pending one.
+- **Listeners** treat a throw as a bug in the predicate: it goes to `onError`
+  and the event is skipped, without counting toward `maxErrors`. A rejection is
+  treated like a failed fetch: events before it on the page are delivered, the
+  poll fails with backoff and counts toward `maxErrors`, and the next poll tests
+  the event again. Reject with a `StreamdError` (not a `StreamdNetworkError`) to
+  stop the subscription at once instead. Pausing or stopping never waits on a
+  pending predicate.
+- `once()` rejects at once on a throw, and retries a rejection like `on()`.
+- `eventsOf`, `previewEvents` and `expectEvents` await it and reject with its
+  error.
 
 ## Data sources and their limits
 
