@@ -1,4 +1,4 @@
-import type { StreamdClient } from "../client.js";
+import type { StreamdClient } from "@streamd/core";
 import type { TailOptions } from "./args.js";
 import { formatEvent, message } from "./format.js";
 

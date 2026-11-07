@@ -1,4 +1,4 @@
-export { serializeEvent as formatEvent } from "../serialize.js";
+export { serializeEvent as formatEvent } from "@streamd/core";
 
 /** The error's message, plus its cause's when the message does not already carry it. */
 export function message(err: unknown): string {

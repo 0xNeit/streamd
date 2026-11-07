@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
-import { requireAddress, requireEventType } from "../adapters/validate.js";
-import type { EventDescriptor, MoveEventType } from "../types.js";
+import { requireAddress, requireEventType } from "@streamd/core";
+import type { EventDescriptor, MoveEventType } from "@streamd/core";
 
 export type Network = "mainnet" | "testnet" | "devnet";
 

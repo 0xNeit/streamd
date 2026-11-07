@@ -1,10 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { runTail } from "../../src/cli/tail.js";
-import type { TailOptions } from "../../src/cli/args.js";
-import { StreamdClient } from "../../src/client.js";
-import { MemoryAdapter } from "../../src/adapters/memory.js";
-import { StreamdError, StreamdNetworkError } from "../../src/errors.js";
-import type { EventAdapter, StreamdEvent } from "../../src/types.js";
+import { runTail } from "../src/tail.js";
+import type { TailOptions } from "../src/args.js";
+import { MemoryAdapter, StreamdClient, StreamdError, StreamdNetworkError } from "@streamd/core";
+import type { EventAdapter, StreamdEvent } from "@streamd/core";
 
 const TYPE = "0x1::coin::DepositEvent";
 

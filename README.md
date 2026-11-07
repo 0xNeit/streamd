@@ -7,7 +7,7 @@ deduplication, backoff and client-side filtering handled for you.
 
 ```ts
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { StreamdClient } from "streamd";
+import { StreamdClient } from "@streamd/core";
 
 const streamd = new StreamdClient({
   aptos: new Aptos(new AptosConfig({ network: Network.MAINNET })),
@@ -30,8 +30,11 @@ bun install
 bun run build
 ```
 
-`@aptos-labs/ts-sdk` (>= 1.0.0) is a peer dependency. The package ships ESM,
-CommonJS and TypeScript types.
+The repository is a Turborepo monorepo on Bun workspaces with two packages:
+
+- `@streamd/core` (`packages/core`) - the library. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer
+  dependency, and it ships ESM, CommonJS and TypeScript types.
+- `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core`.
 
 ## Usage
 
@@ -468,7 +471,7 @@ whose `retryAfter` is set (in ms) replaces the backoff for that wait, capped at 
 and at `maxBackoff` for listeners. A custom adapter sets it from the response header:
 
 ```ts
-import { StreamdNetworkError, parseRetryAfter } from "streamd";
+import { StreamdNetworkError, parseRetryAfter } from "@streamd/core";
 
 if (!res.ok) {
   throw new StreamdNetworkError(
@@ -667,7 +670,7 @@ number of events emitted on it so far and its guid:
 
 ```ts
 import { Aptos } from "@aptos-labs/ts-sdk";
-import { listEventHandles } from "streamd";
+import { listEventHandles } from "@streamd/core";
 
 const handles = await listEventHandles(new Aptos(), "0x1");
 // [{ descriptor: { kind: "handle", accountAddress, eventHandleStruct: "0x1::block::BlockResource", fieldName: "new_block_events" }, count: 1165098930n, guid: { creationNumber: 3n, accountAddress: "0x1" } }, ...]
@@ -690,7 +693,7 @@ type in a `module` descriptor and says whether the struct is there:
 
 ```ts
 import { Aptos } from "@aptos-labs/ts-sdk";
-import { checkDescriptor } from "streamd";
+import { checkDescriptor } from "@streamd/core";
 
 const check = await checkDescriptor(new Aptos(), {
   kind: "module",
@@ -724,7 +727,7 @@ request per distinct module, accepts `module` descriptors only, and throws
 payload type, so every client method infers `event.data` from it:
 
 ```ts
-import { defineEvent } from "streamd";
+import { defineEvent } from "@streamd/core";
 
 const Deposit = defineEvent<{ amount: string }>("0x1::coin::DepositEvent");
 
@@ -814,7 +817,7 @@ JSON has no `bigint`, so `JSON.stringify` throws on a `StreamdEvent`. Use
 `serializeEvent` and `parseEvent` to store or send events and read them back:
 
 ```ts
-import { parseEvent, serializeEvent } from "streamd";
+import { parseEvent, serializeEvent } from "@streamd/core";
 
 const text = serializeEvent(event); // one line, the same format as `streamd tail`
 const back = parseEvent(text, { decode: ["amount"] });
@@ -836,7 +839,7 @@ store or `Map`. It takes anything with `version` and `eventIndex`, so parsed
 events work too:
 
 ```ts
-import { eventId } from "streamd";
+import { eventId } from "@streamd/core";
 
 const seen = new Set<string>();
 streamd.on(descriptor, (event) => {
@@ -858,7 +861,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, ofType, ofModule, fromSender, every, some, not } from "streamd";
+import { involvesAddress, whereField, ofType, ofModule, fromSender, every, some, not } from "@streamd/core";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -936,7 +939,7 @@ throwing. It only reads, but against a real source those reads are network
 calls:
 
 ```ts
-import { checkAdapter } from "streamd";
+import { checkAdapter } from "@streamd/core";
 
 const report = await checkAdapter(
   myIndexAdapter,
@@ -960,7 +963,7 @@ import {
   FullnodeScanAdapter,
   RoutingAdapter,
   StreamdClient,
-} from "streamd";
+} from "@streamd/core";
 
 const fullnode = new FallbackAdapter([
   new FullnodeScanAdapter(primaryAptos),
@@ -983,7 +986,7 @@ that throws fails that fetch. `getHeadVersion`, `getEarliestVersion` and `getBlo
 through unhooked:
 
 ```ts
-import { FullnodeScanAdapter, StreamdClient, withHooks } from "streamd";
+import { FullnodeScanAdapter, StreamdClient, withHooks } from "@streamd/core";
 
 const streamd = new StreamdClient({
   adapter: withHooks(new FullnodeScanAdapter(aptos), {
@@ -1003,7 +1006,7 @@ chain head; a page that tails the head is never cached. Entries are dropped
 least recently used past `maxEntries` (default 1000):
 
 ```ts
-import { CachingAdapter, FullnodeScanAdapter, StreamdClient } from "streamd";
+import { CachingAdapter, FullnodeScanAdapter, StreamdClient } from "@streamd/core";
 
 const streamd = new StreamdClient({
   adapter: new CachingAdapter(new FullnodeScanAdapter(aptos), { maxEntries: 500 }),
@@ -1026,7 +1029,7 @@ requests with no network:
 
 ```ts
 import { readFile, writeFile } from "node:fs/promises";
-import { FullnodeScanAdapter, StreamdClient, recordingAdapter, replayAdapter } from "streamd";
+import { FullnodeScanAdapter, StreamdClient, recordingAdapter, replayAdapter } from "@streamd/core";
 
 const recorder = recordingAdapter(new FullnodeScanAdapter(aptos));
 await new StreamdClient({ adapter: recorder }).getEvents(descriptor, { fromVersion: 3_000_000_000n });
@@ -1053,7 +1056,7 @@ For offline unit tests, pass `MemoryAdapter` with a list of events (`aptos` is
 optional when a custom `adapter` is supplied):
 
 ```ts
-import { MemoryAdapter, StreamdClient } from "streamd";
+import { MemoryAdapter, StreamdClient } from "@streamd/core";
 
 const streamd = new StreamdClient({
   adapter: new MemoryAdapter([
@@ -1070,9 +1073,9 @@ const streamd = new StreamdClient({
 
 ## Command line
 
-The package installs a `streamd` executable. `streamd tail` follows matching events and
+`@streamd/cli` installs a `streamd` executable. `streamd tail` follows matching events and
 prints each one to stdout as a single JSON line, so the output pipes straight into `jq` or a
-file. After `bun run build` it runs from the checkout as `node dist/cli.js`.
+file. After `bun run build` it runs from the checkout as `node packages/cli/dist/cli.js`.
 
 ```sh
 # module events, one or more Move event types
@@ -1154,11 +1157,11 @@ that restarts on `1`.
 
 ```sh
 bun install
-bun run test               # unit tests
+bun run test               # unit tests in every package, through turbo
 bun run typecheck
-bun run build              # ESM + CJS + types into dist/
+bun run build              # each package into its own dist/
 bun run demo               # live demo against mainnet
-STREAMD_INTEGRATION=1 bun test tests/integration   # hits mainnet
+bun run test:integration   # @streamd/core integration tests, hits mainnet
 ```
 
 ## License

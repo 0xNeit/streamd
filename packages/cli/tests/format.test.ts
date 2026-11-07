@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { formatEvent } from "../../src/cli/format.js";
-import type { StreamdEvent } from "../../src/types.js";
+import { formatEvent } from "../src/format.js";
+import type { StreamdEvent } from "@streamd/core";
 
 function ev(overrides: Partial<StreamdEvent> = {}): StreamdEvent {
   return {

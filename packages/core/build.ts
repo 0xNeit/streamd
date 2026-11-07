@@ -15,17 +15,6 @@ for (const [format, name] of [["esm", "index.js"], ["cjs", "index.cjs"]] as cons
   if (!result.success) throw new AggregateError(result.logs, `${format} build failed`);
 }
 
-const cli = await Bun.build({
-  entrypoints: ["src/cli/main.ts"],
-  outdir: "dist",
-  naming: "cli.js",
-  format: "esm",
-  target: "node",
-  packages: "external",
-  banner: "#!/usr/bin/env node",
-});
-if (!cli.success) throw new AggregateError(cli.logs, "cli build failed");
-
 await $`tsc -p tsconfig.build.json`;
 
 // CJS consumers resolve types through .d.cts files, whose relative imports
