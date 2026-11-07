@@ -168,6 +168,42 @@ handler is awaited before the cursor moves past the page, so a crash or a stop m
 redelivers the whole page on resume. A throw or rejection goes to `onError` without counting
 toward `maxErrors`, and polling moves on to the next page.
 
+### Group by transaction
+
+```ts
+const sub = streamd.onTransaction([swaps, deposits], async (tx) => {
+  // tx: { version, transactionHash?, sender?, timestamp?, entryFunction?, events }
+  await db.insertTransaction(tx.version, tx.events);
+});
+```
+
+`onTransaction` calls your handler once per transaction with every matching event it
+emitted, in `eventIndex` order, and transactions in version order. `decode`, `where` and
+`withState` apply per event first, so a transaction with no match is not delivered. The
+optional fields come from the first event carrying them; `handle` events carry none.
+
+Adapter pages can end partway through a transaction (handle events and `MemoryAdapter`
+page by event), so events are held by version until the page's `throughVersion` passes
+it. An adapter that does not report `throughVersion` releases every version below the
+highest one a page reached, and the highest once it reports nothing more. That keeps
+transactions whole only when a committed transaction's events are all visible at once:
+`StoreAdapter` cannot promise this while another writer is still adding rows, and a custom
+adapter should set `throughVersion` if it can.
+
+Several descriptors are merged: each is polled as its own walk, a transaction is released
+once every walk has passed it, and an event two descriptors both match arrives once. With
+several descriptors, every adapter in play should report `throughVersion`: a walk without
+it that has caught up cannot hold the others back, so a transaction can then arrive in two
+calls.
+
+Options and the returned `Subscription` are `onBatch`'s. `batchSize` is each walk's page
+size, so one call may hold more events. With one descriptor, `cursor` moves only past a
+page that left nothing held: resuming from it never splits a transaction, though it can
+repeat ones delivered after it. With several, `cursor` is `undefined` and the `cursor`
+option is refused. `pause()` holds the remaining transactions until `resume()`; a walk
+that gives up ends the others; `onCaughtUp` fires once every walk has caught up. Like
+`reduce()`, it is not counted by `listenerCount()` or stopped by `off()`.
+
 ### Iterate live events
 
 ```ts
