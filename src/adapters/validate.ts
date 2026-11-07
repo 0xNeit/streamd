@@ -1,6 +1,8 @@
 import { StreamdError } from "../errors.js";
 import { normalizeAddress } from "../filter.js";
 import type {
+  BlockHeights,
+  BlockInfo,
   CreationNumberEventDescriptor,
   EventAdapter,
   HandleEventDescriptor,
@@ -91,6 +93,66 @@ export function requireLedgerVersion(value: unknown): bigint {
     throw new StreamdError(`Not a valid ledger version: ${String(value)} (expected a u64 bigint)`);
   }
   return value;
+}
+
+/** Why a head or earliest lookup's result is not a version, or undefined when it is. */
+export function versionError(name: string, value: unknown): string | undefined {
+  if (typeof value === "bigint" && value >= 0n) return undefined;
+  return `${name} resolved ${String(value)}, not a non-negative bigint`;
+}
+
+/** Why `getBlock(height)`'s result is not that block, or undefined when it is. */
+export function blockError(block: unknown, height: bigint): string | undefined {
+  if (!isObject(block)) return "getBlock resolved a non-object";
+  for (const key of ["height", "firstVersion", "lastVersion", "timestamp"]) {
+    if (typeof block[key] !== "bigint") return `getBlock ${key} is not a bigint`;
+  }
+  if (block.height !== height) return `getBlock(${height}) returned height ${String(block.height)}`;
+  if ((block.firstVersion as bigint) < 0n) return "getBlock firstVersion is negative";
+  if ((block.firstVersion as bigint) > (block.lastVersion as bigint)) {
+    return "getBlock firstVersion is above lastVersion";
+  }
+  return undefined;
+}
+
+function blockHeightsError(heights: unknown): string | undefined {
+  if (!isObject(heights)) return "getBlockHeights resolved a non-object";
+  for (const key of ["oldest", "newest"]) {
+    const value = heights[key];
+    if (typeof value !== "bigint" || value < 0n) {
+      return `getBlockHeights ${key} is not a non-negative bigint`;
+    }
+  }
+  if ((heights.oldest as bigint) > (heights.newest as bigint)) {
+    return "getBlockHeights oldest is above newest";
+  }
+  return undefined;
+}
+
+/**
+ * Lookup results become range bounds, so a malformed one is refused as a
+ * plain `StreamdError` (never retried) rather than widening the range.
+ */
+function refuseLookup(error: string | undefined): void {
+  if (error !== undefined) throw new StreamdError(`Adapter returned an invalid result: ${error}`);
+}
+
+export function requireVersion(name: string, value: unknown): bigint {
+  refuseLookup(versionError(name, value));
+  return value as bigint;
+}
+
+/** A fresh copy, so a getter cannot answer the check and the caller differently. */
+export function requireBlock(block: unknown, height: bigint): BlockInfo {
+  refuseLookup(blockError(block, height));
+  const { firstVersion, lastVersion, timestamp } = block as BlockInfo;
+  return { height, firstVersion, lastVersion, timestamp };
+}
+
+export function requireBlockHeights(heights: unknown): BlockHeights {
+  refuseLookup(blockHeightsError(heights));
+  const { oldest, newest } = heights as BlockHeights;
+  return { oldest, newest };
 }
 
 export function parseCursor(cursor: string): bigint {

@@ -1168,3 +1168,29 @@ describe("EventQuery over several descriptors", () => {
     expect(fetchEvents).not.toHaveBeenCalled();
   });
 });
+
+describe("EventQuery bound lookups", () => {
+  const fetchEvents = () =>
+    vi.fn<EventAdapter["fetchEvents"]>(async () => ({ events: [], hasMore: false }));
+  const good = { firstVersion: 10n, lastVersion: 19n, timestamp: 0n };
+
+  it.each([
+    ["a snake_case block", { fromBlock: 1n }, { getBlock: async () => ({ first_version: 10n }) }, "getBlock height is not a bigint"],
+    ["an inverted block", { toBlock: 1n }, { getBlock: async () => ({ ...good, height: 1n, firstVersion: 50n }) }, "getBlock firstVersion is above lastVersion"],
+    ["another block's height", { fromBlock: 1n }, { getBlock: async () => ({ ...good, height: 2n }) }, "getBlock(1) returned height 2"],
+    ["a negative earliest", { fromVersion: "earliest" }, { getEarliestVersion: async () => -500n }, "getEarliestVersion resolved -500"],
+    ["a string earliest", { fromVersion: "earliest" }, { getEarliestVersion: async () => "900" }, "getEarliestVersion resolved 900"],
+    ["a string head for toVersion", { toVersion: "head" }, { getHeadVersion: async () => "900" }, "getHeadVersion resolved 900"],
+    ["a string head for a negative start", { fromVersion: -5n }, { getHeadVersion: async () => "900" }, "getHeadVersion resolved 900"],
+  ])("rejects %s without fetching or retrying", async (_label, filter, lookups, message) => {
+    const source = { fetchEvents: fetchEvents(), ...lookups } as unknown as EventAdapter;
+    const err = await new EventQuery(source)
+      .getEvents(descriptor, { ...(filter as EventFilter), retries: 3 })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain(message);
+    expect(source.fetchEvents).not.toHaveBeenCalled();
+  });
+});

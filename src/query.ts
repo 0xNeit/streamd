@@ -11,6 +11,7 @@ import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
 import { StreamdError, StreamdNetworkError, retryAfterHint } from "./errors.js";
 import { mergeEvents, validateMerge } from "./merge.js";
+import { requireBlock, requireVersion } from "./adapters/validate.js";
 import { buildStateRequest, readState, validateWithState } from "./state.js";
 
 const DEFAULT_PAGE_SIZE = 25;
@@ -59,10 +60,10 @@ async function headVersion(adapter: EventAdapter, descriptor: EventDescriptor): 
   if (adapter.getHeadVersion === undefined) {
     throw new StreamdError('toVersion "head" needs an adapter that implements getHeadVersion');
   }
-  return adapter.getHeadVersion(descriptor);
+  return requireVersion("getHeadVersion", await adapter.getHeadVersion(descriptor));
 }
 
-function blockAt(
+async function blockAt(
   adapter: EventAdapter,
   descriptor: EventDescriptor,
   height: bigint,
@@ -70,7 +71,7 @@ function blockAt(
   if (adapter.getBlock === undefined) {
     throw new StreamdError("fromBlock and toBlock need an adapter that implements getBlock");
   }
-  return adapter.getBlock(descriptor, height);
+  return requireBlock(await adapter.getBlock(descriptor, height), height);
 }
 
 /**
