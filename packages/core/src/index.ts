@@ -35,6 +35,8 @@ export {
   whereField,
 } from "./filter.js";
 
+export { requireAddress, requireEventType } from "./adapters/validate.js";
+
 export type {
   AdapterCheckName,
   AdapterCheckOptions,

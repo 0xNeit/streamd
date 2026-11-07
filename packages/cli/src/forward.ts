@@ -1,9 +1,7 @@
 import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
-import type { StreamdClient } from "../client.js";
-import { parseRetryAfter } from "../errors.js";
-import { serializeEvent } from "../serialize.js";
-import type { Subscription } from "../types.js";
+import { parseRetryAfter, serializeEvent } from "@streamd/core";
+import type { StreamdClient, Subscription } from "@streamd/core";
 import type { ForwardOptions } from "./args.js";
 import { message } from "./format.js";
 

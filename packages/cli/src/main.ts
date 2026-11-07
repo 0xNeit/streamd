@@ -1,6 +1,6 @@
 import { once } from "node:events";
 import { AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { StreamdClient } from "../client.js";
+import { StreamdClient } from "@streamd/core";
 import { parseCommand, USAGE, UsageError } from "./args.js";
 import type { ForwardOptions, ParsedCommand, SourceOptions, TailOptions } from "./args.js";
 import { runForward } from "./forward.js";

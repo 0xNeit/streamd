@@ -10,12 +10,25 @@
         "typescript": "^5.5.0",
       },
     },
-    "packages/core": {
-      "name": "@streamd/core",
+    "packages/cli": {
+      "name": "@streamd/cli",
       "version": "0.1.0",
       "bin": {
         "streamd": "./dist/cli.js",
       },
+      "dependencies": {
+        "@streamd/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@aptos-labs/ts-sdk": "^6.3.1",
+      },
+      "peerDependencies": {
+        "@aptos-labs/ts-sdk": ">=1.0.0",
+      },
+    },
+    "packages/core": {
+      "name": "@streamd/core",
+      "version": "0.1.0",
       "devDependencies": {
         "@aptos-labs/ts-sdk": "^6.3.1",
       },
@@ -42,6 +55,8 @@
     "@scure/bip39": ["@scure/bip39@1.6.0", "", { "dependencies": { "@noble/hashes": "~1.8.0", "@scure/base": "~1.2.5" } }, "sha512-+lF0BbLiJNwVlev4eKelw1WWLaiKXw7sSl8T6FvBlWkdX+94aGJ4o8XjUdlyhTCjd8c+B3KT3JfS8P0bLRNU6A=="],
 
     "@sindresorhus/is": ["@sindresorhus/is@4.6.0", "", {}, "sha512-t09vSN3MdfsyCHoFcTRCH/iUtG7OJ0CsjzB8cjAmKc/va/kIgeDI/TxsigdncE/4be734m0cvIYwNaV4i2XqAw=="],
+
+    "@streamd/cli": ["@streamd/cli@workspace:packages/cli"],
 
     "@streamd/core": ["@streamd/core@workspace:packages/core"],
 
