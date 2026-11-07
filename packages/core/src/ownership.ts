@@ -2,7 +2,7 @@ import type { Aptos } from "@aptos-labs/ts-sdk";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
 import { normalizeAddress } from "./filter.js";
 import { RequestLimiter } from "./limiter.js";
-import { requireAddress } from "./adapters/validate.js";
+import { addressOrName, requireNameResolver, resolveName } from "./names.js";
 import type { EventPredicate, StreamdEvent } from "./types.js";
 
 const DEFAULT_FIELDS = ["store", "object", "token", "token_address"];
@@ -31,13 +31,17 @@ export interface OwnedByOptions {
  * version, such as a store the transaction deleted, is not owned. Answers are
  * cached per object and version; events from `previewEvents` carry a version
  * no node has committed, so the read fails there.
+ *
+ * `wallet` may be an Aptos name (`alice.apt`), resolved once on the first
+ * evaluation through `resolveName`; a failed resolution is retried on the next.
  */
 export function ownedBy(
   aptos: Aptos,
   wallet: string,
   options: OwnedByOptions = {},
 ): EventPredicate {
-  const owner = requireAddress(wallet);
+  const address = addressOrName(wallet);
+  if (address === undefined) requireNameResolver(aptos);
   if (typeof (aptos as { viewJson?: unknown } | null)?.viewJson !== "function") {
     throw new StreamdError("ownedBy needs an Aptos instance");
   }
@@ -49,6 +53,13 @@ export function ownedBy(
   if (!Number.isInteger(max) || max < 1) {
     throw new StreamdError(`Invalid maxConcurrentRequests: ${String(max)} (expected a positive integer)`);
   }
+  let owner: Promise<string> | undefined;
+  const resolveOwner = (): Promise<string> => {
+    if (owner !== undefined) return owner;
+    const pending = address !== undefined ? Promise.resolve(address) : resolveName(aptos, wallet);
+    pending.catch(() => owner === pending && (owner = undefined));
+    return (owner = pending);
+  };
   const limiter = new RequestLimiter(max);
   const cache = new Map<string, Promise<boolean>>();
 
@@ -58,7 +69,7 @@ export function ownedBy(
     if (answer !== undefined) {
       cache.delete(key);
     } else {
-      answer = limiter.run(() => readOwns(aptos, object, owner, version));
+      answer = resolveOwner().then((wallet) => limiter.run(() => readOwns(aptos, object, wallet, version)));
       answer.catch(() => cache.get(key) === answer && cache.delete(key));
       if (cache.size >= CACHE_SIZE) cache.delete(cache.keys().next().value!);
     }

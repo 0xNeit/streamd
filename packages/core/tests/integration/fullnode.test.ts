@@ -4,6 +4,8 @@ import { FullnodeScanAdapter } from "../../src/adapters/fullnode.js";
 import { StreamdClient } from "../../src/client.js";
 import { involvesAddress } from "../../src/filter.js";
 import { ownedBy } from "../../src/ownership.js";
+import { resolveName } from "../../src/names.js";
+import { StreamdError } from "../../src/errors.js";
 import type { EventDescriptor, StreamdEvent } from "../../src/types.js";
 
 /**
@@ -238,5 +240,16 @@ describe.skipIf(!enabled)("ownedBy (mainnet)", () => {
       eventIndex: 0,
     };
     expect(await ownedBy(aptos, "0x1")(event)).toBe(false);
+  }, 30_000);
+});
+
+describe.skipIf(!enabled)("resolveName (mainnet)", () => {
+  it("resolves a live name and refuses an expired one", async () => {
+    const aptos = mainnet();
+    expect(await resolveName(aptos, "petra.apt")).toBe(
+      "0xfe2ffdb3a74307f7314a1c8ab3762b6b5869a3c1278cdd5d230249453e15a1db",
+    );
+    // Expired at the end of 2024 with its target still recorded.
+    await expect(resolveName(aptos, "nascentventures.apt")).rejects.toBeInstanceOf(StreamdError);
   }, 30_000);
 });
