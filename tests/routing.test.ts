@@ -210,17 +210,18 @@ describe("RoutingAdapter head version", () => {
       default: new MemoryAdapter([ev(4)]),
     });
 
-    expect(await router.getHeadVersion(moduleDesc)).toBe(9n);
-    expect(await router.getHeadVersion(handleDesc)).toBe(4n);
+    expect(await router.getHeadVersion!(moduleDesc)).toBe(9n);
+    expect(await router.getHeadVersion!(handleDesc)).toBe(4n);
   });
 
   it("throws StreamdError when the routed adapter cannot report a head", async () => {
     const bare: EventAdapter = {
       fetchEvents: async () => ({ events: [], hasMore: false }),
     };
-    const router = new RoutingAdapter({ account: bare });
+    expect(new RoutingAdapter({ account: bare }).getHeadVersion).toBeUndefined();
+    const router = new RoutingAdapter({ account: bare, default: new MemoryAdapter([ev(4)]) });
 
-    const err = await router.getHeadVersion(accountDesc).catch((e: unknown) => e);
+    const err = await router.getHeadVersion!(accountDesc).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
     expect((err as Error).message).toContain('"account"');
@@ -237,14 +238,16 @@ describe("RoutingAdapter block heights", () => {
     const withHeights: EventAdapter = { ...bare, getBlockHeights: vi.fn(async () => heights) };
     const router = new RoutingAdapter({ module: withHeights, default: bare });
 
-    expect(await router.getBlockHeights(moduleDesc)).toBe(heights);
+    expect(await router.getBlockHeights!(moduleDesc)).toBe(heights);
     expect(withHeights.getBlockHeights).toHaveBeenCalledWith(moduleDesc);
   });
 
   it("throws StreamdError when the routed adapter cannot report block heights", async () => {
-    const router = new RoutingAdapter({ account: bare });
+    expect(new RoutingAdapter({ account: bare }).getBlockHeights).toBeUndefined();
+    const withHeights: EventAdapter = { ...bare, getBlockHeights: async () => heights };
+    const router = new RoutingAdapter({ account: bare, default: withHeights });
 
-    const err = await router.getBlockHeights(accountDesc).catch((e: unknown) => e);
+    const err = await router.getBlockHeights!(accountDesc).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
     expect((err as Error).message).toContain('"account"');
@@ -258,17 +261,18 @@ describe("RoutingAdapter earliest version", () => {
       default: new MemoryAdapter([ev(4), ev(6)]),
     });
 
-    expect(await router.getEarliestVersion(moduleDesc)).toBe(9n);
-    expect(await router.getEarliestVersion(handleDesc)).toBe(4n);
+    expect(await router.getEarliestVersion!(moduleDesc)).toBe(9n);
+    expect(await router.getEarliestVersion!(handleDesc)).toBe(4n);
   });
 
   it("throws StreamdError when the routed adapter cannot report one", async () => {
     const bare: EventAdapter = {
       fetchEvents: async () => ({ events: [], hasMore: false }),
     };
-    const router = new RoutingAdapter({ account: bare });
+    expect(new RoutingAdapter({ account: bare }).getEarliestVersion).toBeUndefined();
+    const router = new RoutingAdapter({ account: bare, default: new MemoryAdapter([ev(4)]) });
 
-    const err = await router.getEarliestVersion(accountDesc).catch((e: unknown) => e);
+    const err = await router.getEarliestVersion!(accountDesc).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
     expect((err as Error).message).toContain('"account"');
@@ -285,14 +289,16 @@ describe("RoutingAdapter blocks", () => {
     const withBlocks: EventAdapter = { ...bare, getBlock: vi.fn(async () => block) };
     const router = new RoutingAdapter({ module: withBlocks, default: bare });
 
-    expect(await router.getBlock(moduleDesc, 5n)).toBe(block);
+    expect(await router.getBlock!(moduleDesc, 5n)).toBe(block);
     expect(withBlocks.getBlock).toHaveBeenCalledWith(moduleDesc, 5n);
   });
 
   it("throws StreamdError when the routed adapter cannot report blocks", async () => {
-    const router = new RoutingAdapter({ account: bare });
+    expect(new RoutingAdapter({ account: bare }).getBlock).toBeUndefined();
+    const withBlocks: EventAdapter = { ...bare, getBlock: async () => block };
+    const router = new RoutingAdapter({ account: bare, default: withBlocks });
 
-    const err = await router.getBlock(accountDesc, 5n).catch((e: unknown) => e);
+    const err = await router.getBlock!(accountDesc, 5n).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
     expect((err as Error).message).toContain('"account"');
@@ -310,17 +316,21 @@ describe("RoutingAdapter transaction lookup", () => {
   it("routes by the descriptor's kind, and to default without a descriptor", async () => {
     const router = new RoutingAdapter({ module: looking("module"), default: looking("default") });
     const moduleDescriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
-    expect((await router.getTransactionEvents(hash, moduleDescriptor))!.vmStatus).toBe("module");
-    expect((await router.getTransactionEvents(hash))!.vmStatus).toBe("default");
+    expect((await router.getTransactionEvents!(hash, moduleDescriptor))!.vmStatus).toBe("module");
+    expect((await router.getTransactionEvents!(hash))!.vmStatus).toBe("default");
   });
 
   it("refuses when no route serves the lookup", async () => {
     const bare: EventAdapter = { fetchEvents: async () => ({ events: [], hasMore: false }) };
-    await expect(new RoutingAdapter({ module: looking("module") }).getTransactionEvents(hash)).rejects.toBeInstanceOf(
+    await expect(new RoutingAdapter({ module: looking("module") }).getTransactionEvents!(hash)).rejects.toBeInstanceOf(
       StreamdError,
     );
+    expect(new RoutingAdapter({ module: bare }).getTransactionEvents).toBeUndefined();
     await expect(
-      new RoutingAdapter({ module: bare }).getTransactionEvents(hash, { kind: "module", eventType: "0x1::t::A" }),
+      new RoutingAdapter({ module: bare, default: looking("default") }).getTransactionEvents!(hash, {
+        kind: "module",
+        eventType: "0x1::t::A",
+      }),
     ).rejects.toThrow("does not look up transactions");
   });
 });
@@ -337,18 +347,22 @@ describe("RoutingAdapter simulation", () => {
   it("routes by the descriptor's kind, and to default without a descriptor", async () => {
     const router = new RoutingAdapter({ account: simulating("account"), default: simulating("default") });
     const accountDescriptor: EventDescriptor = { kind: "account", accountAddress: "0x1" };
-    expect((await router.simulateTransactionEvents(simulation, accountDescriptor)).vmStatus).toBe("account");
+    expect((await router.simulateTransactionEvents!(simulation, accountDescriptor)).vmStatus).toBe("account");
     expect(seen[0]).toEqual([simulation, accountDescriptor]);
-    expect((await router.simulateTransactionEvents(simulation)).vmStatus).toBe("default");
+    expect((await router.simulateTransactionEvents!(simulation)).vmStatus).toBe("default");
   });
 
   it("refuses when no route serves the simulation", async () => {
     const bare: EventAdapter = { fetchEvents: async () => ({ events: [], hasMore: false }) };
     await expect(
-      new RoutingAdapter({ module: simulating("module") }).simulateTransactionEvents(simulation),
+      new RoutingAdapter({ module: simulating("module") }).simulateTransactionEvents!(simulation),
     ).rejects.toBeInstanceOf(StreamdError);
+    expect(new RoutingAdapter({ module: bare }).simulateTransactionEvents).toBeUndefined();
     await expect(
-      new RoutingAdapter({ module: bare }).simulateTransactionEvents(simulation, { kind: "module", eventType: "0x1::t::A" }),
+      new RoutingAdapter({ module: bare, default: simulating("default") }).simulateTransactionEvents!(simulation, {
+        kind: "module",
+        eventType: "0x1::t::A",
+      }),
     ).rejects.toThrow("does not simulate transactions");
   });
 });
@@ -365,22 +379,31 @@ describe("RoutingAdapter view", () => {
     const fallback = viewing("default");
     const router = new RoutingAdapter({ module, default: fallback });
     const descriptor = { kind: "module" as const, eventType: "0x1::a::B" as const };
-    expect(await router.view(request, 7n, descriptor)).toEqual(["module"]);
+    expect(await router.view!(request, 7n, descriptor)).toEqual(["module"]);
     expect(module.view).toHaveBeenCalledWith(request, 7n, descriptor);
-    expect(await router.view(request, 7n)).toEqual(["default"]);
+    expect(await router.view!(request, 7n)).toEqual(["default"]);
   });
 
   it("refuses when no adapter runs views or none is routable", async () => {
     const plain = new MemoryAdapter();
     const descriptor = { kind: "module" as const, eventType: "0x1::a::B" as const };
-    await expect(new RoutingAdapter({ module: plain }).view(request, 1n, descriptor)).rejects.toThrow(
-      'descriptor kind "module" does not run views',
-    );
-    await expect(new RoutingAdapter({ module: plain }).view(request, 1n)).rejects.toThrow(
+    expect(new RoutingAdapter({ module: plain, default: plain }).view).toBeUndefined();
+    await expect(
+      new RoutingAdapter({ module: plain, default: viewing("default") }).view!(request, 1n, descriptor),
+    ).rejects.toThrow('descriptor kind "module" does not run views');
+    await expect(new RoutingAdapter({ module: viewing("module") }).view!(request, 1n)).rejects.toThrow(
       "needs a descriptor or a default adapter",
     );
-    await expect(new RoutingAdapter({ default: plain }).view(request, 1n)).rejects.toThrow(
-      "The default adapter does not run views",
-    );
+    await expect(
+      new RoutingAdapter({ module: viewing("module"), default: plain }).view!(request, 1n),
+    ).rejects.toThrow("The default adapter does not run views");
+  });
+});
+
+describe("RoutingAdapter optional method fields", () => {
+  it("has no own property for a method no route has", () => {
+    const adapter = new RoutingAdapter({ default: new MemoryAdapter() });
+    expect(Object.hasOwn(adapter, "getBlock")).toBe(false);
+    expect("getBlock" in adapter).toBe(false);
   });
 });
