@@ -17,6 +17,8 @@ import type {
   ReduceOptions,
   Reducer,
   Reduction,
+  Replay,
+  ReplayOptions,
   StreamdConfig,
   StreamdEvent,
   Subscription,
@@ -39,6 +41,7 @@ import { CursorManager } from "./cursor.js";
 import { fieldDecoder } from "./decode.js";
 import { SharedFetches } from "./shared.js";
 import { startReduction, type ReduceHost } from "./reduce.js";
+import { startReplay } from "./replay.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { expectEvents } from "./expect.js";
 import { requireTransactionHash } from "./adapters/validate.js";
@@ -403,6 +406,23 @@ export class StreamdClient {
     options?: ReduceOptions<S, TData>,
   ): Reduction<S> {
     return startReduction(this.reduceHost, descriptor, reducer, initial, options);
+  }
+
+  /**
+   * Feed a past range of events through an `on()` callback, in order, so a
+   * live handler can be backtested unchanged: each call is awaited before the
+   * next, and a throw or rejection goes to `onError` while delivery carries
+   * on. The range and narrowing options are `getEvents`'s, applied as it
+   * applies them; `speed` paces delivery by the events' `timestamp`s. `done`
+   * settles when the range is exhausted or a query fails. Like `reduce()`, it
+   * is not a listener for `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  replay<TData = unknown>(
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+    callback: EventCallback<TData>,
+    options?: ReplayOptions,
+  ): Replay {
+    return startReplay(this.reduceHost, descriptor, callback, options);
   }
 
   /**

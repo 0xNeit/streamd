@@ -639,6 +639,64 @@ export interface Reduction<S> {
 }
 
 /**
+ * Options for `replay()`: the range and narrowing options `getEvents` takes,
+ * applied exactly as it applies them, plus pacing. `orderBy` is refused, since
+ * a replay runs forward.
+ */
+export interface ReplayOptions
+  extends Pick<
+      EventFilter,
+      | "fromVersion"
+      | "toVersion"
+      | "fromTime"
+      | "fromBlock"
+      | "toBlock"
+      | "limit"
+      | "offset"
+      | "where"
+      | "decode"
+      | "withState"
+      | "maxPages"
+      | "retries"
+      | "onCursor"
+      | "signal"
+    >,
+    Pick<ListenerOptions, "batchSize" | "onError" | "onCaughtUp"> {
+  /**
+   * Omitted or `Infinity`: deliver each event as soon as the previous
+   * callback settles. A positive number replays chain time scaled by it
+   * (`2` is twice as fast): an event carrying a `timestamp` waits for its gap
+   * from the previous timestamped event divided by `speed`, less the time
+   * already spent since that delivery. An event without a `timestamp` is
+   * delivered at once.
+   */
+  speed?: number;
+}
+
+/** A running `replay()`. */
+export interface Replay {
+  /**
+   * Resolves with the number of events delivered once the range is
+   * exhausted. Rejects with the query error, with `signal.reason` on abort,
+   * or with a `StreamdError` when unsubscribed first. Never an unhandled
+   * rejection.
+   */
+  readonly done: Promise<number>;
+  /** Whether events are still being delivered; `false` while paused. */
+  readonly active: boolean;
+  /** Whether delivery is paused; `false` once stopped. */
+  readonly paused: boolean;
+  /** Hold delivery before the next event. No-op unless active. */
+  pause(): void;
+  /** Undo `pause()`. No-op unless paused. */
+  resume(): void;
+  /** Stop delivering; `done` rejects. */
+  unsubscribe(): void;
+  /** `unsubscribe()`, for `using`. */
+  [Symbol.dispose](): void;
+}
+
+/**
  * Listener options a client can set once for every `on`, `onBatch`, `once` and
  * `stream` call. Start position, filters, callbacks and `signal` are per
  * subscription; `StreamdConfig.onError` is the client-wide error handler.
