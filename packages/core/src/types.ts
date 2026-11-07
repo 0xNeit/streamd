@@ -346,25 +346,33 @@ export interface PreviewEventsOptions {
 }
 
 /**
- * One coin or fungible-asset movement, the `data` of the events
+ * One coin, fungible-asset or token movement, the `data` of the events
  * `StreamdClient.transfers` and `getTransfers` deliver. A deposit paired with
  * the withdraw that funded it carries both sides; a deposit nothing funded (a
- * mint) has no `from`, and a withdraw nothing received (a burn) no `to`.
+ * mint) has no `from`, and a withdraw nothing received (a burn) no `to`. A
+ * token object's transfer always carries both.
  */
 export interface Transfer {
-  /** Fungible-asset metadata address in long form, or the coin type as reported. */
+  /**
+   * Fungible-asset metadata address in long form, the coin type as reported,
+   * a token object's address in long form, or a legacy token's id as
+   * `creator::collection::name::property_version` (creator in long form).
+   */
   asset: string;
+  /** Base units; `1n` for a token object. */
   amount: bigint;
-  /** Owner of the withdrawn store, or the coin account, in long form. */
+  /** Owner of the withdrawn store, the coin or token account, or the object's previous owner, in long form. */
   from?: string;
-  /** Owner of the receiving store, or the coin account, in long form. */
+  /** Owner of the receiving store, the coin or token account, or the object's new owner, in long form. */
   to?: string;
 }
 
 export interface TransferOptions {
   /**
-   * Only transfers of this asset: a fungible-asset metadata address (any
-   * form, e.g. `"0xa"` for APT) or a coin type (`"0x1::aptos_coin::AptosCoin"`).
+   * Only transfers of this asset: a fungible-asset metadata address or
+   * token object address (any form, e.g. `"0xa"` for APT), a coin type
+   * (`"0x1::aptos_coin::AptosCoin"`), or a legacy token id
+   * (`"<creator>::<collection>::<name>::<property_version>"`).
    */
   asset?: string;
 }

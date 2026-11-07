@@ -15,17 +15,33 @@ const FA_WITHDRAW = "0x1::fungible_asset::Withdraw";
 const FA_DEPOSIT = "0x1::fungible_asset::Deposit";
 const COIN_WITHDRAW = "0x1::coin::CoinWithdraw";
 const COIN_DEPOSIT = "0x1::coin::CoinDeposit";
+const TOKEN_WITHDRAW = "0x3::token::TokenWithdraw";
+const TOKEN_DEPOSIT = "0x3::token::TokenDeposit";
+const OBJECT_TRANSFER = "0x1::object::Transfer";
+// Aborts unless a 0x4::token::Token is stored at the object; object_exists is not a view.
+const TOKEN_CREATOR = "0x4::token::creator";
 
 /** Every event a transfer is built from, served by one scan. */
 export const TRANSFER_DESCRIPTOR: ModuleEventDescriptor = {
   kind: "module",
-  eventType: [FA_WITHDRAW, FA_DEPOSIT, COIN_WITHDRAW, COIN_DEPOSIT],
+  eventType: [
+    FA_WITHDRAW,
+    FA_DEPOSIT,
+    COIN_WITHDRAW,
+    COIN_DEPOSIT,
+    TOKEN_WITHDRAW,
+    TOKEN_DEPOSIT,
+    OBJECT_TRANSFER,
+  ],
 };
 
 const MAX_LOOKUPS = 4;
-// A store's metadata never changes, so overflowing only costs a repeat read.
-const METADATA_CACHE_SIZE = 10_000;
+// A store's metadata and whether an object is a token never change, so
+// overflowing only costs a repeat read.
+const CACHE_SIZE = 10_000;
 const HEX = /0x[0-9a-fA-F]+/g;
+const COIN_TYPE = /^0x[0-9a-fA-F]+::\w+::\w+(<.+>)?$/;
+const LEGACY_TOKEN = /^(0x[0-9a-fA-F]+)::(.+::.+)::(\d+)$/s;
 
 /** One side of a transfer: a withdraw or a deposit, with its asset and owner resolved. */
 interface Leg {
@@ -36,10 +52,25 @@ interface Leg {
   owner: string;
 }
 
-type Parsed = { deposit: boolean; amount: bigint } & (
-  | { store: string }
-  | { account: string; coinType: string }
-);
+type Parsed =
+  | { deposit: boolean; amount: bigint; store: string }
+  /** A coin or legacy token leg; `key` is `asset` as the filter compares it. */
+  | { deposit: boolean; amount: bigint; account: string; asset: string; key: string }
+  | { object: string; from: string; to: string };
+
+const address = (field: unknown) => (typeof field === "string" ? normalizeAddress(field) : undefined);
+
+/** A legacy `0x3::token::TokenId` as `creator::collection::name::property_version`. */
+function legacyTokenId(id: unknown): string | undefined {
+  if (typeof id !== "object" || id === null) return undefined;
+  const { token_data_id: data, property_version: version } = id as Record<string, unknown>;
+  if (typeof data !== "object" || data === null) return undefined;
+  if (typeof version !== "string" || !UNSIGNED_INTEGER.test(version)) return undefined;
+  const { creator, collection, name } = data as Record<string, unknown>;
+  const owner = address(creator);
+  if (owner === undefined || typeof collection !== "string" || typeof name !== "string") return undefined;
+  return `${owner}::${collection}::${name}::${BigInt(version)}`;
+}
 
 /** Addresses inside a coin type or an asset address, in long form, for comparing. */
 function assetKey(asset: string): string {
@@ -48,33 +79,61 @@ function assetKey(asset: string): string {
 
 function requireAsset(asset: unknown): string {
   if (typeof asset !== "string" || asset === "") {
-    throw new StreamdError("asset must be a fungible-asset metadata address or a coin type");
+    throw new StreamdError("asset must be a fungible-asset metadata or token object address, a coin type, or a legacy token id");
   }
   if (!asset.includes("::")) return requireAddress(asset);
-  if (!/^0x[0-9a-fA-F]+::\w+::\w+(<.+>)?$/.test(asset)) {
-    throw new StreamdError(`Not a valid coin type: ${asset}`);
-  }
-  return assetKey(asset);
+  if (COIN_TYPE.test(asset)) return assetKey(asset);
+  const legacy = LEGACY_TOKEN.exec(asset);
+  if (legacy === null) throw new StreamdError(`Not a valid coin type or legacy token id: ${asset}`);
+  return `${requireAddress(legacy[1])}::${legacy[2]}::${BigInt(legacy[3]!)}`;
 }
 
 function parse(event: StreamdEvent): Parsed | undefined {
   const data = event.data as Record<string, unknown> | null;
   if (typeof data !== "object" || data === null) return undefined;
+  if (event.type === OBJECT_TRANSFER) {
+    const [object, from, to] = [address(data.object), address(data.from), address(data.to)];
+    return object && from && to ? { object, from, to } : undefined;
+  }
   const { amount } = data;
   if (typeof amount !== "string" || !UNSIGNED_INTEGER.test(amount)) return undefined;
   const value = BigInt(amount);
-  const address = (field: unknown) => (typeof field === "string" ? normalizeAddress(field) : undefined);
+  const deposit = event.type === FA_DEPOSIT || event.type === COIN_DEPOSIT || event.type === TOKEN_DEPOSIT;
   if (event.type === FA_WITHDRAW || event.type === FA_DEPOSIT) {
     const store = address(data.store);
-    return store === undefined ? undefined : { deposit: event.type === FA_DEPOSIT, amount: value, store };
+    return store === undefined ? undefined : { deposit, amount: value, store };
   }
+  const account = address(data.account);
+  if (account === undefined) return undefined;
   if (event.type === COIN_WITHDRAW || event.type === COIN_DEPOSIT) {
-    const account = address(data.account);
     const coinType = data.coin_type;
-    if (account === undefined || typeof coinType !== "string" || coinType === "") return undefined;
-    return { deposit: event.type === COIN_DEPOSIT, amount: value, account, coinType };
+    if (typeof coinType !== "string" || coinType === "") return undefined;
+    return { deposit, amount: value, account, asset: coinType, key: assetKey(coinType) };
+  }
+  if (event.type === TOKEN_WITHDRAW || event.type === TOKEN_DEPOSIT) {
+    const asset = legacyTokenId(data.id);
+    return asset === undefined ? undefined : { deposit, amount: value, account, asset, key: asset };
   }
   return undefined;
+}
+
+/** A bounded least-recently-used promise cache that drops rejections and answers `keep` refuses. */
+function memo<T>(keep: (value: T) => boolean) {
+  const entries = new Map<string, Promise<T>>();
+  return (key: string, load: () => Promise<T>): Promise<T> => {
+    let answer = entries.get(key);
+    if (answer !== undefined) {
+      entries.delete(key);
+    } else {
+      const loaded = load();
+      const forget = () => entries.get(key) === loaded && entries.delete(key);
+      loaded.then((value) => keep(value) || forget(), forget);
+      if (entries.size >= CACHE_SIZE) entries.delete(entries.keys().next().value!);
+      answer = loaded;
+    }
+    entries.set(key, answer);
+    return answer;
+  };
 }
 
 /**
@@ -104,10 +163,11 @@ const byIdentity = (a: StreamdEvent, b: StreamdEvent) =>
   a.version === b.version ? a.eventIndex - b.eventIndex : a.version < b.version ? -1 : 1;
 
 /**
- * `adapter` as a source of transfer records: each page of coin and
- * fungible-asset events becomes the transfers its transactions made. Store
- * assets and owners are read through `adapter.view` inside the page fetch, so
- * a failed read fails the page and a listener retries it.
+ * `adapter` as a source of transfer records: each page of coin,
+ * fungible-asset and token events becomes the transfers its transactions
+ * made. Store assets and owners, and whether a transferred object is a token,
+ * are read through `adapter.view` inside the page fetch, so a failed read
+ * fails the page and a listener retries it.
  *
  * Pairing sees one page, so a transaction split across pages (never on
  * `FullnodeScanAdapter`) pairs per page.
@@ -118,14 +178,15 @@ export function transferSource(adapter: EventAdapter, asset?: string): EventAdap
   }
   const wanted = asset === undefined ? undefined : requireAsset(asset);
   const limiter = new RequestLimiter(MAX_LOOKUPS);
-  const metadata = new Map<string, Promise<string | undefined>>();
+  const metadata = memo<string | undefined>((asset) => asset !== undefined);
+  const tokens = memo<boolean>(() => true);
 
-  /** The address `fn` returns for `store`, before the transaction if the store was gone after it. */
-  const read = async (fn: ViewRequest["function"], store: string, version: bigint): Promise<string | undefined> => {
+  /** The address `fn` returns for `object`, before the transaction if it was gone after it. */
+  const read = async (fn: ViewRequest["function"], object: string, version: bigint): Promise<string | undefined> => {
     const request: ViewRequest = {
       function: fn,
       typeArguments: ["0x1::object::ObjectCore"],
-      functionArguments: [store],
+      functionArguments: [object],
     };
     for (const at of version > 0n ? [version, version - 1n] : [version]) {
       let result: unknown[];
@@ -139,36 +200,35 @@ export function transferSource(adapter: EventAdapter, asset?: string): EventAdap
       if (typeof value === "object" && value !== null) value = (value as { inner?: unknown }).inner;
       const address = typeof value === "string" ? normalizeAddress(value) : undefined;
       if (address === undefined) {
-        throw new StreamdError(`${fn} of ${store} at version ${at} returned no address`);
+        throw new StreamdError(`${fn} of ${object} at version ${at} returned no address`);
       }
       return address;
     }
     return undefined;
   };
 
-  const assetOf = (store: string, version: bigint): Promise<string | undefined> => {
-    let answer = metadata.get(store);
-    if (answer !== undefined) {
-      metadata.delete(store);
-    } else {
-      answer = read("0x1::fungible_asset::store_metadata", store, version);
-      const forget = () => metadata.get(store) === answer && metadata.delete(store);
-      answer.then((a) => a === undefined && forget(), forget);
-      if (metadata.size >= METADATA_CACHE_SIZE) metadata.delete(metadata.keys().next().value!);
-    }
-    metadata.set(store, answer);
-    return answer;
-  };
+  const assetOf = (store: string, version: bigint) =>
+    metadata(store, () => read("0x1::fungible_asset::store_metadata", store, version));
 
-  const legOf = async (event: StreamdEvent): Promise<Leg | undefined> => {
+  const isToken = (object: string, version: bigint) =>
+    tokens(object, async () => (await read(TOKEN_CREATOR, object, version)) !== undefined);
+
+  /** A leg to pair, or a finished record for an object transfer, which names both sides. */
+  const legOf = async (event: StreamdEvent): Promise<Leg | StreamdEvent<Transfer> | undefined> => {
     const parsed = parse(event);
     if (parsed === undefined) return undefined;
-    const { deposit, amount } = parsed;
-    if ("coinType" in parsed) {
-      if (wanted !== undefined && assetKey(parsed.coinType) !== wanted) return undefined;
-      return { event, deposit, amount, asset: parsed.coinType, owner: parsed.account };
+    if ("object" in parsed) {
+      const { object, from, to } = parsed;
+      if (wanted !== undefined && object !== wanted) return undefined;
+      if (!(await isToken(object, event.version))) return undefined;
+      return { ...event, data: { asset: object, amount: 1n, from, to } };
     }
-    // A coin type never names a fungible asset, so its filter needs no store read.
+    const { deposit, amount } = parsed;
+    if ("account" in parsed) {
+      if (wanted !== undefined && parsed.key !== wanted) return undefined;
+      return { event, deposit, amount, asset: parsed.asset, owner: parsed.account };
+    }
+    // A coin type or legacy id never names a fungible asset, so its filter needs no store read.
     if (wanted?.includes("::")) return undefined;
     const asset = await assetOf(parsed.store, event.version);
     if (asset === undefined || (wanted !== undefined && asset !== wanted)) return undefined;
@@ -186,7 +246,12 @@ export function transferSource(adapter: EventAdapter, asset?: string): EventAdap
     const legs = await Promise.all(
       [...transactions.values()].map((txn) => Promise.all(txn.map(legOf))),
     );
-    return legs.flatMap((txn) => pair(txn.filter((l): l is Leg => l !== undefined))).sort(byIdentity);
+    return legs
+      .flatMap((txn) => {
+        const records = txn.filter((r): r is StreamdEvent<Transfer> => r !== undefined && !("deposit" in r));
+        return [...records, ...pair(txn.filter((r): r is Leg => r !== undefined && "deposit" in r))];
+      })
+      .sort(byIdentity);
   };
 
   const source: EventAdapter = {
