@@ -16,6 +16,7 @@ export { listEventHandles } from "./handles.js";
 export { networks } from "./networks.js";
 export { checkDescriptor } from "./preflight.js";
 export { ownedBy } from "./ownership.js";
+export { resolveName } from "./names.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
 export {
   StreamdAssertionError,
