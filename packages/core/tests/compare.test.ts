@@ -73,6 +73,9 @@ describe("compareAdapters", () => {
     const c = new MemoryAdapter([ev(11, 0, { data: { a: "1", b: [2n, { c: "d" }] } })]);
     expect((await compareAdapters(a, b, desc, range)).ok).toBe(true);
     expect((await compareAdapters(a, c, desc, range)).different[0]!.fields).toEqual(["data"]);
+    const list = new MemoryAdapter([ev(11, 0, { data: ["x"] })]);
+    const keyed = new MemoryAdapter([ev(11, 0, { data: { 0: "x" } })]);
+    expect((await compareAdapters(list, keyed, desc, range)).different[0]!.fields).toEqual(["data"]);
   });
 
   it("compares optional fields only when both sides set them, normalizing addresses", async () => {
@@ -128,6 +131,8 @@ describe("compareAdapters", () => {
   it("has no window when one source covered nothing", async () => {
     const report = await compareAdapters(new MemoryAdapter([ev(11)]), scripted([page([])]), desc, range);
     expect(report.coverage.b).toBe(9n);
+    const behind = await compareAdapters(new MemoryAdapter([ev(11)]), scripted([page([], { throughVersion: 3n })]), desc, range);
+    expect(behind.coverage.b).toBe(9n);
     expect(report.window).toBeUndefined();
     expect(report.ok).toBe(false);
     expect(report.missing).toEqual([]);
