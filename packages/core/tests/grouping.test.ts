@@ -71,6 +71,21 @@ describe("onTransaction, one descriptor", () => {
     expect(log).toEqual(["10:0,1,2", "11:0,1"]);
   });
 
+  it("releases a held version on a caught-up page that reports no throughVersion", async () => {
+    // A full handle page settles below its last version; the next, empty one reports nothing.
+    const adapter = scripted([
+      { events: [ev(4, 0), ev(4, 1)], nextCursor: "2", hasMore: true, throughVersion: 3n },
+    ]);
+    const client = new StreamdClient({ adapter });
+    const log: string[] = [];
+    const sub = client.onTransaction(descriptor, (g) => void log.push(shape([g])[0]!));
+    await advanceTimersByTimeAsync(10);
+
+    expect(log).toEqual(["4:0,1"]);
+    expect(sub.cursor).toBe("end");
+    client.destroy();
+  });
+
   it("moves cursor only past a page that left nothing held", async () => {
     const adapter = scripted([
       { events: [ev(10, 0), ev(10, 1)], nextCursor: "a", hasMore: false, throughVersion: 9n },
@@ -301,6 +316,95 @@ describe("onTransaction, several descriptors", () => {
     expect(sub.status.cursor).toBeUndefined();
     expect(sub.status.active).toBe(true);
     client.destroy();
+  });
+
+  describe("a walk idle at the head without throughVersion", () => {
+    const empty: EventPage = { events: [], nextCursor: "c", hasMore: false };
+    const run = async (scripts: Record<string, EventPage[]>, ms: number) => {
+      const client = new StreamdClient({ adapter: perDescriptor(scripts) });
+      const log: string[] = [];
+      client.onTransaction([onA, onB], (g) => void log.push(shape([g])[0]!), { pollInterval: 1000 });
+      await advanceTimersByTimeAsync(ms);
+      client.destroy();
+      return log;
+    };
+
+    it("holds a transaction the other walk read until its own next fetch", async () => {
+      const log = await run(
+        {
+          [A]: [empty, empty, { events: [ev(5, 0, A)], nextCursor: "a", hasMore: false, throughVersion: 5n }],
+          [B]: [empty, { events: [ev(5, 1, B)], nextCursor: "b", hasMore: false, throughVersion: 5n }],
+        },
+        3000,
+      );
+      expect(log).toEqual(["5:0,1"]);
+    });
+
+    it("does not release a later version ahead of its own earlier one", async () => {
+      const log = await run(
+        {
+          [A]: [empty, empty, { events: [ev(5, 0, A)], nextCursor: "a", hasMore: false, throughVersion: 5n }],
+          [B]: [empty, { events: [ev(6, 0, B)], nextCursor: "b", hasMore: false, throughVersion: 6n }],
+        },
+        3000,
+      );
+      expect(log).toEqual(["5:0", "6:0"]);
+    });
+
+    it("lets the other walk's transactions through once it polls again", async () => {
+      const log = await run(
+        { [A]: [], [B]: [empty, { events: [ev(5, 1, B)], nextCursor: "b", hasMore: false }] },
+        2000,
+      );
+      expect(log).toEqual(["5:1"]);
+    });
+  });
+
+  it("reads its own pages beside a subscription that shares a slower walk's requests", async () => {
+    // A growing ledger; A's replies take 400ms and answer from the ledger as it stood when asked.
+    const ledger: StreamdEvent[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => {
+        const after = o.cursor === undefined ? -1 : Number(o.cursor);
+        const page: EventPage = {
+          events: ledger.filter((e, i) => i > after && e.type === typeOf(d)),
+          nextCursor: String(ledger.length - 1),
+          hasMore: false,
+        };
+        return new Promise((r) => setTimeout(() => r(page), typeOf(d) === A ? 400 : 0));
+      },
+    };
+    const client = new StreamdClient({ adapter });
+    client.on(onA, () => {}, { pollInterval: 1000, fromVersion: 0n });
+    await advanceTimersByTimeAsync(700);
+    const log: string[] = [];
+    client.onTransaction([onA, onB], (g) => void log.push(shape([g])[0]!), {
+      pollInterval: 1000,
+      fromVersion: 1n,
+    });
+    await advanceTimersByTimeAsync(800);
+    ledger.push(ev(5, 0, A), ev(5, 1, B));
+    await advanceTimersByTimeAsync(2500);
+    client.destroy();
+
+    expect(log).toEqual(["5:0,1"]);
+  });
+
+  it("resolves an earliest start through each walk's adapter", async () => {
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([ev(1, 0, A), ev(2, 0, A), ev(2, 1, B), ev(3, 0, B)]),
+    });
+    const log: string[] = [];
+    const errors: Error[] = [];
+    client.onTransaction([onA, onB], (g) => void log.push(shape([g])[0]!), {
+      fromVersion: "earliest",
+      onError: (e) => void errors.push(e),
+    });
+    await advanceTimersByTimeAsync(10);
+    client.destroy();
+
+    expect(errors).toEqual([]);
+    expect(log).toEqual(["1:0", "2:0,1", "3:0"]);
   });
 
   it("drops a late copy of an event already delivered through another walk", async () => {

@@ -1,6 +1,8 @@
 import type {
+  EventAdapter,
   EventDescriptor,
   EventPage,
+  FetchOptions,
   ListenerDefaults,
   StreamdEvent,
   Subscription,
@@ -18,39 +20,65 @@ import { isThenable } from "./filter.js";
 export interface TransactionHost {
   defaults: ListenerDefaults;
   onError: ((error: Error) => void) | undefined;
+  /** The client's adapter with shared polling off. */
+  unshared: EventAdapter;
   subscribe(
     descriptor: EventDescriptor,
     delivery: Delivery,
     options: SubscriptionOptions,
     id: string | undefined,
+    wrap: ((source: EventAdapter) => EventAdapter) | undefined,
   ): Subscription;
 }
 
-/** How far a walk has settled: `"all"` once it caught up without a `throughVersion`. */
-type Bound = bigint | "all";
+function highestOf(page: EventPage): bigint | undefined {
+  let highest = page.throughVersion;
+  for (const e of page.events) if (highest === undefined || e.version > highest) highest = e.version;
+  return highest;
+}
+
+function max(a: bigint | undefined, b: bigint | undefined): bigint | undefined {
+  return a === undefined ? b : b === undefined || a > b ? a : b;
+}
 
 /**
  * The walk's settled bound after `page`. Without `throughVersion`, a page
  * that reached a version has every lower version's events, since a committed
  * transaction's events exist all at once; the highest one may continue on the
- * next page unless the source reports nothing more.
+ * next page unless the source reports nothing more. A caught-up page covers
+ * only what was committed when its fetch started: every version up to
+ * `known`, the highest any walk had reached by then.
  */
-function boundOf(page: EventPage, previous: Bound | undefined): Bound | undefined {
+function boundOf(
+  page: EventPage,
+  previous: bigint | undefined,
+  known: bigint | undefined,
+): bigint | undefined {
   if (page.throughVersion !== undefined) return page.throughVersion;
-  if (!page.hasMore) return "all";
-  let highest: bigint | undefined;
-  for (const e of page.events) if (highest === undefined || e.version > highest) highest = e.version;
+  const highest = highestOf(page);
+  if (!page.hasMore) return max(max(previous, highest), known) ?? -1n;
   return highest === undefined ? previous : highest - 1n;
 }
 
 /** The lowest of the walks' bounds, or `undefined` while any walk has none. */
-function lowest(bounds: (Bound | undefined)[]): Bound | undefined {
-  let low: Bound = "all";
+function lowest(bounds: (bigint | undefined)[]): bigint | undefined {
+  let low: bigint | undefined;
   for (const b of bounds) {
     if (b === undefined) return undefined;
-    if (b !== "all" && (low === "all" || b < low)) low = b;
+    if (low === undefined || b < low) low = b;
   }
   return low;
+}
+
+/**
+ * `source` calling `onFetch` as each fetch starts. Merged walks read their own
+ * pages rather than shared ones, since a shared page may come from a request
+ * that started before this one.
+ */
+function stamped(source: EventAdapter, onFetch: () => void): EventAdapter {
+  return Object.assign(Object.create(source) as EventAdapter, {
+    fetchEvents: (d: EventDescriptor, o: FetchOptions) => (onFetch(), source.fetchEvents(d, o)),
+  });
 }
 
 function groupOf(version: bigint, events: StreamdEvent[]): TransactionGroup {
@@ -106,7 +134,10 @@ export function startTransactions(
 
   const buffer = new Map<bigint, Map<number, StreamdEvent>>();
   const released = new CursorManager(undefined, options.dedupWindow ?? host.defaults.dedupWindow);
-  const bounds: (Bound | undefined)[] = descriptors.map(() => undefined);
+  const bounds: (bigint | undefined)[] = descriptors.map(() => undefined);
+  // The highest version any walk has reached, and its value as each walk's fetch started.
+  let seen: bigint | undefined;
+  const known: (bigint | undefined)[] = descriptors.map(() => undefined);
   const caughtUp = new Set<number>();
   const walks: Subscription[] = [];
   let checkpoint = options.cursor;
@@ -140,7 +171,7 @@ export function startTransactions(
     const limit = lowest(bounds);
     if (limit === undefined) return;
     const ready = [...buffer.keys()]
-      .filter((v) => limit === "all" || v <= limit)
+      .filter((v) => v <= limit)
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
     for (const version of ready) {
       // A pause or stop between groups leaves the rest buffered.
@@ -160,7 +191,8 @@ export function startTransactions(
       if (tx === undefined) buffer.set(e.version, (tx = new Map()));
       tx.set(e.eventIndex, e);
     }
-    bounds[walk] = boundOf(page, bounds[walk]);
+    bounds[walk] = boundOf(page, bounds[walk], known[walk]);
+    seen = max(seen, highestOf(page));
     releasing = releasing.then(() => release(page.nextCursor));
     return releasing;
   };
@@ -183,6 +215,7 @@ export function startTransactions(
         },
       },
       walk === 0 ? options.id : undefined,
+      (source) => stamped(single ? source : host.unshared, () => (known[walk] = seen)),
     );
     walks.push(sub);
   });
