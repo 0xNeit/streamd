@@ -2272,6 +2272,17 @@ describe("EventPoller earliest start", () => {
     expect(err.message).toContain("getEarliestVersion");
   });
 
+  it("stops as invalid input when the earliest version is malformed", async () => {
+    const adapter = earliestAdapter(-500n);
+    const { poller, onError } = await firstPoll(adapter, { fromVersion: "earliest" });
+
+    expect(poller.active).toBe(false);
+    expect(adapter.fetchEvents).not.toHaveBeenCalled();
+    expect((onError.mock.calls[0]![0] as Error).message).toContain(
+      "getEarliestVersion resolved -500",
+    );
+  });
+
   it("stops as invalid input on a fromVersion that is neither a bigint nor earliest", async () => {
     const adapter = earliestAdapter(5n);
     const { poller, onError } = await firstPoll(adapter, {
