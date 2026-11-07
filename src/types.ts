@@ -566,7 +566,9 @@ export interface StreamdConfig {
   /**
    * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, the `simulateTransactionEvents` calls behind `previewEvents`, and the `view` calls behind `withState`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
-   * Further calls wait in order. Omit for no limit.
+   * Further calls wait in order. Omit for no limit. A `withState` view that
+   * a pause or unsubscribe abandons frees its slot at once, though the
+   * request itself runs on uncounted, since adapters take no signal.
    */
   maxConcurrentRequests?: number;
   /**
@@ -636,6 +638,15 @@ export interface Subscription {
    * unsubscribing or stopping.
    */
   readonly status: SubscriptionStatus;
+}
+
+/** What `stream()` returns: its live events, and where to resume them. */
+export interface EventStream<TData = unknown> extends AsyncIterableIterator<StreamdEvent<TData>> {
+  /**
+   * As `Subscription.cursor`, moving past a page only once the loop has asked
+   * past its last event; the `cursor` option until the loop first asks.
+   */
+  readonly cursor: string | undefined;
 }
 
 // ---- Callback ----

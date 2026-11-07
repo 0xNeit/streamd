@@ -6,7 +6,7 @@ import type {
   StreamdEvent,
 } from "./types.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
-import { DEFAULT_LIMIT, requireAdapter } from "./adapters/validate.js";
+import { DEFAULT_LIMIT, blockError, requireAdapter, versionError } from "./adapters/validate.js";
 import { eventId } from "./cursor.js";
 
 /** The `EventAdapter` contract rules `checkAdapter` reports on, in report order. */
@@ -298,8 +298,7 @@ async function readVersion(
 ): Promise<bigint | string> {
   try {
     const value: unknown = await adapter[name]!(descriptor);
-    if (typeof value === "bigint" && value >= 0n) return value;
-    return `${name} resolved ${String(value)}, not a non-negative bigint`;
+    return versionError(name, value) ?? (value as bigint);
   } catch (err) {
     return `${name} rejected: ${describe(err)}`;
   }
@@ -340,19 +339,6 @@ async function versionResults(
       ? skip("earliest-version", absent)
       : earliestResult(earliest, head, events),
   ];
-}
-
-function blockError(block: unknown, height: bigint): string | undefined {
-  if (typeof block !== "object" || block === null) return "getBlock resolved a non-object";
-  const b = block as Record<string, unknown>;
-  for (const key of ["height", "firstVersion", "lastVersion", "timestamp"]) {
-    if (typeof b[key] !== "bigint") return `getBlock ${key} is not a bigint`;
-  }
-  if (b.height !== height) return `getBlock(${height}) returned height ${String(b.height)}`;
-  if ((b.firstVersion as bigint) > (b.lastVersion as bigint)) {
-    return "getBlock firstVersion is above lastVersion";
-  }
-  return undefined;
 }
 
 async function blockResult(

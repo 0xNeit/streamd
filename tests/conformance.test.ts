@@ -4,6 +4,8 @@ import { checkAdapter } from "../src/conformance.js";
 import type { AdapterCheckReport } from "../src/conformance.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
+import { FallbackAdapter } from "../src/adapters/fallback.js";
+import { RoutingAdapter } from "../src/adapters/routing.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import type {
   EventAdapter,
@@ -316,6 +318,15 @@ describe("checkAdapter optional methods", () => {
   });
 
   it.each([
+    ["FallbackAdapter", () => new FallbackAdapter([seeded()])],
+    ["RoutingAdapter", () => new RoutingAdapter({ default: seeded() })],
+  ])("skips block for a %s over sources without getBlock", async (_label, make) => {
+    const report = await checkAdapter(make(), desc, { fromVersion: 0n, blockHeight: 1n });
+    expect(result(report, "block")).toEqual({ name: "block", status: "skip", message: "not implemented (optional)" } as never);
+    expect(report.ok).toBe(true);
+  });
+
+  it.each([
     ["head below a seen event", { getHeadVersion: async () => 3n }, "head-version", "below seen event"],
     ["head not a bigint", { getHeadVersion: async () => 7 as unknown as bigint }, "head-version", "not a non-negative bigint"],
     ["head rejecting", { getHeadVersion: async () => { throw new Error("x"); } }, "head-version", "rejected"],
@@ -351,6 +362,7 @@ describe("checkAdapter optional methods", () => {
   it.each([
     ["a height mismatch", { ...block, height: 4n }, "returned height 4"],
     ["an inverted range", { ...block, firstVersion: 13n }, "firstVersion is above lastVersion"],
+    ["a negative firstVersion", { ...block, firstVersion: -1n }, "firstVersion is negative"],
     ["a number timestamp", { ...block, timestamp: 1 }, "timestamp is not a bigint"],
   ])("fails block on %s", async (_label, reply, message) => {
     const report = await checkAdapter(broken({ getBlock: async () => reply as BlockInfo }), desc, {

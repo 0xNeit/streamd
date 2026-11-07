@@ -1,13 +1,8 @@
 import type {
-  BlockHeights,
-  BlockInfo,
   EventAdapter,
   EventDescriptor,
   EventPage,
   FetchOptions,
-  TransactionEvents,
-  TransactionSimulation,
-  ViewRequest,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
 import { requireAdapter } from "./validate.js";
@@ -40,10 +35,20 @@ async function tryInOrder<T>(
  * `StreamdNetworkError`) is rethrown at once without trying later adapters.
  * A page from any source but the first comes back with `final: false`.
  * `throughVersion` is kept from whichever source answered, since it describes
- * how far that source scanned for the events it returned.
+ * how far that source scanned for the events it returned. Each optional
+ * method is defined only when some source has it, and tries those sources in
+ * order under the same rules.
  */
 export class FallbackAdapter implements EventAdapter {
   private readonly adapters: readonly EventAdapter[];
+
+  declare getHeadVersion?: EventAdapter["getHeadVersion"];
+  declare getEarliestVersion?: EventAdapter["getEarliestVersion"];
+  declare getBlock?: EventAdapter["getBlock"];
+  declare getBlockHeights?: EventAdapter["getBlockHeights"];
+  declare getTransactionEvents?: EventAdapter["getTransactionEvents"];
+  declare simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
+  declare view?: EventAdapter["view"];
 
   constructor(adapters: readonly EventAdapter[]) {
     if (!Array.isArray(adapters) || adapters.length === 0) {
@@ -52,6 +57,44 @@ export class FallbackAdapter implements EventAdapter {
     this.adapters = adapters.map((adapter, index) =>
       requireAdapter(adapter, `FallbackAdapter[${index}]`),
     );
+
+    const head = this.sources("getHeadVersion");
+    if (head.length > 0) {
+      this.getHeadVersion = (descriptor) =>
+        tryInOrder(head, (adapter) => adapter.getHeadVersion!(descriptor));
+    }
+    const earliest = this.sources("getEarliestVersion");
+    if (earliest.length > 0) {
+      this.getEarliestVersion = (descriptor) =>
+        tryInOrder(earliest, (adapter) => adapter.getEarliestVersion!(descriptor));
+    }
+    const blocks = this.sources("getBlock");
+    if (blocks.length > 0) {
+      this.getBlock = (descriptor, height) =>
+        tryInOrder(blocks, (adapter) => adapter.getBlock!(descriptor, height));
+    }
+    const heights = this.sources("getBlockHeights");
+    if (heights.length > 0) {
+      this.getBlockHeights = (descriptor) =>
+        tryInOrder(heights, (adapter) => adapter.getBlockHeights!(descriptor));
+    }
+    const lookups = this.sources("getTransactionEvents");
+    if (lookups.length > 0) {
+      this.getTransactionEvents = (hash, descriptor) =>
+        tryInOrder(lookups, (adapter) => adapter.getTransactionEvents!(hash, descriptor));
+    }
+    const simulators = this.sources("simulateTransactionEvents");
+    if (simulators.length > 0) {
+      this.simulateTransactionEvents = (simulation, descriptor) =>
+        tryInOrder(simulators, (adapter) =>
+          adapter.simulateTransactionEvents!(simulation, descriptor),
+        );
+    }
+    const views = this.sources("view");
+    if (views.length > 0) {
+      this.view = (request, ledgerVersion, descriptor) =>
+        tryInOrder(views, (adapter) => adapter.view!(request, ledgerVersion, descriptor));
+    }
   }
 
   async fetchEvents(
@@ -68,82 +111,7 @@ export class FallbackAdapter implements EventAdapter {
     });
   }
 
-  /** From the first adapter that reports one, with the same fallback rules. */
-  async getHeadVersion(descriptor: EventDescriptor): Promise<bigint> {
-    const reporting = this.adapters.filter((a) => a.getHeadVersion !== undefined);
-    if (reporting.length === 0) {
-      throw new StreamdError("No FallbackAdapter source reports a head version");
-    }
-    return tryInOrder(reporting, (adapter) =>
-      adapter.getHeadVersion!(descriptor),
-    );
-  }
-
-  /** From the first adapter that reports one, with the same fallback rules. */
-  async getEarliestVersion(descriptor: EventDescriptor): Promise<bigint> {
-    const reporting = this.adapters.filter((a) => a.getEarliestVersion !== undefined);
-    if (reporting.length === 0) {
-      throw new StreamdError("No FallbackAdapter source reports an earliest version");
-    }
-    return tryInOrder(reporting, (adapter) =>
-      adapter.getEarliestVersion!(descriptor),
-    );
-  }
-
-  /** From the first adapter that reports blocks, with the same fallback rules. */
-  async getBlock(descriptor: EventDescriptor, height: bigint): Promise<BlockInfo> {
-    const reporting = this.adapters.filter((a) => a.getBlock !== undefined);
-    if (reporting.length === 0) {
-      throw new StreamdError("No FallbackAdapter source reports blocks");
-    }
-    return tryInOrder(reporting, (adapter) => adapter.getBlock!(descriptor, height));
-  }
-
-  /** From the first adapter that reports block heights, with the same fallback rules. */
-  async getBlockHeights(descriptor: EventDescriptor): Promise<BlockHeights> {
-    const reporting = this.adapters.filter((a) => a.getBlockHeights !== undefined);
-    if (reporting.length === 0) {
-      throw new StreamdError("No FallbackAdapter source reports block heights");
-    }
-    return tryInOrder(reporting, (adapter) => adapter.getBlockHeights!(descriptor));
-  }
-
-  /** From the first adapter that looks transactions up, with the same fallback rules. */
-  async getTransactionEvents(
-    transactionHash: string,
-    descriptor?: EventDescriptor,
-  ): Promise<TransactionEvents | undefined> {
-    const reporting = this.adapters.filter((a) => a.getTransactionEvents !== undefined);
-    if (reporting.length === 0) {
-      throw new StreamdError("No FallbackAdapter source looks up transactions");
-    }
-    return tryInOrder(reporting, (adapter) =>
-      adapter.getTransactionEvents!(transactionHash, descriptor),
-    );
-  }
-
-  /** From the first adapter that simulates transactions, with the same fallback rules. */
-  async simulateTransactionEvents(
-    simulation: TransactionSimulation,
-    descriptor?: EventDescriptor,
-  ): Promise<TransactionEvents> {
-    const reporting = this.adapters.filter((a) => a.simulateTransactionEvents !== undefined);
-    if (reporting.length === 0) {
-      throw new StreamdError("No FallbackAdapter source simulates transactions");
-    }
-    return tryInOrder(reporting, (adapter) =>
-      adapter.simulateTransactionEvents!(simulation, descriptor),
-    );
-  }
-
-  /** From the first adapter that runs views, with the same fallback rules. */
-  async view(
-    request: ViewRequest,
-    ledgerVersion: bigint,
-    descriptor?: EventDescriptor,
-  ): Promise<unknown[]> {
-    const reporting = this.adapters.filter((a) => a.view !== undefined);
-    if (reporting.length === 0) throw new StreamdError("No FallbackAdapter source runs views");
-    return tryInOrder(reporting, (adapter) => adapter.view!(request, ledgerVersion, descriptor));
+  private sources(name: keyof EventAdapter): EventAdapter[] {
+    return this.adapters.filter((adapter) => adapter[name] !== undefined);
   }
 }

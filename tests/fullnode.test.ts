@@ -3,7 +3,10 @@ import { Account, Aptos, AptosConfig, Network, parseTypeTag } from "@aptos-labs/
 import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
 import { FallbackAdapter } from "../src/adapters/fallback.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
-import type { EventDescriptor } from "../src/types.js";
+import { checkDescriptor } from "../src/preflight.js";
+import { listEventHandles } from "../src/handles.js";
+import { withHooks } from "../src/adapters/hooks.js";
+import type { EventDescriptor, ModuleEventDescriptor } from "../src/types.js";
 
 const TYPE = "0x1::test::Ping";
 const OTHER = "0x1::test::Pong";
@@ -622,7 +625,7 @@ describe("FullnodeScanAdapter errors", () => {
 
       expect(err).toBeInstanceOf(StreamdNetworkError);
       expect((err as StreamdNetworkError).statusCode).toBe(429);
-      expect((err as StreamdNetworkError).cause).toBeDefined();
+      expect((err as StreamdNetworkError).cause).toBeUndefined();
     });
   }
 
@@ -1139,7 +1142,7 @@ describe("FullnodeScanAdapter view", () => {
       new FullnodeScanAdapter(pruned.aptos),
       new FullnodeScanAdapter(archive.aptos),
     ]);
-    expect(await adapter.view({ function: BALANCE }, 5n)).toEqual(["7"]);
+    expect(await adapter.view!({ function: BALANCE }, 5n)).toEqual(["7"]);
   });
 
   it("sends the values it checked and refuses unserialisable arguments", async () => {
@@ -1161,4 +1164,59 @@ describe("FullnodeScanAdapter view", () => {
     expect((err as Error).message).toContain("JSON-serialisable");
     expect(calls).toHaveLength(1);
   });
+});
+
+/** True when `needle` is a string anywhere in `value`'s object graph. */
+function reaches(value: unknown, needle: string, seen = new Set<unknown>()): boolean {
+  if (typeof value === "string") return value.includes(needle);
+  if (typeof value !== "object" || value === null || seen.has(value)) return false;
+  seen.add(value);
+  return Object.getOwnPropertyNames(value).some((key) =>
+    reaches((value as Record<string, unknown>)[key], needle, seen),
+  );
+}
+
+describe("FullnodeScanAdapter errors and the API key", () => {
+  const KEY = "sk-streamd-test-key";
+  // A network no other test reads the ledger through, so the SDK's ledger-info cache never answers.
+  const failing = (status: number) => () =>
+    fakeNode(() => ({ status, data: { message: "boom" } }), { API_KEY: KEY }, Network.NETNA);
+
+  for (const status of [400, 500]) {
+    it(`keeps the API key out of every error from a ${status}`, async () => {
+      const make = failing(status);
+      const calls: [string, (aptos: Aptos) => Promise<unknown>][] = [
+        ["module events", (a) => new FullnodeScanAdapter(a).fetchEvents(moduleDesc, { fromVersion: 0n })],
+        ["account events", (a) => new FullnodeScanAdapter(a).fetchEvents(accountDesc, { fromVersion: 0n })],
+        ["handle events", (a) => new FullnodeScanAdapter(a).fetchEvents(handleDesc, {})],
+        ["head version", (a) => new FullnodeScanAdapter(a).getHeadVersion()],
+        ["earliest version", (a) => new FullnodeScanAdapter(a).getEarliestVersion()],
+        ["block heights", (a) => new FullnodeScanAdapter(a).getBlockHeights()],
+        ["block", (a) => new FullnodeScanAdapter(a).getBlock(moduleDesc, 1n)],
+        ["transaction", (a) => new FullnodeScanAdapter(a).getTransactionEvents("0x" + "ab".repeat(32))],
+        ["view", (a) => new FullnodeScanAdapter(a).view({ function: "0x1::coin::balance" }, 1n)],
+        ["checkDescriptor", (a) => checkDescriptor(a, moduleDesc as ModuleEventDescriptor)],
+        ["listEventHandles", (a) => listEventHandles(a, "0x1")],
+        [
+          "withHooks onResponse",
+          async (a) => {
+            let reported: unknown;
+            const hooked = withHooks(new FullnodeScanAdapter(a), {
+              onResponse: (r) => void (reported = r.error),
+            });
+            await hooked.fetchEvents(handleDesc, {}).catch(() => {});
+            throw reported;
+          },
+        ],
+      ];
+      for (const [name, call] of calls) {
+        const err = await call(make().aptos).then(
+          () => new Error(`${name} did not fail`),
+          (e: unknown) => e,
+        );
+        expect([name, err]).toEqual([name, expect.any(StreamdError)]);
+        expect([name, reaches(err, KEY)]).toEqual([name, false]);
+      }
+    });
+  }
 });

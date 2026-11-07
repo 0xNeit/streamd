@@ -26,13 +26,22 @@ export interface RoutingAdapterRoutes {
 /**
  * Composes `EventAdapter` instances by descriptor `kind` (`"module"`,
  * `"handle"`, `"account"`), with an optional `default` adapter for kinds not
- * listed explicitly.
+ * listed explicitly. Each optional method is defined only when some route or
+ * the default has it, and still rejects for a kind whose adapter lacks it.
  */
 export class RoutingAdapter implements EventAdapter {
   private readonly moduleAdapter?: EventAdapter;
   private readonly handleAdapter?: EventAdapter;
   private readonly accountAdapter?: EventAdapter;
   private readonly defaultAdapter?: EventAdapter;
+
+  declare getHeadVersion?: EventAdapter["getHeadVersion"];
+  declare getEarliestVersion?: EventAdapter["getEarliestVersion"];
+  declare getBlock?: EventAdapter["getBlock"];
+  declare getBlockHeights?: EventAdapter["getBlockHeights"];
+  declare getTransactionEvents?: EventAdapter["getTransactionEvents"];
+  declare simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
+  declare view?: EventAdapter["view"];
 
   constructor(routes: RoutingAdapterRoutes) {
     if (typeof routes !== "object" || routes === null) {
@@ -72,6 +81,32 @@ export class RoutingAdapter implements EventAdapter {
         "RoutingAdapter requires at least one route or a default adapter",
       );
     }
+    this.exposeOptionalMethods();
+  }
+
+  /** Defines each optional method only when some route or the default has it. */
+  private exposeOptionalMethods(): void {
+    const routes = [
+      this.moduleAdapter,
+      this.handleAdapter,
+      this.accountAdapter,
+      this.defaultAdapter,
+    ];
+    const served = (name: keyof EventAdapter) =>
+      routes.some((adapter) => adapter?.[name] !== undefined);
+    if (served("getHeadVersion")) this.getHeadVersion = (d) => this.headVersion(d);
+    if (served("getEarliestVersion")) this.getEarliestVersion = (d) => this.earliestVersion(d);
+    if (served("getBlock")) this.getBlock = (d, height) => this.block(d, height);
+    if (served("getBlockHeights")) this.getBlockHeights = (d) => this.blockHeights(d);
+    if (served("getTransactionEvents")) {
+      this.getTransactionEvents = (hash, d) => this.transactionEvents(hash, d);
+    }
+    if (served("simulateTransactionEvents")) {
+      this.simulateTransactionEvents = (simulation, d) => this.simulation(simulation, d);
+    }
+    if (served("view")) {
+      this.view = (request, ledgerVersion, d) => this.runView(request, ledgerVersion, d);
+    }
   }
 
   async fetchEvents(
@@ -82,7 +117,7 @@ export class RoutingAdapter implements EventAdapter {
     return adapter.fetchEvents(descriptor, options);
   }
 
-  async getHeadVersion(descriptor: EventDescriptor): Promise<bigint> {
+  private async headVersion(descriptor: EventDescriptor): Promise<bigint> {
     const adapter = this.selectAdapter(descriptor);
     if (adapter.getHeadVersion === undefined) {
       throw new StreamdError(
@@ -92,7 +127,7 @@ export class RoutingAdapter implements EventAdapter {
     return adapter.getHeadVersion(descriptor);
   }
 
-  async getEarliestVersion(descriptor: EventDescriptor): Promise<bigint> {
+  private async earliestVersion(descriptor: EventDescriptor): Promise<bigint> {
     const adapter = this.selectAdapter(descriptor);
     if (adapter.getEarliestVersion === undefined) {
       throw new StreamdError(
@@ -102,7 +137,7 @@ export class RoutingAdapter implements EventAdapter {
     return adapter.getEarliestVersion(descriptor);
   }
 
-  async getBlock(descriptor: EventDescriptor, height: bigint): Promise<BlockInfo> {
+  private async block(descriptor: EventDescriptor, height: bigint): Promise<BlockInfo> {
     const adapter = this.selectAdapter(descriptor);
     if (adapter.getBlock === undefined) {
       throw new StreamdError(
@@ -112,7 +147,7 @@ export class RoutingAdapter implements EventAdapter {
     return adapter.getBlock(descriptor, height);
   }
 
-  async getBlockHeights(descriptor: EventDescriptor): Promise<BlockHeights> {
+  private async blockHeights(descriptor: EventDescriptor): Promise<BlockHeights> {
     const adapter = this.selectAdapter(descriptor);
     if (adapter.getBlockHeights === undefined) {
       throw new StreamdError(
@@ -123,7 +158,7 @@ export class RoutingAdapter implements EventAdapter {
   }
 
   /** From the adapter for `descriptor`'s kind, or the `default` adapter without one. */
-  async getTransactionEvents(
+  private async transactionEvents(
     transactionHash: string,
     descriptor?: EventDescriptor,
   ): Promise<TransactionEvents | undefined> {
@@ -145,7 +180,7 @@ export class RoutingAdapter implements EventAdapter {
   }
 
   /** From the adapter for `descriptor`'s kind, or the `default` adapter without one. */
-  async simulateTransactionEvents(
+  private async simulation(
     simulation: TransactionSimulation,
     descriptor?: EventDescriptor,
   ): Promise<TransactionEvents> {
@@ -167,7 +202,7 @@ export class RoutingAdapter implements EventAdapter {
   }
 
   /** From the adapter for `descriptor`'s kind, or the `default` adapter without one. */
-  async view(
+  private async runView(
     request: ViewRequest,
     ledgerVersion: bigint,
     descriptor?: EventDescriptor,

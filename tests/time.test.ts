@@ -78,6 +78,35 @@ describe("resolveFromTime", () => {
     }
   });
 
+  it("refuses malformed block heights and a block that answers another height", async () => {
+    const { adapter } = chain(uniform);
+    const cases: [EventAdapter, string][] = [
+      [{ ...adapter, getBlockHeights: async () => ({ oldest: 9n, newest: 2n }) }, "oldest is above newest"],
+      [{ ...adapter, getBlockHeights: async () => ({ oldest: "0", newest: 9n }) as never }, "getBlockHeights oldest"],
+      [{ ...adapter, getBlock: async (d, h) => ({ ...(await adapter.getBlock!(d, h)), height: h + 1n }) }, "getBlock(0) returned height 1"],
+    ];
+    for (const [bad, message] of cases) {
+      const err = await resolveFromTime(bad, descriptor, 50_000_123n).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect((err as Error).message).toContain(message);
+    }
+  });
+
+  it("reads block heights once, so a getter cannot change them after the check", async () => {
+    const { adapter } = chain(uniform);
+    let reads = 0;
+    const heights = {
+      newest: 999n,
+      get oldest() {
+        return ++reads > 1 ? 5000n : 0n;
+      },
+    };
+    const flipping = { ...adapter, getBlockHeights: async () => heights };
+
+    expect(await resolveFromTime(flipping, descriptor, 1_250_000n)).toBe(expected(uniform, 1_250_000n));
+    expect(reads).toBe(1);
+  });
+
   it("stops between lookups once its caller has given up", async () => {
     const { adapter, looked } = chain(uniform);
     const err = await resolveFromTime(adapter, descriptor, 50_000_123n, () => true).catch(

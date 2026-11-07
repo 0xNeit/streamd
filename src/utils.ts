@@ -1,6 +1,7 @@
 import type { EventAdapter, EventDescriptor, FetchOptions } from "./types.js";
 import { StreamdError } from "./errors.js";
 import { normalizeAddress } from "./filter.js";
+import { handlePath, requireVersion } from "./adapters/validate.js";
 
 let nextId = 0;
 
@@ -84,7 +85,7 @@ export async function resolveFromVersion(
         'fromVersion "earliest" needs an adapter that implements getEarliestVersion',
       );
     }
-    return adapter.getEarliestVersion(descriptor);
+    return requireVersion("getEarliestVersion", await adapter.getEarliestVersion(descriptor));
   }
   if (typeof fromVersion !== "bigint") {
     throw new StreamdError(
@@ -96,12 +97,23 @@ export async function resolveFromVersion(
       "A negative fromVersion needs an adapter that implements getHeadVersion",
     );
   }
-  const start = (head ?? (await adapter.getHeadVersion!(descriptor))) + fromVersion;
+  const start =
+    (head ?? requireVersion("getHeadVersion", await adapter.getHeadVersion!(descriptor))) +
+    fromVersion;
   return start < 0n ? 0n : start;
 }
 
 function typeSet(types: unknown): unknown[] {
   return Array.isArray(types) ? [...new Set(types)].sort() : [types];
+}
+
+function isValidHandle(d: Parameters<typeof handlePath>[0]): boolean {
+  try {
+    handlePath(d);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -132,8 +144,11 @@ export function descriptorKey(d: EventDescriptor | undefined): string | undefine
 /**
  * Value key for one `fetchEvents` request: equal for the same descriptor and
  * the same defined options in any order, undefined when `d` is not a descriptor.
+ * A handle descriptor the adapters refuse has no key, so it never shares,
+ * caches or replays the answer of a valid one it would otherwise collide with.
  */
 export function fetchKey(d: EventDescriptor, options: FetchOptions): string | undefined {
+  if (d?.kind === "handle" && !isValidHandle(d)) return undefined;
   const selector = descriptorKey(d);
   if (selector === undefined) return undefined;
   const fields = Object.entries(options)

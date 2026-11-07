@@ -1,5 +1,5 @@
 import type { EventAdapter, EventDescriptor, EventPage, FetchOptions } from "./types.js";
-import { descriptorKey } from "./utils.js";
+import { fetchKey } from "./utils.js";
 
 interface Entry {
   at: number;
@@ -89,13 +89,7 @@ function shareKey(
 ): string | undefined {
   // An interval setTimeout cannot honour would keep a page alive indefinitely.
   if (!(ttl > 0 && ttl <= MAX_DELAY)) return undefined;
-  const descriptorPart = descriptorKey(descriptor);
-  if (descriptorPart === undefined) return undefined;
   if (options.cursor === undefined && options.fromVersion === undefined) return undefined;
-  // Every option is part of the request, so every option is part of the key.
-  const fields = Object.entries(options)
-    .filter(([, v]) => v !== undefined)
-    .sort(([a], [b]) => (a < b ? -1 : 1))
-    .map(([k, v]) => [k, typeof v === "bigint" ? `${v}n` : v]);
-  return JSON.stringify([descriptorPart, ttl, fields]);
+  const request = fetchKey(descriptor, options);
+  return request === undefined ? undefined : `${ttl}|${request}`;
 }

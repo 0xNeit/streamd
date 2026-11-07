@@ -145,7 +145,7 @@ describe("listEventHandles", () => {
     const err = await listEventHandles(aptos, ADDR).catch((e) => e);
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect((err as StreamdNetworkError).statusCode).toBe(500);
-    expect((err as StreamdNetworkError).cause).toBeDefined();
+    expect((err as StreamdNetworkError).cause).toBeUndefined();
   });
 
   it("yields descriptors FullnodeScanAdapter reads from the handle endpoint", async () => {

@@ -64,20 +64,68 @@ describe("RequestLimiter", () => {
     expect(await third).toBe(3);
   });
 
-  it("drops a queued task that is cancelled by the time a slot frees", async () => {
+  it("frees the slot of a started task once its signal aborts", async () => {
     const limiter = new RequestLimiter(1);
     const h = harness();
-    let cancelled = false;
+    const controller = new AbortController();
+    const hung = limiter.run(h.task(1), undefined, controller.signal).catch((e: Error) => e.name);
+    const next = limiter.run(h.task(2));
+    await flush();
+    expect(h.started).toEqual([1]);
+    controller.abort();
+    expect(await hung).toBe("AbortError");
+    await flush();
+    expect(h.started).toEqual([1, 2]);
+    h.settle.get(2)!.ok();
+    expect(await next).toBe(2);
+  });
+
+  it("drops a queued task as soon as its drop signal aborts, with the abort reason", async () => {
+    const limiter = new RequestLimiter(1);
+    const h = harness();
     void limiter.run(h.task(1));
-    const dropped = limiter.run(h.task(2), () => cancelled).catch((e) => e);
+    const controller = new AbortController();
+    const dropped = [...Array(1000)].map((_, i) => limiter.run(h.task(10 + i), controller.signal).catch((e) => e));
     const after = limiter.run(h.task(3));
-    cancelled = true;
+    const reason = new Error("gone");
+    controller.abort(reason);
+    expect(limiter["queue"].length).toBe(1);
+    await flush();
+    for (const result of await Promise.all(dropped)) expect(result).toBe(reason);
     h.settle.get(1)!.ok();
-    expect(await dropped).toBeInstanceOf(StreamdError);
     await flush();
     expect(h.started).toEqual([1, 3]);
     h.settle.get(3)!.ok();
     expect(await after).toBe(3);
+  });
+
+  it("rejects a task queued with an already-aborted drop signal without queueing it", async () => {
+    const limiter = new RequestLimiter(1);
+    const h = harness();
+    void limiter.run(h.task(1));
+    const reason = new Error("gone");
+    let outcome: unknown;
+    limiter.run(h.task(2), AbortSignal.abort(reason)).catch((e) => (outcome = e));
+    await flush();
+    expect(outcome).toBe(reason);
+    expect(limiter["queue"].length).toBe(0);
+  });
+
+  it("clear() rejects every queued task and leaves running ones alone", async () => {
+    const limiter = new RequestLimiter(1);
+    const h = harness();
+    const running = limiter.run(h.task(1));
+    const outcomes: unknown[] = [];
+    for (const id of [2, 3]) limiter.run(h.task(id)).catch((e) => outcomes.push(e));
+    limiter.clear();
+    await flush();
+    expect(outcomes.length).toBe(2);
+    for (const result of outcomes) expect(result).toBeInstanceOf(StreamdError);
+    expect(limiter["queue"].length).toBe(0);
+    h.settle.get(1)!.ok();
+    expect(await running).toBe(1);
+    await flush();
+    expect(h.started).toEqual([1]);
   });
 
   it("starts every task at once when unlimited", async () => {

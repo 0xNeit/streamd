@@ -82,6 +82,7 @@ export type {
   EventPage,
   EventPredicate,
   EventsOfOptions,
+  EventStream,
   FetchOptions,
   HandleEventDescriptor,
   ListenerDefaults,

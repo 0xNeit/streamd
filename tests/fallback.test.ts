@@ -238,7 +238,7 @@ describe("FallbackAdapter head version", () => {
 
   it("skips adapters that cannot report a head", async () => {
     const fallback = new FallbackAdapter([bare, new MemoryAdapter([ev(6)])]);
-    expect(await fallback.getHeadVersion(moduleDesc)).toBe(6n);
+    expect(await fallback.getHeadVersion!(moduleDesc)).toBe(6n);
   });
 
   it("falls back on a network error", async () => {
@@ -250,7 +250,7 @@ describe("FallbackAdapter head version", () => {
     };
     const fallback = new FallbackAdapter([down, new MemoryAdapter([ev(8)])]);
 
-    expect(await fallback.getHeadVersion(moduleDesc)).toBe(8n);
+    expect(await fallback.getHeadVersion!(moduleDesc)).toBe(8n);
     expect(down.getHeadVersion).toHaveBeenCalledTimes(1);
   });
 
@@ -265,16 +265,12 @@ describe("FallbackAdapter head version", () => {
     const spy = vi.spyOn(later, "getHeadVersion");
     const fallback = new FallbackAdapter([invalid, later]);
 
-    await expect(fallback.getHeadVersion(moduleDesc)).rejects.toThrow("bad descriptor");
+    await expect(fallback.getHeadVersion!(moduleDesc)).rejects.toThrow("bad descriptor");
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("throws StreamdError when no adapter can report a head", async () => {
-    const err = await new FallbackAdapter([bare])
-      .getHeadVersion(moduleDesc)
-      .catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StreamdError);
-    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  it("leaves getHeadVersion undefined when no adapter can report a head", () => {
+    expect(new FallbackAdapter([bare]).getHeadVersion).toBeUndefined();
   });
 });
 
@@ -285,7 +281,7 @@ describe("FallbackAdapter earliest version", () => {
 
   it("skips adapters that cannot report one", async () => {
     const fallback = new FallbackAdapter([bare, new MemoryAdapter([ev(6), ev(9)])]);
-    expect(await fallback.getEarliestVersion(moduleDesc)).toBe(6n);
+    expect(await fallback.getEarliestVersion!(moduleDesc)).toBe(6n);
   });
 
   it("falls back on a network error", async () => {
@@ -297,7 +293,7 @@ describe("FallbackAdapter earliest version", () => {
     };
     const fallback = new FallbackAdapter([down, new MemoryAdapter([ev(8)])]);
 
-    expect(await fallback.getEarliestVersion(moduleDesc)).toBe(8n);
+    expect(await fallback.getEarliestVersion!(moduleDesc)).toBe(8n);
     expect(down.getEarliestVersion).toHaveBeenCalledTimes(1);
   });
 
@@ -312,16 +308,12 @@ describe("FallbackAdapter earliest version", () => {
     const spy = vi.spyOn(later, "getEarliestVersion");
     const fallback = new FallbackAdapter([invalid, later]);
 
-    await expect(fallback.getEarliestVersion(moduleDesc)).rejects.toThrow("bad descriptor");
+    await expect(fallback.getEarliestVersion!(moduleDesc)).rejects.toThrow("bad descriptor");
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("throws StreamdError when no adapter can report one", async () => {
-    const err = await new FallbackAdapter([bare])
-      .getEarliestVersion(moduleDesc)
-      .catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StreamdError);
-    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  it("leaves getEarliestVersion undefined when no adapter can report one", () => {
+    expect(new FallbackAdapter([bare]).getEarliestVersion).toBeUndefined();
   });
 });
 
@@ -341,17 +333,13 @@ describe("FallbackAdapter block heights", () => {
     const up: EventAdapter = { ...bare, getBlockHeights: vi.fn(async () => heights) };
     const fallback = new FallbackAdapter([bare, down, up]);
 
-    expect(await fallback.getBlockHeights(moduleDesc)).toBe(heights);
+    expect(await fallback.getBlockHeights!(moduleDesc)).toBe(heights);
     expect(down.getBlockHeights).toHaveBeenCalledTimes(1);
     expect(up.getBlockHeights).toHaveBeenCalledWith(moduleDesc);
   });
 
-  it("throws StreamdError when no adapter reports block heights", async () => {
-    const err = await new FallbackAdapter([bare])
-      .getBlockHeights(moduleDesc)
-      .catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StreamdError);
-    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  it("leaves getBlockHeights undefined when no adapter reports block heights", () => {
+    expect(new FallbackAdapter([bare]).getBlockHeights).toBeUndefined();
   });
 });
 
@@ -371,17 +359,13 @@ describe("FallbackAdapter blocks", () => {
     const up: EventAdapter = { ...bare, getBlock: vi.fn(async () => block) };
     const fallback = new FallbackAdapter([bare, down, up]);
 
-    expect(await fallback.getBlock(moduleDesc, 5n)).toBe(block);
+    expect(await fallback.getBlock!(moduleDesc, 5n)).toBe(block);
     expect(down.getBlock).toHaveBeenCalledTimes(1);
     expect(up.getBlock).toHaveBeenCalledWith(moduleDesc, 5n);
   });
 
-  it("throws StreamdError when no adapter reports blocks", async () => {
-    const err = await new FallbackAdapter([bare])
-      .getBlock(moduleDesc, 5n)
-      .catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StreamdError);
-    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  it("leaves getBlock undefined when no adapter reports blocks", () => {
+    expect(new FallbackAdapter([bare]).getBlock).toBeUndefined();
   });
 });
 
@@ -414,13 +398,13 @@ describe("FallbackAdapter transaction lookup", () => {
     };
     const up: EventAdapter = { ...bare, getTransactionEvents: vi.fn(async () => found) };
     const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
-    expect(await new FallbackAdapter([bare, down, up]).getTransactionEvents(hash, descriptor)).toBe(found);
+    expect(await new FallbackAdapter([bare, down, up]).getTransactionEvents!(hash, descriptor)).toBe(found);
     expect(down.getTransactionEvents).toHaveBeenCalledTimes(1);
     expect(up.getTransactionEvents).toHaveBeenCalledWith(hash, descriptor);
   });
 
-  it("refuses when no source looks transactions up", async () => {
-    await expect(new FallbackAdapter([bare]).getTransactionEvents(hash)).rejects.toBeInstanceOf(StreamdError);
+  it("leaves getTransactionEvents undefined when no source looks transactions up", () => {
+    expect(new FallbackAdapter([bare]).getTransactionEvents).toBeUndefined();
   });
 });
 
@@ -438,13 +422,13 @@ describe("FallbackAdapter simulation", () => {
     };
     const up: EventAdapter = { ...bare, simulateTransactionEvents: vi.fn(async () => simulated) };
     const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
-    expect(await new FallbackAdapter([bare, down, up]).simulateTransactionEvents(simulation, descriptor)).toBe(simulated);
+    expect(await new FallbackAdapter([bare, down, up]).simulateTransactionEvents!(simulation, descriptor)).toBe(simulated);
     expect(down.simulateTransactionEvents).toHaveBeenCalledTimes(1);
     expect(up.simulateTransactionEvents).toHaveBeenCalledWith(simulation, descriptor);
   });
 
-  it("refuses when no source simulates transactions", async () => {
-    await expect(new FallbackAdapter([bare]).simulateTransactionEvents(simulation)).rejects.toBeInstanceOf(StreamdError);
+  it("leaves simulateTransactionEvents undefined when no source simulates transactions", () => {
+    expect(new FallbackAdapter([bare]).simulateTransactionEvents).toBeUndefined();
   });
 });
 
@@ -463,13 +447,19 @@ describe("FallbackAdapter view", () => {
       view: vi.fn(async () => ["ok"]),
     };
     const adapter = new FallbackAdapter([down, new MemoryAdapter(), up]);
-    expect(await adapter.view(request, 3n)).toEqual(["ok"]);
+    expect(await adapter.view!(request, 3n)).toEqual(["ok"]);
     expect(up.view).toHaveBeenCalledWith(request, 3n, undefined);
   });
 
-  it("refuses when no source runs views", async () => {
-    await expect(new FallbackAdapter([new MemoryAdapter()]).view(request, 1n)).rejects.toThrow(
-      "No FallbackAdapter source runs views",
-    );
+  it("leaves view undefined when no source runs views", () => {
+    expect(new FallbackAdapter([new MemoryAdapter()]).view).toBeUndefined();
+  });
+});
+
+describe("FallbackAdapter optional method fields", () => {
+  it("has no own property for a method no source has", () => {
+    const adapter = new FallbackAdapter([new MemoryAdapter()]);
+    expect(Object.hasOwn(adapter, "getBlock")).toBe(false);
+    expect("getBlock" in adapter).toBe(false);
   });
 });

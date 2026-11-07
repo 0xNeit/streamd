@@ -58,6 +58,40 @@ describe("StreamdClient.stream", () => {
     expect(adapter.fetchEvents).toHaveBeenCalledTimes(1);
   });
 
+  it("reports a cursor that resumes a later stream after the last finished page", async () => {
+    const pages: Record<string, EventPage> = {
+      start: { events: [ev(1), ev(2)], nextCursor: "c1", hasMore: true },
+      c1: { events: [ev(3), ev(4)], nextCursor: "c2", hasMore: false },
+      c2: { events: [], nextCursor: "c2", hasMore: false },
+    };
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async (_d, o) => pages[o.cursor ?? "start"]!),
+    };
+    const c = client(adapter);
+
+    const it = c.stream(descriptor, { cursor: "start" });
+    expect(it.cursor).toBe("start");
+    const seen: bigint[] = [];
+    const loop = (async () => {
+      for await (const e of it) {
+        seen.push(e.version);
+        if (e.version === 3n) break;
+      }
+    })();
+    await advanceTimersByTimeAsync(50);
+    await loop;
+    expect(seen).toEqual([1n, 2n, 3n]);
+    // The loop left mid-page, so the cursor is the one before that page.
+    expect(it.cursor).toBe("c1");
+
+    const resumed = c.stream(descriptor, { cursor: it.cursor });
+    const next = resumed.next();
+    await advanceTimersByTimeAsync(0);
+    expect((await next).value?.version).toBe(3n);
+    await resumed.return!();
+    c.destroy();
+  });
+
   it("holds the next poll while the loop body is still on an event", async () => {
     const adapter = adapterOf([{ events: [ev(1)], nextCursor: "2", hasMore: false }]);
     const c = client(adapter);

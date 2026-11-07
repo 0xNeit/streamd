@@ -122,10 +122,14 @@ sub.resume();  // poll again at once, from the same cursor
 
 Pausing keeps the cursor, the dedup window, and the error count, so `resume()` picks up
 with the page it held and skips events already delivered. A handler already running when
-you pause finishes, the rest of its page waits for `resume()`, and a fetch in flight is
-discarded. While paused, `active` (and `sub.status.active`) is `false`. `unsubscribe()`,
-`destroy()`, or the `signal` aborting still ends a paused subscription, and `resume()` never
-revives one that has ended, including after `maxErrors`.
+you pause finishes, the rest of its page waits for `resume()`, and a fetch in flight runs
+to completion with its result discarded: `resume()` waits for it rather than sending a
+second request. A `withState` view in flight is abandoned instead, so a hung one never stalls
+`resume()` or keeps its request slot once the subscription ends. The abandoned request still
+runs on the node, outside `maxConcurrentRequests`, and the resumed run asks again. While
+paused, `active` (and `sub.status.active`) is `false`. `unsubscribe()`, `destroy()`, or the
+`signal` aborting still ends a paused subscription, and `resume()` never revives one that has
+ended, including after `maxErrors`.
 
 ### Caught-up signal
 
@@ -170,7 +174,9 @@ for await (const event of streamd.stream(descriptor, { where: involvesAddress(wa
 next poll waits until the body asks for the following event, so a slow body slows the
 subscription down. The loop throws if polling gives up (after `maxErrors`, or at once on
 invalid input); other errors go to `onError`. `destroy()` ends any open loop. One loop
-per stream: the stream subscribes when the loop first asks for an event.
+per stream: the stream subscribes when the loop first asks for an event. Its `cursor`
+resumes like a subscription's (below), passing a page only once the loop has asked past
+its last event, so leaving the loop mid-page resumes at that page.
 
 ### Resume after a restart
 
@@ -345,7 +351,10 @@ const event = await streamd.once(
 ```
 
 The promise rejects with `StreamdTimeoutError` if `timeout` elapses first, if
-polling gives up after `maxErrors`, or straight away on invalid input.
+polling gives up after `maxErrors`, straight away on invalid input, or on the first
+throw from `where`, which would otherwise skip every event. A throwing `onCaughtUp`,
+an event that fails `decode`, or a throwing `withState` builder goes to `onError` and
+`once()` keeps waiting for a match.
 
 ### Events from a submitted transaction
 
@@ -560,8 +569,10 @@ a negative `fromVersion`, the `getEarliestVersion` read behind `"earliest"`, and
 `getBlock` and `getBlockHeights` lookups behind `fromBlock`/`toBlock` and `fromTime`, and
 the lookups behind `eventsOf()` and the simulations behind `previewEvents()` all count. The unit is one adapter call, not one HTTP request:
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
-still waiting when its subscription stops or pauses, or its query's `signal` aborts, is
-dropped without reaching the adapter. Omit the option for no limit.
+still waiting when its subscription stops or pauses, or its query's `signal` aborts, leaves
+the queue at once without reaching the adapter, and `destroy()` rejects every call still
+waiting. A call the adapter never settles holds its slot, so give a custom adapter its own
+timeouts. Omit the option for no limit.
 
 ### Shared polling
 
@@ -1097,8 +1108,8 @@ To pick up where a run stopped, pass the last printed `version` plus one as
 
 Polling errors are reported on stderr and tailing continues until the subscription gives
 up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes
-(as when piped into `head`); `1` when the subscription stopped on an error; `2` for invalid
-arguments; `130` on a second Ctrl-C.
+(as when piped into `head`); `1` when the subscription stopped on an error, or output could not
+be written; `2` for invalid arguments; `130` on a second Ctrl-C.
 
 ### Forward events to a webhook
 

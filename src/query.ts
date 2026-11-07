@@ -11,6 +11,7 @@ import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
 import { StreamdError, StreamdNetworkError, retryAfterHint } from "./errors.js";
 import { mergeEvents, validateMerge } from "./merge.js";
+import { requireBlock, requireVersion } from "./adapters/validate.js";
 import { buildStateRequest, readState, validateWithState } from "./state.js";
 
 const DEFAULT_PAGE_SIZE = 25;
@@ -59,10 +60,10 @@ async function headVersion(adapter: EventAdapter, descriptor: EventDescriptor): 
   if (adapter.getHeadVersion === undefined) {
     throw new StreamdError('toVersion "head" needs an adapter that implements getHeadVersion');
   }
-  return adapter.getHeadVersion(descriptor);
+  return requireVersion("getHeadVersion", await adapter.getHeadVersion(descriptor));
 }
 
-function blockAt(
+async function blockAt(
   adapter: EventAdapter,
   descriptor: EventDescriptor,
   height: bigint,
@@ -70,7 +71,7 @@ function blockAt(
   if (adapter.getBlock === undefined) {
     throw new StreamdError("fromBlock and toBlock need an adapter that implements getBlock");
   }
-  return adapter.getBlock(descriptor, height);
+  return requireBlock(await adapter.getBlock(descriptor, height), height);
 }
 
 /**
@@ -175,7 +176,7 @@ export class EventQuery {
     validateWithState(withState);
     const pages = this.pages<TData>(descriptor, rest, pageSize);
     if (withState === undefined) return yield* pages;
-    const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
+    const adapter = this.limiter.wrap(this.source, signal);
     const first = Array.isArray(descriptor)
       ? (descriptor as readonly EventDescriptor[])[0]!
       : (descriptor as EventDescriptor);
@@ -299,7 +300,7 @@ export class EventQuery {
       filter.fromTime !== undefined ||
       (!earliest && !isAbsoluteVersion(filter.fromVersion));
     if (!shared) return filter;
-    const adapter = this.limiter.wrap(this.source, () => filter.signal?.aborted === true);
+    const adapter = this.limiter.wrap(this.source, filter.signal);
     const bounds = await resolveBounds(adapter, descriptor, {
       ...filter,
       fromVersion: earliest ? undefined : filter.fromVersion,
@@ -331,7 +332,7 @@ export class EventQuery {
       ...adapterFilter
     } = filter;
     const decode = fieldDecoder(fields);
-    const adapter = this.limiter.wrap(this.source, () => signal?.aborted === true);
+    const adapter = this.limiter.wrap(this.source, signal);
     const limit = filter.limit;
     let cursor: string | undefined;
     let fromVersion = isAbsoluteVersion(filter.fromVersion)
