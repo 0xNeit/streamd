@@ -164,7 +164,7 @@ describe("ownedBy", () => {
     let lookups = 0;
     Object.assign(aptos, {
       getTargetAddress: async () => {
-        if (lookups++ === 0) throw apiError(503);
+        if (lookups++ === 0) throw new TypeError("fetch failed");
         return AccountAddress.from(WALLET_LONG);
       },
     });

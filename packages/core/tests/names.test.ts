@@ -53,6 +53,14 @@ describe("resolveName", () => {
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
   });
 
+  it("resolves on the networks the SDK has a router for", async () => {
+    for (const network of [Network.MAINNET, Network.TESTNET, Network.LOCAL]) {
+      const { aptos } = fakeAptos(() => AccountAddress.from(TARGET));
+      Object.assign(aptos, { config: { network } });
+      expect(await resolveName(aptos, "alice.apt")).toBe(TARGET);
+    }
+  });
+
   it("refuses a network without ANS before any read", async () => {
     const { aptos, names } = fakeAptos(() => AccountAddress.ONE);
     Object.assign(aptos, { config: { network: Network.CUSTOM } });
