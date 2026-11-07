@@ -18,9 +18,9 @@ export interface TailIO {
  * signal aborts, 1 when the subscription stopped on an error.
  */
 export async function runTail(options: TailOptions, io: TailIO): Promise<number> {
-  const reported = new Set<unknown>();
+  let lastReported: unknown;
   const report = (err: unknown) => {
-    reported.add(err);
+    lastReported = err;
     io.error(`streamd: ${message(err)}`);
   };
   // Unset options are left out rather than passed as undefined, which would
@@ -42,8 +42,8 @@ export async function runTail(options: TailOptions, io: TailIO): Promise<number>
     return 0;
   } catch (err) {
     if (io.signal?.aborted) return 0;
-    // The error that stopped the subscription already went through onError.
-    if (!reported.has(err)) report(err);
+    // The error that stopped the subscription was the last one through onError.
+    if (err !== lastReported) report(err);
     return 1;
   }
 }

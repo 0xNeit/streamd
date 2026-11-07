@@ -133,3 +133,47 @@ describe("runTail", () => {
     expect(maxPending).toBe(1);
   });
 });
+
+describe("runTail with a stub client", () => {
+  type StreamOptions = Parameters<StreamdClient["stream"]>[1];
+
+  function stub(run: (opts: StreamOptions) => AsyncGenerator<StreamdEvent>) {
+    const seen: StreamOptions[] = [];
+    const errors: string[] = [];
+    const io = {
+      client: {
+        stream: ((_descriptor: unknown, opts: StreamOptions) => {
+          seen.push(opts);
+          return run(opts);
+        }) as unknown as StreamdClient["stream"],
+      },
+      write: (_line: string): void | Promise<void> => {},
+      error: (message: string) => {
+        errors.push(message);
+      },
+    };
+    return { seen, errors, io };
+  }
+
+  it("does not hold on to errors reported before the latest one", async () => {
+    let first: WeakRef<Error> | undefined;
+    const reportTwo = (opts: StreamOptions) => {
+      const err = new Error("first");
+      first = new WeakRef(err);
+      opts?.onError?.(err);
+      opts?.onError?.(new Error("second"));
+    };
+    const { errors, io } = stub(async function* (opts) {
+      reportTwo(opts);
+      yield ev(1);
+    });
+    let released: boolean | undefined;
+    io.write = () => {
+      Bun.gc(true);
+      released = first!.deref() === undefined;
+    };
+    expect(await runTail(options({ limit: 1 }), io)).toBe(0);
+    expect(errors).toEqual(["streamd: first", "streamd: second"]);
+    expect(released).toBe(true);
+  });
+});
