@@ -35,13 +35,13 @@ export class RoutingAdapter implements EventAdapter {
   private readonly accountAdapter?: EventAdapter;
   private readonly defaultAdapter?: EventAdapter;
 
-  getHeadVersion?: EventAdapter["getHeadVersion"];
-  getEarliestVersion?: EventAdapter["getEarliestVersion"];
-  getBlock?: EventAdapter["getBlock"];
-  getBlockHeights?: EventAdapter["getBlockHeights"];
-  getTransactionEvents?: EventAdapter["getTransactionEvents"];
-  simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
-  view?: EventAdapter["view"];
+  declare getHeadVersion?: EventAdapter["getHeadVersion"];
+  declare getEarliestVersion?: EventAdapter["getEarliestVersion"];
+  declare getBlock?: EventAdapter["getBlock"];
+  declare getBlockHeights?: EventAdapter["getBlockHeights"];
+  declare getTransactionEvents?: EventAdapter["getTransactionEvents"];
+  declare simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
+  declare view?: EventAdapter["view"];
 
   constructor(routes: RoutingAdapterRoutes) {
     if (typeof routes !== "object" || routes === null) {

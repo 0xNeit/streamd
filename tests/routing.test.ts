@@ -399,3 +399,11 @@ describe("RoutingAdapter view", () => {
     ).rejects.toThrow("The default adapter does not run views");
   });
 });
+
+describe("RoutingAdapter optional method fields", () => {
+  it("has no own property for a method no route has", () => {
+    const adapter = new RoutingAdapter({ default: new MemoryAdapter() });
+    expect(Object.hasOwn(adapter, "getBlock")).toBe(false);
+    expect("getBlock" in adapter).toBe(false);
+  });
+});

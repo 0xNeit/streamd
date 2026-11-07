@@ -455,3 +455,11 @@ describe("FallbackAdapter view", () => {
     expect(new FallbackAdapter([new MemoryAdapter()]).view).toBeUndefined();
   });
 });
+
+describe("FallbackAdapter optional method fields", () => {
+  it("has no own property for a method no source has", () => {
+    const adapter = new FallbackAdapter([new MemoryAdapter()]);
+    expect(Object.hasOwn(adapter, "getBlock")).toBe(false);
+    expect("getBlock" in adapter).toBe(false);
+  });
+});
