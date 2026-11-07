@@ -62,7 +62,7 @@ function groupOf(version: bigint, events: StreamdEvent[]): TransactionGroup {
   return group;
 }
 
-function combinedStatus(walks: Subscription[], active: boolean): SubscriptionStatus {
+export function combinedStatus(walks: Subscription[], active: boolean): SubscriptionStatus {
   const statuses = walks.map((w) => w.status);
   let lastVersion: bigint | undefined;
   for (const s of statuses) {

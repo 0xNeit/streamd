@@ -27,6 +27,9 @@ import type {
   TransferFilter,
   TransferListenerOptions,
   TransactionCallback,
+  Watch,
+  WatchCallback,
+  WatchOptions,
 } from "./types.js";
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
 import { EventPoller, resolveMaxBackoff, type Delivery } from "./poller.js";
@@ -44,6 +47,7 @@ import { SharedFetches } from "./shared.js";
 import { startReduction, type ReduceHost } from "./reduce.js";
 import { startReplay } from "./replay.js";
 import { startTransactions, type TransactionHost } from "./grouping.js";
+import { startWatch } from "./watch.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { expectEvents } from "./expect.js";
 import { requireTransactionHash } from "./adapters/validate.js";
@@ -238,6 +242,24 @@ export class StreamdClient {
       callback as TransactionCallback,
       options,
     );
+  }
+
+  /**
+   * Follow many addresses at once: one `account` walk per address, each event
+   * delivered as `callback(event, address)`. What a walk sees is what the
+   * adapter yields for an `account` descriptor: on `FullnodeScanAdapter`,
+   * transactions the address sent; on `IndexerAccountAdapter`, every one
+   * touching it. `add()` and `remove()` change the list at runtime; a walk that
+   * gives up drops its address and the rest carry on. Like `onTransaction()`,
+   * it is not a listener for `off()` or `listenerCount()`; `unsubscribe()` or
+   * `destroy()` ends it.
+   */
+  watch<TData = unknown>(
+    addresses: readonly string[],
+    callback: WatchCallback<TData>,
+    options?: WatchOptions,
+  ): Watch {
+    return startWatch(this.reduceHost, addresses, callback as WatchCallback, options);
   }
 
   private subscribe(
