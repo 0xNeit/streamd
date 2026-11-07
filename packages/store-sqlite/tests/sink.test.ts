@@ -76,6 +76,27 @@ describe("storeEvents", () => {
     expect(await stored(db)).toEqual(history(30).slice(8).map(eventId));
   });
 
+  it("saves the cursor on catching up, so a head start with no matches yet resumes without a gap", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    const options = { name: "swaps", fromVersion: -1n, where: (e: StreamdEvent) => e.version > 10n };
+    const first = new StreamdClient({ adapter: new MemoryAdapter(history(10)) });
+    let caught = 0;
+    const sub = await caughtUp((done) =>
+      storeEvents(first, store, swaps, { ...options, onCaughtUp: () => (caught++, done()) }),
+    );
+    sub.unsubscribe();
+    first.destroy();
+    expect(caught).toBe(1);
+    expect(store.readCursor("swaps")).toBe("10");
+
+    const second = new StreamdClient({ adapter: new MemoryAdapter(history(30)) });
+    const resumed = await caughtUp((onCaughtUp) => storeEvents(second, store, swaps, { ...options, onCaughtUp }));
+    resumed.unsubscribe();
+    second.destroy();
+    expect(await stored(db)).toEqual(history(30).slice(10).map(eventId));
+  });
+
   it("an explicit cursor wins over the saved one", async () => {
     const store = new SqliteEventStore(new Database(":memory:"));
     store.write([], { name: "swaps", cursor: "4" });

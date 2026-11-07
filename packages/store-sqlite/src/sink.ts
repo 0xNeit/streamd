@@ -11,8 +11,11 @@ export interface StoreEventsOptions extends SubscriptionOptions {
  * subscription's cursor, in one transaction. It resumes from the cursor saved
  * under `options.name` unless `options.cursor` is given. The saved cursor is
  * the one before the batch, then the one after it once the poller has moved
- * on; a restart between the two reads the batch again and the upsert absorbs it. A failed write reaches `onError` and ends the
- * subscription before its cursor moves past the batch; start it again to retry.
+ * on; a restart between the two reads the batch again and the upsert absorbs
+ * it. The cursor is also saved on first catching up, which fixes a relative or
+ * head start before any event matches. A failed write reaches `onError` and
+ * ends the subscription before its cursor moves past the batch; start it again
+ * to retry.
  */
 export function storeEvents(
   client: StreamdClient,
@@ -46,7 +49,15 @@ export function storeEvents(
         }
       });
     },
-    { ...listener, cursor },
+    {
+      ...listener,
+      cursor,
+      onCaughtUp: () => {
+        // Every page so far is stored, so the live cursor is safe to save.
+        store.write([], { name, cursor: subscription.cursor });
+        listener.onCaughtUp?.();
+      },
+    },
   );
   return subscription;
 }
