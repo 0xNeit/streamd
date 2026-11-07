@@ -9,7 +9,7 @@ import type {
 } from "../types.js";
 import { StreamdError, StreamdNetworkError, parseRetryAfter } from "../errors.js";
 import { toStreamdError, toStreamdEvents, type TransactionWithEvents } from "./fullnode.js";
-import { DEFAULT_LIMIT, parseCursor, requireAddress } from "./validate.js";
+import { DEFAULT_LIMIT, isObject, parseCursor, requireAddress } from "./validate.js";
 
 const PROCESSOR = "account_transactions_processor";
 const DEFAULT_MAX_SCAN = 100;
@@ -37,10 +37,6 @@ export interface IndexerAccountAdapterOptions {
   fetch?: (url: string, init: RequestInit) => Promise<Response>;
   /** Most transactions read per `fetchEvents` call (default: 100). */
   maxScan?: number;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 /** A ledger version as the Indexer (number) or fullnode (decimal string) sends it. */
@@ -80,6 +76,7 @@ function requireTransaction(txn: unknown, version: bigint): TransactionWithEvent
   if (events !== undefined && !Array.isArray(events)) throw malformed;
   for (const event of events ?? []) {
     if (!isObject(event) || typeof event.type !== "string") throw malformed;
+    if (event.guid !== undefined && !isObject(event.guid)) throw malformed;
     if (event.sequence_number !== undefined && toVersion(event.sequence_number) === undefined) throw malformed;
   }
   return txn as unknown as TransactionWithEvents;
@@ -151,7 +148,7 @@ export class IndexerAccountAdapter implements EventAdapter {
       throw new StreamdError("IndexerAccountAdapter takes no offset; start at fromVersion or a cursor");
     }
     const wanted = options.limit ?? DEFAULT_LIMIT;
-    if (wanted <= 0) return { events: [], hasMore: false };
+    if (!(wanted > 0)) return { events: [], hasMore: false };
 
     const indexed = await this.getHeadVersion();
     let start = cursor ?? indexed;
@@ -296,7 +293,13 @@ export class IndexerAccountAdapter implements EventAdapter {
     try {
       body = await response.json();
     } catch {
-      throw new StreamdError("Indexer returned a body that is not JSON");
+      // A gateway's error page sent as 200 is a passing fault, so it is retried like one.
+      throw new StreamdNetworkError(
+        "Indexer returned a body that is not JSON",
+        response.status,
+        undefined,
+        retryAfter,
+      );
     }
     if (isObject(body) && Array.isArray(body.errors) && body.errors.length > 0) {
       throw graphqlFailure(body.errors, retryAfter);

@@ -82,6 +82,7 @@ describe("IndexerAccountAdapter options", () => {
     [{ indexerUrl: "not a url" }],
     [{ indexerUrl: 5 }],
     [{ indexerUrl: URL_, apiKey: "" }],
+    [{ indexerUrl: URL_, apiKey: 42 }],
     [{ indexerUrl: URL_, fetch: "nope" }],
     [{ indexerUrl: URL_, maxScan: 0 }],
     [{ indexerUrl: URL_, maxScan: 1.5 }],
@@ -123,11 +124,11 @@ describe("IndexerAccountAdapter bounds", () => {
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
   });
 
-  it("rejects a body that is not JSON as a StreamdError", async () => {
+  it("rejects a 200 body that is not JSON as a network error, so it is retried", async () => {
     const { adapter } = adapterWith(() => new Response("<html>"));
-    const err = await adapter.getHeadVersion().catch((e: unknown) => e);
-    expect(err).not.toBeInstanceOf(StreamdNetworkError);
-    expect(err).toBeInstanceOf(StreamdError);
+    const err = (await adapter.getHeadVersion().catch((e: unknown) => e)) as StreamdNetworkError;
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect(err.statusCode).toBe(200);
   });
 
   it("rejects HTTP 429 as a network error carrying Retry-After", async () => {
@@ -142,13 +143,17 @@ describe("IndexerAccountAdapter bounds", () => {
     expect(err.message).not.toContain("secret");
   });
 
-  it("rejects a GraphQL rate-limit error as a 429 network error", async () => {
-    const { adapter } = adapterWith(() => ({
-      errors: [{ message: "rate limit exceeded", extensions: { code: 429 } }],
-    }));
+  it.each([[429], ["429"]])("rejects a GraphQL rate-limit error (code %p) as a 429 network error", async (code) => {
+    const { adapter } = adapterWith(() =>
+      Response.json(
+        { errors: [{ message: "rate limit exceeded", extensions: { code } }] },
+        { headers: { "Retry-After": "3" } },
+      ),
+    );
     const err = (await adapter.getHeadVersion().catch((e: unknown) => e)) as StreamdNetworkError;
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect(err.statusCode).toBe(429);
+    expect(err.retryAfter).toBe(3000);
     expect(err.message).toContain("rate limit exceeded");
   });
 
@@ -341,23 +346,30 @@ describe("IndexerAccountAdapter fetchEvents", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("returns an empty page for a zero limit without a request", async () => {
+  it.each([[0], [Number.NaN]])("returns an empty page for limit %p without a request", async (limit) => {
     const { make, calls } = chain([10], 50);
-    expect(await make().fetchEvents(account, { limit: 0 })).toEqual({ events: [], hasMore: false });
+    expect(await make().fetchEvents(account, { limit })).toEqual({ events: [], hasMore: false });
     expect(calls).toHaveLength(0);
+  });
+
+  it("returns an empty page at fromVersion while the Indexer is behind it", async () => {
+    const { make } = chain([10], 50);
+    const page = await make().fetchEvents(account, { fromVersion: 80n });
+    expect(page).toEqual({ events: [], nextCursor: "80", hasMore: false });
   });
 
   it.each([
     ["descending", [{ transaction_version: 20 }, { transaction_version: 10 }]],
     ["repeated", [{ transaction_version: 10 }, { transaction_version: 10 }]],
-    ["above the bound", [{ transaction_version: 99 }]],
+    ["above the bound", [{ transaction_version: 999 }]],
     ["below the start", [{ transaction_version: 1 }]],
     ["not versions", [{ transaction_version: "x" }]],
     ["not a list", "rows"],
+    ["more than asked for", Array.from({ length: 101 }, (_, i) => ({ transaction_version: 10 + i }))],
   ])("refuses a listing whose rows are %s", async (_label, rows) => {
-    const { aptos } = fakeNode(() => ({ data: txn(10) }));
+    const { aptos } = fakeNode((path) => ({ data: txn(Number(path.split("/").at(-1))) }));
     const indexer = fakeIndexer(({ query }) =>
-      query.includes("processor_status") ? processed(50) : { data: { account_transactions: rows } },
+      query.includes("processor_status") ? processed(500) : { data: { account_transactions: rows } },
     );
     const adapter = new IndexerAccountAdapter(aptos, { indexerUrl: URL_, fetch: indexer.fetch });
     const err = await adapter.fetchEvents(account, { cursor: "5" }).catch((e: unknown) => e);
@@ -371,6 +383,7 @@ describe("IndexerAccountAdapter fetchEvents", () => {
     ["an event with no type", { ...txn(10), events: [{ data: {}, sequence_number: "0" }] }],
     ["a bad sequence number", { ...txn(10), events: [{ type: DEPOSIT, sequence_number: "-1" }] }],
     ["a bad timestamp", { ...txn(10), timestamp: "soon" }],
+    ["a null guid", { ...txn(10), events: [{ type: DEPOSIT, sequence_number: "0", guid: null }] }],
   ])("refuses a transaction carrying %s", async (_label, body) => {
     const { make, state } = chain([10], 50);
     state.txns.set(10, body);
