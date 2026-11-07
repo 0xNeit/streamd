@@ -82,6 +82,8 @@ export type {
 export type {
   AccountEventDescriptor,
   BatchCallback,
+  TransactionCallback,
+  TransactionGroup,
   BlockHeights,
   BlockInfo,
   CreationNumberEventDescriptor,

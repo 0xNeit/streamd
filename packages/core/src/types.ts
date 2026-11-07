@@ -847,6 +847,31 @@ export type BatchCallback<TData = unknown> = (
   events: StreamdEvent<TData>[],
 ) => void;
 
+/**
+ * One transaction's matching events, as `onTransaction()` delivers them.
+ * `events` are in `eventIndex` order and never empty; each optional field is
+ * taken from the first event carrying it.
+ */
+export interface TransactionGroup<TData = unknown> {
+  /** The transaction's version, shared by every event in `events`. */
+  version: bigint;
+  transactionHash?: string;
+  sender?: string;
+  timestamp?: bigint;
+  entryFunction?: EntryFunctionCall;
+  events: StreamdEvent<TData>[];
+}
+
+/**
+ * Called once per transaction with its matching events, in version order.
+ * Otherwise as `EventCallback`: a returned promise is awaited before the next
+ * transaction, and a throw or rejection goes to `onError` without counting
+ * toward `maxErrors`.
+ */
+export type TransactionCallback<TData = unknown> = (
+  group: TransactionGroup<TData>,
+) => void;
+
 // ---- Adapter interface ----
 
 /**

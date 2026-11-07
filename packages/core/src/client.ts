@@ -26,6 +26,7 @@ import type {
   Transfer,
   TransferFilter,
   TransferListenerOptions,
+  TransactionCallback,
 } from "./types.js";
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
 import { EventPoller, resolveMaxBackoff, type Delivery } from "./poller.js";
@@ -42,6 +43,7 @@ import { fieldDecoder } from "./decode.js";
 import { SharedFetches } from "./shared.js";
 import { startReduction, type ReduceHost } from "./reduce.js";
 import { startReplay } from "./replay.js";
+import { startTransactions, type TransactionHost } from "./grouping.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { expectEvents } from "./expect.js";
 import { requireTransactionHash } from "./adapters/validate.js";
@@ -148,6 +150,8 @@ export class StreamdClient {
   private readonly streams = new Set<() => void>();
   /** What `reduce()` needs, built once. */
   private readonly reduceHost: ReduceHost;
+  /** What `onTransaction()` needs, built once. */
+  private readonly transactionHost: TransactionHost;
 
   constructor(config: StreamdConfig) {
     this.defaults = resolveDefaults(config);
@@ -162,6 +166,11 @@ export class StreamdClient {
       onError: this.onError,
       subscribe: (d, callback, options) => this.subscribe(d, callback, options),
       track: (stop) => (this.streams.add(stop), () => void this.streams.delete(stop)),
+    };
+    this.transactionHost = {
+      defaults: this.defaults,
+      onError: this.onError,
+      subscribe: (d, delivery, options, id) => this.subscribe(d, delivery, options, undefined, id),
     };
   }
 
@@ -201,6 +210,33 @@ export class StreamdClient {
       options,
       callback,
       options?.id,
+    );
+  }
+
+  /**
+   * Like `onBatch()`, but each call holds one transaction's matching events,
+   * all of them: events are held by version until the adapter's
+   * `EventPage.throughVersion` passes it (without one, until a later version
+   * arrives or the adapter reports nothing more), then released in version
+   * order. `decode`, `where` and `withState` apply per event first, so a
+   * transaction with no match delivers nothing.
+   *
+   * Several descriptors are merged: one walk each, a transaction released once
+   * every walk has passed it, each event once. Their `cursor` is `undefined`
+   * and the `cursor` option is refused. With one descriptor, `cursor` moves only
+   * past pages that left nothing held. Like `reduce()`, it is not a listener
+   * for `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+   */
+  onTransaction<TData = unknown>(
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+    callback: TransactionCallback<TData>,
+    options?: SubscriptionOptions,
+  ): Subscription {
+    return startTransactions(
+      this.transactionHost,
+      descriptor,
+      callback as TransactionCallback,
+      options,
     );
   }
 
