@@ -11,12 +11,14 @@ import type {
   FetchOptions,
   HandleEventDescriptor,
   ModuleEventDescriptor,
+  ResourceDescriptor,
   StreamdEvent,
   TransactionEvents,
   TransactionSimulation,
   ViewRequest,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
+import { normalizeAddress } from "../filter.js";
 import {
   DEFAULT_LIMIT,
   handlePath,
@@ -24,6 +26,7 @@ import {
   parseCursor,
   requireAddress,
   requireLedgerVersion,
+  requireResourceType,
   requireSimulation,
   requireTransactionHash,
   requireViewRequest,
@@ -37,6 +40,14 @@ interface RawEvent {
   data: unknown;
 }
 
+/** A write-set change; only the resource kinds are read. */
+interface RawChange {
+  type: string;
+  address?: string;
+  data?: { type: string; data: unknown };
+  resource?: string;
+}
+
 export interface TransactionWithEvents {
   version?: string;
   hash?: string;
@@ -46,6 +57,7 @@ export interface TransactionWithEvents {
   success?: unknown;
   vm_status?: unknown;
   events?: RawEvent[];
+  changes?: RawChange[];
 }
 
 /** Transactions requested per underlying REST call while scanning. */
@@ -82,7 +94,6 @@ export function toStreamdEvents(
   keep: (type: string) => boolean,
 ): StreamdEvent[] {
   const out: StreamdEvent[] = [];
-  let timestamp: bigint | undefined;
   txn.events?.forEach((event, eventIndex) => {
     if (!keep(event.type)) return;
     const item: StreamdEvent = {
@@ -92,15 +103,51 @@ export function toStreamdEvents(
       sequenceNumber: BigInt(event.sequence_number ?? "0"),
       eventIndex,
     };
-    if (txn.hash !== undefined) item.transactionHash = txn.hash;
-    if (txn.sender !== undefined) item.sender = txn.sender;
     const guid = toGuid(event);
     if (guid !== undefined) item.guid = guid;
-    if (txn.timestamp !== undefined) {
-      timestamp ??= BigInt(txn.timestamp);
-      item.timestamp = timestamp;
+    out.push(withTransaction(item, txn));
+  });
+  return out;
+}
+
+function withTransaction(item: StreamdEvent, txn: TransactionWithEvents): StreamdEvent {
+  if (txn.hash !== undefined) item.transactionHash = txn.hash;
+  if (txn.sender !== undefined) item.sender = txn.sender;
+  if (txn.timestamp !== undefined) item.timestamp = BigInt(txn.timestamp);
+  return item;
+}
+
+/**
+ * Writes and deletes of `resourceType` at `address` (normalised) in one
+ * transaction's write set. A delete carries `data: null`. The index counts on
+ * from the transaction's events, so no change shares an id with an event.
+ */
+export function toResourceChanges(
+  txn: TransactionWithEvents,
+  version: bigint,
+  address: string,
+  resourceType: string,
+): StreamdEvent[] {
+  const out: StreamdEvent[] = [];
+  const base = txn.events?.length ?? 0;
+  txn.changes?.forEach((change, changeIndex) => {
+    let data: unknown;
+    if (change.type === "write_resource" && change.data?.type === resourceType) {
+      data = change.data.data;
+    } else if (change.type === "delete_resource" && change.resource === resourceType) {
+      data = null;
+    } else {
+      return;
     }
-    out.push(item);
+    if (typeof change.address !== "string" || normalizeAddress(change.address) !== address) return;
+    const item: StreamdEvent = {
+      type: resourceType,
+      data,
+      version,
+      sequenceNumber: 0n,
+      eventIndex: base + changeIndex,
+    };
+    out.push(withTransaction(item, txn));
   });
   return out;
 }
@@ -166,6 +213,10 @@ export interface FullnodeScanAdapterOptions {
  * sender's transaction and will never appear. Send-side activity is exact;
  * "everything touching this account" is not expressible against a fullnode
  * and needs a real index.
+ *
+ * Resource descriptors use the same transaction scan as module events,
+ * reading each transaction's write set instead of its events, so they share
+ * its cost: fine for following the head, not for deep history.
  */
 export class FullnodeScanAdapter implements EventAdapter {
   private readonly scanBatch: number;
@@ -356,24 +407,43 @@ export class FullnodeScanAdapter implements EventAdapter {
       case "account":
         return this.fetchAccountEvents(descriptor, options);
       case "resource":
-        throw new StreamdError("FullnodeScanAdapter does not serve resource descriptors yet");
+        return this.fetchResourceChanges(descriptor, options);
       default:
         return this.fetchModuleEvents(descriptor, options);
     }
   }
 
+  private fetchModuleEvents(
+    descriptor: ModuleEventDescriptor,
+    options: FetchOptions,
+  ): Promise<EventPage> {
+    const keep = moduleTypeFilter(descriptor.eventType);
+    return this.scanTransactions(options, (txn, version) => toStreamdEvents(txn, version, keep));
+  }
+
+  private fetchResourceChanges(
+    descriptor: ResourceDescriptor,
+    options: FetchOptions,
+  ): Promise<EventPage> {
+    const address = requireAddress(descriptor.accountAddress);
+    const resourceType = requireResourceType(descriptor.resourceType);
+    return this.scanTransactions(options, (txn, version) =>
+      toResourceChanges(txn, version, address, resourceType),
+    );
+  }
+
   /**
-   * Scans forward from the cursor collecting matching events.
+   * Scans forward from the cursor collecting what `extract` takes from each
+   * transaction.
    *
    * The returned cursor tracks the last transaction *scanned*, not the last
    * event *matched*, so callers advance past windows with no matches rather
    * than re-reading them forever.
    */
-  private async fetchModuleEvents(
-    descriptor: ModuleEventDescriptor,
+  private async scanTransactions(
     options: FetchOptions,
+    extract: (txn: TransactionWithEvents, version: bigint) => StreamdEvent[],
   ): Promise<EventPage> {
-    const keep = moduleTypeFilter(descriptor.eventType);
     const wanted = options.limit ?? DEFAULT_LIMIT;
     if (wanted <= 0) return { events: [], hasMore: false };
 
@@ -408,7 +478,7 @@ export class FullnodeScanAdapter implements EventAdapter {
           break;
         }
         next = version + 1n;
-        events.push(...toStreamdEvents(txn, version, keep));
+        events.push(...extract(txn, version));
       }
 
       scanned += txns.length;
