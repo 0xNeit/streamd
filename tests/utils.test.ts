@@ -1,0 +1,87 @@
+import { describe, it, expect } from "bun:test";
+import { descriptorKey, raceAbort } from "../src/utils.js";
+import { SharedFetches } from "../src/shared.js";
+import { CachingAdapter } from "../src/adapters/caching.js";
+import { MemoryAdapter } from "../src/adapters/memory.js";
+import { recordingAdapter, replayAdapter } from "../src/adapters/recording.js";
+import type { EventAdapter, EventDescriptor, StreamdEvent } from "../src/types.js";
+
+const ev = (v: number): StreamdEvent => ({
+  type: "0x1::m::E",
+  data: {},
+  version: BigInt(v),
+  sequenceNumber: 0n,
+  eventIndex: 0,
+});
+
+const valid: EventDescriptor = { kind: "handle", accountAddress: "0x1", creationNumber: 5n };
+const invalid = {
+  ...valid,
+  eventHandleStruct: "0x1::a::B",
+  fieldName: "f",
+} as unknown as EventDescriptor;
+
+const LONG_0X1 = `0x${"0".repeat(63)}1`;
+
+describe("descriptorKey", () => {
+  it("keeps the key of valid handle descriptors", () => {
+    expect(descriptorKey(valid)).toBe(JSON.stringify(["handle", LONG_0X1, "5"]));
+    expect(
+      descriptorKey({
+        kind: "handle",
+        accountAddress: "0x1",
+        eventHandleStruct: "0x1::a::B",
+        fieldName: "f",
+      }),
+    ).toBe(JSON.stringify(["handle", LONG_0X1, "0x1::a::B", "f"]));
+  });
+
+  it("gives no key to a handle descriptor the adapters refuse", () => {
+    const refused = [
+      invalid,
+      { kind: "handle", accountAddress: "0x1", creationNumber: 5 },
+      { kind: "handle", accountAddress: "0x1", creationNumber: -1n },
+      { kind: "handle", accountAddress: "0x1", creationNumber: 5n, fieldName: "f" },
+      { kind: "handle", accountAddress: "not an address", creationNumber: 5n },
+      { kind: "handle", accountAddress: "0x1", eventHandleStruct: "0x1::a::B", fieldName: "" },
+      { kind: "handle", accountAddress: "0x1", eventHandleStruct: "0x1::a::B" },
+    ] as unknown as EventDescriptor[];
+    for (const d of refused) expect(descriptorKey(d)).toBeUndefined();
+  });
+
+  it("does not let an invalid descriptor's shared fetch fail a valid one", async () => {
+    const memory = new MemoryAdapter([ev(1), ev(2)]);
+    const delayed: EventAdapter = {
+      fetchEvents: async (d, o) => {
+        await new Promise((r) => setTimeout(r, 5));
+        return memory.fetchEvents(d, o);
+      },
+    };
+    const view = new SharedFetches(delayed).view(1000);
+    const [bad, good] = await Promise.allSettled([
+      view.fetchEvents(invalid, { fromVersion: 0n }),
+      view.fetchEvents(valid, { fromVersion: 0n }),
+    ]);
+    expect(bad.status).toBe("rejected");
+    expect(good.status === "fulfilled" && good.value.events.length).toBe(2);
+  });
+
+  it("does not serve an invalid descriptor a cached page", async () => {
+    const memory = new MemoryAdapter([ev(1), ev(2)]);
+    const cache = new CachingAdapter({
+      fetchEvents: async (d, o) => ({ ...(await memory.fetchEvents(d, o)), final: true }),
+    });
+    expect((await cache.fetchEvents(valid, { fromVersion: 0n })).events).toHaveLength(2);
+    await expect(cache.fetchEvents(invalid, { fromVersion: 0n })).rejects.toThrow("not both");
+  });
+
+  it("does not replay a valid descriptor's page to an invalid one", async () => {
+    const recorder = recordingAdapter(new MemoryAdapter([ev(1), ev(2)]));
+    await recorder.fetchEvents(valid, { fromVersion: 0n });
+    const replay = replayAdapter(recorder.toJSON());
+    expect((await replay.fetchEvents(valid, { fromVersion: 0n })).events).toHaveLength(2);
+    await expect(replay.fetchEvents(invalid, { fromVersion: 0n })).rejects.toThrow(
+      "No recorded fetchEvents call",
+    );
+  });
+});
