@@ -375,6 +375,23 @@ describe("onTransaction, several descriptors", () => {
     expect(log).toEqual(["5:0,1"]);
   });
 
+  it("resolves an earliest start through each walk's adapter", async () => {
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([ev(1, 0, A), ev(2, 0, A), ev(2, 1, B), ev(3, 0, B)]),
+    });
+    const log: string[] = [];
+    const errors: Error[] = [];
+    client.onTransaction([onA, onB], (g) => void log.push(shape([g])[0]!), {
+      fromVersion: "earliest",
+      onError: (e) => void errors.push(e),
+    });
+    await advanceTimersByTimeAsync(10);
+    client.destroy();
+
+    expect(errors).toEqual([]);
+    expect(log).toEqual(["1:0", "2:0,1", "3:0"]);
+  });
+
   it("drops a late copy of an event already delivered through another walk", async () => {
     const shared = ev(10, 0, B);
     const adapter = perDescriptor({
