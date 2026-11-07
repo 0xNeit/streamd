@@ -11,6 +11,7 @@ export { EventPoller } from "./poller.js";
 export { EventQuery } from "./query.js";
 export { CursorManager, eventId } from "./cursor.js";
 export { checkAdapter } from "./conformance.js";
+export { compareAdapters } from "./compare.js";
 export { defineEvent } from "./define.js";
 export { listEventHandles } from "./handles.js";
 export { networks } from "./networks.js";
@@ -49,6 +50,12 @@ export type {
   AdapterCheckReport,
   AdapterCheckResult,
 } from "./conformance.js";
+export type {
+  AdapterCompareRange,
+  AdapterComparison,
+  EventDifference,
+  EventDifferenceField,
+} from "./compare.js";
 export type { CachingAdapterOptions } from "./adapters/caching.js";
 export type { FullnodeScanAdapterOptions } from "./adapters/fullnode.js";
 export type { IndexerAccountAdapterOptions } from "./adapters/indexer.js";

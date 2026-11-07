@@ -71,10 +71,11 @@ interface Walk {
   shapeError?: string;
 }
 
-function requireCount(value: unknown, label: string, fallback: number): number {
+/** `label` names the caller and option, as in `"checkAdapter limit"`. */
+export function requireCount(value: unknown, label: string, fallback: number): number {
   if (value === undefined) return fallback;
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
-    throw new StreamdError(`checkAdapter ${label} must be a positive integer`);
+    throw new StreamdError(`${label} must be a positive integer`);
   }
   return value;
 }
@@ -93,13 +94,13 @@ function settings(options: AdapterCheckOptions): Settings {
   }
   return {
     fromVersion: requireVersion(options.fromVersion, "fromVersion"),
-    limit: requireCount(options.limit, "limit", DEFAULT_LIMIT),
-    maxPages: requireCount(options.maxPages, "maxPages", DEFAULT_MAX_PAGES),
+    limit: requireCount(options.limit, "checkAdapter limit", DEFAULT_LIMIT),
+    maxPages: requireCount(options.maxPages, "checkAdapter maxPages", DEFAULT_MAX_PAGES),
     blockHeight: requireVersion(options.blockHeight, "blockHeight"),
   };
 }
 
-function describe(err: unknown): string {
+export function describe(err: unknown): string {
   return err instanceof Error ? `${err.name}: ${err.message}` : String(err);
 }
 
@@ -140,7 +141,7 @@ function eventShapeError(value: unknown): string | undefined {
   return undefined;
 }
 
-function pageShapeError(value: unknown): string | undefined {
+export function pageShapeError(value: unknown): string | undefined {
   if (typeof value !== "object" || value === null) return "page is not an object";
   const page = value as Record<string, unknown>;
   if (!Array.isArray(page.events)) return "events is not an array";
