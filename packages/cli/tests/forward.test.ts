@@ -2,13 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runForward } from "../../src/cli/forward.js";
-import type { ForwardIO } from "../../src/cli/forward.js";
-import type { ForwardOptions } from "../../src/cli/args.js";
-import { StreamdClient } from "../../src/client.js";
-import { MemoryAdapter } from "../../src/adapters/memory.js";
-import { StreamdError } from "../../src/errors.js";
-import type { EventAdapter, StreamdEvent } from "../../src/types.js";
+import { runForward } from "../src/forward.js";
+import type { ForwardIO } from "../src/forward.js";
+import type { ForwardOptions } from "../src/args.js";
+import { MemoryAdapter, StreamdClient, StreamdError } from "@streamd/core";
+import type { EventAdapter, StreamdEvent } from "@streamd/core";
 
 const TYPE = "0x1::coin::DepositEvent";
 const SECRET = "s3cret-token";

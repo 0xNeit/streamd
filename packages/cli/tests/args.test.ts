@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { parseCommand, UsageError } from "../../src/cli/args.js";
-import type { ForwardOptions, TailOptions } from "../../src/cli/args.js";
+import { parseCommand, UsageError } from "../src/args.js";
+import type { ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
 const LONG_ADDR = `0x${"0".repeat(63)}1`;
