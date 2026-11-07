@@ -30,11 +30,15 @@ bun install
 bun run build
 ```
 
-The repository is a Turborepo monorepo on Bun workspaces with two packages:
+The repository is a Turborepo monorepo on Bun workspaces with four packages:
 
 - `@streamd/core` (`packages/core`) - the library. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer
   dependency, and it ships ESM, CommonJS and TypeScript types.
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core`.
+- `@streamd/store-sqlite` (`packages/store-sqlite`) - opt-in persistence: events written to a
+  SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
+- `@streamd/react` (`packages/react`) - `useEvents` and `useLogs` hooks. `react` (>= 18) and
+  `@aptos-labs/ts-sdk` are peer dependencies. See [React hooks](#react-hooks).
 
 ## Usage
 
@@ -899,7 +903,8 @@ By default streamd reads from a fullnode with `FullnodeScanAdapter`:
 
 - **Handle events** use the dedicated fullnode endpoint. Exact and cheap.
 - **Account events** walk that account's own transaction history. Cheap even
-  far back.
+  far back, but only transactions the account sent; `IndexerAccountAdapter`
+  (below) adds the ones it received.
 - **Module events** have no by-type endpoint on Aptos, so the adapter scans
   transactions and keeps the matches. That's fine for following the chain
   head, but not for deep history: fullnodes prune old data, and a rare event
@@ -977,6 +982,35 @@ const streamd = new StreamdClient({
   }),
 });
 ```
+
+For `account` descriptors that see every transaction touching the account, received
+ones included, use `IndexerAccountAdapter`. It pages the Aptos Indexer's
+`account_transactions` table by version, then reads each transaction's events from the
+fullnode, one read per transaction. It serves `account` descriptors only, so route the
+other kinds elsewhere:
+
+```ts
+import { FullnodeScanAdapter, IndexerAccountAdapter, RoutingAdapter, StreamdClient } from "@streamd/core";
+
+const streamd = new StreamdClient({
+  adapter: new RoutingAdapter({
+    account: new IndexerAccountAdapter(aptos, { apiKey: process.env.APTOS_API_KEY }),
+    default: new FullnodeScanAdapter(aptos),
+  }),
+});
+```
+
+- **Indexer lag.** Reads stop at the version the Indexer has processed, usually about a
+  second behind the chain; `getHeadVersion` reports it, and a subscription with no start
+  begins there.
+- **Pruning.** The Indexer lists history the fullnode has pruned, so `fromVersion` is
+  raised to the fullnode's oldest version (`getEarliestVersion`). A cursor older than that
+  fails with status 410 rather than skipping history.
+- **Rate limits.** Anonymous Indexer access is rate limited per IP; a limit hit rejects as a
+  `StreamdNetworkError` with status 429. Pass `apiKey` (sent as a bearer token) for more.
+- **Options.** `indexerUrl` (default: the `Aptos` network's Indexer), `apiKey`, `fetch`, and
+  `maxScan`, the most transactions read per call (default 100). `offset` is refused, and
+  pages are never `final`, so `CachingAdapter` passes them through.
 
 To log or time requests, wrap any adapter with `withHooks`. `onRequest` runs
 before each `fetchEvents` call and `onResponse` after it settles, with the
@@ -1071,6 +1105,180 @@ const streamd = new StreamdClient({
 });
 ```
 
+## Networks
+
+streamd runs against any network that serves the Aptos fullnode REST API. For
+Aptos mainnet, testnet, devnet and localnet, use the SDK's own `Network`, which
+already knows their fullnode and Indexer URLs:
+
+```ts
+import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+
+const aptos = new Aptos(new AptosConfig({ network: Network.TESTNET }));
+```
+
+For other Aptos-compatible chains, `networks` holds presets streamd has been
+verified against. Each is shaped as SDK settings, so it passes straight to
+`AptosConfig`, and `IndexerAccountAdapter` picks up its Indexer:
+
+```ts
+import { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
+import { IndexerAccountAdapter, StreamdClient, networks } from "@streamd/core";
+
+const aptos = new Aptos(new AptosConfig({ ...networks.movementMainnet, clientConfig: { http2: false } }));
+const streamd = new StreamdClient({ aptos });
+const received = new IndexerAccountAdapter(aptos);
+```
+
+| Preset | Chain id | Fullnode | Indexer |
+| --- | --- | --- | --- |
+| `movementMainnet` | 126 | `https://mainnet.movementnetwork.xyz/v1` | `https://indexer.mainnet.movementnetwork.xyz/v1/graphql` |
+| `movementTestnet` | 250 | `https://testnet.movementnetwork.xyz/v1` | `https://indexer.testnet.movementnetwork.xyz/v1/graphql` |
+
+The SDK prints `Note: using CUSTOM network will require queries to lookup
+ChainId` for every `AptosConfig` built on a preset; it is informational.
+
+### What differs, as measured
+
+Measured on 2026-11-07 with anonymous, read-only requests (about 80 in all)
+against each network's public endpoint. Each network was exercised on ledger
+info, `getHeadVersion` and `getEarliestVersion`, module `getEvents`, the `account` path, the `0x1` `new_block_events` handle,
+`fromBlock`/`toBlock`, `fromTime`, `checkAdapter` on `FullnodeScanAdapter`,
+and the Indexer's processed version.
+
+| | Aptos testnet | Aptos devnet | Movement mainnet | Movement testnet |
+| --- | --- | --- | --- | --- |
+| Chain id | 2 | 226, which changes when devnet resets; the SDK lists none | 126 | 250 |
+| Oldest version kept | 213,894,770 of 363,694,761 (pruned) | 0 (full history) | 0 (full history) | 0 (full history) |
+| Oldest block kept | 17,651,703 of 25,994,004 | 0 | 0 | 0 |
+| Indexer | yes (SDK default) | yes (SDK default) | yes | yes |
+| `checkAdapter` | ok | ok | ok | ok |
+| Handle from sequence 0 | refused, 410 `version_pruned` (oldest sequence 17,640,121) | ok | ok | ok |
+| `fromTime` | failed once: the oldest block was pruned mid-search (410 `block_pruned`) | ok | ok | ok |
+| Transfer events | not sampled | `0x1::fungible_asset::Withdraw`/`Deposit` | legacy `0x1::coin::WithdrawEvent`/`DepositEvent` | legacy `0x1::coin::WithdrawEvent`/`DepositEvent` |
+| Block close | not sampled | `block_epilogue_transaction` | `state_checkpoint_transaction` | not sampled |
+| Traffic | busy | 2 user transactions in the last 100 versions | none in the last 100 versions | low |
+| Rate limiting | no 429 seen | no 429, no rate-limit headers | no 429, no rate-limit headers | no 429, no rate-limit headers |
+
+Notes from the same run:
+
+- **Orderless transactions on Aptos testnet.** The busy sender sampled there
+  reported `sequence_number` 0 and `/accounts/{address}/transactions` returned
+  nothing for it, so the `account` path sees none of its transactions.
+  `IndexerAccountAdapter` listed them.
+- **Low-traffic chains.** On devnet and both Movement networks a module query
+  over the last 100 versions found no `FeeStatement` at all; on both Movement
+  networks the same query at a known user transaction found one. Widen `fromVersion` or raise `maxScan` there.
+- **Movement fullnodes** report `git_hash` `4be787e` and no `encryption_key` in
+  ledger info, and keep every version from genesis, so `fromVersion: "earliest"`
+  is version 0.
+- **Movement testnet's Indexer** answers at both
+  `indexer.testnet.movementnetwork.xyz` and `hasura.testnet.movementnetwork.xyz`
+  with the same data; the preset uses the first, which Movement's Indexer docs name.
+- **Not verified:** Aptos localnet (`Network.LOCAL`), since none was running.
+- **SDK ledger cache.** `@aptos-labs/ts-sdk` caches `aptos.getLedgerInfo()` for
+  10 seconds keyed by network name, so every `Network.CUSTOM` instance in one
+  process shares it: a Movement testnet instance reported chain id 126.
+  streamd's adapters read ledger info directly and are not affected; your own
+  `getLedgerInfo()` calls are.
+
+## Store events in SQLite
+
+`@streamd/store-sqlite` keeps events in a SQLite database you open with whichever driver your
+runtime has: `bun:sqlite`'s `Database`, `better-sqlite3`, or Node's `node:sqlite`
+`DatabaseSync`. It has no SQLite dependency of its own, and core never depends on it.
+
+```ts
+import { Database } from "bun:sqlite";
+import { StreamdClient } from "@streamd/core";
+import { SqliteEventStore, StoreAdapter, storeEvents } from "@streamd/store-sqlite";
+
+const db = new Database("events.db");
+const store = new SqliteEventStore(db);
+
+// Follows the chain, writing each batch and the subscription's cursor in one transaction.
+// After a restart the same call resumes from the cursor saved under "swaps".
+storeEvents(streamd, store, descriptor, { name: "swaps", fromVersion: -100_000n });
+
+// Elsewhere, queries answered from the database instead of the fullnode.
+const local = new StreamdClient({ adapter: new StoreAdapter(db) });
+const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersion: "head" });
+```
+
+- **No gaps, no duplicates.** Rows are keyed on `(version, eventIndex)` and a repeated write
+  replaces its row. Each batch is written with the cursor from before it, then the cursor
+  after it is saved, so a restart in between reads the batch again and the upsert absorbs it.
+  The cursor is also saved when the subscription first catches up, which pins a relative or
+  head start; until then a restart re-resolves it, so pass an absolute `fromVersion` to leave
+  no window at all.
+  A failed write reaches `onError` and ends the subscription before its cursor moves on;
+  start it again to retry. Give each descriptor its own `name`, and set `PRAGMA busy_timeout`
+  when another connection writes the same file, since a busy database is a failed write.
+  `store.write(events, { name, cursor })` (a savepoint, so it works inside your own
+  transaction) and `store.readCursor(name)` are there for wiring your own.
+- **Exact integers.** Versions, sequence numbers, timestamps and guids round-trip as `bigint`
+  up to u64 (u128 for `creationNumber`). Events are stored as `serializeEvent` writes them,
+  so a `bigint` inside `data` comes back as a decimal string: query with `decode` to restore it.
+- **What `StoreAdapter` matches.** `module` by event type; `account` by the stored `sender`,
+  so events stored without one (from `handle` descriptors) never match; `handle` by
+  `creationNumber` against the stored `guid` (`listEventHandles` returns it), and a struct
+  and field handle is refused with a `StreamdError`. It sees only what was stored, from
+  whichever subscription stored it. Following the store with `on()` is gap-free only while
+  rows arrive in version order, since its cursor is a position in the table; it sets no
+  `throughVersion` for the same reason.
+- **Head and earliest** are the highest and lowest stored versions across the whole store,
+  `0n` when empty, so relative `fromVersion` and `toVersion: "head"` count from what is
+  stored. With no `cursor` or `fromVersion` a fetch starts at the earliest stored event.
+- It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
+  first use.
+
+## React hooks
+
+`@streamd/react` ties a subscription or a query to a component's lifetime.
+
+```tsx
+import { StreamdProvider, useEvents, useLogs } from "@streamd/react";
+
+const deposits = { kind: "module", eventType: "0x1::fungible_asset::Deposit" } as const;
+
+function App() {
+  return (
+    <StreamdProvider client={streamd}>
+      <Feed />
+    </StreamdProvider>
+  );
+}
+
+function Feed() {
+  const { events, error, status } = useEvents(deposits, { maxEvents: 20 });
+  const { data, loading } = useLogs(deposits, { fromVersion: -1_000n, limit: 10 });
+  // ...
+}
+```
+
+- **`useEvents(descriptor, options?)`** follows the descriptor with `client.onBatch` and
+  returns `{ events, error, status }`: the most recent `maxEvents` events (default 100), oldest
+  first; the last error, cleared when events next arrive; and `status`, `"idle"` (no
+  descriptor, or not mounted yet), `"live"`, or `"stopped"` once `maxErrors` is reached.
+  Options are `on()`'s, without `signal`.
+- **`useLogs(descriptor, options?)`** runs `client.getEvents` and returns
+  `{ data, error, loading }`. `data` is the last successful result and stays through refetches
+  and errors. Options are `getEvents`'s, without `signal`; it takes a list of descriptors too.
+- **Keyed by value.** Inline descriptors and options are compared by value (bigints
+  included), so a re-render with an equal one keeps the subscription or result. A different
+  one resubscribes, starting `events` empty, or refetches, aborting the request it replaces.
+  Function options such as `where` are always called in their latest form without
+  resubscribing.
+- **Lifetime.** Unmounting unsubscribes or aborts, StrictMode's double mount included. Nothing
+  polls or fetches during server rendering. Pass `null` as the descriptor to wait, for
+  example until a wallet is connected.
+- **Errors.** Neither hook retries on its own: the subscription's backoff and `maxErrors`
+  apply. `options.onError` still runs; the client's `onError` does not, since the error is in
+  the hook's result. In a browser every visitor shares one anonymous rate limit per IP, and a
+  rate-limited fullnode response can surface as a `StreamdNetworkError` without `retryAfter`,
+  so give the `Aptos` client an API key.
+- `client` in either hook's options overrides the provider's.
+
 ## Command line
 
 `@streamd/cli` installs a `streamd` executable. `streamd tail` follows matching events and
@@ -1152,6 +1360,55 @@ Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST without
 cursor; `1` when a batch fails past its retries, the subscription stops on an error, or the
 cursor file cannot be read or written; `2` for invalid arguments. Run it under a supervisor
 that restarts on `1`.
+
+### Generate event types
+
+`streamd codegen` reads module ABIs from the fullnode and writes a TypeScript file with a type
+and a `defineEvent` descriptor for every `#[event]` struct, plus types for the structs those
+events reference, fetched from whichever modules and accounts declare them.
+
+```sh
+streamd codegen --out src/events.ts 0x1::fungible_asset 0x1::coin
+```
+
+```ts
+import { FungibleAsset_Deposit, Coin_Deposit } from "./events.js";
+
+client.on(FungibleAsset_Deposit, (e) => console.log(e.data.store, e.data.amount));
+// generic events take their type arguments in the fullnode's own form
+client.on(Coin_Deposit("0x1::aptos_coin::AptosCoin"), (e) => console.log(e.data.account));
+```
+
+Each type describes the JSON the fullnode returns:
+
+| Move | TypeScript |
+| --- | --- |
+| `u8`, `u16`, `u32`, `i8`, `i16`, `i32` | `number` |
+| `u64`, `u128`, `u256`, `i64`, `i128`, `i256` | `string` (decimal; name the field in `decode` for a `bigint` at runtime) |
+| `bool` | `boolean` |
+| `address`, `vector<u8>` (hex), `0x1::string::String` | `string` |
+| `vector<T>` | `T[]` |
+| `0x1::option::Option<T>` | `{ vec: [] \| [T] }` |
+| `0x1::object::Object<T>` | `{ inner: string }` |
+| other structs | a generated interface |
+| enums | a union discriminated on `__variant__`, with that variant's fields beside it |
+| type parameters `T0`, `T1` | type parameters, defaulting to `unknown` |
+
+Signed integers follow the unsigned rule; none had been seen as event fields when this was
+written. A struct keeps its Move name unless two modules share it, in which case both become
+`<Module>_<Struct>` (`Coin_Deposit`, `FungibleAsset_Deposit`), with the address appended if
+that still collides. A descriptor shares its type's name; a generic event's descriptor is a
+function of its type arguments, since module descriptors match the full type string. The
+output reflects the ABI at generation time, so regenerate after a module upgrade.
+
+| Option | Meaning |
+| --- | --- |
+| `--out <file>` | write to this file instead of stdout |
+
+`--network` and `--node-url` work as for `tail`. Exit codes: `0` once the file is written;
+`1` when a module or a struct it references is missing, a module declares no events, an ABI
+is malformed, or a field type is unsupported (such as a function type); `2` for invalid
+arguments.
 
 ## Development
 

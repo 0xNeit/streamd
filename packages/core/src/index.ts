@@ -3,6 +3,7 @@ export { CachingAdapter } from "./adapters/caching.js";
 export { FallbackAdapter } from "./adapters/fallback.js";
 export { FullnodeScanAdapter } from "./adapters/fullnode.js";
 export { withHooks } from "./adapters/hooks.js";
+export { IndexerAccountAdapter } from "./adapters/indexer.js";
 export { MemoryAdapter } from "./adapters/memory.js";
 export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
 export { RoutingAdapter } from "./adapters/routing.js";
@@ -12,6 +13,7 @@ export { CursorManager, eventId } from "./cursor.js";
 export { checkAdapter } from "./conformance.js";
 export { defineEvent } from "./define.js";
 export { listEventHandles } from "./handles.js";
+export { networks } from "./networks.js";
 export { checkDescriptor } from "./preflight.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
 export {
@@ -45,6 +47,7 @@ export type {
 } from "./conformance.js";
 export type { CachingAdapterOptions } from "./adapters/caching.js";
 export type { FullnodeScanAdapterOptions } from "./adapters/fullnode.js";
+export type { IndexerAccountAdapterOptions } from "./adapters/indexer.js";
 export type {
   AdapterHooks,
   AdapterRequest,
@@ -58,6 +61,7 @@ export type {
 } from "./adapters/recording.js";
 export type { RoutingAdapterRoutes } from "./adapters/routing.js";
 export type { EventHandleInfo } from "./handles.js";
+export type { NetworkPreset } from "./networks.js";
 export type {
   DescriptorCheck,
   EventTypeCheck,
