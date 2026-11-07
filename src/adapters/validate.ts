@@ -142,17 +142,24 @@ export function requireVersion(name: string, value: unknown): bigint {
   return value as bigint;
 }
 
-/** A fresh copy, so a getter cannot answer the check and the caller differently. */
+/** Checks and returns a copy read once, so a getter cannot answer the check and the caller differently. */
 export function requireBlock(block: unknown, height: bigint): BlockInfo {
-  refuseLookup(blockError(block, height));
-  const { firstVersion, lastVersion, timestamp } = block as BlockInfo;
-  return { height, firstVersion, lastVersion, timestamp };
+  const copy = isObject(block)
+    ? {
+        height: block.height,
+        firstVersion: block.firstVersion,
+        lastVersion: block.lastVersion,
+        timestamp: block.timestamp,
+      }
+    : block;
+  refuseLookup(blockError(copy, height));
+  return copy as BlockInfo;
 }
 
 export function requireBlockHeights(heights: unknown): BlockHeights {
-  refuseLookup(blockHeightsError(heights));
-  const { oldest, newest } = heights as BlockHeights;
-  return { oldest, newest };
+  const copy = isObject(heights) ? { oldest: heights.oldest, newest: heights.newest } : heights;
+  refuseLookup(blockHeightsError(copy));
+  return copy as BlockHeights;
 }
 
 export function parseCursor(cursor: string): bigint {
