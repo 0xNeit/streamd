@@ -133,10 +133,7 @@ describe("resolveFromTime", () => {
   it("moves past pruned blocks the reported oldest height still names", async () => {
     const served = uniform.slice(40);
     const { adapter } = pruning(uniform, { below: 40n });
-    const first = await resolveFromTime(adapter, descriptor, 0n);
-    expect(first % 10n).toBe(0n);
-    expect(first / 10n).toBeGreaterThanOrEqual(40n);
-    expect(first / 10n).toBeLessThan(80n);
+    expect(await resolveFromTime(adapter, descriptor, 0n)).toBe(400n);
     for (const t of [served[200]!, served[200]! + 1n, served.at(-1)!]) {
       const { adapter } = pruning(uniform, { below: 40n });
       expect(await resolveFromTime(adapter, descriptor, t)).toBe(expected(uniform, t));
@@ -156,6 +153,32 @@ describe("resolveFromTime", () => {
     expect(await resolveFromTime(adapter, descriptor, t)).toBe(expected(uniform, t));
     const early = await resolveFromTime(pruning(uniform, { below: 600n }).adapter, descriptor, uniform[10]!);
     expect(early / 10n).toBeGreaterThanOrEqual(600n);
+  });
+
+  it("clamps to the exact first served block however far the edge is past the reported oldest", async () => {
+    const stamps = Array.from({ length: 4000 }, (_, i) => BigInt(i) * 1000n);
+    const { adapter } = pruning(stamps, { below: 1025n });
+    expect(await resolveFromTime(adapter, descriptor, 0n)).toBe(10250n);
+    for (const t of [1_026_000n, 1_500_000n, 3_999_000n]) {
+      const { adapter } = pruning(stamps, { below: 1025n });
+      expect(await resolveFromTime(adapter, descriptor, t)).toBe(expected(stamps, t));
+    }
+  });
+
+  it("clamps when the edge passes the search's upper probe while it runs", async () => {
+    const stamps = Array.from({ length: 10_000 }, (_, i) => BigInt(i) * 1000n);
+    const edge = { below: 0n };
+    const { adapter } = pruning(stamps, edge);
+    const getBlock = adapter.getBlock!;
+    adapter.getBlock = async (d, height) => {
+      const block = getBlock(d, height);
+      edge.below++;
+      return block;
+    };
+    const first = await resolveFromTime(adapter, descriptor, 2000n);
+    expect(first % 10n).toBe(0n);
+    expect(first / 10n).toBeGreaterThan(2n);
+    expect(first / 10n).toBeLessThanOrEqual(edge.below);
   });
 
   it("still rejects other failures, and a source pruned through its newest block", async () => {

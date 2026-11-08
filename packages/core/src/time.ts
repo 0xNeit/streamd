@@ -71,7 +71,13 @@ export async function resolveFromTime(
       block = await blockAt(height);
     } catch (err) {
       if (!isPruned(err)) throw err;
-      lo = await firstServed(blockAt, height + 1n, hi.height);
+      try {
+        lo = await firstServed(blockAt, height + 1n, hi.height);
+      } catch (pruneErr) {
+        // The edge passed `hi` as well, so the answer is pruned: clamp past it.
+        if (!isPruned(pruneErr) || hi.height >= newest) throw pruneErr;
+        return (await firstServed(blockAt, hi.height + 1n, newest)).firstVersion;
+      }
       if (lo.timestamp >= fromTime) return lo.firstVersion;
       continue;
     }
@@ -84,21 +90,35 @@ export async function resolveFromTime(
 const isPruned = (err: unknown) => err instanceof StreamdNetworkError && err.statusCode === 410;
 
 /**
- * The first served block at or above `from`, stepping forward by a doubling
- * stride up to `limit`. It overshoots the exact edge by up to one stride rather
- * than bisecting back, since the edge has moved again by the time a start is used.
+ * The first served block at or above `from`, up to `limit`: a doubling stride
+ * forward past pruned blocks, then a bisection back to the edge so no served
+ * block is skipped.
  */
 async function firstServed(
   blockAt: (height: bigint) => Promise<BlockInfo>,
   from: bigint,
   limit: bigint,
 ): Promise<BlockInfo> {
+  let pruned = from - 1n;
+  let found: BlockInfo;
   for (let height = from, stride = 1n; ; stride *= 2n) {
     try {
-      return await blockAt(height);
+      found = await blockAt(height);
+      break;
     } catch (err) {
       if (!isPruned(err) || height >= limit) throw err;
     }
+    pruned = height;
     height = height + stride < limit ? height + stride : limit;
   }
+  while (found.height - pruned > 1n) {
+    const mid = pruned + (found.height - pruned) / 2n;
+    try {
+      found = await blockAt(mid);
+    } catch (err) {
+      if (!isPruned(err)) throw err;
+      pruned = mid;
+    }
+  }
+  return found;
 }
