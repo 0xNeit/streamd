@@ -49,7 +49,10 @@ export async function resolveFromTime(
     throw new StreamdError("fromTime needs an adapter that implements getBlockHeights and getBlock");
   }
   const getBlock = adapter.getBlock.bind(adapter);
-  const blockAt = async (height: bigint) => requireBlock(await getBlock(descriptor, height), height);
+  const blockAt = async (height: bigint) => {
+    if (stopped()) throw new StreamdError("fromTime search stopped");
+    return requireBlock(await getBlock(descriptor, height), height);
+  };
   const { oldest, newest } = requireBlockHeights(await adapter.getBlockHeights(descriptor));
   let lo = await firstServed(blockAt, oldest, newest);
   if (lo.timestamp >= fromTime) return lo.firstVersion;
@@ -58,7 +61,6 @@ export async function resolveFromTime(
 
   // Invariant: lo.timestamp < fromTime <= hi.timestamp, so the span is positive.
   for (let probe = 0; hi.height - lo.height > 1n; probe++) {
-    if (stopped()) throw new StreamdError("fromTime search stopped");
     const span = hi.height - lo.height;
     const guess =
       probe % 2 === 0

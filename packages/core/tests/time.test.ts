@@ -113,7 +113,7 @@ describe("resolveFromTime", () => {
       (e: unknown) => e,
     );
     expect(err).toBeInstanceOf(StreamdError);
-    expect(looked).toEqual([0n, 999n]);
+    expect(looked).toEqual([]);
   });
 
   /** `chain(...)` whose blocks below `edge.below` answer 410, as a pruning fullnode does. */
@@ -179,6 +179,16 @@ describe("resolveFromTime", () => {
     expect(first % 10n).toBe(0n);
     expect(first / 10n).toBeGreaterThan(2n);
     expect(first / 10n).toBeLessThanOrEqual(edge.below);
+  });
+
+  it("stops stepping past pruned blocks once its caller has given up", async () => {
+    for (const t of [0n, uniform[500]!]) {
+      const { adapter, looked } = pruning(uniform, { below: 900n });
+      const err = await resolveFromTime(adapter, descriptor, t, () => looked.length >= 2)
+        .catch((e: unknown) => e);
+      expect((err as Error).message).toBe("fromTime search stopped");
+      expect(looked.length).toBe(2);
+    }
   });
 
   it("still rejects other failures, and a source pruned through its newest block", async () => {
