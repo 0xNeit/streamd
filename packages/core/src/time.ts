@@ -1,5 +1,5 @@
-import type { EventAdapter, EventDescriptor } from "./types.js";
-import { StreamdError } from "./errors.js";
+import type { BlockInfo, EventAdapter, EventDescriptor } from "./types.js";
+import { StreamdError, StreamdNetworkError } from "./errors.js";
 import { requireBlock, requireBlockHeights } from "./adapters/validate.js";
 
 /** Rejects a `fromTime` that is malformed or clashes with another start option. */
@@ -34,6 +34,10 @@ export function validateFromTime(options: {
  * half keeps uneven stretches from degrading it. Plain bisection measured
  * about twice the lookups on mainnet. `stopped` ends the search between
  * lookups once its caller has given up.
+ *
+ * Aptos mainnet reports an `oldest_block_height` tens of blocks behind its
+ * pruner, and the edge moves while the search runs, so a 410 for a block
+ * means everything at or below it is gone and the search moves past it.
  */
 export async function resolveFromTime(
   adapter: EventAdapter,
@@ -45,16 +49,18 @@ export async function resolveFromTime(
     throw new StreamdError("fromTime needs an adapter that implements getBlockHeights and getBlock");
   }
   const getBlock = adapter.getBlock.bind(adapter);
-  const blockAt = async (height: bigint) => requireBlock(await getBlock(descriptor, height), height);
+  const blockAt = async (height: bigint) => {
+    if (stopped()) throw new StreamdError("fromTime search stopped");
+    return requireBlock(await getBlock(descriptor, height), height);
+  };
   const { oldest, newest } = requireBlockHeights(await adapter.getBlockHeights(descriptor));
-  let lo = await blockAt(oldest);
+  let lo = await firstServed(blockAt, oldest, newest);
   if (lo.timestamp >= fromTime) return lo.firstVersion;
   let hi = await blockAt(newest);
   if (hi.timestamp < fromTime) return hi.lastVersion + 1n;
 
   // Invariant: lo.timestamp < fromTime <= hi.timestamp, so the span is positive.
   for (let probe = 0; hi.height - lo.height > 1n; probe++) {
-    if (stopped()) throw new StreamdError("fromTime search stopped");
     const span = hi.height - lo.height;
     const guess =
       probe % 2 === 0
@@ -62,9 +68,59 @@ export async function resolveFromTime(
         : lo.height + span / 2n;
     const height =
       guess <= lo.height ? lo.height + 1n : guess >= hi.height ? hi.height - 1n : guess;
-    const block = await blockAt(height);
+    let block: BlockInfo;
+    try {
+      block = await blockAt(height);
+    } catch (err) {
+      if (!isPruned(err)) throw err;
+      try {
+        lo = await firstServed(blockAt, height + 1n, hi.height);
+      } catch (pruneErr) {
+        // The edge passed `hi` as well, so the answer is pruned: clamp past it.
+        if (!isPruned(pruneErr) || hi.height >= newest) throw pruneErr;
+        return (await firstServed(blockAt, hi.height + 1n, newest)).firstVersion;
+      }
+      if (lo.timestamp >= fromTime) return lo.firstVersion;
+      continue;
+    }
     if (block.timestamp < fromTime) lo = block;
     else hi = block;
   }
   return hi.firstVersion;
+}
+
+const isPruned = (err: unknown) => err instanceof StreamdNetworkError && err.statusCode === 410;
+
+/**
+ * The first served block at or above `from`, up to `limit`: a doubling stride
+ * forward past pruned blocks, then a bisection back to the edge so no served
+ * block is skipped.
+ */
+async function firstServed(
+  blockAt: (height: bigint) => Promise<BlockInfo>,
+  from: bigint,
+  limit: bigint,
+): Promise<BlockInfo> {
+  let pruned = from - 1n;
+  let found: BlockInfo;
+  for (let height = from, stride = 1n; ; stride *= 2n) {
+    try {
+      found = await blockAt(height);
+      break;
+    } catch (err) {
+      if (!isPruned(err) || height >= limit) throw err;
+    }
+    pruned = height;
+    height = height + stride < limit ? height + stride : limit;
+  }
+  while (found.height - pruned > 1n) {
+    const mid = pruned + (found.height - pruned) / 2n;
+    try {
+      found = await blockAt(mid);
+    } catch (err) {
+      if (!isPruned(err)) throw err;
+      pruned = mid;
+    }
+  }
+  return found;
 }
