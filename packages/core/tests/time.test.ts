@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { resolveFromTime, validateFromTime } from "../src/time.js";
-import { StreamdError } from "../src/errors.js";
+import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import type { EventAdapter, EventDescriptor } from "../src/types.js";
 
 const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::test::Event" };
@@ -114,6 +114,60 @@ describe("resolveFromTime", () => {
     );
     expect(err).toBeInstanceOf(StreamdError);
     expect(looked).toEqual([0n, 999n]);
+  });
+
+  /** `chain(...)` whose blocks below `edge.below` answer 410, as a pruning fullnode does. */
+  function pruning(stamps: readonly bigint[], edge: { below: bigint }) {
+    const { adapter, looked } = chain(stamps);
+    const getBlock = adapter.getBlock!;
+    adapter.getBlock = async (d, height) => {
+      if (height < edge.below) {
+        looked.push(height);
+        throw new StreamdNetworkError(`block ${height} pruned`, 410);
+      }
+      return getBlock(d, height);
+    };
+    return { adapter, looked };
+  }
+
+  it("moves past pruned blocks the reported oldest height still names", async () => {
+    const served = uniform.slice(40);
+    const { adapter } = pruning(uniform, { below: 40n });
+    const first = await resolveFromTime(adapter, descriptor, 0n);
+    expect(first % 10n).toBe(0n);
+    expect(first / 10n).toBeGreaterThanOrEqual(40n);
+    expect(first / 10n).toBeLessThan(80n);
+    for (const t of [served[200]!, served[200]! + 1n, served.at(-1)!]) {
+      const { adapter } = pruning(uniform, { below: 40n });
+      expect(await resolveFromTime(adapter, descriptor, t)).toBe(expected(uniform, t));
+    }
+  });
+
+  it("moves past a block pruned while the search runs", async () => {
+    const edge = { below: 0n };
+    const { adapter } = pruning(uniform, edge);
+    const getBlock = adapter.getBlock!;
+    let calls = 0;
+    adapter.getBlock = async (d, height) => {
+      if (++calls === 3) edge.below = 600n;
+      return getBlock(d, height);
+    };
+    const t = uniform[700]!;
+    expect(await resolveFromTime(adapter, descriptor, t)).toBe(expected(uniform, t));
+    const early = await resolveFromTime(pruning(uniform, { below: 600n }).adapter, descriptor, uniform[10]!);
+    expect(early / 10n).toBeGreaterThanOrEqual(600n);
+  });
+
+  it("still rejects other failures, and a source pruned through its newest block", async () => {
+    const { adapter } = chain(uniform);
+    const failing = { ...adapter, getBlock: async () => { throw new StreamdNetworkError("down", 500); } };
+    const down = await resolveFromTime(failing, descriptor, 1n).catch((e: unknown) => e);
+    expect((down as StreamdNetworkError).statusCode).toBe(500);
+
+    const gone = await resolveFromTime(pruning(uniform, { below: 5000n }).adapter, descriptor, 1n)
+      .catch((e: unknown) => e);
+    expect(gone).toBeInstanceOf(StreamdNetworkError);
+    expect((gone as StreamdNetworkError).statusCode).toBe(410);
   });
 });
 
