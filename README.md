@@ -1847,6 +1847,28 @@ The statuses are `event`, `legacy` (no `#[event]`, but a legacy `EventHandle` ca
 `legacy`, 1 when one is not or the fullnode fails, and 2 for bad usage. It takes event types
 only, not `--account` or `--handle`.
 
+### Record a session for tests
+
+`streamd record` runs a bounded query and writes a [recording](#data-sources-and-their-limits) that
+`replayAdapter` answers with no network:
+
+```sh
+streamd record --from-version 7984000000 --to-version 7984000500 --out deposits.json \
+  0x1::fungible_asset::Deposit
+```
+
+```ts
+const adapter = replayAdapter(readFileSync("deposits.json", "utf8"));
+const client = new StreamdClient({ adapter });
+const events = await client.getEvents(descriptor, { fromVersion: 7984000000n, toVersion: 7984000500n });
+```
+
+A recording answers only the requests it saw, so replay with the same descriptor and options; the
+command prints them to stderr. `--from-version` and `--to-version` are both required, so the query
+has an end. Failed pages are retried and not recorded, and the file appears only once the whole
+query has succeeded. Without `--out` the recording goes to stdout. It exits 0 on success, 1 on
+failure, 130 if interrupted and 2 for bad usage.
+
 ### Generate event types
 
 `streamd store` follows the same descriptors as `tail` into a SQLite file, through
