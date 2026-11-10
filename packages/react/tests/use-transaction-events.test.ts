@@ -187,7 +187,11 @@ describe("useTransactionEvents", () => {
 
   it("never reports the abort of StrictMode's first effect", async () => {
     const t = setup();
+    const release = t.hold();
     const root = await render(createElement(StrictMode, null, t.el(A)));
+    expect(t.signals[0]!.aborted).toBe(true);
+    await new Promise((r) => setTimeout(r, 20));
+    release();
     await waitFor(() => expect(t.last().data?.length).toBe(2));
     expect(t.results.every((r) => r.error === undefined)).toBe(true);
     await unmount(root);
