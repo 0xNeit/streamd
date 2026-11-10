@@ -2732,6 +2732,14 @@ describe("EventPoller maxPollInterval", () => {
     expect(a.gaps()).toEqual([100, 100, 100]);
   });
 
+  it("counts events below the start as activity", async () => {
+    const a = scripted((n) => page([makeEvent(n)], n));
+    const poller = start(a, { pollInterval: 100, maxPollInterval: 800, fromVersion: 1000n });
+    await advanceTimersByTimeAsync(350);
+    poller.stop();
+    expect(a.gaps()).toEqual([100, 100, 100]);
+  });
+
   it("polls at once while the source has more, without stretching", async () => {
     const a = scripted((n) => page([], n, n <= 3));
     const poller = start(a, { pollInterval: 100, maxPollInterval: 800 });
