@@ -1,6 +1,6 @@
 import { parseArgs } from "node:util";
 import { requireAddress, requireEventType } from "@streamd/core";
-import type { EventDescriptor, MoveEventType } from "@streamd/core";
+import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
 import type { ModuleRef } from "./codegen.js";
 
 export type Network = "mainnet" | "testnet" | "devnet";
@@ -37,6 +37,12 @@ export interface StoreOptions extends SourceOptions {
   name?: string;
 }
 
+export interface CheckOptions {
+  descriptor: ModuleEventDescriptor;
+  network: Network;
+  nodeUrl?: string;
+}
+
 export interface CodegenOptions {
   modules: ModuleRef[];
   network: Network;
@@ -50,6 +56,7 @@ export type ParsedCommand =
   | { command: "tail"; options: TailOptions }
   | { command: "forward"; options: ForwardOptions }
   | { command: "store"; options: StoreOptions }
+  | { command: "check"; options: CheckOptions }
   | { command: "codegen"; options: CodegenOptions };
 
 /** Bad command-line input: reported with usage, exit code 2. */
@@ -91,6 +98,12 @@ const STORE_OPTIONS = {
   name: { type: "string" },
 } as const;
 
+const CHECK_OPTIONS = {
+  network: { type: "string" },
+  "node-url": { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const CODEGEN_OPTIONS = {
   network: { type: "string" },
   "node-url": { type: "string" },
@@ -118,6 +131,7 @@ export const USAGE = `Usage:
   streamd forward --to <url> --account <address> [...]
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
+  streamd check <eventType>...
   streamd codegen [--out <file>] <address>::<module>...
 
 tail follows matching events and prints each as one JSON line on stdout.
@@ -125,6 +139,7 @@ forward POSTs each batch of matching events to a webhook as a JSON array,
 saving its position to a cursor file once the webhook acknowledges it.
 store follows matching events into a SQLite file, resuming from the cursor
 saved there when run again.
+check says whether each event type can be emitted, and exits 1 if one cannot.
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs.
 
@@ -322,6 +337,20 @@ function parseStore(args: string[]): ParsedCommand {
   return { command: "store", options };
 }
 
+function parseCheck(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: CHECK_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const options: CheckOptions = {
+    descriptor: descriptor("check", {}, positionals) as ModuleEventDescriptor,
+    network: network(values.network),
+  };
+  const url = nodeUrl(values["node-url"]);
+  if (url !== undefined) options.nodeUrl = url;
+  return { command: "check", options };
+}
+
 function moduleRef(raw: string): ModuleRef {
   const [address = "", module = "", ...rest] = raw.split("::");
   if (rest.length > 0 || !MODULE_NAME.test(module)) {
@@ -359,6 +388,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "tail") return parseTail(rest);
   if (command === "forward") return parseForward(rest);
   if (command === "store") return parseStore(rest);
+  if (command === "check") return parseCheck(rest);
   if (command === "codegen") return parseCodegen(rest);
   throw new UsageError(`unknown command: ${command}`);
 }
