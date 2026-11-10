@@ -19,6 +19,7 @@ export interface SourceOptions {
 export interface TailOptions extends SourceOptions {
   limit?: number;
   cursorFile?: string;
+  format?: "json" | "pretty";
 }
 
 export interface ForwardOptions extends SourceOptions {
@@ -132,6 +133,7 @@ const TAIL_OPTIONS = {
   ...FROM_TIME,
   limit: { type: "string" },
   "cursor-file": { type: "string" },
+  format: { type: "string" },
 } as const;
 
 const FORWARD_OPTIONS = {
@@ -249,6 +251,7 @@ Options:
   --to <url>             forward: webhook URL (http or https, required)
   --cursor-file <path>   tail: save and resume from here; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE})
+  --format <name>        tail: json, or pretty for aligned lines in UTC (default: json)
   --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
   --timeout <ms>         forward: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx: wait for commit (default: 20000)
@@ -456,6 +459,12 @@ function parseTail(args: string[]): ParsedCommand {
   if (limit !== undefined) options.limit = limit;
   if (values["cursor-file"] === "") throw new UsageError("--cursor-file must not be empty");
   if (values["cursor-file"] !== undefined) options.cursorFile = values["cursor-file"];
+  if (values.format !== undefined) {
+    if (values.format !== "json" && values.format !== "pretty") {
+      throw new UsageError(`--format must be json or pretty: ${values.format}`);
+    }
+    options.format = values.format;
+  }
   return { command: "tail", options };
 }
 
