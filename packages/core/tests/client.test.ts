@@ -3228,7 +3228,7 @@ describe("requestTimeout", () => {
     expect(errors).toHaveLength(2);
     expect((errors[0] as StreamdPollingError).cause).toBeInstanceOf(StreamdNetworkError);
     expect((errors[1] as StreamdPollingError).consecutiveFailures).toBe(2);
-    expect(subscription.status().active).toBe(false);
+    expect(subscription.status.active).toBe(false);
   });
 
   it("recovers when the source does", async () => {
