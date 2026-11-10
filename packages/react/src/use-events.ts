@@ -1,16 +1,9 @@
-import { useEffect, useRef, useState } from "react";
-import {
-  StreamdError,
-  type EventDescriptor,
-  type StreamdClient,
-  type StreamdEvent,
-  type Subscription,
-  type SubscriptionOptions,
-} from "@streamd/core";
+import type { EventDescriptor, StreamdClient, SubscriptionOptions } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
-import { valueKey, withLatestFunctions } from "./key.js";
+import { DEFAULT_MAX_EVENTS, useFollowing, type UseEventsResult } from "./follow.js";
+import { valueKey } from "./key.js";
 
-const DEFAULT_MAX_EVENTS = 100;
+export type { UseEventsResult, UseEventsStatus } from "./follow.js";
 
 /** `onBatch` options, minus `signal`: the subscription ends on unmount and on input change. */
 export interface UseEventsOptions extends Omit<SubscriptionOptions, "signal"> {
@@ -19,19 +12,6 @@ export interface UseEventsOptions extends Omit<SubscriptionOptions, "signal"> {
   /** How many of the most recent events to keep (default: 100). */
   maxEvents?: number;
 }
-
-/** `idle` before mount, on the server, or with no descriptor; `stopped` once polling gives up. */
-export type UseEventsStatus = "idle" | "live" | "stopped";
-
-export interface UseEventsResult<TData> {
-  /** The most recent `maxEvents` delivered events, oldest first. */
-  events: StreamdEvent<TData>[];
-  /** The last polling or handler error, cleared when events next arrive. */
-  error: Error | undefined;
-  status: UseEventsStatus;
-}
-
-const IDLE: UseEventsResult<never> = { events: [], error: undefined, status: "idle" };
 
 /**
  * Follows `descriptor` live with `client.onBatch` while the component is
@@ -44,50 +24,13 @@ export function useEvents<TData = unknown>(
   options: UseEventsOptions = {},
 ): UseEventsResult<TData> {
   const { client: explicit, maxEvents = DEFAULT_MAX_EVENTS, ...listener } = options;
-  if (!Number.isSafeInteger(maxEvents) || maxEvents < 1) {
-    throw new StreamdError(`Invalid maxEvents: ${String(maxEvents)} (expected a positive integer)`);
-  }
   const client = useStreamdClient(explicit);
-  const latest = useRef({ listener, maxEvents });
-  latest.current = { listener, maxEvents };
-  const key = valueKey([descriptor, listener]);
-  const [state, setState] = useState<UseEventsResult<TData>>(IDLE);
-
-  useEffect(() => {
-    if (descriptor == null) {
-      setState(IDLE);
-      return;
-    }
-    let current = true;
-    let sub: Subscription | undefined;
-    const opts = withLatestFunctions(listener, () => latest.current.listener);
-    setState({ events: [], error: undefined, status: "live" });
-    sub = client.onBatch<TData>(
-      descriptor,
-      (batch) => {
-        if (!current) return;
-        setState((s) => ({
-          events: [...s.events, ...batch].slice(-latest.current.maxEvents),
-          error: undefined,
-          status: "live",
-        }));
-      },
-      {
-        ...opts,
-        onError: (err) => {
-          opts.onError?.(err);
-          if (!current) return;
-          const stopped = sub !== undefined && !sub.active && !sub.paused;
-          setState((s) => ({ ...s, error: err, status: stopped ? "stopped" : "live" }));
-        },
-      },
-    );
-    return () => {
-      current = false;
-      sub.unsubscribe();
-    };
-    // `key` stands for `descriptor` and `listener` by value.
-  }, [client, key]);
-
-  return state;
+  return useFollowing<TData, typeof listener>(
+    descriptor != null,
+    valueKey([descriptor, listener]),
+    client,
+    listener,
+    maxEvents,
+    (deliver, opts) => client.onBatch<TData>(descriptor!, deliver, opts),
+  );
 }
