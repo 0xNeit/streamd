@@ -18,6 +18,7 @@
       },
       "dependencies": {
         "@streamd/core": "workspace:*",
+        "@streamd/store-sqlite": "workspace:*",
       },
       "devDependencies": {
         "@aptos-labs/ts-sdk": "^6.3.1",

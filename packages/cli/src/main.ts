@@ -10,11 +10,13 @@ import type {
   ForwardOptions,
   ParsedCommand,
   SourceOptions,
+  StoreOptions,
   TailOptions,
 } from "./args.js";
 import { generateEventTypes } from "./codegen.js";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
+import { openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
 
 const NETWORKS = {
@@ -40,7 +42,12 @@ function setup(options: SourceOptions): { client: StreamdClient; controller: Abo
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
   process.once("SIGTERM", () => controller.abort());
   const client = new StreamdClient({
-    aptos: new AptosConfig({ network: NETWORKS[options.network], fullnode: options.nodeUrl }),
+    aptos: new AptosConfig({
+      network: NETWORKS[options.network],
+      fullnode: options.nodeUrl,
+      // The SDK's default HTTP/2 hangs under Bun, with no error.
+      ...("Bun" in globalThis && { clientConfig: { http2: false } }),
+    }),
   });
   return { client, controller };
 }
@@ -50,6 +57,20 @@ async function forward(options: ForwardOptions): Promise<number> {
   try {
     return await runForward(options, {
       client,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+  } finally {
+    client.destroy();
+  }
+}
+
+async function store(options: StoreOptions): Promise<number> {
+  const { client, controller } = setup(options);
+  try {
+    return await runStore(options, {
+      client,
+      open: openDatabase,
       error: (message) => process.stderr.write(`${message}\n`),
       signal: controller.signal,
     });
@@ -121,6 +142,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (parsed.command === "codegen") return codegen(parsed.options);
+  if (parsed.command === "store") return store(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 

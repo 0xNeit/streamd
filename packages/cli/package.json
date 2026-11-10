@@ -1,7 +1,7 @@
 {
   "name": "@streamd/cli",
   "version": "0.1.0",
-  "description": "The streamd command: tail and forward on-chain events from the terminal",
+  "description": "The streamd command: tail, forward and store on-chain events from the terminal",
   "type": "module",
   "bin": {
     "streamd": "./dist/cli.js"
@@ -15,7 +15,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@streamd/core": "workspace:*"
+    "@streamd/core": "workspace:*",
+    "@streamd/store-sqlite": "workspace:*"
   },
   "peerDependencies": {
     "@aptos-labs/ts-sdk": ">=1.0.0"

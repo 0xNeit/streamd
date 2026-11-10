@@ -1832,6 +1832,25 @@ that restarts on `1`.
 
 ### Generate event types
 
+`streamd store` follows the same descriptors as `tail` into a SQLite file, through
+[`storeEvents`](#store-events-in-sqlite). Run the same command again and it resumes where it
+stopped:
+
+```sh
+streamd store --db events.db 0x1::transaction_fee::FeeStatement --from-version 7984000000
+sqlite3 events.db 'SELECT count(*) FROM streamd_events'
+```
+
+- It uses the runtime's own SQLite: `bun:sqlite`, or `node:sqlite` on Node 22.5 or newer, which
+  prints one experimental warning on stderr.
+- The cursor is saved under `--name`, or by default under the network and descriptor, so one
+  file can follow several descriptors. A saved cursor beats `--from-version`, which only
+  seeds the first run.
+- Use one file per network, since events are keyed on `(version, eventIndex)`.
+- The file is in WAL mode with a 5 second busy timeout, so it can be queried while written.
+- Exit code 0 on Ctrl-C or SIGTERM, 1 when polling gives up, a write fails, or the file cannot
+  be opened.
+
 `streamd codegen` reads module ABIs from the fullnode and writes a TypeScript file with a type
 and a `defineEvent` descriptor for every `#[event]` struct, plus types for the structs those
 events reference, fetched from whichever modules and accounts declare them.

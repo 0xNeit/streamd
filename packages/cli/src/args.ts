@@ -30,6 +30,13 @@ export interface ForwardOptions extends SourceOptions {
   headers: Record<string, string>;
 }
 
+export interface StoreOptions extends SourceOptions {
+  /** SQLite file to write. */
+  db: string;
+  /** Name its cursor is saved under; derived from the network and descriptor when unset. */
+  name?: string;
+}
+
 export interface CodegenOptions {
   modules: ModuleRef[];
   network: Network;
@@ -42,6 +49,7 @@ export type ParsedCommand =
   | { command: "help" }
   | { command: "tail"; options: TailOptions }
   | { command: "forward"; options: ForwardOptions }
+  | { command: "store"; options: StoreOptions }
   | { command: "codegen"; options: CodegenOptions };
 
 /** Bad command-line input: reported with usage, exit code 2. */
@@ -77,6 +85,12 @@ const FORWARD_OPTIONS = {
   header: { type: "string", multiple: true },
 } as const;
 
+const STORE_OPTIONS = {
+  ...SOURCE_OPTIONS,
+  db: { type: "string" },
+  name: { type: "string" },
+} as const;
+
 const CODEGEN_OPTIONS = {
   network: { type: "string" },
   "node-url": { type: "string" },
@@ -102,11 +116,15 @@ export const USAGE = `Usage:
   streamd tail --account <address> --handle <struct> --field <name> [options]
   streamd forward --to <url> [options] <eventType>...
   streamd forward --to <url> --account <address> [...]
+  streamd store --db <file> [options] <eventType>...
+  streamd store --db <file> --account <address> [...]
   streamd codegen [--out <file>] <address>::<module>...
 
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array,
 saving its position to a cursor file once the webhook acknowledges it.
+store follows matching events into a SQLite file, resuming from the cursor
+saved there when run again.
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs.
 
@@ -124,6 +142,8 @@ Options:
   --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
   --timeout <ms>         forward: per-request timeout (default: ${DEFAULT_TIMEOUT})
   --header <h>           forward: request header 'Name: value', repeatable
+  --db <file>            store: SQLite file to write (required)
+  --name <name>          store: name its cursor is saved under (default: the network and descriptor)
   --out <file>           codegen: write to this file instead of stdout
   -h, --help             show this help
 `;
@@ -289,6 +309,19 @@ function parseForward(args: string[]): ParsedCommand {
   return { command: "forward", options };
 }
 
+function parseStore(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: STORE_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (values.db === undefined) throw new UsageError("store needs --db <file>");
+  if (values.db === "") throw new UsageError("--db must not be empty");
+  if (values.name === "") throw new UsageError("--name must not be empty");
+  const options: StoreOptions = { ...source("store", values, positionals), db: values.db };
+  if (values.name !== undefined) options.name = values.name;
+  return { command: "store", options };
+}
+
 function moduleRef(raw: string): ModuleRef {
   const [address = "", module = "", ...rest] = raw.split("::");
   if (rest.length > 0 || !MODULE_NAME.test(module)) {
@@ -325,6 +358,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   }
   if (command === "tail") return parseTail(rest);
   if (command === "forward") return parseForward(rest);
+  if (command === "store") return parseStore(rest);
   if (command === "codegen") return parseCodegen(rest);
   throw new UsageError(`unknown command: ${command}`);
 }
