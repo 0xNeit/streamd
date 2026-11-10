@@ -521,3 +521,28 @@ describe("tail --cursor-file", () => {
     expect(() => parseCommand(["tail", "--cursor-file", "", TYPE])).toThrow(/--cursor-file must not be empty/);
   });
 });
+
+describe("parseCommand tx", () => {
+  const HASH = `0x${"ab".repeat(32)}`;
+
+  it("takes a hash, a network, a node URL and a timeout", () => {
+    expect(parseCommand(["tx", HASH])).toEqual({ command: "tx", options: { hash: HASH, network: "mainnet" } });
+    expect(parseCommand(["tx", "--network", "testnet", "--node-url", "https://n.example/v1", "--timeout", "500", HASH])).toEqual({
+      command: "tx",
+      options: { hash: HASH, network: "testnet", nodeUrl: "https://n.example/v1", timeout: 500 },
+    });
+    expect(parseCommand(["tx", "--help"])).toEqual({ command: "help" });
+  });
+
+  it.each([
+    [["tx"], /tx needs one transaction hash/],
+    [["tx", HASH, HASH], /tx needs one transaction hash/],
+    [["tx", "0x12"], /not a transaction hash/],
+    [["tx", `${"ab".repeat(32)}`], /not a transaction hash/],
+    [["tx", `0x${"zz".repeat(32)}`], /not a transaction hash/],
+    [["tx", HASH, "--timeout", "soon"], /--timeout/],
+    [["tx", HASH, "--limit", "1"], /limit/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
