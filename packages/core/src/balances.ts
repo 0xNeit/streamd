@@ -1,5 +1,4 @@
 import { StreamdError, StreamdNetworkError } from "./errors.js";
-import { normalizeAddress } from "./filter.js";
 import { UNSIGNED_INTEGER } from "./decode.js";
 import { TRANSFER_DESCRIPTOR, assetKey, requireAsset, transferSource } from "./transfers.js";
 import { onAbort } from "./utils.js";
@@ -10,27 +9,16 @@ import type {
   EventAdapter,
   EventCallback,
   ListenerOptions,
-  ModuleEventDescriptor,
-  MoveEventType,
   StreamdEvent,
   Subscription,
   Transfer,
   ViewRequest,
 } from "./types.js";
 
-const FEE_STATEMENT = "0x1::transaction_fee::FeeStatement";
 const APT = `0x${"a".padStart(64, "0")}`;
 const APT_COIN = "0x1::aptos_coin::AptosCoin";
 const APT_COIN_KEY = assetKey(APT_COIN);
-const COIN = /::/;
 const LEGACY_TOKEN = /^0x[0-9a-fA-F]+::.+::.+::\d+$/s;
-const NOT_FUNGIBLE_CACHE = 10_000;
-
-/** Every event that can change a balance, gas included, served by one scan. */
-export const BALANCE_DESCRIPTOR: ModuleEventDescriptor = {
-  kind: "module",
-  eventType: [...(TRANSFER_DESCRIPTOR.eventType as readonly MoveEventType[]), FEE_STATEMENT],
-};
 
 /** The asset's map key: long-form addresses, with APT one entry however it was named. */
 function canonical(asset: string): string {
@@ -39,7 +27,7 @@ function canonical(asset: string): string {
 }
 
 function balanceRequest(owner: string, asset: string): ViewRequest {
-  if (asset === APT || COIN.test(asset)) {
+  if (asset === APT || asset.includes("::")) {
     return {
       function: "0x1::coin::balance",
       typeArguments: [asset === APT ? APT_COIN : asset],
@@ -63,7 +51,7 @@ async function balanceAt(
   const request = balanceRequest(owner, asset);
   let result: unknown[];
   try {
-    result = await adapter.view!(request, version, BALANCE_DESCRIPTOR);
+    result = await adapter.view!(request, version, TRANSFER_DESCRIPTOR);
   } catch (err) {
     if (err instanceof StreamdError && !(err instanceof StreamdNetworkError)) return undefined;
     throw err;
@@ -76,56 +64,49 @@ async function balanceAt(
 }
 
 /**
- * `adapter` as a source of balance changes for `account`: one record per asset
- * per version a transaction changed, holding the balance as that version left
- * it. Reads happen inside the page fetch, so a failed view fails the page and
- * a listener retries it. Records keep the identity of the event that signalled
- * them.
- *
- * Balances are read, never summed from transfers: gas leaves APT with no
- * withdraw event, so a running total would drift.
+ * `adapter` as a source of balance changes: each fetch reads every tracked
+ * asset at one head version and returns those that differ from `known`, so
+ * `EventPoller` supplies the interval, backoff and error budget. Reading
+ * rather than following events is what keeps it exact: gas moves APT with no
+ * withdraw, a coin can move as its paired fungible asset, and a scan of the
+ * whole chain cannot keep up with mainnet.
  */
-export function balanceSource(
+function balancePoll(
   adapter: EventAdapter,
-  account: () => Promise<string>,
-  wanted?: string,
+  who: string,
+  known: ReadonlyMap<string, bigint>,
+  tracked: Set<string>,
+  notFungible: Set<string>,
+  from: bigint,
 ): EventAdapter {
-  const notFungible = new Set<string>();
-  const isFee = (event: StreamdEvent) => event.type === FEE_STATEMENT;
-  const transfers = transferSource(
-    adapter,
-    // Coin and fungible legs of APT report different assets, so APT is narrowed below.
-    wanted === APT ? undefined : wanted,
-    account,
-    (event, who) =>
-      isFee(event) && typeof event.sender === "string" && normalizeAddress(event.sender) === who,
-  );
-
-  const source: EventAdapter = {
-    ...transfers,
-    fetchEvents: async (descriptor, options) => {
-      const page = await transfers.fetchEvents(descriptor, options);
-      const who = await account();
-      const done = new Set<string>();
+  let latest = from;
+  return {
+    fetchEvents: async () => {
+      const head = await adapter.getHeadVersion!(TRANSFER_DESCRIPTOR);
+      // A load balancer can answer from a node a few versions behind the last one.
+      if (head < latest) return { events: [], nextCursor: String(latest), hasMore: false, throughVersion: latest };
+      latest = head;
       const events: StreamdEvent[] = [];
-      for (const event of page.events) {
-        const asset = isFee(event) ? APT : canonical((event as StreamdEvent<Transfer>).data.asset);
-        const key = `${event.version}:${asset}`;
-        if (done.has(key) || notFungible.has(asset)) continue;
-        if ((wanted !== undefined && asset !== wanted) || LEGACY_TOKEN.test(asset)) continue;
-        done.add(key);
-        const balance = await balanceAt(adapter, who, asset, event.version);
+      let position = 0;
+      for (const asset of [...tracked]) {
+        const eventIndex = position++;
+        const balance = await balanceAt(adapter, who, asset, head);
         if (balance === undefined) {
-          if (notFungible.size >= NOT_FUNGIBLE_CACHE) notFungible.clear();
+          tracked.delete(asset);
           notFungible.add(asset);
-          continue;
+        } else if (known.get(asset) !== balance) {
+          events.push({
+            type: balanceRequest(who, asset).function,
+            data: { asset, balance } satisfies BalanceChange,
+            version: head,
+            sequenceNumber: 0n,
+            eventIndex,
+          });
         }
-        events.push({ ...event, data: { asset, balance } satisfies BalanceChange });
       }
-      return { ...page, events };
+      return { events, nextCursor: String(head), hasMore: false, throughVersion: head };
     },
   };
-  return source;
 }
 
 /** What `startBalances` needs from its client. */
@@ -153,7 +134,7 @@ const ALLOWED: readonly string[] = [
   "signal",
 ] satisfies readonly (keyof BalancesOptions)[];
 
-/** `client.balances()`: read what is known at the head, then follow what changes. */
+/** `client.balances()`: read what is tracked at the head, then keep reading it. */
 export function startBalances(
   host: BalancesHost,
   account: () => Promise<string>,
@@ -163,8 +144,8 @@ export function startBalances(
   if (refused !== undefined) {
     throw new StreamdError(`Unsupported balances option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
   }
-  if (typeof host.adapter.view !== "function") {
-    throw new StreamdError("balances needs an adapter that implements view");
+  if (typeof host.adapter.view !== "function" || typeof host.adapter.getHeadVersion !== "function") {
+    throw new StreamdError("balances needs an adapter that implements view and getHeadVersion");
   }
   const { asset: named, onChange, ...listener } = options;
   const wanted = named === undefined ? undefined : canonical(requireAsset(named));
@@ -173,16 +154,21 @@ export function startBalances(
   }
 
   const amounts = new Map<string, bigint>();
-  let live: Subscription | undefined;
+  const tracked = new Set([wanted ?? APT]);
+  const notFungible = new Set<string>();
+  let polling: Subscription | undefined;
+  let discovery: Subscription | undefined;
   let stopped = false;
   const abandon = new AbortController();
+  const report = (err: Error) => (options.onError ?? host.onError)?.(err);
   const stop = (reason: unknown = new StreamdError("Balances stopped before the first read finished")) => {
     if (stopped) return;
     stopped = true;
     untrack();
     detachSignal();
     abandon.abort(reason);
-    live?.unsubscribe();
+    polling?.unsubscribe();
+    discovery?.unsubscribe();
   };
   const untrack = host.track(stop);
   const detachSignal = onAbort(options.signal, () => stop(options.signal!.reason));
@@ -194,42 +180,49 @@ export function startBalances(
 
   const run = async (): Promise<ReadonlyMap<string, bigint>> => {
     throwIfStopped();
-    let start: bigint | undefined;
-    if (wanted !== undefined) {
-      if (host.adapter.getHeadVersion === undefined) {
-        throw new StreamdError("balances with asset needs an adapter that implements getHeadVersion");
-      }
-      const who = await account();
-      start = await host.adapter.getHeadVersion(BALANCE_DESCRIPTOR);
-      const balance = await balanceAt(host.adapter, who, wanted, start);
-      if (balance === undefined) throw new StreamdError(`Not a fungible asset or coin type: ${named}`);
-      throwIfStopped();
-      amounts.set(wanted, balance);
-    }
-    live = host.subscribe(
+    const who = await account();
+    const head = await host.adapter.getHeadVersion!(TRANSFER_DESCRIPTOR);
+    const first = wanted ?? APT;
+    const balance = await balanceAt(host.adapter, who, first, head);
+    if (balance === undefined) throw new StreamdError(`Not a fungible asset or coin type: ${named ?? first}`);
+    throwIfStopped();
+    amounts.set(first, balance);
+
+    polling = host.subscribe(
       (event) => {
-        const { asset, balance } = event.data as BalanceChange;
-        if (amounts.get(asset) === balance) return;
-        amounts.set(asset, balance);
+        const { asset, balance: next } = event.data as BalanceChange;
+        amounts.set(asset, next);
         onChange?.(new Map(amounts), event as StreamdEvent<BalanceChange>);
       },
       {
         ...listener,
-        ...(start === undefined ? {} : { fromVersion: start }),
+        fromVersion: 0n,
         onError: (err) => {
-          if (!live?.active && !live?.paused) stop();
-          (options.onError ?? host.onError)?.(err);
+          if (!polling?.active && !polling?.paused) stop();
+          report(err);
         },
       },
-      (source) => balanceSource(source, account, wanted),
+      (source) => balancePoll(source, who, amounts, tracked, notFungible, head),
     );
+    if (wanted === undefined) {
+      const { onCaughtUp: _unused, ...scan } = listener;
+      discovery = host.subscribe(
+        (event) => {
+          const asset = canonical((event as StreamdEvent<Transfer>).data.asset);
+          if (!LEGACY_TOKEN.test(asset) && !notFungible.has(asset)) tracked.add(asset);
+        },
+        // A scan that gives up only stops new assets appearing, so polling carries on.
+        { ...scan, fromVersion: head, onError: report },
+        (source) => transferSource(source, undefined, account),
+      );
+    }
     return new Map(amounts);
   };
 
   const ready = run().catch((err: unknown) => {
     const wasStopped = stopped;
     stop(err);
-    if (!wasStopped) (options.onError ?? host.onError)?.(err as Error);
+    if (!wasStopped) report(err as Error);
     throw err;
   });
   ready.catch(() => {});
@@ -243,7 +236,7 @@ export function startBalances(
     },
     ready,
     get active() {
-      return !stopped && live?.active !== false;
+      return !stopped && polling?.active !== false;
     },
     unsubscribe: () => stop(),
     [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: () => stop(),

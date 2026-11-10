@@ -174,13 +174,11 @@ const byIdentity = (a: StreamdEvent, b: StreamdEvent) =>
  *
  * `account` resolves to the long-form address whose records to keep. It filters
  * finished records, since a deposit needs its withdraw to report `from`.
- * `alsoKeep` passes raw events of that account through, among the records.
  */
 export function transferSource(
   adapter: EventAdapter,
   asset?: string,
   account?: () => Promise<string>,
-  alsoKeep?: (event: StreamdEvent, account: string) => boolean,
 ): EventAdapter {
   if (typeof adapter.view !== "function") {
     throw new StreamdError("transfers needs an adapter that implements view");
@@ -268,13 +266,7 @@ export function transferSource(
       const who = await account?.();
       const page = await adapter.fetchEvents(descriptor, options);
       let events = await toTransfers(page.events);
-      if (who !== undefined) {
-        events = events.filter(({ data }) => data.from === who || data.to === who);
-        if (alsoKeep !== undefined) {
-          const raw = page.events.filter((e) => alsoKeep(e, who)) as StreamdEvent<Transfer>[];
-          events = [...events, ...raw].sort(byIdentity);
-        }
-      }
+      if (who !== undefined) events = events.filter(({ data }) => data.from === who || data.to === who);
       if (options.orderBy === "desc") events.reverse();
       return { ...page, events };
     },

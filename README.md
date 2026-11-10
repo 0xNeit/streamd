@@ -1271,8 +1271,8 @@ an Aptos name.
 
 ```ts
 const wallet = streamd.balances("alice.apt", {
-  asset: "0xa", // omit to fill the map as assets move
-  onChange: (all, { data }) => console.log(data.asset, data.balance),
+  asset: "0xa", // omit to follow APT plus whatever the wallet is seen moving
+  onChange: (all, { data, version }) => console.log(version, data.asset, data.balance),
 });
 
 await wallet.ready;
@@ -1281,25 +1281,27 @@ wallet.value; // Map of every balance known so far
 wallet.unsubscribe();
 ```
 
-- **Read, never summed.** A balance is a view at the version a transaction changed
-  it. Gas leaves APT with no withdraw event, so a total folded from transfers would
-  drift. Transfers and the wallet's own `transaction_fee::FeeStatement` only signal
-  that a balance needs reading.
-- **Which assets.** No view lists a wallet's assets. With `asset`, that one is read
-  at the head before following. Without it, an asset appears the first time the
-  wallet's transfers or gas touch it.
+- **Read at the head.** Every `pollInterval`, it reads the head version, then each
+  followed balance at that version, and reports what changed. A running total
+  built from transfers would drift, since gas moves APT with no withdraw event,
+  and a scan of the chain cannot keep up with mainnet.
+- **Which assets.** No view lists a wallet's assets. With `asset`, that one is
+  followed and nothing is scanned. Without it, APT is followed from the start and
+  a `transfers` scan adds each asset the wallet is seen moving. That scan can fall
+  behind on a busy chain, which only delays a new asset's first appearance; if it
+  gives up, the error is reported and the balances already followed carry on.
 - **What a balance is.** Fungible assets read the primary store, so secondary stores
-  and assets held through an object are not counted. Coin types read `coin::balance`.
-  APT is one entry, under `0xa` in long form, and counts both coin and fungible
-  stores; `get` takes any form.
+  and assets held through an object are not counted. Coin types read `coin::balance`,
+  which includes the paired fungible asset. APT is one entry, under `0xa` in long
+  form, counting both; `get` takes any form.
 - **Tokens.** Token objects and legacy tokens are skipped. A token object given as
   `asset` rejects `ready`.
-- **Gaps.** A sponsored transaction's gas is charged to its fee payer, who is not its
-  sender, so an account that only sponsors is not refreshed by that alone.
-- **Cost.** It runs the `transfers` scan and its reads, plus one view per changed
-  asset per version. It starts at the head; `ready` rejects if the first read
-  fails, and a failed read later fails the poll, which retries. A balances handle
-  is not a listener for `off()` or `listenerCount()`.
+- **Cost.** One head read and one view per followed asset every `pollInterval`
+  (default 1 second), so raise it for a long list on the anonymous rate limit.
+  `onChange` sees each poll's result, not every transaction in between.
+- **Failures.** `ready` rejects if the first read fails. A later failed read retries
+  with backoff, and `maxErrors` stops it. A balances handle is not a listener for
+  `off()` or `listenerCount()`.
 
 ## Data sources and their limits
 
