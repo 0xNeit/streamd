@@ -298,7 +298,7 @@ describe("parseCommand check", () => {
   });
 
   it.each([
-    [["check"], /check needs at least one event type/],
+    [["check"], /^check needs at least one event type$/],
     [["check", "nope"], /event type/i],
     [["check", "--account", "0x1", TYPE], /account/],
     [["check", "--handle", "x", TYPE], /handle/],

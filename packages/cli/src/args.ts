@@ -342,6 +342,7 @@ function parseCheck(args: string[]): ParsedCommand {
     parseArgs({ args, options: CHECK_OPTIONS, allowPositionals: true, strict: true }),
   );
   if (values.help) return { command: "help" };
+  if (positionals.length === 0) throw new UsageError("check needs at least one event type");
   const options: CheckOptions = {
     descriptor: descriptor("check", {}, positionals) as ModuleEventDescriptor,
     network: network(values.network),
