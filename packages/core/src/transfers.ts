@@ -171,8 +171,15 @@ const byIdentity = (a: StreamdEvent, b: StreamdEvent) =>
  *
  * Pairing sees one page, so a transaction split across pages (never on
  * `FullnodeScanAdapter`) pairs per page.
+ *
+ * `account` resolves to the long-form address whose records to keep. It filters
+ * finished records, since a deposit needs its withdraw to report `from`.
  */
-export function transferSource(adapter: EventAdapter, asset?: string): EventAdapter {
+export function transferSource(
+  adapter: EventAdapter,
+  asset?: string,
+  account?: () => Promise<string>,
+): EventAdapter {
   if (typeof adapter.view !== "function") {
     throw new StreamdError("transfers needs an adapter that implements view");
   }
@@ -256,8 +263,10 @@ export function transferSource(adapter: EventAdapter, asset?: string): EventAdap
 
   const source: EventAdapter = {
     fetchEvents: async (descriptor, options) => {
+      const who = await account?.();
       const page = await adapter.fetchEvents(descriptor, options);
-      const events = await toTransfers(page.events);
+      let events = await toTransfers(page.events);
+      if (who !== undefined) events = events.filter(({ data }) => data.from === who || data.to === who);
       if (options.orderBy === "desc") events.reverse();
       return { ...page, events };
     },

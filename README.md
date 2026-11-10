@@ -1209,6 +1209,9 @@ const sub = streamd.transfers(
 );
 
 const recent = await streamd.getTransfers({ fromVersion: -10_000n, asset: "0xa" });
+
+// what one address sent or received; an Aptos name works too
+const mine = await streamd.getTransfers({ fromVersion: -10_000n, account: "alice.apt" });
 ```
 
 - **Sources.** One scan over `0x1::fungible_asset::Withdraw`/`Deposit`,
@@ -1229,6 +1232,13 @@ const recent = await streamd.getTransfers({ fromVersion: -10_000n, asset: "0xa" 
   form, the rest as stored, so a name containing `::` reads ambiguously) and
   the token amount. `asset` takes a token object address or a legacy id too;
   other objects are then dropped before any read.
+- **One account.** `account` keeps the records whose `from` or `to` is that
+  address. It filters finished records, because a deposit needs its withdraw to
+  report `from`, so it costs the same reads as no filter; add `asset` to save
+  them. `from` and `to` are direct owners, so a wallet does not match a store it
+  holds through an object. A name needs `aptos` in the client config and
+  resolves once per subscription or query, on the first page; an unregistered
+  one stops a subscription, and a query rejects.
 - **Pairing.** Within a transaction, in event order, a deposit pairs with the
   most recent unpaired withdraw of the same asset and amount. A deposit with
   none (a mint, or a fee-on-transfer token) has no `from`; a withdraw left over

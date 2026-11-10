@@ -5,7 +5,7 @@ import {
   captureMicrotaskThrows,
   mocked,
 } from "./timers.js";
-import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { FallbackAdapter } from "../src/adapters/fallback.js";
 import { withHooks } from "../src/adapters/hooks.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
@@ -3048,5 +3048,69 @@ describe("transfers through the client", () => {
   it("refuses an adapter without view", () => {
     const client = new StreamdClient({ adapter: new MemoryAdapter(events) });
     expect(() => client.transfers(() => {})).toThrow(StreamdError);
+  });
+
+  describe("account", () => {
+    const named = (lookup: () => Promise<AccountAddress | undefined>) => {
+      const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET }));
+      let lookups = 0;
+      aptos.getTargetAddress = () => (lookups++, lookup());
+      return { client: new StreamdClient({ adapter: withViews(), aptos }), lookups: () => lookups };
+    };
+    const alice = AccountAddress.from(ALICE);
+
+    it("keeps one account's records, for an address in any form", async () => {
+      const client = new StreamdClient({ adapter: withViews() });
+      const sent = await client.getTransfers({ fromVersion: 0n, account: `0x${ALICE.slice(2).toUpperCase()}` });
+      expect(sent.map((e) => e.version)).toEqual([1n]);
+      const bob = await client.getTransfers({ fromVersion: 0n, account: BOB });
+      expect(bob.map((e) => e.version)).toEqual([1n, 2n]);
+    });
+
+    it("resolves a name once for a query", async () => {
+      const { client, lookups } = named(async () => alice);
+      const records = await client.getTransfers({ fromVersion: 0n, account: "alice.apt" });
+      expect(records.map((e) => e.version)).toEqual([1n]);
+      expect(lookups()).toBe(1);
+    });
+
+    it("refuses a malformed value at the call, and a name without aptos", async () => {
+      const client = new StreamdClient({ adapter: withViews() });
+      expect(() => client.transfers(() => {}, { account: "0xnothex" })).toThrow(StreamdError);
+      expect(() => client.transfers(() => {}, { account: "alice.apt" })).toThrow("aptos");
+      await expect(client.getTransfers({ account: "alice.apt" })).rejects.toThrow("aptos");
+    });
+
+    it("stops a listener on an unregistered name, and retries a failed lookup", async () => {
+      const gone = named(async () => undefined);
+      const errors: Error[] = [];
+      const stopped = gone.client.transfers(() => {}, {
+        fromVersion: 0n,
+        pollInterval: 1,
+        account: "nobody.apt",
+        onError: (err) => errors.push(err),
+      });
+      for (let i = 0; i < 200 && stopped.active; i++) await new Promise((r) => setTimeout(r, 2));
+      expect(stopped.active).toBe(false);
+      expect(errors[0]!.message).toContain("nobody.apt");
+
+      let calls = 0;
+      const flaky = named(async () => {
+        if (++calls === 1) throw new TypeError("fetch failed");
+        return alice;
+      });
+      const seen: Transfer[] = [];
+      const sub = flaky.client.transfers((e) => void seen.push(e.data), {
+        fromVersion: 0n,
+        pollInterval: 1,
+        maxBackoff: 1,
+        account: "alice.apt",
+        onError: () => {},
+      });
+      for (let i = 0; i < 200 && seen.length < 1; i++) await new Promise((r) => setTimeout(r, 2));
+      expect(seen.map((t) => t.from)).toEqual([ALICE]);
+      expect(flaky.lookups()).toBe(2);
+      sub.unsubscribe();
+    });
   });
 });
