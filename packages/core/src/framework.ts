@@ -51,6 +51,7 @@ export interface AptosGovernance_CreateProposal {
   proposal_metadata: SimpleMap<string, string>;
 }
 export const AptosGovernance_CreateProposal = defineEvent<AptosGovernance_CreateProposal>("0x1::aptos_governance::CreateProposal");
+export const AptosGovernance_CreateProposalDecode = ["proposal_id"] as const;
 
 /** `0x1::aptos_governance::UpdateConfig`, an event */
 export interface UpdateConfig {
@@ -59,6 +60,7 @@ export interface UpdateConfig {
   voting_duration_secs: string;
 }
 export const UpdateConfig = defineEvent<UpdateConfig>("0x1::aptos_governance::UpdateConfig");
+export const UpdateConfigDecode = ["min_voting_threshold", "required_proposer_stake", "voting_duration_secs"] as const;
 
 /** `0x1::aptos_governance::Vote`, an event */
 export interface AptosGovernance_Vote {
@@ -69,6 +71,7 @@ export interface AptosGovernance_Vote {
   should_pass: boolean;
 }
 export const AptosGovernance_Vote = defineEvent<AptosGovernance_Vote>("0x1::aptos_governance::Vote");
+export const AptosGovernance_VoteDecode = ["proposal_id", "num_votes"] as const;
 
 /** `0x1::block::NewBlock`, an event */
 export interface NewBlock {
@@ -82,6 +85,7 @@ export interface NewBlock {
   time_microseconds: string;
 }
 export const NewBlock = defineEvent<NewBlock>("0x1::block::NewBlock");
+export const NewBlockDecode = ["epoch", "round", "height", "time_microseconds"] as const;
 
 /** `0x1::block::UpdateEpochInterval`, an event */
 export interface UpdateEpochInterval {
@@ -89,6 +93,7 @@ export interface UpdateEpochInterval {
   new_epoch_interval: string;
 }
 export const UpdateEpochInterval = defineEvent<UpdateEpochInterval>("0x1::block::UpdateEpochInterval");
+export const UpdateEpochIntervalDecode = ["old_epoch_interval", "new_epoch_interval"] as const;
 
 /** `0x1::coin::CoinDeposit`, an event */
 export interface CoinDeposit {
@@ -97,6 +102,7 @@ export interface CoinDeposit {
   amount: string;
 }
 export const CoinDeposit = defineEvent<CoinDeposit>("0x1::coin::CoinDeposit");
+export const CoinDepositDecode = ["amount"] as const;
 
 /** `0x1::coin::CoinEventHandleDeletion`, an event */
 export interface CoinEventHandleDeletion {
@@ -105,6 +111,7 @@ export interface CoinEventHandleDeletion {
   deleted_withdraw_event_handle_creation_number: string;
 }
 export const CoinEventHandleDeletion = defineEvent<CoinEventHandleDeletion>("0x1::coin::CoinEventHandleDeletion");
+export const CoinEventHandleDeletionDecode = ["deleted_deposit_event_handle_creation_number", "deleted_withdraw_event_handle_creation_number"] as const;
 
 /** `0x1::coin::CoinStoreDeletion`, an event */
 export interface CoinStoreDeletion {
@@ -114,6 +121,7 @@ export interface CoinStoreDeletion {
   deleted_withdraw_event_handle_creation_number: string;
 }
 export const CoinStoreDeletion = defineEvent<CoinStoreDeletion>("0x1::coin::CoinStoreDeletion");
+export const CoinStoreDeletionDecode = ["deleted_deposit_event_handle_creation_number", "deleted_withdraw_event_handle_creation_number"] as const;
 
 /** `0x1::coin::CoinWithdraw`, an event */
 export interface CoinWithdraw {
@@ -122,6 +130,7 @@ export interface CoinWithdraw {
   amount: string;
 }
 export const CoinWithdraw = defineEvent<CoinWithdraw>("0x1::coin::CoinWithdraw");
+export const CoinWithdrawDecode = ["amount"] as const;
 
 /** `0x1::coin::Deposit`, an event */
 export interface Coin_Deposit<T0 = unknown> {
@@ -130,6 +139,7 @@ export interface Coin_Deposit<T0 = unknown> {
 }
 export const Coin_Deposit = <T0 = unknown>(t0: string) =>
   defineEvent<Coin_Deposit<T0>>(`0x1::coin::Deposit<${t0}>`);
+export const Coin_DepositDecode = ["amount"] as const;
 
 /** `0x1::coin::PairCreation`, an event */
 export interface PairCreation {
@@ -145,6 +155,7 @@ export interface Coin_Withdraw<T0 = unknown> {
 }
 export const Coin_Withdraw = <T0 = unknown>(t0: string) =>
   defineEvent<Coin_Withdraw<T0>>(`0x1::coin::Withdraw<${t0}>`);
+export const Coin_WithdrawDecode = ["amount"] as const;
 
 /** `0x1::delegation_pool::AddStake`, an event */
 export interface DelegationPool_AddStake {
@@ -154,6 +165,7 @@ export interface DelegationPool_AddStake {
   add_stake_fee: string;
 }
 export const DelegationPool_AddStake = defineEvent<DelegationPool_AddStake>("0x1::delegation_pool::AddStake");
+export const DelegationPool_AddStakeDecode = ["amount_added", "add_stake_fee"] as const;
 
 /** `0x1::delegation_pool::AllowlistDelegator`, an event */
 export interface AllowlistDelegator {
@@ -169,6 +181,7 @@ export interface CommissionPercentageChange {
   commission_percentage_next_lockup_cycle: string;
 }
 export const CommissionPercentageChange = defineEvent<CommissionPercentageChange>("0x1::delegation_pool::CommissionPercentageChange");
+export const CommissionPercentageChangeDecode = ["commission_percentage_next_lockup_cycle"] as const;
 
 /** `0x1::delegation_pool::CreateProposal`, an event */
 export interface DelegationPool_CreateProposal {
@@ -177,6 +190,7 @@ export interface DelegationPool_CreateProposal {
   delegation_pool: string;
 }
 export const DelegationPool_CreateProposal = defineEvent<DelegationPool_CreateProposal>("0x1::delegation_pool::CreateProposal");
+export const DelegationPool_CreateProposalDecode = ["proposal_id"] as const;
 
 /** `0x1::delegation_pool::DelegateVotingPower`, an event */
 export interface DelegateVotingPower {
@@ -201,6 +215,7 @@ export interface DistributeCommission {
   commission_pending_inactive: string;
 }
 export const DistributeCommission = defineEvent<DistributeCommission>("0x1::delegation_pool::DistributeCommission");
+export const DistributeCommissionDecode = ["commission_active", "commission_pending_inactive"] as const;
 
 /** `0x1::delegation_pool::DistributeCommissionEvent`, an event */
 export interface DistributeCommissionEvent {
@@ -210,6 +225,7 @@ export interface DistributeCommissionEvent {
   commission_pending_inactive: string;
 }
 export const DistributeCommissionEvent = defineEvent<DistributeCommissionEvent>("0x1::delegation_pool::DistributeCommissionEvent");
+export const DistributeCommissionEventDecode = ["commission_active", "commission_pending_inactive"] as const;
 
 /** `0x1::delegation_pool::EnableDelegatorsAllowlisting`, an event */
 export interface EnableDelegatorsAllowlisting {
@@ -231,6 +247,7 @@ export interface DelegationPool_ReactivateStake {
   amount_reactivated: string;
 }
 export const DelegationPool_ReactivateStake = defineEvent<DelegationPool_ReactivateStake>("0x1::delegation_pool::ReactivateStake");
+export const DelegationPool_ReactivateStakeDecode = ["amount_reactivated"] as const;
 
 /** `0x1::delegation_pool::RemoveDelegatorFromAllowlist`, an event */
 export interface RemoveDelegatorFromAllowlist {
@@ -254,6 +271,7 @@ export interface DelegationPool_UnlockStake {
   amount_unlocked: string;
 }
 export const DelegationPool_UnlockStake = defineEvent<DelegationPool_UnlockStake>("0x1::delegation_pool::UnlockStake");
+export const DelegationPool_UnlockStakeDecode = ["amount_unlocked"] as const;
 
 /** `0x1::delegation_pool::Vote`, an event */
 export interface DelegationPool_Vote {
@@ -264,6 +282,7 @@ export interface DelegationPool_Vote {
   should_pass: boolean;
 }
 export const DelegationPool_Vote = defineEvent<DelegationPool_Vote>("0x1::delegation_pool::Vote");
+export const DelegationPool_VoteDecode = ["proposal_id", "num_votes"] as const;
 
 /** `0x1::delegation_pool::WithdrawStake`, an event */
 export interface DelegationPool_WithdrawStake {
@@ -272,6 +291,7 @@ export interface DelegationPool_WithdrawStake {
   amount_withdrawn: string;
 }
 export const DelegationPool_WithdrawStake = defineEvent<DelegationPool_WithdrawStake>("0x1::delegation_pool::WithdrawStake");
+export const DelegationPool_WithdrawStakeDecode = ["amount_withdrawn"] as const;
 
 /** `0x1::fungible_asset::Creation`, an event */
 export interface Creation {
@@ -291,6 +311,7 @@ export interface FungibleAsset_Deposit {
   amount: string;
 }
 export const FungibleAsset_Deposit = defineEvent<FungibleAsset_Deposit>("0x1::fungible_asset::Deposit");
+export const FungibleAsset_DepositDecode = ["amount"] as const;
 
 /** `0x1::fungible_asset::Frozen`, an event */
 export interface Frozen {
@@ -313,6 +334,7 @@ export interface FungibleAsset_Withdraw {
   amount: string;
 }
 export const FungibleAsset_Withdraw = defineEvent<FungibleAsset_Withdraw>("0x1::fungible_asset::Withdraw");
+export const FungibleAsset_WithdrawDecode = ["amount"] as const;
 
 /** `0x1::multisig_account::AddOwners`, an event */
 export interface AddOwners {
@@ -329,6 +351,7 @@ export interface CreateTransaction {
   transaction: MultisigTransaction;
 }
 export const CreateTransaction = defineEvent<CreateTransaction>("0x1::multisig_account::CreateTransaction");
+export const CreateTransactionDecode = ["sequence_number"] as const;
 
 /** `0x1::multisig_account::ExecuteRejectedTransaction`, an event */
 export interface ExecuteRejectedTransaction {
@@ -338,6 +361,7 @@ export interface ExecuteRejectedTransaction {
   executor: string;
 }
 export const ExecuteRejectedTransaction = defineEvent<ExecuteRejectedTransaction>("0x1::multisig_account::ExecuteRejectedTransaction");
+export const ExecuteRejectedTransactionDecode = ["sequence_number", "num_rejections"] as const;
 
 /** `0x1::multisig_account::ExecutionError` */
 export interface ExecutionError {
@@ -383,6 +407,7 @@ export interface TimelockUpdated {
   override_threshold: { vec: [] | [string] };
 }
 export const TimelockUpdated = defineEvent<TimelockUpdated>("0x1::multisig_account::TimelockUpdated");
+export const TimelockUpdatedDecode = ["timelock_period"] as const;
 
 /** `0x1::multisig_account::TransactionExecutionFailed`, an event */
 export interface TransactionExecutionFailed {
@@ -394,6 +419,7 @@ export interface TransactionExecutionFailed {
   execution_error: ExecutionError;
 }
 export const TransactionExecutionFailed = defineEvent<TransactionExecutionFailed>("0x1::multisig_account::TransactionExecutionFailed");
+export const TransactionExecutionFailedDecode = ["sequence_number", "num_approvals"] as const;
 
 /** `0x1::multisig_account::TransactionExecutionSucceeded`, an event */
 export interface TransactionExecutionSucceeded {
@@ -404,6 +430,7 @@ export interface TransactionExecutionSucceeded {
   num_approvals: string;
 }
 export const TransactionExecutionSucceeded = defineEvent<TransactionExecutionSucceeded>("0x1::multisig_account::TransactionExecutionSucceeded");
+export const TransactionExecutionSucceededDecode = ["sequence_number", "num_approvals"] as const;
 
 /** `0x1::multisig_account::UpdateSignaturesRequired`, an event */
 export interface UpdateSignaturesRequired {
@@ -412,6 +439,7 @@ export interface UpdateSignaturesRequired {
   new_num_signatures_required: string;
 }
 export const UpdateSignaturesRequired = defineEvent<UpdateSignaturesRequired>("0x1::multisig_account::UpdateSignaturesRequired");
+export const UpdateSignaturesRequiredDecode = ["old_num_signatures_required", "new_num_signatures_required"] as const;
 
 /** `0x1::multisig_account::Vote`, an event */
 export interface MultisigAccount_Vote {
@@ -421,6 +449,7 @@ export interface MultisigAccount_Vote {
   approved: boolean;
 }
 export const MultisigAccount_Vote = defineEvent<MultisigAccount_Vote>("0x1::multisig_account::Vote");
+export const MultisigAccount_VoteDecode = ["sequence_number"] as const;
 
 /** `0x1::object::Transfer`, an event */
 export interface Transfer {
@@ -447,6 +476,7 @@ export interface Stake_AddStake {
   amount_added: string;
 }
 export const Stake_AddStake = defineEvent<Stake_AddStake>("0x1::stake::AddStake");
+export const Stake_AddStakeDecode = ["amount_added"] as const;
 
 /** `0x1::stake::DistributeRewards`, an event */
 export interface DistributeRewards {
@@ -454,6 +484,7 @@ export interface DistributeRewards {
   rewards_amount: string;
 }
 export const DistributeRewards = defineEvent<DistributeRewards>("0x1::stake::DistributeRewards");
+export const DistributeRewardsDecode = ["rewards_amount"] as const;
 
 /** `0x1::stake::DistributeTransactionFee`, an event */
 export interface DistributeTransactionFee {
@@ -461,6 +492,7 @@ export interface DistributeTransactionFee {
   fee_amount: string;
 }
 export const DistributeTransactionFee = defineEvent<DistributeTransactionFee>("0x1::stake::DistributeTransactionFee");
+export const DistributeTransactionFeeDecode = ["fee_amount"] as const;
 
 /** `0x1::stake::IncreaseLockup`, an event */
 export interface IncreaseLockup {
@@ -469,6 +501,7 @@ export interface IncreaseLockup {
   new_locked_until_secs: string;
 }
 export const IncreaseLockup = defineEvent<IncreaseLockup>("0x1::stake::IncreaseLockup");
+export const IncreaseLockupDecode = ["old_locked_until_secs", "new_locked_until_secs"] as const;
 
 /** `0x1::stake::JoinValidatorSet`, an event */
 export interface JoinValidatorSet {
@@ -488,6 +521,7 @@ export interface Stake_ReactivateStake {
   amount: string;
 }
 export const Stake_ReactivateStake = defineEvent<Stake_ReactivateStake>("0x1::stake::ReactivateStake");
+export const Stake_ReactivateStakeDecode = ["amount"] as const;
 
 /** `0x1::stake::RegisterValidatorCandidate`, an event */
 export interface RegisterValidatorCandidate {
@@ -517,6 +551,7 @@ export interface Stake_UnlockStake {
   amount_unlocked: string;
 }
 export const Stake_UnlockStake = defineEvent<Stake_UnlockStake>("0x1::stake::UnlockStake");
+export const Stake_UnlockStakeDecode = ["amount_unlocked"] as const;
 
 /** `0x1::stake::UpdateNetworkAndFullnodeAddresses`, an event */
 export interface UpdateNetworkAndFullnodeAddresses {
@@ -535,6 +570,7 @@ export interface ValidatorSetLivenessFallback {
   total_emergency_voting_power: string;
 }
 export const ValidatorSetLivenessFallback = defineEvent<ValidatorSetLivenessFallback>("0x1::stake::ValidatorSetLivenessFallback");
+export const ValidatorSetLivenessFallbackDecode = ["minimum_stake", "emergency_validator_count", "total_emergency_voting_power"] as const;
 
 /** `0x1::stake::WithdrawStake`, an event */
 export interface Stake_WithdrawStake {
@@ -542,6 +578,7 @@ export interface Stake_WithdrawStake {
   amount_withdrawn: string;
 }
 export const Stake_WithdrawStake = defineEvent<Stake_WithdrawStake>("0x1::stake::WithdrawStake");
+export const Stake_WithdrawStakeDecode = ["amount_withdrawn"] as const;
 
 /** `0x1::transaction_fee::FeeStatement`, an event */
 export interface FeeStatement {
@@ -552,6 +589,7 @@ export interface FeeStatement {
   storage_fee_refund_octas: string;
 }
 export const FeeStatement = defineEvent<FeeStatement>("0x1::transaction_fee::FeeStatement");
+export const FeeStatementDecode = ["total_charge_gas_units", "execution_gas_units", "io_gas_units", "storage_fee_octas", "storage_fee_refund_octas"] as const;
 
 /** `0x1::type_info::TypeInfo` */
 export interface TypeInfo {
@@ -570,6 +608,7 @@ export interface Voting_CreateProposal {
   min_vote_threshold: string;
 }
 export const Voting_CreateProposal = defineEvent<Voting_CreateProposal>("0x1::voting::CreateProposal");
+export const Voting_CreateProposalDecode = ["proposal_id", "expiration_secs", "min_vote_threshold"] as const;
 
 /** `0x1::voting::RegisterForum`, an event */
 export interface RegisterForum {
@@ -586,6 +625,7 @@ export interface ResolveProposal {
   resolved_early: boolean;
 }
 export const ResolveProposal = defineEvent<ResolveProposal>("0x1::voting::ResolveProposal");
+export const ResolveProposalDecode = ["proposal_id", "yes_votes", "no_votes"] as const;
 
 /** `0x1::voting::Vote`, an event */
 export interface Voting_Vote {
@@ -593,6 +633,7 @@ export interface Voting_Vote {
   num_votes: string;
 }
 export const Voting_Vote = defineEvent<Voting_Vote>("0x1::voting::Vote");
+export const Voting_VoteDecode = ["proposal_id", "num_votes"] as const;
 
 /** `0x3::token::Burn`, an event */
 export interface Token_Burn {
@@ -601,6 +642,7 @@ export interface Token_Burn {
   amount: string;
 }
 export const Token_Burn = defineEvent<Token_Burn>("0x3::token::Burn");
+export const Token_BurnDecode = ["amount"] as const;
 
 /** `0x3::token::BurnToken`, an event */
 export interface BurnToken {
@@ -608,6 +650,7 @@ export interface BurnToken {
   amount: string;
 }
 export const BurnToken = defineEvent<BurnToken>("0x3::token::BurnToken");
+export const BurnTokenDecode = ["amount"] as const;
 
 /** `0x3::token::CreateCollection`, an event */
 export interface CreateCollection {
@@ -618,6 +661,7 @@ export interface CreateCollection {
   maximum: string;
 }
 export const CreateCollection = defineEvent<CreateCollection>("0x3::token::CreateCollection");
+export const CreateCollectionDecode = ["maximum"] as const;
 
 /** `0x3::token::CreateTokenData`, an event */
 export interface CreateTokenData {
@@ -635,6 +679,7 @@ export interface CreateTokenData {
   property_types: string[];
 }
 export const CreateTokenData = defineEvent<CreateTokenData>("0x3::token::CreateTokenData");
+export const CreateTokenDataDecode = ["maximum", "royalty_points_denominator", "royalty_points_numerator"] as const;
 
 /** `0x3::token::Deposit`, an event */
 export interface Token_Deposit {
@@ -642,6 +687,7 @@ export interface Token_Deposit {
   amount: string;
 }
 export const Token_Deposit = defineEvent<Token_Deposit>("0x3::token::Deposit");
+export const Token_DepositDecode = ["amount"] as const;
 
 /** `0x3::token::Mint`, an event */
 export interface Token_Mint {
@@ -650,6 +696,7 @@ export interface Token_Mint {
   amount: string;
 }
 export const Token_Mint = defineEvent<Token_Mint>("0x3::token::Mint");
+export const Token_MintDecode = ["amount"] as const;
 
 /** `0x3::token::MintToken`, an event */
 export interface MintToken {
@@ -657,6 +704,7 @@ export interface MintToken {
   amount: string;
 }
 export const MintToken = defineEvent<MintToken>("0x3::token::MintToken");
+export const MintTokenDecode = ["amount"] as const;
 
 /** `0x3::token::MutatePropertyMap`, an event */
 export interface MutatePropertyMap {
@@ -696,6 +744,7 @@ export interface TokenDataCreation {
   property_types: string[];
 }
 export const TokenDataCreation = defineEvent<TokenDataCreation>("0x3::token::TokenDataCreation");
+export const TokenDataCreationDecode = ["maximum", "royalty_points_denominator", "royalty_points_numerator"] as const;
 
 /** `0x3::token::TokenDataId` */
 export interface TokenDataId {
@@ -711,6 +760,7 @@ export interface TokenDeposit {
   amount: string;
 }
 export const TokenDeposit = defineEvent<TokenDeposit>("0x3::token::TokenDeposit");
+export const TokenDepositDecode = ["amount"] as const;
 
 /** `0x3::token::TokenId` */
 export interface TokenId {
@@ -734,6 +784,7 @@ export interface TokenWithdraw {
   amount: string;
 }
 export const TokenWithdraw = defineEvent<TokenWithdraw>("0x3::token::TokenWithdraw");
+export const TokenWithdrawDecode = ["amount"] as const;
 
 /** `0x3::token::Withdraw`, an event */
 export interface Token_Withdraw {
@@ -741,6 +792,7 @@ export interface Token_Withdraw {
   amount: string;
 }
 export const Token_Withdraw = defineEvent<Token_Withdraw>("0x3::token::Withdraw");
+export const Token_WithdrawDecode = ["amount"] as const;
 
 /** `0x4::collection::Burn`, an event */
 export interface Collection_Burn {
@@ -750,6 +802,7 @@ export interface Collection_Burn {
   previous_owner: string;
 }
 export const Collection_Burn = defineEvent<Collection_Burn>("0x4::collection::Burn");
+export const Collection_BurnDecode = ["index"] as const;
 
 /** `0x4::collection::ConcurrentBurnEvent`, an event */
 export interface ConcurrentBurnEvent {
@@ -758,6 +811,7 @@ export interface ConcurrentBurnEvent {
   token: string;
 }
 export const ConcurrentBurnEvent = defineEvent<ConcurrentBurnEvent>("0x4::collection::ConcurrentBurnEvent");
+export const ConcurrentBurnEventDecode = ["index"] as const;
 
 /** `0x4::collection::ConcurrentMintEvent`, an event */
 export interface ConcurrentMintEvent {
@@ -791,6 +845,7 @@ export interface SetMaxSupply {
   new_max_supply: string;
 }
 export const SetMaxSupply = defineEvent<SetMaxSupply>("0x4::collection::SetMaxSupply");
+export const SetMaxSupplyDecode = ["old_max_supply", "new_max_supply"] as const;
 
 /** `0x4::token::Mutation`, an event */
 export interface Token_Mutation {

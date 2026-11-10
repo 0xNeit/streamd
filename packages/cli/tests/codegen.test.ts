@@ -187,7 +187,7 @@ describe("generateEventTypes", () => {
 // Each @ts-expect-error fails the compile if its line does typecheck.
 const USAGE = `
 import type { StreamdClient } from "@streamd/core";
-import { Coin_Deposit, Creation, FungibleAsset_Deposit, OrderEvent, PairCreation, Swap } from "./events.js";
+import { Coin_Deposit, Creation, FungibleAsset_Deposit, FungibleAsset_DepositDecode, OrderEvent, PairCreation, Swap } from "./events.js";
 
 declare const client: StreamdClient;
 const is = <T>(_value: T) => {};
@@ -197,6 +197,7 @@ client.on(FungibleAsset_Deposit, (e) => {
   // @ts-expect-error u64 is a decimal string
   is<number>(e.data.amount);
 });
+client.on(FungibleAsset_Deposit, () => {}, { decode: FungibleAsset_DepositDecode });
 client.on(OrderEvent, (e) => {
   if (e.data.__variant__ === "Filled") {
     is<number>(e.data.delta);
@@ -226,6 +227,63 @@ client.on(Creation, (e) => {
   is(e.data.nope);
 });
 `;
+
+describe("generateEventTypes decode lists", () => {
+  const generate = (...structs: unknown[]) =>
+    generateEventTypes([{ address: "0x1", module: "m" }], loader([abi("0x1", "m", structs)]).load);
+
+  it("lists an event's own unsigned wide integers, in field order", async () => {
+    const source = await generate(
+      struct("Trade", [["size", "u64"], ["who", "address"], ["fee", "u128"], ["big", "u256"]]),
+    );
+    expect(source).toContain('export const TradeDecode = ["size", "fee", "big"] as const;');
+  });
+
+  it("leaves out everything decode cannot read", async () => {
+    const source = await generate(
+      struct("Inner", [["amount", "u64"]], false),
+      struct("Trade", [
+        ["narrow", "u8"],
+        ["word", "u32"],
+        ["signed", "i64"],
+        ["huge", "i256"],
+        ["flag", "bool"],
+        ["list", "vector<u64>"],
+        ["maybe", "0x1::option::Option<u64>"],
+        ["nested", "0x1::m::Inner"],
+        ["kept", "u64"],
+      ]),
+    );
+    expect(source).toContain('export const TradeDecode = ["kept"] as const;');
+    expect(source).not.toContain("InnerDecode");
+  });
+
+  it("writes no list when nothing qualifies, or for an enum", async () => {
+    const source = await generate(struct("Quiet", [["who", "address"]]), {
+      name: "Kind",
+      is_event: true,
+      is_enum: true,
+      generic_type_params: [],
+      variants: [{ name: "A", fields: [{ name: "n", type: "u64" }] }],
+      fields: [],
+    });
+    expect(source).not.toContain("Decode");
+  });
+
+  it("writes a plain list for a generic event, leaving out its type parameters", async () => {
+    const source = await generate({
+      ...struct("Pair", [["amount", "u64"], ["value", "T0"]]),
+      generic_type_params: [{ constraints: [] }],
+    });
+    expect(source).toContain('export const PairDecode = ["amount"] as const;');
+  });
+
+  it("steps around a struct that already has the name", async () => {
+    const source = await generate(struct("Trade", [["n", "u64"]]), struct("TradeDecode", [["who", "address"]]));
+    expect(source).toContain('export const TradeDecode_ = ["n"] as const;');
+    expect(source).toContain('export const TradeDecode = defineEvent<TradeDecode>(');
+  });
+});
 
 describe("generateEventTypes view builders", () => {
   const fn = (name: string, params: string[], generics = 0, isView = true) => ({
