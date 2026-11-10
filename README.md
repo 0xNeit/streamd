@@ -1084,7 +1084,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
+import { involvesAddress, whereField, whereCompare, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -1097,6 +1097,11 @@ streamd.on(
   (a dot-separated string such as `"store.owner"` or `"holders.0.owner"`, or an
   array of keys and indices such as `["store", "owner"]` or `["key.with.dots"]`).
   When `value` is an address, `0x1` and `0x000...01` count as the same address.
+- `whereCompare(path, op, value)` compares an integer in `data` using `==`,
+  `!=`, `<`, `<=`, `>` or `>=` (`whereCompare("amount", ">", 1_000_000n)`). The
+  field can be a decimal string, a number or a bigint, so `decode` is not
+  needed, and it compares at full precision. A field that is missing or not an
+  integer never matches, under `!=` too.
 - `involvesAddress(address, { fields?, maxDepth? })` matches events whose
   payload mentions the address anywhere. `0x1` and `0x000…01` count as the
   same address.

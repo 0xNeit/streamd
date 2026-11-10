@@ -11,6 +11,7 @@ import {
   ofModule,
   ofType,
   some,
+  whereCompare,
   whereField,
 } from "../src/filter.js";
 import type { EventPredicate, StreamdEvent, SyncEventPredicate } from "../src/types.js";
@@ -79,6 +80,59 @@ describe("involvesAddress", () => {
 
   it("rejects an invalid target address up front", () => {
     expect(() => involvesAddress("not-an-address")).toThrow(TypeError);
+  });
+});
+
+describe("whereCompare", () => {
+  const matches = (op: Parameters<typeof whereCompare>[1], amount: unknown, value: bigint | number | string = 10n) =>
+    whereCompare("amount", op, value)(ev({ amount }));
+
+  it.each([
+    ["==", [false, true, false]],
+    ["!=", [true, false, true]],
+    ["<", [true, false, false]],
+    ["<=", [true, true, false]],
+    [">", [false, false, true]],
+    [">=", [false, true, true]],
+  ] as const)("%s at, below and above the boundary", (op, expected) => {
+    expect(["9", "10", "11"].map((a) => matches(op, a))).toEqual([...expected]);
+  });
+
+  it("compares strings, bigints and numbers alike, on either side", () => {
+    expect(matches(">", "11", "10")).toBe(true);
+    expect(matches(">", 11n, 10)).toBe(true);
+    expect(matches(">", 11, "10")).toBe(true);
+    expect(matches("<", "-1", 0)).toBe(true);
+  });
+
+  it("keeps full precision beyond the safe integer range", () => {
+    const max = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+    expect(matches("==", max, BigInt(max))).toBe(true);
+    expect(matches("<", max.slice(0, -1) + "4", BigInt(max))).toBe(true);
+    expect(matches(">", "9007199254740993", 9007199254740992n)).toBe(true);
+  });
+
+  it("reads nested paths", () => {
+    expect(whereCompare("inner.amounts.1", ">=", 5)(ev({ inner: { amounts: ["1", "5"] } }))).toBe(true);
+    expect(whereCompare(["inner", "amounts", 0], ">=", 5)(ev({ inner: { amounts: ["1", "5"] } }))).toBe(false);
+  });
+
+  it("never matches a field that is missing or not an integer, under any operator", () => {
+    const fields: unknown[] = ["", "0x10", "1.5", "abc", " 1", true, null, 1.5, Number.MAX_SAFE_INTEGER + 1, {}, []];
+    for (const op of ["==", "!=", "<", "<=", ">", ">="] as const) {
+      expect(whereCompare("amount", op, 0)(ev({}))).toBe(false);
+      expect(whereCompare("amount", op, 0)(ev("not an object"))).toBe(false);
+      for (const field of fields) expect(matches(op, field, 0)).toBe(false);
+    }
+  });
+
+  it("throws on a bad operator, value or path", () => {
+    expect(() => whereCompare("a", "=" as "==", 1)).toThrow(StreamdError);
+    expect(() => whereCompare("a", "toString" as "==", 1)).toThrow(StreamdError);
+    for (const bad of [1.5, Number.NaN, "", "0x10", "1e3", undefined, null, true]) {
+      expect(() => whereCompare("a", "==", bad as number)).toThrow(StreamdError);
+    }
+    expect(() => whereCompare("", "==", 1)).toThrow(StreamdError);
   });
 });
 
