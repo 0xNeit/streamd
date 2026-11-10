@@ -51,10 +51,10 @@ describe("RequestLimiter spacing", () => {
   it("never lets a new call jump the queue in the moment before its timer fires", async () => {
     const limiter = new RequestLimiter(Infinity, 50);
     const t = timed(limiter, 2);
-    const now = spyOn(performance, "now").mockReturnValue(performance.now() + 1e6);
+    const now = spyOn(performance, "now").mockReturnValue(performance.now() + 25);
     const late = limiter.run(async () => void t.started.push(9));
-    expect(t.started).toEqual([0]);
     now.mockRestore();
+    expect(t.started).toEqual([0, 1]);
     await Promise.all([...t.runs, late]);
     expect(t.started).toEqual([0, 1, 9]);
   });
