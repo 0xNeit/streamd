@@ -561,20 +561,6 @@ error holding it. It needs an adapter with `simulateTransactionEvents`, which
 `FullnodeScanAdapter` has. The wrapping adapters pass it through, never cached or recorded,
 since a simulation answers for the chain's state at that moment.
 
-### Start from a time
-
-`tail`, `forward` and `query` take `--from-time` instead of `--from-version`: a duration back from
-now (`90s`, `30m`, `2h`, `7d`) or an ISO date or date-time, which is UTC unless it names an offset:
-
-```sh
-streamd tail --from-time 2h 0x1::fungible_asset::Deposit
-streamd query --from-time 2026-11-10T09:00 --to-version 7985000000 0x1::coin::CoinDeposit
-```
-
-It starts at the first block stamped at or after that time. A time before the oldest block the
-node serves starts at that block. On `forward` a saved cursor beats it, so a restart does not
-rewind.
-
 ### Query history
 
 ```ts
@@ -1892,7 +1878,21 @@ cursor; `1` when a batch fails past its retries, the subscription stops on an er
 cursor file cannot be read or written; `2` for invalid arguments. Run it under a supervisor
 that restarts on `1`.
 
-### Query history
+### Start from a time
+
+`tail`, `forward` and `query` take `--from-time` instead of `--from-version`: a duration back from
+now (`90s`, `30m`, `2h`, `7d`) or an ISO date or date-time, which is UTC unless it names an offset:
+
+```sh
+streamd tail --from-time 2h 0x1::fungible_asset::Deposit
+streamd query --from-time 2026-11-10T09:00 --to-version 7985000000 0x1::coin::CoinDeposit
+```
+
+It starts at the first block stamped at or after that time. A time before the oldest block the
+node serves starts at that block. On `forward` a saved cursor beats it, so a restart does not
+rewind.
+
+### Query a range
 
 `streamd query` reads a closed range as JSON lines and exits:
 

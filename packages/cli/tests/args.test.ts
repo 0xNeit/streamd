@@ -401,6 +401,16 @@ describe("parseTime", () => {
     expect(parseTime(raw, now)).toBe(BigInt(ms) * 1000n);
   });
 
+  it("reads a date-time the same in any zone", () => {
+    const zone = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      expect(parseTime("2026-11-10T09:30", now)).toBe(BigInt(Date.UTC(2026, 10, 10, 9, 30)) * 1000n);
+    } finally {
+      process.env.TZ = zone;
+    }
+  });
+
   it("clamps a duration reaching before the epoch", () => {
     expect(parseTime("99999999999d", now)).toBe(0n);
   });
