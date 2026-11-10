@@ -72,14 +72,18 @@ function checkTimeout(ms: number | undefined): StreamdError | undefined {
   return new StreamdError(`Invalid timeout: ${String(ms)} (expected 0..${MAX_TIMEOUT}ms)`);
 }
 
-function resolveLimiter(max: number | undefined): RequestLimiter {
-  if (max === undefined) return new RequestLimiter();
-  if (!Number.isInteger(max) || max < 1) {
+function resolveLimiter(max: number | undefined, perSecond: number | undefined): RequestLimiter {
+  if (max !== undefined && (!Number.isInteger(max) || max < 1)) {
     throw new StreamdError(
       `Invalid maxConcurrentRequests: ${String(max)} (expected a positive integer)`,
     );
   }
-  return new RequestLimiter(max);
+  if (perSecond !== undefined && (!Number.isFinite(perSecond) || perSecond <= 0)) {
+    throw new StreamdError(
+      `Invalid maxRequestsPerSecond: ${String(perSecond)} (expected a positive number)`,
+    );
+  }
+  return new RequestLimiter(max, perSecond);
 }
 
 const DEFAULT_KEYS = [
@@ -168,7 +172,7 @@ export class StreamdClient {
   constructor(config: StreamdConfig) {
     this.defaults = resolveDefaults(config);
     this.onError = config.onError;
-    this.limiter = resolveLimiter(config.maxConcurrentRequests);
+    this.limiter = resolveLimiter(config.maxConcurrentRequests, config.maxRequestsPerSecond);
     this.aptos = resolveAptos(config);
     this.adapter = resolveAdapter(config, this.aptos);
     this.shared = new SharedFetches(this.adapter);

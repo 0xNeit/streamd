@@ -784,6 +784,12 @@ export interface StreamdConfig {
    */
   maxConcurrentRequests?: number;
   /**
+   * Spaces the starts of those same adapter calls evenly, at most this many a
+   * second with no burst; a positive number, so `0.5` is one call every two
+   * seconds. Calls wait in order, in the same queue. Omit for no limit.
+   */
+  maxRequestsPerSecond?: number;
+  /**
    * Listener options for every subscription this client creates. A call's own
    * value for a field wins; one it leaves `undefined` takes this one. A call's
    * `decode` replaces this list rather than adding to it. `pollInterval` here
