@@ -1,4 +1,10 @@
-import { StreamdError, parseEvent, requireAddress, requireEventType } from "@streamd/core";
+import {
+  StreamdError,
+  StreamdNetworkError,
+  parseEvent,
+  requireAddress,
+  requireEventType,
+} from "@streamd/core";
 import type {
   EventAdapter,
   EventDescriptor,
@@ -6,7 +12,7 @@ import type {
   FetchOptions,
   StreamdEvent,
 } from "@streamd/core";
-import { ensureSchema, versionKey } from "./schema.js";
+import { ensureSchema, prunedBefore, versionKey } from "./schema.js";
 import type { SqliteDatabase } from "./schema.js";
 
 const DEFAULT_LIMIT = 25;
@@ -71,9 +77,17 @@ function parseCursor(cursor: string): Position {
   return { version: BigInt(match[1]!), eventIndex };
 }
 
-function startOf(options: FetchOptions): Position {
-  if (options.cursor !== undefined) return parseCursor(options.cursor);
-  return { version: options.fromVersion ?? 0n, eventIndex: -1 };
+/** No start position means the oldest version kept; only asking for pruned history fails. */
+function startOf(options: FetchOptions, edge: bigint): Position {
+  const start =
+    options.cursor !== undefined
+      ? parseCursor(options.cursor)
+      : { version: options.fromVersion ?? edge, eventIndex: -1 };
+  // A cursor at edge - 1 fails too: it cannot show whether that version's later events went.
+  if (start.version < edge || (options.toVersion !== undefined && options.toVersion < edge)) {
+    throw new StreamdNetworkError(`Version pruned from this store; the oldest kept is ${edge}`, 410);
+  }
+  return start;
 }
 
 function count(value: number | undefined, label: string, fallback: number): number {
@@ -96,19 +110,22 @@ export class StoreAdapter implements EventAdapter {
     this.db = db;
   }
 
-  /** The highest stored version across the whole store, or `0n` when it is empty. */
+  /** The highest stored version, or just below the pruned edge when none is stored; `0n` for a new store. */
   async getHeadVersion(): Promise<bigint> {
-    return this.bound("MAX");
+    const edge = prunedBefore(this.db);
+    return this.bound("MAX") ?? (edge > 0n ? edge - 1n : 0n);
   }
 
-  /** The lowest stored version across the whole store, or `0n` when it is empty. */
+  /** The lowest readable version: the lowest stored, or the pruned edge if that is higher. */
   async getEarliestVersion(): Promise<bigint> {
-    return this.bound("MIN");
+    const edge = prunedBefore(this.db);
+    const lowest = this.bound("MIN") ?? 0n;
+    return lowest > edge ? lowest : edge;
   }
 
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
     const where = descriptorWhere(descriptor);
-    const start = startOf(options);
+    const start = startOf(options, prunedBefore(this.db));
     const limit = count(options.limit, "limit", DEFAULT_LIMIT);
     const offset = options.cursor === undefined ? count(options.offset, "offset", 0) : 0;
     const startCursor = `${start.version}:${start.eventIndex}`;
@@ -137,11 +154,11 @@ export class StoreAdapter implements EventAdapter {
     return page;
   }
 
-  private bound(fn: "MAX" | "MIN"): bigint {
+  private bound(fn: "MAX" | "MIN"): bigint | undefined {
     const row = this.db.prepare(`SELECT ${fn}(version) AS v FROM streamd_events`).get() as
       | { v: string | null }
       | null
       | undefined;
-    return row?.v == null ? 0n : BigInt(row.v);
+    return row?.v == null ? undefined : BigInt(row.v);
   }
 }
