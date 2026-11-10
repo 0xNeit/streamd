@@ -51,6 +51,19 @@ describe("runQuery", () => {
     expect(desc.versions).toEqual(["4", "3"]);
   });
 
+  it("starts at a time when given one instead of a version", async () => {
+    const seen: unknown[] = [];
+    const client = {
+      iterateEvents: async function* (_d: unknown, filter: unknown) {
+        seen.push(filter);
+      },
+    };
+    const opts = options({ fromTime: 123n, fromVersion: undefined });
+    await runQuery(opts, { client: client as never, write: () => {}, error: () => {}, signal: new AbortController().signal });
+    expect(seen[0]).toMatchObject({ fromTime: 123n });
+    expect((seen[0] as { fromVersion?: bigint }).fromVersion).toBeUndefined();
+  });
+
   it("exits 0 with no output when nothing matches", async () => {
     const { code, lines } = await run(new MemoryAdapter([]));
     expect(code).toBe(0);

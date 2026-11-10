@@ -25,9 +25,10 @@ export async function runTail(options: TailOptions, io: TailIO): Promise<number>
   };
   // Unset options are left out rather than passed as undefined, which would
   // override the client's own defaults when spread.
-  const { fromVersion, pollInterval } = options;
+  const { fromVersion, fromTime, pollInterval } = options;
   const stream = io.client.stream(options.descriptor, {
     ...(fromVersion !== undefined && { fromVersion }),
+    ...(fromTime !== undefined && { fromTime }),
     ...(pollInterval !== undefined && { pollInterval }),
     signal: io.signal,
     onError: report,

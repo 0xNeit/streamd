@@ -151,7 +151,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     const onAbort = () => finish(0);
     io.signal.addEventListener("abort", onAbort, { once: true });
 
-    const { fromVersion, pollInterval } = options;
+    const { fromVersion, fromTime, pollInterval } = options;
     sub = io.client.onBatch(
       options.descriptor,
       async (events) => {
@@ -175,6 +175,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
       {
         ...(saved !== undefined && { cursor: saved }),
         ...(fromVersion !== undefined && { fromVersion }),
+        ...(fromTime !== undefined && { fromTime }),
         ...(pollInterval !== undefined && { pollInterval }),
         onError: (err) => {
           io.error(`streamd: ${message(err)}`);

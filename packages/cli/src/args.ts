@@ -11,6 +11,8 @@ export interface SourceOptions {
   network: Network;
   nodeUrl?: string;
   fromVersion?: bigint;
+  /** Microseconds since the epoch; never set with `fromVersion`. */
+  fromTime?: bigint;
   pollInterval?: number;
 }
 
@@ -41,7 +43,9 @@ export interface QueryOptions {
   descriptor: EventDescriptor;
   network: Network;
   nodeUrl?: string;
-  fromVersion: bigint;
+  /** Exactly one of `fromVersion` and `fromTime` is set. */
+  fromVersion?: bigint;
+  fromTime?: bigint;
   toVersion: bigint | "head";
   limit?: number;
   order: "asc" | "desc";
@@ -104,10 +108,13 @@ const SOURCE_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
-const TAIL_OPTIONS = { ...SOURCE_OPTIONS, limit: { type: "string" } } as const;
+const FROM_TIME = { "from-time": { type: "string" } } as const;
+
+const TAIL_OPTIONS = { ...SOURCE_OPTIONS, ...FROM_TIME, limit: { type: "string" } } as const;
 
 const FORWARD_OPTIONS = {
   ...SOURCE_OPTIONS,
+  ...FROM_TIME,
   to: { type: "string" },
   "cursor-file": { type: "string" },
   retries: { type: "string" },
@@ -135,6 +142,7 @@ const RECORD_OPTIONS = {
 } as const;
 
 const QUERY_OPTIONS = {
+  ...FROM_TIME,
   account: { type: "string" },
   handle: { type: "string" },
   field: { type: "string" },
@@ -180,7 +188,7 @@ export const USAGE = `Usage:
   streamd forward --to <url> --account <address> [...]
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
-  streamd query --from-version <n> [--to-version <n>] [options] <eventType>...
+  streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
   streamd codegen [--out <file>] <address>::<module>...
@@ -203,6 +211,7 @@ Options:
   --network <name>       mainnet, testnet, or devnet (default: mainnet)
   --node-url <url>       fullnode URL, overriding the network's default
   --from-version <n>     start at this version instead of the chain head
+  --from-time <t>        tail, forward, query: start here, as 2h, 7d or an ISO date (UTC)
   --poll-interval <ms>   delay between polls (default: 1000)
   --limit <n>            tail: exit after printing n events; record, query: stop after n
   --to <url>             forward: webhook URL (http or https, required)
@@ -241,6 +250,25 @@ function version(raw: string | undefined, flag = "from-version"): bigint | undef
     throw new UsageError(`--${flag} must be a non-negative integer: ${raw}`);
   }
   return BigInt(raw);
+}
+
+const DURATION = /^(\d+)([smhd])$/;
+const MS_PER: Record<string, bigint> = { s: 1000n, m: 60_000n, h: 3_600_000n, d: 86_400_000n };
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+/** Microseconds since the epoch for a duration before `now`, or an ISO date (UTC unless it names an offset). */
+export function parseTime(raw: string, now = Date.now()): bigint {
+  const duration = DURATION.exec(raw);
+  if (duration !== null) {
+    const ms = BigInt(now) - BigInt(duration[1]!) * MS_PER[duration[2]!]!;
+    return ms < 0n ? 0n : ms * 1000n;
+  }
+  const iso = ISO_TIME.exec(raw);
+  const ms = iso === null ? NaN : Date.parse(raw.includes("T") && iso[1] === undefined ? `${raw}Z` : raw);
+  if (Number.isNaN(ms) || ms < 0) {
+    throw new UsageError(`--from-time must be a duration such as 2h or an ISO date: ${raw}`);
+  }
+  return BigInt(ms) * 1000n;
 }
 
 function network(raw: string | undefined): Network {
@@ -333,8 +361,15 @@ function descriptor(
 interface SourceFlags extends DescriptorFlags {
   network?: string;
   "node-url"?: string;
+  "from-time"?: string;
   "from-version"?: string;
   "poll-interval"?: string;
+}
+
+function startTime(values: { "from-time"?: string; "from-version"?: string }): bigint | undefined {
+  if (values["from-time"] === undefined) return undefined;
+  if (values["from-version"] !== undefined) throw new UsageError("set --from-time or --from-version, not both");
+  return parseTime(values["from-time"]);
 }
 
 function source(command: string, values: SourceFlags, positionals: string[]): SourceOptions {
@@ -344,9 +379,11 @@ function source(command: string, values: SourceFlags, positionals: string[]): So
   };
   const url = nodeUrl(values["node-url"]);
   const fromVersion = version(values["from-version"]);
+  const fromTime = startTime(values);
   const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
   if (url !== undefined) options.nodeUrl = url;
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
+  if (fromTime !== undefined) options.fromTime = fromTime;
   if (pollInterval !== undefined) options.pollInterval = pollInterval;
   return options;
 }
@@ -424,9 +461,12 @@ function parseQuery(args: string[]): ParsedCommand {
   );
   if (values.help) return { command: "help" };
   const fromVersion = version(values["from-version"]);
-  if (fromVersion === undefined) throw new UsageError("query needs --from-version");
+  const fromTime = startTime(values);
+  if (fromVersion === undefined && fromTime === undefined) {
+    throw new UsageError("query needs --from-version or --from-time");
+  }
   const toVersion = version(values["to-version"], "to-version") ?? "head";
-  if (toVersion !== "head" && toVersion < fromVersion) {
+  if (toVersion !== "head" && fromVersion !== undefined && toVersion < fromVersion) {
     throw new UsageError("--to-version must not be below --from-version");
   }
   const order = values.order ?? "asc";
@@ -434,10 +474,11 @@ function parseQuery(args: string[]): ParsedCommand {
   const options: QueryOptions = {
     descriptor: descriptor("query", values, positionals),
     network: network(values.network),
-    fromVersion,
     toVersion,
     order,
   };
+  if (fromVersion !== undefined) options.fromVersion = fromVersion;
+  if (fromTime !== undefined) options.fromTime = fromTime;
   const url = nodeUrl(values["node-url"]);
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
   if (url !== undefined) options.nodeUrl = url;
