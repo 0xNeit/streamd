@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { MemoryAdapter } from "../src/adapters/memory.js";
+import { StreamdClient } from "../src/client.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import { serializeEvent } from "../src/serialize.js";
 import type { EventDescriptor, StreamdEvent } from "../src/types.js";
@@ -503,5 +504,93 @@ describe("MemoryAdapter.fromJsonLines", () => {
   it("refuses anything but a string", () => {
     expect(() => MemoryAdapter.fromJsonLines(undefined as unknown as string)).toThrow(StreamdError);
     expect(() => MemoryAdapter.fromJsonLines([] as unknown as string)).toThrow(StreamdError);
+  });
+});
+
+describe("MemoryAdapter.push", () => {
+  it("continues a saved cursor past the old end", async () => {
+    const adapter = new MemoryAdapter([ev(1)]);
+    const first = await adapter.fetchEvents(moduleDesc);
+    expect(first.hasMore).toBe(false);
+    adapter.push(ev(2));
+    const next = await adapter.fetchEvents(moduleDesc, { cursor: first.nextCursor });
+    expect(next.events.map((e) => e.version)).toEqual([2n]);
+    expect(next.hasMore).toBe(false);
+  });
+
+  it("moves the head and is found by transaction lookup", async () => {
+    const adapter = new MemoryAdapter();
+    expect(await adapter.getHeadVersion()).toBe(0n);
+    const hash = `0x${"ab".repeat(32)}`;
+    adapter.push({ ...ev(7), transactionHash: hash });
+    expect(await adapter.getHeadVersion()).toBe(7n);
+    expect((await adapter.getTransactionEvents(hash))?.version).toBe(7n);
+  });
+
+  it("sorts one call's events, which may share a version", async () => {
+    const adapter = new MemoryAdapter([ev(1)]);
+    adapter.push(ev(3, 0), ev(2, 1), ev(2, 0));
+    const page = await adapter.fetchEvents(moduleDesc);
+    expect(page.events.map((e) => [e.version, e.eventIndex])).toEqual([
+      [1n, 0],
+      [2n, 0],
+      [2n, 1],
+      [3n, 0],
+    ]);
+  });
+
+  it("does nothing given no events", async () => {
+    const adapter = new MemoryAdapter([ev(1)]);
+    adapter.push();
+    expect((await adapter.fetchEvents(moduleDesc)).events).toHaveLength(1);
+  });
+
+  it("refuses a version at or below the highest held", () => {
+    const adapter = new MemoryAdapter([ev(5)]);
+    expect(() => adapter.push(ev(5, 1))).toThrow(StreamdError);
+    expect(() => adapter.push(ev(4))).toThrow("above the highest held, 5");
+  });
+
+  it("refuses the same event twice in one call", () => {
+    const adapter = new MemoryAdapter();
+    expect(() => adapter.push(ev(1), ev(2), ev(1))).toThrow("the same event twice: 1:0");
+  });
+
+  it("adds nothing when any event in the call is refused", async () => {
+    const adapter = new MemoryAdapter([ev(5)]);
+    expect(() => adapter.push(ev(6), ev(4))).toThrow(StreamdError);
+    expect(await adapter.getHeadVersion()).toBe(5n);
+    adapter.push(ev(6));
+    expect((await adapter.fetchEvents(moduleDesc)).events).toHaveLength(2);
+  });
+
+  it("drives a running on() with each pushed event once", async () => {
+    const adapter = new MemoryAdapter([ev(1)]);
+    const client = new StreamdClient({ adapter });
+    const seen: bigint[] = [];
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => (finish = resolve));
+    const subscription = client.on(
+      moduleDesc,
+      (event) => {
+        seen.push(event.version);
+        if (seen.length === 1) adapter.push(ev(2), ev(3));
+        if (seen.length === 3) finish();
+      },
+      { pollInterval: 1 },
+    );
+    await finished;
+    await Bun.sleep(15);
+    subscription.unsubscribe();
+    expect(seen).toEqual([1n, 2n, 3n]);
+  });
+
+  it("resolves a waiting once()", async () => {
+    const adapter = new MemoryAdapter();
+    const client = new StreamdClient({ adapter });
+    const waiting = client.once(moduleDesc, { pollInterval: 1 });
+    await Bun.sleep(5);
+    adapter.push(ev(9));
+    expect((await waiting).version).toBe(9n);
   });
 });
