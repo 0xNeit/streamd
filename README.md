@@ -907,7 +907,7 @@ are listed, since the struct and field form cannot address one nested inside a
 struct field. A nested handle is still readable by creation number, taken from
 the `guid` in the resource data.
 
-### Check a module descriptor
+### Check a descriptor
 
 A misspelled event type is not an error to the module scan: it just never
 matches. `checkDescriptor(aptos, descriptor)` reads the module ABI for each
@@ -939,9 +939,24 @@ Each type gets one status:
 
 `ok` is true when every type is `event` or `legacy`. A generic type is checked
 by its outer struct only; its type arguments are not looked up. It makes one
-request per distinct module, accepts `module` descriptors only, and throws
-`StreamdError` for malformed input before any request, or
-`StreamdNetworkError` when the node fails.
+request per distinct module.
+
+`handle` and `resource` descriptors get one entry in `types`, whose `eventType`
+is the resource type, or for a handle by creation number that number as a string:
+
+| Status | Meaning | `ok` |
+| --- | --- | --- |
+| `handle` | The `EventHandle` exists on the account. | yes |
+| `missing-resource` | The account holds no resource of the handle's struct. | no |
+| `not-handle` | That resource has no such field, or the field is not an `EventHandle`. | no |
+| `missing-handle` | Nothing on the account holds that creation number, nested handles included. | no |
+| `resource` | The account holds the resource. | yes |
+| `not-held` | A valid resource type the account does not hold now; it may be created later. | yes |
+| `not-resource` | The struct lacks `key`, so no account can hold it. | no |
+
+A `resource` type can also report `missing-module` or `missing-struct`.
+`account` descriptors are refused. Malformed input throws `StreamdError` before
+any request, and a node failure is a `StreamdNetworkError`.
 
 ### Typed events
 
