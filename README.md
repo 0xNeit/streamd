@@ -707,6 +707,19 @@ Aborting `on()` unsubscribes quietly without calling `onError`. Aborting
 paging and rejects with `signal.reason`. An already-aborted signal never
 fetches.
 
+### Limit the request rate
+
+```ts
+const streamd = new StreamdClient({ aptos, maxRequestsPerSecond: 2 });
+```
+
+Adapter calls start at least `1000 / maxRequestsPerSecond` ms apart, with no burst, across
+every subscription and query on the client. A fraction is allowed: `0.5` is one call every two
+seconds. It counts what `maxConcurrentRequests` counts, shares its queue, and combines with
+it. The unit is one adapter call, so a module-event scan may make several HTTP requests per
+call and needs a lower number. `ownedBy` predicates read through the SDK directly and are
+not counted.
+
 ### Limit concurrent requests
 
 ```ts

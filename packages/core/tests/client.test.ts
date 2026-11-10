@@ -1829,6 +1829,34 @@ describe("StreamdClient query retries", () => {
   });
 });
 
+describe("maxRequestsPerSecond", () => {
+  it("rejects anything but a positive finite number", () => {
+    for (const bad of [0, -1, Number.NaN, Infinity, "2"]) {
+      expect(() => new StreamdClient({ adapter: new MemoryAdapter(), maxRequestsPerSecond: bad as number })).toThrow(
+        StreamdError,
+      );
+    }
+    expect(() => new StreamdClient({ adapter: new MemoryAdapter(), maxRequestsPerSecond: 0.5 })).not.toThrow();
+  });
+
+  it("spaces a client's adapter calls", async () => {
+    const memory = new MemoryAdapter();
+    const at: number[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => {
+        at.push(performance.now());
+        return memory.fetchEvents(d, o);
+      },
+    };
+    const client = new StreamdClient({ adapter, maxRequestsPerSecond: 40 });
+    const descriptor = { kind: "account", accountAddress: "0x1" } as const;
+    await Promise.all([client.getEvents(descriptor), client.getEvents(descriptor), client.getEvents(descriptor)]);
+    expect(at).toHaveLength(3);
+    expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(24);
+    expect(at[2]! - at[1]!).toBeGreaterThanOrEqual(24);
+  });
+});
+
 describe("maxConcurrentRequests", () => {
   const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
 

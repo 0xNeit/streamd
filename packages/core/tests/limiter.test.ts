@@ -1,4 +1,4 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, spyOn } from "bun:test";
 import { RequestLimiter } from "../src/limiter.js";
 import { StreamdError } from "../src/errors.js";
 import type { EventAdapter, EventPage, TransactionSimulation } from "../src/types.js";
@@ -22,6 +22,103 @@ function harness() {
     });
   return { started, settle, task, peak: () => peak };
 }
+
+describe("RequestLimiter spacing", () => {
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const gaps = (times: number[]) => times.slice(1).map((t, i) => t - times[i]!);
+
+  function timed(limiter: RequestLimiter, count: number) {
+    const started: number[] = [];
+    const at: number[] = [];
+    const runs = Array.from({ length: count }, (_, id) =>
+      limiter.run(async () => {
+        started.push(id);
+        at.push(performance.now());
+        return id;
+      }),
+    );
+    return { started, at, runs };
+  }
+
+  it("spaces starts at the interval, in order, with the first at once", async () => {
+    const t = timed(new RequestLimiter(Infinity, 50), 4);
+    expect(t.started).toEqual([0]);
+    expect(await Promise.all(t.runs)).toEqual([0, 1, 2, 3]);
+    expect(t.started).toEqual([0, 1, 2, 3]);
+    for (const gap of gaps(t.at)) expect(gap).toBeGreaterThanOrEqual(19);
+  });
+
+  it("never lets a new call jump the queue while slots are free", async () => {
+    const limiter = new RequestLimiter(Infinity, 25);
+    const t = timed(limiter, 2);
+    await sleep(45);
+    const late = limiter.run(async () => void t.started.push(9));
+    await Promise.all([...t.runs, late]);
+    expect(t.started).toEqual([0, 1, 9]);
+  });
+
+  it("applies both limits together", async () => {
+    const limiter = new RequestLimiter(1, 100);
+    const h = harness();
+    const runs = [1, 2].map((id) => limiter.run(h.task(id)));
+    await sleep(40);
+    expect(h.started).toEqual([1]);
+    h.settle.get(1)!.ok();
+    await sleep(20);
+    expect(h.started).toEqual([1, 2]);
+    h.settle.get(2)!.ok();
+    await Promise.all(runs);
+    expect(h.peak()).toBe(1);
+  });
+
+  it("lets a dropped waiter leave, and the next one keep its turn", async () => {
+    const limiter = new RequestLimiter(Infinity, 25);
+    const controller = new AbortController();
+    const started: number[] = [];
+    const first = limiter.run(async () => void started.push(1));
+    const dropped = limiter.run(async () => void started.push(2), controller.signal);
+    const third = limiter.run(async () => void started.push(3));
+    controller.abort(new Error("stopped"));
+    await expect(dropped).rejects.toThrow("stopped");
+    await Promise.all([first, third]);
+    expect(started).toEqual([1, 3]);
+  });
+
+  it("clear rejects waiters and starts nothing afterwards", async () => {
+    const limiter = new RequestLimiter(Infinity, 50);
+    const started: number[] = [];
+    const first = limiter.run(async () => void started.push(1));
+    const second = limiter.run(async () => void started.push(2));
+    limiter.clear();
+    await first;
+    await expect(second).rejects.toBeInstanceOf(StreamdError);
+    await sleep(40);
+    expect(started).toEqual([1]);
+  });
+
+  it("starts everything at once without a rate", () => {
+    expect(timed(new RequestLimiter(), 5).started).toEqual([0, 1, 2, 3, 4]);
+  });
+
+  it("reads no clock without a rate, so fake timers cannot stall it", async () => {
+    const now = spyOn(performance, "now").mockReturnValueOnce(1e9).mockReturnValue(0);
+    const limiter = new RequestLimiter();
+    await limiter.run(async () => 1);
+    expect(timed(limiter, 1).started).toEqual([0]);
+    now.mockRestore();
+  });
+
+  it("keeps a slowly finishing call from shortening the interval", async () => {
+    const limiter = new RequestLimiter(Infinity, 25);
+    const at: number[] = [];
+    await limiter.run(async () => {
+      at.push(performance.now());
+      await sleep(10);
+    });
+    await limiter.run(async () => void at.push(performance.now()));
+    expect(at[1]! - at[0]!).toBeGreaterThanOrEqual(39);
+  });
+});
 
 describe("RequestLimiter", () => {
   it("never runs more than max tasks at once, starting queued ones in FIFO order", async () => {
