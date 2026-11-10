@@ -69,8 +69,7 @@ const POSITION_PREFIX = "streamd-reduction:";
  * An adapter cursor moves per page and the value per event, so a position saved
  * partway through a page also names the last folded event, for the resume to skip.
  */
-function encodePosition(cursor: string | undefined, last: Folded | undefined): string | undefined {
-  if (cursor === undefined && last === undefined) return undefined;
+function encodePosition(cursor: string | undefined, last: Folded | undefined): string {
   return POSITION_PREFIX + JSON.stringify([cursor ?? null, last?.version.toString() ?? null, last?.eventIndex ?? null]);
 }
 
@@ -122,7 +121,6 @@ export function startReduction<S, TData>(
   let state = initial;
   let last: Folded | undefined = resumed?.last;
   let live: Subscription | undefined;
-  let followedFrom: string | undefined;
   let stopped = false;
   const backfill = new AbortController();
   const report = (err: Error) => (options.onError ?? host.onError)?.(err);
@@ -159,7 +157,6 @@ export function startReduction<S, TData>(
   // Without a cursor, follow from the last folded version; `after` skips what
   // was already folded there or, on a resume, earlier in the cursor's page.
   const follow = (cursor: string | undefined, after: Folded | undefined) => {
-    followedFrom = cursor;
     const start = cursor !== undefined ? { cursor } : { fromVersion: last!.version };
     live = host.subscribe(
       descriptor,
@@ -224,7 +221,7 @@ export function startReduction<S, TData>(
       return state;
     },
     get cursor() {
-      return live === undefined ? undefined : encodePosition(live.cursor ?? followedFrom, last);
+      return live === undefined ? undefined : encodePosition(live.cursor, last);
     },
     ready,
     get active() {
