@@ -662,6 +662,13 @@ export interface ReduceOptions<S = unknown, TData = unknown>
       | "signal"
     > {
   /**
+   * `Reduction.cursor` from an earlier run, with its `value` as `initial`, to
+   * continue instead of reading the history again: `ready` resolves with
+   * `initial`, and the history options are ignored. An adapter cursor from
+   * `onCursor` works too.
+   */
+  cursor?: string;
+  /**
    * Called after each live event is folded in, with the new state. Not called
    * during the backfill, whose result `ready` resolves with. A throw goes to
    * `onError` and does not stop the reduction.
@@ -673,6 +680,13 @@ export interface ReduceOptions<S = unknown, TData = unknown>
 export interface Reduction<S> {
   /** The reduction of every event folded so far; the last good one once stopped. */
   readonly value: S;
+  /**
+   * Where `value` stands: save the two together, and pass them back as
+   * `initial` and `ReduceOptions.cursor` after a restart. Agrees with `value`
+   * at any moment, inside `onChange` too. Undefined until the backfill has
+   * finished; still readable after unsubscribing.
+   */
+  readonly cursor: string | undefined;
   /**
    * Resolves with the backfilled value once the history is folded and live
    * following has started. Rejects if the backfill fails, the reducer throws,

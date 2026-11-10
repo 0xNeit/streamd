@@ -353,6 +353,24 @@ following, and `where` and `decode` (or the client's `defaults.decode`) apply to
 Options that would leave no exact point to follow from, such as `limit`, `toVersion` or
 `orderBy`, are refused.
 
+To survive a restart without refolding the history, save `value` and `cursor` together and pass
+them back:
+
+```ts
+const volume = streamd.reduce(Deposit, add, saved?.value ?? 0n, {
+  fromVersion: 0n,
+  cursor: saved?.cursor,
+  onChange: (value) => save({ value, cursor: volume.cursor }),
+});
+```
+
+`cursor` is `undefined` until the backfill has finished, and stays readable after
+`unsubscribe()`. It always agrees with `value`, inside `onChange` too, so each event is folded
+exactly once. With a cursor no history is read: `ready` resolves with the value you passed, and
+`fromVersion`, `fromBlock` and `fromTime` are ignored. It is an opaque, JSON-safe string, and only
+works with the descriptor and node that produced it. Keep `value` JSON-safe if you store it as
+JSON.
+
 A throwing reducer stops the reduction, since folding past a lost event would leave the
 value wrong: the error goes to `onError` (or the client's), `ready` rejects if the backfill
 was still running, and `value` keeps the last good state. A failed backfill does the same.
