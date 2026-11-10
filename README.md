@@ -946,7 +946,7 @@ streamd codegen --out src/coin.ts 0x1::coin
 ```ts
 import { balanceView } from "./coin";
 
-const deposits = await streamd.getEvents(FeeStatement, {
+const fees = await streamd.getEvents(FeeStatement, {
   fromVersion: -1000n,
   limit: 10,
   withState: (event) => balanceView("0x1::aptos_coin::AptosCoin", event.sender!),
