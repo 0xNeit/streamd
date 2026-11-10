@@ -56,7 +56,7 @@ export type {
   EventDifference,
   EventDifferenceField,
 } from "./compare.js";
-export type { CachingAdapterOptions } from "./adapters/caching.js";
+export type { CachingAdapterOptions, PageStore } from "./adapters/caching.js";
 export type { FullnodeScanAdapterOptions } from "./adapters/fullnode.js";
 export type { IndexerAccountAdapterOptions } from "./adapters/indexer.js";
 export type {

@@ -52,7 +52,7 @@ function toJson(value: unknown): unknown {
   );
 }
 
-function pageJson(page: EventPage): unknown {
+export function pageJson(page: EventPage): unknown {
   return toJson({
     events: page.events.map((event) => JSON.parse(serializeEvent(event)) as unknown),
     nextCursor: page.nextCursor,
@@ -183,7 +183,7 @@ function optional<T>(value: unknown, type: string, field: string): T | undefined
   return value as T | undefined;
 }
 
-function parsePage(value: unknown): EventPage {
+export function parsePage(value: unknown): EventPage {
   if (!isObject(value) || !Array.isArray(value.events)) {
     throw new StreamdError('"events" must be an array');
   }

@@ -6,13 +6,31 @@ import type {
 } from "../types.js";
 import { StreamdError } from "../errors.js";
 import { fetchKey } from "../utils.js";
+import { pageJson, parsePage } from "./recording.js";
 import { requireAdapter } from "./validate.js";
 
 const DEFAULT_MAX_ENTRIES = 1000;
 
+/**
+ * Somewhere `CachingAdapter` can keep pages past a restart. Values are opaque
+ * JSON text. Keys name the request and not the network, so keep one store per
+ * network.
+ */
+export interface PageStore {
+  get(key: string): string | undefined | null | Promise<string | undefined | null>;
+  set(key: string, page: string): void | Promise<void>;
+}
+
 export interface CachingAdapterOptions {
-  /** Pages kept before the least recently used is dropped (default: 1000). */
+  /** Pages kept in memory before the least recently used is dropped (default: 1000). */
   maxEntries?: number;
+  /** Also keep final pages here, read when memory misses. */
+  store?: PageStore;
+  /**
+   * Called when `store` fails or holds an unreadable entry. A broken store
+   * never fails a read: the page comes from the source instead.
+   */
+  onStoreError?: (error: unknown) => void;
 }
 
 function copy(page: EventPage): EventPage {
@@ -27,10 +45,16 @@ function copy(page: EventPage): EventPage {
  * `getBlockHeights`, `getTransactionEvents`, `simulateTransactionEvents` and
  * `view` pass through uncached, only when the wrapped adapter has them.
  * (A view at a past version never changes, so it could be cached; it is not.)
+ *
+ * With a `store`, final pages also survive a restart. A `bigint` inside an
+ * event's `data` comes back from the store as a decimal string, as
+ * `serializeEvent` writes it.
  */
 export class CachingAdapter implements EventAdapter {
   private readonly source: EventAdapter;
   private readonly maxEntries: number;
+  private readonly store?: PageStore;
+  private readonly onStoreError?: (error: unknown) => void;
   // Map order is recency order: a hit is moved to the end, the front is evicted.
   private readonly pages = new Map<string, EventPage>();
 
@@ -51,6 +75,11 @@ export class CachingAdapter implements EventAdapter {
       );
     }
     this.maxEntries = max;
+    if (options.store !== undefined && (typeof options.store.get !== "function" || typeof options.store.set !== "function")) {
+      throw new StreamdError("store must have get() and set()");
+    }
+    this.store = options.store;
+    this.onStoreError = options.onStoreError;
 
     const source = this.source;
     if (source.getHeadVersion !== undefined) {
@@ -93,12 +122,46 @@ export class CachingAdapter implements EventAdapter {
       return copy(cached);
     }
 
+    const stored = await this.readStored(key);
+    if (stored !== undefined) {
+      this.remember(key, stored);
+      return copy(stored);
+    }
+
     const page = await this.source.fetchEvents(descriptor, options);
     if (page.final !== true) return page;
+    this.remember(key, page);
+    await this.writeStored(key, page);
+    return page;
+  }
+
+  private remember(key: string, page: EventPage): void {
     this.pages.set(key, copy(page));
     if (this.pages.size > this.maxEntries) {
       this.pages.delete(this.pages.keys().next().value!);
     }
-    return page;
+  }
+
+  private async readStored(key: string): Promise<EventPage | undefined> {
+    if (this.store === undefined) return undefined;
+    try {
+      const text = await this.store.get(key);
+      if (text === undefined || text === null) return undefined;
+      const page = parsePage(JSON.parse(text));
+      if (page.final !== true) throw new StreamdError("A stored page is not final");
+      return page;
+    } catch (err) {
+      this.onStoreError?.(err);
+      return undefined;
+    }
+  }
+
+  private async writeStored(key: string, page: EventPage): Promise<void> {
+    if (this.store === undefined) return;
+    try {
+      await this.store.set(key, JSON.stringify(pageJson(page)));
+    } catch (err) {
+      this.onStoreError?.(err);
+    }
   }
 }
