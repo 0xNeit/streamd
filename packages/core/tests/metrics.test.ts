@@ -81,6 +81,10 @@ describe("adapterMetrics", () => {
       const metrics = adapterMetrics(adapter);
       for (let i = 0; i < 100; i++) await metrics.adapter.fetchEvents(descriptor, {});
       expect(metrics.snapshot().fetchEvents!.latency).toEqual({ p50: 50, p95: 95, p99: 99, max: 100 });
+      metrics.reset();
+      durations.push(1, 2, 3, 4, 5);
+      for (let i = 0; i < 5; i++) await metrics.adapter.fetchEvents(descriptor, {});
+      expect(metrics.snapshot().fetchEvents!.latency).toEqual({ p50: 3, p95: 5, p99: 5, max: 5 });
     } finally {
       performance.now = original;
     }
