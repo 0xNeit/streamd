@@ -445,3 +445,71 @@ describe("--from-time", () => {
     expect(() => parseCommand(argv)).toThrow(pattern);
   });
 });
+
+describe("every descriptor kind", () => {
+  const RESOURCE = "0x1::block::BlockResource";
+  const bounds = ["--from-version", "1", "--to-version", "2"];
+  const commands: [string, string[]][] = [
+    ["tail", []],
+    ["forward", ["--to", "https://h.example"]],
+    ["store", ["--db", "e.db"]],
+    ["query", bounds],
+    ["record", bounds],
+  ];
+
+  it.each(commands)("%s follows a resource", (command, extra) => {
+    expect(parseCommand([command, ...extra, "--account", ADDR, "--resource", RESOURCE])).toMatchObject({
+      options: { descriptor: { kind: "resource", accountAddress: LONG_ADDR, resourceType: RESOURCE } },
+    });
+  });
+
+  it.each(commands)("%s follows a handle by creation number", (command, extra) => {
+    expect(parseCommand([command, ...extra, "--account", ADDR, "--creation-number", "7"])).toMatchObject({
+      options: { descriptor: { kind: "handle", accountAddress: LONG_ADDR, creationNumber: 7n } },
+    });
+  });
+
+  it("takes the largest u64 creation number exactly", () => {
+    expect(parseCommand(["tail", "--account", ADDR, "--creation-number", "18446744073709551615"])).toMatchObject({
+      options: { descriptor: { creationNumber: 18446744073709551615n } },
+    });
+  });
+
+  it.each([
+    [["tail", "--resource", RESOURCE], /--resource needs --account/],
+    [["tail", "--creation-number", "7"], /--creation-number needs --account/],
+    [["tail", "--account", ADDR, "--resource", RESOURCE, "--creation-number", "7"], /not both/],
+    [["tail", "--account", ADDR, "--resource", RESOURCE, "--handle", "s", "--field", "f"], /cannot be combined/],
+    [["tail", "--account", ADDR, "--creation-number", "7", "--field", "f"], /cannot be combined/],
+    [["tail", "--account", ADDR, "--resource", RESOURCE, TYPE], /event types cannot be combined/],
+    [["tail", "--account", ADDR, "--creation-number", "7", TYPE], /event types cannot be combined/],
+    [["tail", "--account", ADDR, "--resource", "nope"], /resource|type/i],
+    [["tail", "--account", ADDR, "--creation-number", "x"], /must be a u64/],
+    [["tail", "--account", ADDR, "--creation-number", "18446744073709551616"], /must be a u64/],
+    [["check", "--account", ADDR, "--resource", RESOURCE], /account/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
+
+describe("Movement networks", () => {
+  it.each(["movement-mainnet", "movement-testnet"])("%s reaches every command", (name) => {
+    const net = ["--network", name];
+    const range = ["--from-version", "1", "--to-version", "2"];
+    for (const argv of [
+      ["tail", ...net, TYPE],
+      ["forward", "--to", "https://h.example", ...net, TYPE],
+      ["store", "--db", "e.db", ...net, TYPE],
+      ["query", ...range, ...net, TYPE],
+      ["record", ...range, ...net, TYPE],
+      ["check", ...net, TYPE],
+      ["codegen", ...net, "0x1::coin"],
+    ]) {
+      expect(parseCommand(argv)).toMatchObject({ options: { network: name } });
+    }
+  });
+
+  it("still refuses an unknown network, naming the choices", () => {
+    expect(() => parseCommand(["tail", "--network", "moon", TYPE])).toThrow(/movement-mainnet/);
+  });
+});

@@ -1,9 +1,9 @@
 import { parseArgs } from "node:util";
-import { requireAddress, requireEventType } from "@streamd/core";
+import { requireAddress, requireEventType, requireResourceType } from "@streamd/core";
 import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
 import type { ModuleRef } from "./codegen.js";
 
-export type Network = "mainnet" | "testnet" | "devnet";
+export type Network = "mainnet" | "testnet" | "devnet" | "movement-mainnet" | "movement-testnet";
 
 /** Where events come from: shared by `tail` and `forward`. */
 export interface SourceOptions {
@@ -94,13 +94,20 @@ export class UsageError extends Error {
   }
 }
 
-const NETWORKS: readonly Network[] = ["mainnet", "testnet", "devnet"];
+const NETWORKS: readonly Network[] = ["mainnet", "testnet", "devnet", "movement-mainnet", "movement-testnet"];
+const U64_MAX = 2n ** 64n - 1n;
 const MAX_TIMEOUT = 2_147_483_647;
 
-const SOURCE_OPTIONS = {
+const DESCRIPTOR_OPTIONS = {
   account: { type: "string" },
   handle: { type: "string" },
   field: { type: "string" },
+  resource: { type: "string" },
+  "creation-number": { type: "string" },
+} as const;
+
+const SOURCE_OPTIONS = {
+  ...DESCRIPTOR_OPTIONS,
   network: { type: "string" },
   "node-url": { type: "string" },
   "from-version": { type: "string" },
@@ -129,9 +136,7 @@ const STORE_OPTIONS = {
 } as const;
 
 const RECORD_OPTIONS = {
-  account: { type: "string" },
-  handle: { type: "string" },
-  field: { type: "string" },
+  ...DESCRIPTOR_OPTIONS,
   network: { type: "string" },
   "node-url": { type: "string" },
   "from-version": { type: "string" },
@@ -143,9 +148,7 @@ const RECORD_OPTIONS = {
 
 const QUERY_OPTIONS = {
   ...FROM_TIME,
-  account: { type: "string" },
-  handle: { type: "string" },
-  field: { type: "string" },
+  ...DESCRIPTOR_OPTIONS,
   network: { type: "string" },
   "node-url": { type: "string" },
   "from-version": { type: "string" },
@@ -184,6 +187,8 @@ export const USAGE = `Usage:
   streamd tail [options] <eventType>...
   streamd tail --account <address> [options] [<eventType>...]
   streamd tail --account <address> --handle <struct> --field <name> [options]
+  streamd tail --account <address> --creation-number <n> [options]
+  streamd tail --account <address> --resource <type> [options]
   streamd forward --to <url> [options] <eventType>...
   streamd forward --to <url> --account <address> [...]
   streamd store --db <file> [options] <eventType>...
@@ -208,7 +213,10 @@ Options:
   --account <address>    events from transactions this account sent
   --handle <struct>      legacy event handle struct (with --account and --field)
   --field <name>         event handle field name
-  --network <name>       mainnet, testnet, or devnet (default: mainnet)
+  --creation-number <n>  event handle by creation number (with --account)
+  --resource <type>      every change to this resource (with --account)
+  --network <name>       mainnet, testnet, devnet, movement-mainnet, or movement-testnet
+                         (default: mainnet)
   --node-url <url>       fullnode URL, overriding the network's default
   --from-version <n>     start at this version instead of the chain head
   --from-time <t>        tail, forward, query: start here, as 2h, 7d or an ISO date (UTC)
@@ -324,6 +332,14 @@ interface DescriptorFlags {
   account?: string;
   handle?: string;
   field?: string;
+  resource?: string;
+  "creation-number"?: string;
+}
+
+function creationNumber(raw: string): bigint {
+  const number = /^\d+$/.test(raw) ? BigInt(raw) : -1n;
+  if (number < 0n || number > U64_MAX) throw new UsageError(`--creation-number must be a u64: ${raw}`);
+  return number;
 }
 
 function descriptor(
@@ -331,6 +347,22 @@ function descriptor(
   flags: DescriptorFlags,
   types: string[],
 ): EventDescriptor {
+  const number = flags["creation-number"];
+  if (flags.resource !== undefined || number !== undefined) {
+    if (flags.resource !== undefined && number !== undefined) {
+      throw new UsageError("set --resource or --creation-number, not both");
+    }
+    const flag = flags.resource !== undefined ? "--resource" : "--creation-number";
+    if (flags.account === undefined) throw new UsageError(`${flag} needs --account`);
+    if (flags.handle !== undefined || flags.field !== undefined) {
+      throw new UsageError(`${flag} cannot be combined with --handle or --field`);
+    }
+    if (types.length > 0) throw new UsageError(`event types cannot be combined with ${flag}`);
+    const accountAddress = wrap(() => requireAddress(flags.account!));
+    return flags.resource !== undefined
+      ? { kind: "resource", accountAddress, resourceType: wrap(() => requireResourceType(flags.resource)) as MoveEventType }
+      : { kind: "handle", accountAddress, creationNumber: creationNumber(number!) };
+  }
   const eventTypes = types.map((t) => wrap(() => requireEventType(t)));
   if (flags.handle !== undefined || flags.field !== undefined) {
     if (flags.handle === undefined || flags.field === undefined || flags.account === undefined) {

@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { Aptos, AptosConfig, getAptosFullNode, Network } from "@aptos-labs/ts-sdk";
-import { FullnodeScanAdapter, StreamdClient, StreamdError, checkDescriptor } from "@streamd/core";
+import { FullnodeScanAdapter, StreamdClient, StreamdError, checkDescriptor, networks } from "@streamd/core";
 import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
@@ -25,10 +25,15 @@ import { runRecord, writeAtomically } from "./record.js";
 import { openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
 
+// The SDK logs notes for custom networks with console.log, which would corrupt JSON lines on stdout.
+console.log = console.error;
+
 const NETWORKS = {
-  mainnet: Network.MAINNET,
-  testnet: Network.TESTNET,
-  devnet: Network.DEVNET,
+  mainnet: { network: Network.MAINNET },
+  testnet: { network: Network.TESTNET },
+  devnet: { network: Network.DEVNET },
+  "movement-mainnet": networks.movementMainnet,
+  "movement-testnet": networks.movementTestnet,
 } as const;
 
 function parse(argv: string[]): ParsedCommand | undefined {
@@ -43,8 +48,8 @@ function parse(argv: string[]): ParsedCommand | undefined {
 
 function aptosConfig(options: Pick<SourceOptions, "network" | "nodeUrl">): AptosConfig {
   return new AptosConfig({
-    network: NETWORKS[options.network],
-    fullnode: options.nodeUrl,
+    ...NETWORKS[options.network],
+    ...(options.nodeUrl !== undefined && { fullnode: options.nodeUrl }),
     // The SDK's default HTTP/2 hangs under Bun, with no error.
     ...("Bun" in globalThis && { clientConfig: { http2: false } }),
   });
