@@ -31,6 +31,7 @@ const LIVE_KEYS = [
   "batchSize",
   "maxErrors",
   "maxBackoff",
+  "maxPollInterval",
   "dedupWindow",
   "onCaughtUp",
 ] as const;

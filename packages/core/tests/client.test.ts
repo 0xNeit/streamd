@@ -1829,6 +1829,41 @@ describe("StreamdClient query retries", () => {
   });
 });
 
+describe("maxPollInterval", () => {
+  it("applies from client defaults, and a call's own value wins", async () => {
+    vi.useFakeTimers();
+    try {
+      const at: number[] = [];
+      const adapter: EventAdapter = {
+        fetchEvents: async () => {
+          at.push(Date.now());
+          return { events: [], nextCursor: String(at.length), hasMore: false };
+        },
+      };
+      const client = new StreamdClient({ adapter, defaults: { pollInterval: 100, maxPollInterval: 400 } });
+      const descriptor = { kind: "account", accountAddress: "0x1" } as const;
+      const sub = client.on(descriptor, () => {}, { fromVersion: 0n });
+      await advanceTimersByTimeAsync(1200);
+      sub.unsubscribe();
+      expect(at.slice(1).map((t, i) => t - at[i]!)).toEqual([100, 200, 400, 400]);
+
+      at.length = 0;
+      const own = client.on(descriptor, () => {}, { fromVersion: 0n, maxPollInterval: 100 });
+      await advanceTimersByTimeAsync(250);
+      own.unsubscribe();
+      expect(at.slice(1).map((t, i) => t - at[i]!)).toEqual([100, 100]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("rejects an invalid default at construction", () => {
+    expect(() => new StreamdClient({ adapter: new MemoryAdapter(), defaults: { maxPollInterval: -1 } })).toThrow(
+      /maxPollInterval/,
+    );
+  });
+});
+
 describe("maxRequestsPerSecond", () => {
   it("rejects anything but a positive finite number", () => {
     for (const bad of [0, -1, Number.NaN, Infinity, "2"]) {

@@ -46,6 +46,16 @@ export function resolveMaxBackoff(maxBackoff: number | undefined): number {
   return maxBackoff;
 }
 
+export function resolveMaxPollInterval(max: number | undefined): number | undefined {
+  if (max === undefined) return undefined;
+  if (typeof max !== "number" || !Number.isFinite(max) || max < 0 || max > MAX_DELAY) {
+    throw new StreamdError(
+      `Invalid maxPollInterval: ${String(max)} (expected 0..${MAX_DELAY}ms)`,
+    );
+  }
+  return max;
+}
+
 /** An event ready to deliver, and the view to read for it, if any. */
 type Prepared = { event: StreamdEvent; request?: ViewRequest };
 
@@ -68,6 +78,8 @@ export class EventPoller {
   private lastVersion: bigint | undefined = undefined;
   private lastSuccessAt: number | undefined = undefined;
   private currentInterval: number;
+  /** The wait after the next empty page; grows only under `maxPollInterval`. */
+  private quietInterval: number;
   private _active = false;
   private _paused = false;
   private caughtUp = false;
@@ -90,6 +102,7 @@ export class EventPoller {
   private readonly batchSize: number;
   private readonly maxErrors: number;
   private readonly maxBackoff: number;
+  private readonly maxPollInterval?: number;
   /** Absolute once the first poll has resolved a relative or earliest start. */
   private fromVersion?: bigint | "earliest";
   /** Cleared once the first poll has resolved it into `fromVersion`. */
@@ -120,6 +133,7 @@ export class EventPoller {
     this.batchSize = options.batchSize ?? DEFAULT_BATCH_SIZE;
     this.maxErrors = options.maxErrors ?? DEFAULT_MAX_ERRORS;
     this.maxBackoff = resolveMaxBackoff(options.maxBackoff);
+    this.maxPollInterval = resolveMaxPollInterval(options.maxPollInterval);
     validateFromTime(options);
     this.fromVersion = options.fromVersion;
     this.fromTime = options.fromTime;
@@ -131,6 +145,7 @@ export class EventPoller {
     this.onCaughtUp = options.onCaughtUp;
     this.signal = options.signal;
     this.currentInterval = this.pollInterval;
+    this.quietInterval = this.pollInterval;
     this.dedupWindow = options.dedupWindow;
     this.position = new CursorManager(options.cursor, options.dedupWindow);
   }
@@ -168,6 +183,7 @@ export class EventPoller {
     if (!this._paused) {
       this.consecutiveErrors = 0;
       this.currentInterval = this.pollInterval;
+      this.quietInterval = this.pollInterval;
     }
     this._active = true;
     this._paused = false;
@@ -305,11 +321,24 @@ export class EventPoller {
       // onCaughtUp or its error handler may have stopped or paused the poller.
       if (!this.isCurrent(gen)) return;
 
+      // Empty is what the source returned, before `where`: filtered events
+      // still show it is busy.
+      const empty = page.events.length === 0;
+      if (!empty) this.quietInterval = this.pollInterval;
       // Catch-up mode: the adapter says more is waiting, so don't idle.
-      this.schedulePoll(page.hasMore ? 0 : this.pollInterval);
+      this.schedulePoll(page.hasMore ? 0 : this.idleDelay(empty));
     } catch (err) {
       this.handlePollError(err, gen);
     }
+  }
+
+  private idleDelay(empty: boolean): number {
+    const delay = this.quietInterval;
+    if (empty && this.maxPollInterval !== undefined) {
+      const cap = Math.max(this.maxPollInterval, this.pollInterval);
+      this.quietInterval = Math.min(Math.max(delay * 2, 1), cap);
+    }
+    return delay;
   }
 
   private signalCaughtUp(): void {

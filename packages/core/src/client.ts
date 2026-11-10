@@ -34,7 +34,7 @@ import type {
   WatchOptions,
 } from "./types.js";
 import { FullnodeScanAdapter } from "./adapters/fullnode.js";
-import { EventPoller, resolveMaxBackoff, type Delivery } from "./poller.js";
+import { EventPoller, resolveMaxBackoff, resolveMaxPollInterval, type Delivery } from "./poller.js";
 import { EventQuery } from "./query.js";
 import {
   StreamdError,
@@ -91,6 +91,7 @@ const DEFAULT_KEYS = [
   "batchSize",
   "maxErrors",
   "maxBackoff",
+  "maxPollInterval",
   "dedupWindow",
   "decode",
 ] as const satisfies readonly (keyof ListenerDefaults)[];
@@ -111,6 +112,7 @@ function resolveDefaults(config: StreamdConfig): ListenerDefaults {
   }
   const resolved: ListenerDefaults = { ...defaults };
   resolveMaxBackoff(resolved.maxBackoff);
+  resolveMaxPollInterval(resolved.maxPollInterval);
   fieldDecoder(resolved.decode);
   new CursorManager(undefined, resolved.dedupWindow);
   resolved.pollInterval ??= config.defaultPollInterval ?? 1000;
