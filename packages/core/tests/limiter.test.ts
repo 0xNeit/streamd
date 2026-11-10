@@ -48,11 +48,13 @@ describe("RequestLimiter spacing", () => {
     for (const gap of gaps(t.at)) expect(gap).toBeGreaterThanOrEqual(19);
   });
 
-  it("never lets a new call jump the queue while slots are free", async () => {
-    const limiter = new RequestLimiter(Infinity, 25);
+  it("never lets a new call jump the queue in the moment before its timer fires", async () => {
+    const limiter = new RequestLimiter(Infinity, 50);
     const t = timed(limiter, 2);
-    await sleep(45);
+    const now = spyOn(performance, "now").mockReturnValue(performance.now() + 1e6);
     const late = limiter.run(async () => void t.started.push(9));
+    expect(t.started).toEqual([0]);
+    now.mockRestore();
     await Promise.all([...t.runs, late]);
     expect(t.started).toEqual([0, 1, 9]);
   });
@@ -89,7 +91,10 @@ describe("RequestLimiter spacing", () => {
     const started: number[] = [];
     const first = limiter.run(async () => void started.push(1));
     const second = limiter.run(async () => void started.push(2));
+    const cancel = spyOn(globalThis, "clearTimeout");
     limiter.clear();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    cancel.mockRestore();
     await first;
     await expect(second).rejects.toBeInstanceOf(StreamdError);
     await sleep(40);
@@ -101,7 +106,7 @@ describe("RequestLimiter spacing", () => {
   });
 
   it("reads no clock without a rate, so fake timers cannot stall it", async () => {
-    const now = spyOn(performance, "now").mockReturnValueOnce(1e9).mockReturnValue(0);
+    const now = spyOn(performance, "now").mockReturnValueOnce(0).mockReturnValueOnce(1e9).mockReturnValue(0);
     const limiter = new RequestLimiter();
     await limiter.run(async () => 1);
     expect(timed(limiter, 1).started).toEqual([0]);
