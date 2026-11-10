@@ -53,6 +53,7 @@ const sub = streamd.on(
     batchSize: 25,       // events fetched per poll (default 25)
     maxErrors: 10,       // consecutive failures before stopping (default 10)
     maxBackoff: 60_000,  // max backoff delay in ms on failures (default 60000)
+    maxPollInterval: 30_000, // poll less often while nothing arrives (default: off)
     dedupWindow: 1000,   // seen-event dedup window size, 0 to disable (default 1000)
     id: "deposits",      // sub.id; generated when omitted
     onError: (err) => console.error(err),
@@ -87,7 +88,10 @@ deduplication). On errors it backs off exponentially up to `maxBackoff` ms
 (default `60000`), and stops after `maxErrors` failures in a row. When the
 adapter's error carries a server's `Retry-After` hint (see below), it waits
 that long instead, still capped at `maxBackoff` and still counted as a
-failure. Invalid
+failure. With `maxPollInterval`, a quiet subscription polls less often: each empty page
+doubles the wait from `pollInterval` up to that many ms, and a page with events returns it to
+`pollInterval`, so a new event can be seen up to `maxPollInterval` late. An event `where`
+filters out still counts as activity. Invalid
 input, such as a malformed address or cursor, stops it at once, since retrying
 cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
 a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
@@ -111,8 +115,8 @@ streamd.on(deposits, handle);                           // polls every 3000 ms
 streamd.on(withdrawals, handle, { pollInterval: 500 }); // its own interval, still maxErrors 3
 ```
 
-`defaults` sets `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`, `dedupWindow`
-and `decode` for every `on()`, `onBatch()`, `once()` and `stream()` call on the client.
+`defaults` sets `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`, `maxPollInterval`,
+`dedupWindow` and `decode` for every `on()`, `onBatch()`, `once()` and `stream()` call on the client.
 A call's own value for a field wins, and one it leaves `undefined` takes the default; a
 call's `decode` replaces the default list rather than adding to it. `defaults.pollInterval`
 wins over `defaultPollInterval`. Start positions, `where`, `signal`, `onCaughtUp` and

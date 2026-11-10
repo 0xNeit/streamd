@@ -553,6 +553,13 @@ export interface ListenerOptions {
    */
   maxBackoff?: number;
   /**
+   * Lets a quiet subscription poll less often: each empty page doubles the
+   * wait from `pollInterval` up to this many ms, and a page with events returns
+   * it to `pollInterval`. A new event can then be seen up to this late. At or
+   * below `pollInterval` it never stretches. Omit to always wait `pollInterval`.
+   */
+  maxPollInterval?: number;
+  /**
    * Sliding-window capacity for deduplicating seen events by
    * `(version, eventIndex)` (default: 1000). Set to `0` to disable client-side
    * deduplication.
@@ -648,6 +655,7 @@ export interface ReduceOptions<S = unknown, TData = unknown>
       | "batchSize"
       | "maxErrors"
       | "maxBackoff"
+      | "maxPollInterval"
       | "dedupWindow"
       | "onError"
       | "onCaughtUp"
@@ -745,7 +753,7 @@ export interface Replay {
  */
 export type ListenerDefaults = Pick<
   ListenerOptions,
-  "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "dedupWindow" | "decode"
+  "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "maxPollInterval" | "dedupWindow" | "decode"
 >;
 
 // ---- Client config ----
