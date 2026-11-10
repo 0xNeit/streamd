@@ -1,8 +1,9 @@
 import { describe, it, expect } from "bun:test";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdClient } from "../src/client.js";
-import { defineEvent } from "../src/define.js";
-import type { EventDescriptor, EventStream, StreamdEvent } from "../src/types.js";
+import { defineEvent, defineEvents } from "../src/define.js";
+import { StreamdError } from "../src/errors.js";
+import type { EventDescriptor, EventOf, EventStream, StreamdEvent } from "../src/types.js";
 
 type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
@@ -108,5 +109,130 @@ describe("defineEvent", () => {
     const client = new StreamdClient({ adapter: new MemoryAdapter([]) });
     // @ts-expect-error a Deposit descriptor cannot deliver { other: number }
     await client.getEvents<{ other: number }>(deposit, { fromVersion: 0n });
+  });
+});
+
+describe("defineEvents", () => {
+  const DEPOSIT = "0x1::coin::DepositEvent";
+  const WITHDRAW = "0x1::coin::WithdrawEvent";
+
+  interface Withdrawal {
+    to: string;
+  }
+
+  const both = defineEvents({
+    [DEPOSIT]: defineEvent<Deposit>(DEPOSIT),
+    [WITHDRAW]: defineEvent<Withdrawal>(WITHDRAW),
+  } as {
+    "0x1::coin::DepositEvent": ReturnType<typeof defineEvent<Deposit>>;
+    "0x1::coin::WithdrawEvent": ReturnType<typeof defineEvent<Withdrawal>>;
+  });
+
+  const events: StreamdEvent[] = [
+    { type: DEPOSIT, data: { amount: "5" }, version: 1n, sequenceNumber: 0n, eventIndex: 0 },
+    { type: WITHDRAW, data: { to: "0xb" }, version: 2n, sequenceNumber: 0n, eventIndex: 0 },
+  ];
+
+  it("returns a plain module descriptor over the types", () => {
+    expect(both).toEqual({ kind: "module", eventType: [DEPOSIT, WITHDRAW] });
+  });
+
+  it("refuses an empty set and anything that would make the types lie", () => {
+    const one = defineEvent<Deposit>(DEPOSIT);
+    const bad: unknown[] = [
+      {},
+      undefined,
+      { [WITHDRAW]: one },
+      { [DEPOSIT]: defineEvent<Deposit>([DEPOSIT, WITHDRAW]) },
+      { [DEPOSIT]: { kind: "account", accountAddress: "0x1" } },
+      { [DEPOSIT]: null },
+      { "not a type": defineEvent<Deposit>("not a type" as never) },
+    ];
+    for (const input of bad) {
+      expect(() => defineEvents(input as never)).toThrow(StreamdError);
+    }
+  });
+
+  it("delivers every type and narrows on event.type in each public call", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter(events) });
+    const amounts: string[] = [];
+    const targets: string[] = [];
+
+    type Both = EventOf<typeof both extends EventDescriptor<infer T> ? T : never>;
+    const read = (event: Both) => {
+      // @ts-expect-error a field of one member is not readable before narrowing
+      void event.data.amount;
+      if (event.type === DEPOSIT) amounts.push(event.data.amount);
+      else targets.push(event.data.to);
+    };
+
+    const seen = new Promise<void>((resolve) => {
+      let count = 0;
+      const sub = client.on(
+        both,
+        (event) => {
+          read(event);
+          if (++count === 2) (sub.unsubscribe(), resolve());
+        },
+        { pollInterval: 1 },
+      );
+    });
+    await seen;
+
+    await new Promise<void>((resolve) => {
+      const sub = client.onBatch(
+        both,
+        (batch) => {
+          batch.forEach(read);
+          sub.unsubscribe();
+          resolve();
+        },
+        { pollInterval: 1 },
+      );
+    });
+
+    read(await client.once(both, { pollInterval: 1 }));
+    (await client.getEvents(both)).forEach(read);
+    for await (const page of client.getEventPages(both)) page.forEach(read);
+    for await (const event of client.iterateEvents(both)) read(event);
+
+    const stream = client.stream(both, { pollInterval: 1 });
+    read((await stream.next()).value!);
+    await stream.return?.(undefined);
+
+    const reduction = client.reduce(
+      both,
+      (total: number, event) => total + (event.type === DEPOSIT ? Number(event.data.amount) : event.data.to.length),
+      0,
+      { pollInterval: 1 },
+    );
+    await reduction.ready;
+    expect(reduction.value).toBe(5 + 3);
+    reduction.unsubscribe();
+
+    client.destroy();
+    expect(amounts.every((a) => a === "5")).toBe(true);
+    expect(amounts.length).toBeGreaterThanOrEqual(6);
+    expect(targets.every((t) => t === "0xb")).toBe(true);
+  });
+
+  it("leaves every other payload's event type exactly as it was", () => {
+    const plain: Equals<EventOf<Deposit>, StreamdEvent<Deposit>> = true;
+    const unknownData: Equals<EventOf<unknown>, StreamdEvent<unknown>> = true;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const anyData: Equals<EventOf<any>, StreamdEvent<any>> = true;
+    const union: Equals<EventOf<Deposit | Withdrawal>, StreamdEvent<Deposit | Withdrawal>> = true;
+    expect([plain, unknownData, anyData, union]).toEqual([true, true, true, true]);
+  });
+
+  it("infers the literal keys from an object literal", () => {
+    const direct = defineEvents({
+      "0x1::a::A": defineEvent<{ a: string }>("0x1::a::A"),
+      "0x1::b::B": defineEvent<{ b: number }>("0x1::b::B"),
+    });
+    type Direct = EventOf<typeof direct extends EventDescriptor<infer T> ? T : never>;
+    const check = (event: Direct): string | number =>
+      event.type === "0x1::a::A" ? event.data.a : event.data.b;
+    expect(check({ type: "0x1::b::B", data: { b: 7 }, version: 1n, sequenceNumber: 0n, eventIndex: 0 })).toBe(7);
   });
 });

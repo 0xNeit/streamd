@@ -4,6 +4,7 @@ import type {
   EventExpectation,
   EventPredicate,
   ExpectEventsOptions,
+  EventOf,
   StreamdEvent,
 } from "./types.js";
 import { StreamdAssertionError } from "./errors.js";
@@ -47,7 +48,7 @@ export function expectEvents(
   return {
     async toEmit<TData>(descriptor: EventDescriptor<TData>, where?: EventPredicate) {
       const { all, matched, what } = await match(descriptor, where);
-      if (matched.length > 0) return matched as StreamdEvent<TData>[];
+      if (matched.length > 0) return matched as unknown as EventOf<TData>[];
       throw new StreamdAssertionError(
         `Expected transaction ${transactionHash} to emit ${what}, but ${listing(all)}`,
         transactionHash,

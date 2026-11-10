@@ -2,6 +2,7 @@ import { Aptos } from "@aptos-labs/ts-sdk";
 import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type {
   CloseOptions,
+  EventOf,
   Balances,
   BalancesOptions,
   BatchCallback,
@@ -420,12 +421,12 @@ export class StreamdClient {
   once<TData = unknown>(
     descriptor: EventDescriptor<TData>,
     options?: OnceOptions,
-  ): Promise<StreamdEvent<TData>> {
+  ): Promise<EventOf<TData>> {
     const badTimeout = checkTimeout(options?.timeout);
     if (badTimeout !== undefined) return Promise.reject(badTimeout);
     if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
 
-    return new Promise<StreamdEvent<TData>>((resolve, reject) => {
+    return new Promise<EventOf<TData>>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let detach = () => {};
       const close = () => {
@@ -441,7 +442,7 @@ export class StreamdClient {
       const where = options?.where;
       const sub = this.subscribe(
         descriptor,
-        ((event: StreamdEvent<TData>) => (close(), resolve(event))) as EventCallback,
+        ((event: EventOf<TData>) => (close(), resolve(event))) as unknown as EventCallback,
         {
           ...options,
           where:
@@ -645,8 +646,8 @@ export class StreamdClient {
   async getEvents<TData = unknown>(
     descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
-  ): Promise<StreamdEvent<TData>[]> {
-    return this.query.getEvents<TData>(descriptor, filter);
+  ): Promise<EventOf<TData>[]> {
+    return this.query.getEvents<TData>(descriptor, filter) as unknown as Promise<EventOf<TData>[]>;
   }
 
   /**
@@ -656,8 +657,12 @@ export class StreamdClient {
     descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
     pageSize?: number,
-  ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    return this.query.getEventPages<TData>(descriptor, filter, pageSize);
+  ): AsyncGenerator<EventOf<TData>[], void, unknown> {
+    return this.query.getEventPages<TData>(descriptor, filter, pageSize) as unknown as AsyncGenerator<
+      EventOf<TData>[],
+      void,
+      unknown
+    >;
   }
 
   /**
@@ -668,8 +673,12 @@ export class StreamdClient {
     descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
     pageSize?: number,
-  ): AsyncGenerator<StreamdEvent<TData>, void, unknown> {
-    return this.query.iterateEvents<TData>(descriptor, filter, pageSize);
+  ): AsyncGenerator<EventOf<TData>, void, unknown> {
+    return this.query.iterateEvents<TData>(descriptor, filter, pageSize) as unknown as AsyncGenerator<
+      EventOf<TData>,
+      void,
+      unknown
+    >;
   }
 
   /**
@@ -689,7 +698,7 @@ export class StreamdClient {
     transactionHash: string,
     descriptor?: EventDescriptor<TData>,
     options: EventsOfOptions = {},
-  ): Promise<StreamdEvent<TData>[]> {
+  ): Promise<EventOf<TData>[]> {
     const badTimeout = checkTimeout(options.timeout);
     if (badTimeout !== undefined) throw badTimeout;
     const events = await eventsOf(
@@ -700,7 +709,7 @@ export class StreamdClient {
       descriptor,
       options,
     );
-    return events as StreamdEvent<TData>[];
+    return events as unknown as EventOf<TData>[];
   }
 
   /**
@@ -740,9 +749,9 @@ export class StreamdClient {
     transaction: SimpleTransaction,
     descriptor?: EventDescriptor<TData>,
     options: PreviewEventsOptions = {},
-  ): Promise<StreamdEvent<TData>[]> {
+  ): Promise<EventOf<TData>[]> {
     const events = await previewEvents(this.adapter, this.limiter, transaction, descriptor, options);
-    return events as StreamdEvent<TData>[];
+    return events as unknown as EventOf<TData>[];
   }
 
   /**
