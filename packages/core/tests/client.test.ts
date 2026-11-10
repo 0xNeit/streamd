@@ -3248,6 +3248,55 @@ describe("requestTimeout", () => {
     expect(errors).toHaveLength(2);
   });
 
+  it("recovers a hung poll that has a cursor, which shared polling would otherwise join", async () => {
+    const pages = [page, undefined, { ...page, events: [makeEvent(2)], nextCursor: "2" }];
+    let calls = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: () => {
+        const next = pages[calls++];
+        if (calls === 2) return hung();
+        return Promise.resolve(next ?? { ...empty, nextCursor: "2" });
+      },
+    };
+    const client = new StreamdClient({ adapter, requestTimeout: 2 });
+    const errors: unknown[] = [];
+    const versions: bigint[] = [];
+    await new Promise<void>((resolve) => {
+      client.on(
+        desc,
+        (event) => {
+          versions.push(event.version);
+          if (versions.length === 2) resolve();
+        },
+        { pollInterval: 1, maxBackoff: 1, maxErrors: 5, onError: (err) => errors.push(err) },
+      );
+    });
+    client.destroy();
+    expect(versions).toEqual([1n, 2n]);
+    expect(errors).toHaveLength(1);
+  });
+
+  it("still shares a request in flight before the timeout", async () => {
+    let calls = 0;
+    let release!: (value: EventPage) => void;
+    const adapter: EventAdapter = {
+      fetchEvents: () => {
+        calls++;
+        return new Promise<EventPage>((r) => (release = r));
+      },
+    };
+    const client = new StreamdClient({ adapter, requestTimeout: 1000 });
+    const options = { fromVersion: 5n, pollInterval: 50 };
+    const seen: bigint[] = [];
+    client.on(desc, (e) => void seen.push(e.version), options);
+    const second = new Promise<StreamdEvent>((resolve) => client.on(desc, resolve, options));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(calls).toBe(1);
+    release({ events: [makeEvent(6)], nextCursor: "6", hasMore: false });
+    expect((await second).version).toBe(6n);
+    client.destroy();
+  });
+
   it("lets a query retry a hung page", async () => {
     const client = new StreamdClient({ adapter: sometimesHung(1), requestTimeout: 2 });
     const events = await client.getEvents(desc, { retries: 1, limit: 1 });

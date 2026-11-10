@@ -203,7 +203,7 @@ export class StreamdClient {
     this.limiter = resolveLimiter(config);
     this.aptos = resolveAptos(config);
     this.adapter = resolveAdapter(config, this.aptos);
-    this.shared = new SharedFetches(this.adapter);
+    this.shared = new SharedFetches(this.adapter, config.requestTimeout);
     this.query = new EventQuery(this.adapter, this.limiter);
     this.reduceHost = {
       query: this.query,
