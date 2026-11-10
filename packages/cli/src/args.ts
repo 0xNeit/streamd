@@ -37,6 +37,16 @@ export interface StoreOptions extends SourceOptions {
   name?: string;
 }
 
+export interface QueryOptions {
+  descriptor: EventDescriptor;
+  network: Network;
+  nodeUrl?: string;
+  fromVersion: bigint;
+  toVersion: bigint | "head";
+  limit?: number;
+  order: "asc" | "desc";
+}
+
 export interface RecordOptions {
   descriptor: EventDescriptor;
   network: Network;
@@ -69,6 +79,7 @@ export type ParsedCommand =
   | { command: "store"; options: StoreOptions }
   | { command: "check"; options: CheckOptions }
   | { command: "record"; options: RecordOptions }
+  | { command: "query"; options: QueryOptions }
   | { command: "codegen"; options: CodegenOptions };
 
 /** Bad command-line input: reported with usage, exit code 2. */
@@ -123,6 +134,19 @@ const RECORD_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const QUERY_OPTIONS = {
+  account: { type: "string" },
+  handle: { type: "string" },
+  field: { type: "string" },
+  network: { type: "string" },
+  "node-url": { type: "string" },
+  "from-version": { type: "string" },
+  "to-version": { type: "string" },
+  limit: { type: "string" },
+  order: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const CHECK_OPTIONS = {
   network: { type: "string" },
   "node-url": { type: "string" },
@@ -156,6 +180,7 @@ export const USAGE = `Usage:
   streamd forward --to <url> --account <address> [...]
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
+  streamd query --from-version <n> [--to-version <n>] [options] <eventType>...
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
   streamd codegen [--out <file>] <address>::<module>...
@@ -165,6 +190,7 @@ forward POSTs each batch of matching events to a webhook as a JSON array,
 saving its position to a cursor file once the webhook acknowledges it.
 store follows matching events into a SQLite file, resuming from the cursor
 saved there when run again.
+query reads a closed range of history as JSON lines, then exits.
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 codegen reads module ABIs and writes TypeScript types and defineEvent
@@ -178,7 +204,7 @@ Options:
   --node-url <url>       fullnode URL, overriding the network's default
   --from-version <n>     start at this version instead of the chain head
   --poll-interval <ms>   delay between polls (default: 1000)
-  --limit <n>            tail: exit after printing n events; record: stop after n
+  --limit <n>            tail: exit after printing n events; record, query: stop after n
   --to <url>             forward: webhook URL (http or https, required)
   --cursor-file <path>   forward: cursor file (default: ${DEFAULT_CURSOR_FILE})
   --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
@@ -186,7 +212,8 @@ Options:
   --header <h>           forward: request header 'Name: value', repeatable
   --db <file>            store: SQLite file to write (required)
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
-  --to-version <n>       record: end of the range (required)
+  --to-version <n>       record: end of the range (required); query: default the head
+  --order <asc|desc>     query: oldest or newest first (default: asc)
   --out <file>           codegen, record: write to this file instead of stdout
   -h, --help             show this help
 `;
@@ -391,6 +418,33 @@ function parseRecord(args: string[]): ParsedCommand {
   return { command: "record", options };
 }
 
+function parseQuery(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: QUERY_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const fromVersion = version(values["from-version"]);
+  if (fromVersion === undefined) throw new UsageError("query needs --from-version");
+  const toVersion = version(values["to-version"], "to-version") ?? "head";
+  if (toVersion !== "head" && toVersion < fromVersion) {
+    throw new UsageError("--to-version must not be below --from-version");
+  }
+  const order = values.order ?? "asc";
+  if (order !== "asc" && order !== "desc") throw new UsageError(`--order must be asc or desc: ${order}`);
+  const options: QueryOptions = {
+    descriptor: descriptor("query", values, positionals),
+    network: network(values.network),
+    fromVersion,
+    toVersion,
+    order,
+  };
+  const url = nodeUrl(values["node-url"]);
+  const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  if (url !== undefined) options.nodeUrl = url;
+  if (limit !== undefined) options.limit = limit;
+  return { command: "query", options };
+}
+
 function parseCheck(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: CHECK_OPTIONS, allowPositionals: true, strict: true }),
@@ -445,6 +499,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "store") return parseStore(rest);
   if (command === "check") return parseCheck(rest);
   if (command === "record") return parseRecord(rest);
+  if (command === "query") return parseQuery(rest);
   if (command === "codegen") return parseCodegen(rest);
   throw new UsageError(`unknown command: ${command}`);
 }

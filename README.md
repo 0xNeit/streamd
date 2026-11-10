@@ -1878,6 +1878,22 @@ cursor; `1` when a batch fails past its retries, the subscription stops on an er
 cursor file cannot be read or written; `2` for invalid arguments. Run it under a supervisor
 that restarts on `1`.
 
+### Query history
+
+`streamd query` reads a closed range as JSON lines and exits:
+
+```sh
+streamd query --from-version 7984000000 --to-version 7984001000 0x1::fungible_asset::Deposit
+# the latest 10 up to the head, newest first
+streamd query --from-version 7984000000 --limit 10 --order desc 0x1::fungible_asset::Deposit
+```
+
+`--to-version` defaults to the head, read once when the query starts, so a busy type still ends.
+`--order desc` has to walk the whole range before it prints, since sources only page forward. It
+takes the same descriptors as `tail`. Failed pages are retried. It exits 0 when finished or when
+interrupted or piped into something that stops reading, such as `head`, 1 on failure, and 2 for
+bad usage.
+
 ### Check event types
 
 `streamd check` says whether each event type can be emitted, before a `tail` or `forward` that
