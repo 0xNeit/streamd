@@ -169,3 +169,8 @@ export function fetchKey(d: EventDescriptor, options: FetchOptions): string | un
   );
   return `${selector}|${encoded}`;
 }
+
+// Runtimes without explicit resource management lack the symbol. The registry
+// key is the one core-js polyfills it with.
+export const ASYNC_DISPOSE: typeof Symbol.asyncDispose =
+  Symbol.asyncDispose ?? (Symbol.for("Symbol.asyncDispose") as typeof Symbol.asyncDispose);

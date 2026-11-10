@@ -1,6 +1,7 @@
 import { Aptos } from "@aptos-labs/ts-sdk";
 import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type {
+  CloseOptions,
   Balances,
   BalancesOptions,
   BatchCallback,
@@ -40,7 +41,7 @@ import {
   StreamdError,
   StreamdTimeoutError,
 } from "./errors.js";
-import { descriptorKey, generateId, onAbort } from "./utils.js";
+import { ASYNC_DISPOSE, descriptorKey, generateId, onAbort } from "./utils.js";
 import { eventStream } from "./stream.js";
 import { RequestLimiter } from "./limiter.js";
 import { CursorManager } from "./cursor.js";
@@ -64,6 +65,21 @@ const MAX_TIMEOUT = 2_147_483_647;
 // the method when such a polyfill loads after this module.
 const DISPOSE: typeof Symbol.dispose =
   Symbol.dispose ?? (Symbol.for("Symbol.dispose") as typeof Symbol.dispose);
+
+const DEFAULT_CLOSE_TIMEOUT = 5000;
+
+/** Whether `work` settled within `ms`. */
+async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([work.then(() => true), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 function checkTimeout(ms: number | undefined): StreamdError | undefined {
   if (ms === undefined || (typeof ms === "number" && ms >= 0 && ms <= MAX_TIMEOUT)) {
@@ -357,6 +373,10 @@ export class StreamdClient {
       resume: () => poller.resume(),
       unsubscribe,
       [DISPOSE]: unsubscribe,
+      [ASYNC_DISPOSE]: async () => {
+        unsubscribe();
+        await settlesWithin(poller.handling, DEFAULT_CLOSE_TIMEOUT);
+      },
     };
   }
 
@@ -764,5 +784,23 @@ export class StreamdClient {
   /** `destroy()`, so `using client = new StreamdClient(...)` cleans up at scope exit. */
   [DISPOSE](): void {
     this.destroy();
+  }
+
+  /**
+   * `destroy()`, then waits for the handlers those subscriptions have running.
+   * Resolves `true` once they have finished, or `false` at `timeout`.
+   */
+  async close(options: CloseOptions = {}): Promise<boolean> {
+    const timeout = options.timeout ?? DEFAULT_CLOSE_TIMEOUT;
+    const invalid = checkTimeout(timeout);
+    if (invalid !== undefined) throw invalid;
+    const running = [...this.subscriptions.values()].map(({ poller }) => poller.handling);
+    this.destroy();
+    return settlesWithin(Promise.all(running), timeout);
+  }
+
+  /** `close()`, so `await using client = new StreamdClient(...)` drains at scope exit. */
+  async [ASYNC_DISPOSE](): Promise<void> {
+    await this.close();
   }
 }

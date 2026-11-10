@@ -836,6 +836,32 @@ Disposing is `unsubscribe()` (or `destroy()` for the client) and is safe to repe
 needs a runtime with `Symbol.dispose` (Node 18.18+, 20.4+, Bun) or a polyfill, and
 TypeScript 5.2+; the type declarations pull in the `esnext.disposable` lib themselves.
 
+### Shut down cleanly
+
+`destroy()` stops everything at once and returns, so a handler part way through a write keeps
+going with nothing waiting for it. `await streamd.close()` also waits for the handlers already
+running:
+
+```ts
+process.on("SIGTERM", async () => {
+  const finished = await streamd.close({ timeout: 10_000 });
+  process.exit(finished ? 0 : 1);
+});
+```
+
+Polling stops at once and no further event is delivered; only handlers already running are
+waited for, across everything subscribed when it is called: `on()`, `onBatch()`, `once()`,
+`watch()`, `onTransaction()`, `transfers()` and a reduction's live tail. It does not wait for
+adapter requests, so a hung source cannot hold it up. It resolves `true` once they have
+finished and `false` at `timeout` (default five seconds) without rejecting, and a handler
+still running then carries on. A subscription already unsubscribed and `replay()` are not
+waited for. A handler that awaits `close()` on its own client is waiting for itself, so it
+waits out the timeout.
+
+A predicate still deciding is abandoned, as on any stop. `await using sub = streamd.on(...)`
+(or on `onBatch()`, `onTransaction()` or `watch()`) does the same for one subscription, and
+`await using streamd = new StreamdClient(...)` for a client, each with the default timeout.
+
 ## Choosing events
 
 Every call takes an event descriptor:
