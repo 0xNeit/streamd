@@ -3,6 +3,7 @@ export { CachingAdapter } from "./adapters/caching.js";
 export { FallbackAdapter } from "./adapters/fallback.js";
 export { FullnodeScanAdapter } from "./adapters/fullnode.js";
 export { withHooks } from "./adapters/hooks.js";
+export { adapterMetrics } from "./adapters/metrics.js";
 export { IndexerAccountAdapter } from "./adapters/indexer.js";
 export { MemoryAdapter } from "./adapters/memory.js";
 export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
@@ -57,6 +58,12 @@ export type {
   EventDifferenceField,
 } from "./compare.js";
 export type { CachingAdapterOptions, PageStore } from "./adapters/caching.js";
+export type {
+  AdapterMethod,
+  AdapterMetrics,
+  LatencyPercentiles,
+  MethodMetrics,
+} from "./adapters/metrics.js";
 export type { FullnodeScanAdapterOptions } from "./adapters/fullnode.js";
 export type { IndexerAccountAdapterOptions } from "./adapters/indexer.js";
 export type {
