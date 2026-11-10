@@ -2607,3 +2607,25 @@ describe("EventPoller page delivery", () => {
     expect(poller.status.consecutiveErrors).toBe(0);
   });
 });
+
+describe("EventPoller start version", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("delivers nothing below fromVersion on any page", async () => {
+    const seen: bigint[] = [];
+    const adapter = createMockAdapter([
+      page([makeEvent(1), makeEvent(2)], 1, true),
+      page([makeEvent(3), makeEvent(4)], 2, true),
+      page([makeEvent(5)], 3, false),
+    ]);
+    const poller = new EventPoller(adapter, descriptor, (e: StreamdEvent) => void seen.push(e.version), {
+      fromVersion: 4n,
+      pollInterval: 100,
+    });
+    poller.start();
+    for (let i = 0; i < 6; i++) await advanceTimersByTimeAsync(100);
+    poller.stop();
+    expect(seen).toEqual([4n, 5n]);
+  });
+});

@@ -273,7 +273,15 @@ export class EventPoller {
       // not touch the cursor or the error budget the live run resumes with.
       if (!this.isCurrent(gen)) return;
 
-      const delivery = this.processPage(page, gen, viewer, run);
+      // Adapters honour fromVersion only on the first request, so account and
+      // handle walks, which start below it, are bounded here on every page.
+      const floor = this.fromVersion;
+      const bounded =
+        typeof floor === "bigint" && floor >= 0n
+          ? { ...page, events: page.events.filter((e) => e.version >= floor) }
+          : page;
+
+      const delivery = this.processPage(bounded, gen, viewer, run);
       // A failed page is this poll's error alone; later polls must not inherit it.
       this.delivering = delivery.catch(() => {});
       await delivery;
