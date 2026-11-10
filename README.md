@@ -2090,6 +2090,20 @@ Each type describes the JSON the fullnode returns:
 | enums | a union discriminated on `__variant__`, with that variant's fields beside it |
 | type parameters `T0`, `T1` | type parameters, defaulting to `unknown` |
 
+Each event with `u64`, `u128` or `u256` fields at its top level also gets a list of their names,
+ready for `decode`:
+
+```ts
+import { FungibleAsset_Deposit, FungibleAsset_DepositDecode } from "./events.js";
+
+client.on(FungibleAsset_Deposit, (e) => console.log(e.data.amount), { decode: FungibleAsset_DepositDecode });
+```
+
+The list is named `<Event>Decode`, with an underscore added if a struct already has that name.
+`event.data` keeps its generated type, which says `string` for those fields; `decode` makes
+them `bigint` at runtime. Signed integers are not listed, since `decode` reads unsigned digits
+only, and neither are nested fields.
+
 Signed integers follow the unsigned rule; none had been seen as event fields when this was
 written. A struct keeps its Move name unless two modules share it, in which case both become
 `<Module>_<Struct>` (`Coin_Deposit`, `FungibleAsset_Deposit`), with the address appended if

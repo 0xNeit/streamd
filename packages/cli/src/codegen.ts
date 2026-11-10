@@ -22,6 +22,7 @@ interface ViewEntry {
 
 const FRAMEWORK = normalizeAddress("0x1")!;
 const NARROW = new Set(["u8", "u16", "u32", "i8", "i16", "i32"]);
+const DECODABLE = new Set(["u64", "u128", "u256"]);
 
 const long = (address: string) => normalizeAddress(address) ?? address;
 const moduleKey = (address: string, module: string) => `${long(address)}::${module}`;
@@ -174,6 +175,20 @@ function tsType(t: MoveType, names: Map<string, string>): string {
   }
 }
 
+/** The fields `decode` can turn into a `bigint`: signed values are refused by it, so they stay out. */
+function decodableFields(struct: Entry["struct"]): string[] {
+  if (struct.isEnum) return [];
+  return struct.fields
+    .filter((f) => f.type.kind === "primitive" && DECODABLE.has(f.type.name))
+    .map((f) => f.name);
+}
+
+function renderDecodeList(name: string, fields: string[], names: Map<string, string>): string {
+  const list = `${name}Decode`;
+  const free = [...names.values()].includes(list) ? `${list}_` : list;
+  return `export const ${free} = [${fields.map((f) => JSON.stringify(f)).join(", ")}] as const;`;
+}
+
 function render(e: Entry, names: Map<string, string>): string {
   const name = names.get(e.key)!;
   const count = e.struct.typeParams;
@@ -202,6 +217,8 @@ function render(e: Entry, names: Map<string, string>): string {
         `  defineEvent<${name}<${params.join(", ")}>>(\`${qualified(e)}<${args.map((a) => `\${${a}}`).join(", ")}>\`);`,
       );
     }
+    const fields = decodableFields(e.struct);
+    if (fields.length > 0) out.push(renderDecodeList(name, fields, names));
   }
   return out.join("\n");
 }
