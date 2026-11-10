@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { MemoryAdapter } from "../src/adapters/memory.js";
+import { StreamdClient } from "../src/client.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import { TRANSFER_DESCRIPTOR, formatAmount, transferSource } from "../src/transfers.js";
 import type { EventAdapter, FetchOptions, StreamdEvent, Transfer, ViewRequest } from "../src/types.js";
@@ -536,5 +537,50 @@ describe("formatAmount", () => {
 
   it("refuses an amount that is not a bigint", () => {
     expect(() => formatAmount(1 as unknown as bigint, 8)).toThrow(StreamdError);
+  });
+});
+
+describe("transfers with requestTimeout", () => {
+  /** `withViews`, except that the first view read never settles. */
+  function firstViewHangs() {
+    const inner = withViews([fa(1, 0, "Withdraw", "a1", "100"), fa(1, 1, "Deposit", "b1", "100")]);
+    let views = 0;
+    const adapter: EventAdapter = {
+      ...inner.adapter,
+      view: (request, version, descriptor) =>
+        ++views === 1 ? new Promise<never>(() => {}) : inner.adapter.view!(request, version, descriptor),
+    };
+    return { adapter, views: () => views };
+  }
+
+  it("fails a hung read and reads again on the next page", async () => {
+    const { adapter } = firstViewHangs();
+    const source = transferSource(adapter, undefined, undefined, false, 2);
+    await expect(source.fetchEvents(TRANSFER_DESCRIPTOR, all)).rejects.toBeInstanceOf(StreamdNetworkError);
+    expect((await source.fetchEvents(TRANSFER_DESCRIPTOR, all)).events).toHaveLength(1);
+  });
+
+  it("lets getTransfers retry past a hung read", async () => {
+    const { adapter, views } = firstViewHangs();
+    const client = new StreamdClient({ adapter, requestTimeout: 2 });
+    const records = await client.getTransfers({ fromVersion: 0n, retries: 3 });
+    expect(records.map((r) => r.data.amount)).toEqual([100n]);
+    expect(views()).toBeGreaterThan(1);
+  });
+
+  it("recovers a live subscription from a hung read", async () => {
+    const { adapter } = firstViewHangs();
+    const client = new StreamdClient({ adapter, requestTimeout: 2 });
+    const record = await new Promise<StreamdEvent<Transfer>>((resolve) => {
+      client.transfers(resolve, {
+        fromVersion: 0n,
+        pollInterval: 1,
+        maxBackoff: 1,
+        maxErrors: 10,
+        onError: () => {},
+      });
+    });
+    client.destroy();
+    expect(record.data.amount).toBe(100n);
   });
 });

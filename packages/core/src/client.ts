@@ -185,6 +185,7 @@ export class StreamdClient {
   private readonly query: EventQuery;
   /** Shared by every poller and query, so the cap holds client-wide. */
   private readonly limiter: RequestLimiter;
+  private readonly requestTimeout?: number;
   /** Lets identical subscriptions share each poll's adapter request. */
   private readonly shared: SharedFetches;
   private readonly subscriptions = new Map<string, { poller: EventPoller; stop: () => void }>();
@@ -201,9 +202,10 @@ export class StreamdClient {
     this.defaults = resolveDefaults(config);
     this.onError = config.onError;
     this.limiter = resolveLimiter(config);
+    this.requestTimeout = config.requestTimeout;
     this.aptos = resolveAptos(config);
     this.adapter = resolveAdapter(config, this.aptos);
-    this.shared = new SharedFetches(this.adapter, config.requestTimeout);
+    this.shared = new SharedFetches(this.adapter, this.requestTimeout);
     this.query = new EventQuery(this.adapter, this.limiter);
     this.reduceHost = {
       query: this.query,
@@ -578,7 +580,7 @@ export class StreamdClient {
       rest,
       undefined,
       rest.id,
-      (source) => transferSource(source, asset, who, withAssetInfo),
+      (source) => transferSource(source, asset, who, withAssetInfo, this.requestTimeout),
     );
   }
 
@@ -631,7 +633,13 @@ export class StreamdClient {
    */
   async getTransfers(filter: TransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
     const { asset, account, withAssetInfo, ...rest } = filter;
-    const source = transferSource(this.adapter, asset, this.accountOf(account), withAssetInfo);
+    const source = transferSource(
+      this.adapter,
+      asset,
+      this.accountOf(account),
+      withAssetInfo,
+      this.requestTimeout,
+    );
     const query = new EventQuery(source, this.limiter);
     return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }

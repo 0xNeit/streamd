@@ -800,7 +800,8 @@ An adapter call still unfinished after that many milliseconds fails with a
 `StreamdNetworkError`. A listener backs off and counts it toward `maxErrors`, and a query's
 `retries` retry it, as for any network failure. The clock starts when the call starts, so
 time spent waiting for `maxConcurrentRequests` or `maxRequestsPerSecond` does not count. It
-covers the calls those two options count. The slot frees at once, but adapters take no
+covers the calls those two options count, and the view reads behind `transfers()` and
+`getTransfers()`. The slot frees at once, but adapters take no
 signal, so the request itself runs on, uncounted, until it ends. A module scan is one
 adapter call that may make several HTTP requests, so allow for that. Omit the option for no
 timeout.

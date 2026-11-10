@@ -202,12 +202,14 @@ export function transferSource(
   asset?: string,
   account?: () => Promise<string>,
   withAssetInfo?: boolean,
+  requestTimeout?: number,
 ): EventAdapter {
   if (typeof adapter.view !== "function") {
     throw new StreamdError("transfers needs an adapter that implements view");
   }
   const wanted = asset === undefined ? undefined : requireAsset(asset);
-  const limiter = new RequestLimiter(MAX_LOOKUPS);
+  // The timeout matters here as a memoized read that never settled would hang every retry.
+  const limiter = new RequestLimiter(MAX_LOOKUPS, Infinity, requestTimeout);
   const metadata = memo<string | undefined>((asset) => asset !== undefined);
   const infos = memo<AssetInfo | undefined>(() => true);
   const tokens = memo<boolean>(() => true);
