@@ -1,0 +1,64 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "simple_map",
+  "structs": [
+   {
+    "name": "Element",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": []
+     },
+     {
+      "constraints": []
+     }
+    ],
+    "fields": [
+     {
+      "name": "key",
+      "type": "T0"
+     },
+     {
+      "name": "value",
+      "type": "T1"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SimpleMap",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": []
+     },
+     {
+      "constraints": []
+     }
+    ],
+    "fields": [
+     {
+      "name": "data",
+      "type": "vector<0x1::simple_map::Element<T0, T1>>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}
