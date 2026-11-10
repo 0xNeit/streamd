@@ -1616,6 +1616,18 @@ const streamd = new StreamdClient({
 });
 ```
 
+`MemoryAdapter.fromJsonLines(text, { decode? })` builds one from saved
+`streamd tail` output, so a captured stream can drive tests and `replay`:
+
+```ts
+const text = await readFile("deposits.jsonl", "utf8");
+const streamd = new StreamdClient({ adapter: MemoryAdapter.fromJsonLines(text) });
+```
+
+Each event is kept once, since a resumed `tail` can repeat lines. Blank lines
+are ignored, and any other unreadable line throws a `StreamdError` naming its
+line number, a truncated last line included.
+
 ## Networks
 
 streamd runs against any network that serves the Aptos fullnode REST API. For

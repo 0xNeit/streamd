@@ -6,7 +6,9 @@ import type {
   StreamdEvent,
   TransactionEvents,
 } from "../types.js";
+import { eventId } from "../cursor.js";
 import { StreamdError } from "../errors.js";
+import { parseEvent, type ParseEventOptions } from "../serialize.js";
 import {
   DEFAULT_LIMIT,
   handlePath,
@@ -61,6 +63,14 @@ function validateLimit(limit: number | undefined): number {
   return limit;
 }
 
+function parseLine(line: string, number: number, options: ParseEventOptions): StreamdEvent {
+  try {
+    return parseEvent(line, options);
+  } catch (err) {
+    throw new StreamdError(`Line ${number}: ${(err as Error).message}`, err);
+  }
+}
+
 /**
  * In-memory `EventAdapter` seeded with a static list of events, for testing
  * `on()`, `once()`, `stream()`, `getEvents()`, and `getEventPages()` handlers
@@ -71,6 +81,26 @@ export class MemoryAdapter implements EventAdapter {
 
   constructor(events: readonly StreamdEvent[] = []) {
     this.events = [...events].sort(compareEvents);
+  }
+
+  /**
+   * An adapter over saved `streamd tail` output, one `serializeEvent` line per
+   * event. A resumed tail repeats what it printed since its last save, so each
+   * event is kept once. Blank lines are ignored; any other unreadable line
+   * throws, naming its line number.
+   */
+  static fromJsonLines(text: string, options: ParseEventOptions = {}): MemoryAdapter {
+    if (typeof text !== "string") {
+      throw new StreamdError("JSON lines must be a string");
+    }
+    const events = new Map<string, StreamdEvent>();
+    text.split("\n").forEach((line, index) => {
+      if (line.trim() === "") return;
+      const event = parseLine(line, index + 1, options);
+      const id = eventId(event);
+      if (!events.has(id)) events.set(id, event);
+    });
+    return new MemoryAdapter([...events.values()]);
   }
 
   /** The highest seeded version, or `0n` when empty. */
