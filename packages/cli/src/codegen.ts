@@ -177,7 +177,6 @@ function tsType(t: MoveType, names: Map<string, string>): string {
 
 /** The fields `decode` can turn into a `bigint`: signed values are refused by it, so they stay out. */
 function decodableFields(struct: Entry["struct"]): string[] {
-  if (struct.isEnum) return [];
   return struct.fields
     .filter((f) => f.type.kind === "primitive" && DECODABLE.has(f.type.name))
     .map((f) => f.name);
