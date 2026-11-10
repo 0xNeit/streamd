@@ -1936,9 +1936,9 @@ comparison:
 ```ts
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-const expected = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
-const given = request.headers.get("x-streamd-signature") ?? "";
-const valid = given.length === expected.length && timingSafeEqual(Buffer.from(given), Buffer.from(expected));
+const expected = Buffer.from(`sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`);
+const given = Buffer.from(request.headers.get("x-streamd-signature") ?? "");
+const valid = given.length === expected.length && timingSafeEqual(given, expected);
 ```
 
 The signature has no timestamp, so it proves origin and integrity but not freshness: a captured
