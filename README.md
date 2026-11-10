@@ -1831,6 +1831,18 @@ the source has them, `transactionHash`, `timestamp`, `sender` and, last, `entryF
 {"type":"0x1::transaction_fee::FeeStatement","data":{"total_charge_gas_units":"7"},"version":"2817350001","sequenceNumber":"0","eventIndex":3,"transactionHash":"0x5c...","timestamp":"1730000000000000","sender":"0x9f..."}
 ```
 
+Every command that takes a descriptor takes all four kinds. With `--account`, add
+`--handle` and `--field`, or `--creation-number <n>` for a handle by its number, or
+`--resource <type>` for every change to one resource:
+
+```sh
+streamd tail --account 0x1 --resource 0x1::block::BlockResource
+streamd tail --account 0x1 --creation-number 11
+```
+
+`--network` takes `mainnet`, `testnet`, `devnet`, `movement-mainnet` or `movement-testnet`, and
+`--node-url` overrides its fullnode.
+
 To pick up where a run stopped, pass the last printed `version` plus one as
 `--from-version`.
 
