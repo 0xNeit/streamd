@@ -934,6 +934,33 @@ const fees = await client.getEvents(FeeStatement, { fromVersion: -1000n, limit: 
 The catalog reflects the framework ABIs it was generated from; legacy `EventHandle` events such
 as `0x1::coin::DepositEvent` are not `#[event]` structs and are not in it.
 
+### Typed view builders
+
+`streamd codegen` also writes a `ViewRequest` builder for each `#[view]` function in the modules it
+reads, so `withState` gets checked arguments:
+
+```sh
+streamd codegen --out src/coin.ts 0x1::coin
+```
+
+```ts
+import { balanceView } from "./coin";
+
+const deposits = await streamd.getEvents(FeeStatement, {
+  fromVersion: -1000n,
+  limit: 10,
+  withState: (event) => balanceView("0x1::aptos_coin::AptosCoin", event.sender!),
+});
+```
+
+A builder is named `<function>View` in camelCase, or `<module>_<function>View` where two modules
+share the function. It takes type arguments first, then positional `arg0`, `arg1` since the ABI has
+no parameter names: `u64` and wider as `string | bigint`, narrower integers as `number`, addresses
+and `Object<T>` as `string`, `vector<u8>` as a hex `string`, and `Option<T>` as `{ vec: [] | [T] }`.
+A view that takes a `signer` or another struct cannot be called over JSON, so it gets a comment
+instead. A view's return values are not typed; `event.state` stays `unknown[]`. A module with views
+and no events now generates too.
+
 ### Decode integers
 
 Move `u64`, `u128` and `u256` values arrive as decimal strings. Name the

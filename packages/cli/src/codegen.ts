@@ -1,5 +1,5 @@
 import { normalizeAddress, StreamdError } from "@streamd/core";
-import type { FieldAbi, ModuleAbi, MoveType, StructAbi } from "./abi.js";
+import type { FieldAbi, ModuleAbi, MoveType, StructAbi, ViewAbi } from "./abi.js";
 
 export interface ModuleRef {
   address: string;
@@ -13,6 +13,11 @@ interface Entry {
   key: string;
   module: ModuleAbi;
   struct: StructAbi;
+}
+
+interface ViewEntry {
+  module: ModuleAbi;
+  view: ViewAbi;
 }
 
 const FRAMEWORK = normalizeAddress("0x1")!;
@@ -37,7 +42,10 @@ const fieldsOf = (s: StructAbi): FieldAbi[] =>
   s.isEnum ? s.variants.flatMap((v) => v.fields) : s.fields;
 
 /** Every struct to generate: the targets' events, then what they reference. */
-async function collect(targets: ModuleRef[], load: LoadModule): Promise<Map<string, Entry>> {
+async function collect(
+  targets: ModuleRef[],
+  load: LoadModule,
+): Promise<{ entries: Map<string, Entry>; views: ViewEntry[] }> {
   const modules = new Map<string, Promise<ModuleAbi>>();
   const getModule = (address: string, name: string) => {
     const key = moduleKey(address, name);
@@ -65,13 +73,15 @@ async function collect(targets: ModuleRef[], load: LoadModule): Promise<Map<stri
   };
 
   const pending: Entry[] = [];
+  const views: ViewEntry[] = [];
   for (const { address, module } of targets) {
     const abi = await getModule(address, module);
     const events = abi.structs.filter((s) => s.isEvent);
-    if (events.length === 0) {
-      throw new StreamdError(`Module ${address}::${module} declares no event structs`);
+    if (events.length === 0 && abi.views.length === 0) {
+      throw new StreamdError(`Module ${address}::${module} declares no event structs or view functions`);
     }
     for (const s of events) pending.push(...add(abi, s));
+    for (const view of abi.views) views.push({ module: abi, view });
   }
 
   const visit = async (owner: Entry, field: string, t: MoveType): Promise<void> => {
@@ -100,7 +110,7 @@ async function collect(targets: ModuleRef[], load: LoadModule): Promise<Map<stri
   for (let entry = pending.shift(); entry !== undefined; entry = pending.shift()) {
     for (const f of fieldsOf(entry.struct)) await visit(entry, f.name, f.type);
   }
-  return entries;
+  return { entries, views };
 }
 
 const pascal = (snake: string) =>
@@ -196,22 +206,93 @@ function render(e: Entry, names: Map<string, string>): string {
   return out.join("\n");
 }
 
+const camel = (snake: string) => {
+  const name = pascal(snake);
+  return name.charAt(0).toLowerCase() + name.slice(1);
+};
+
+/** The TypeScript type `/view` accepts for `t`, or `undefined` when JSON cannot express it. */
+function argumentType(t: MoveType): string | undefined {
+  switch (t.kind) {
+    case "primitive":
+      if (t.name === "signer") return undefined;
+      if (t.name === "bool") return "boolean";
+      if (t.name === "address") return "string";
+      return NARROW.has(t.name) ? "number" : "string | bigint";
+    case "param":
+      return "unknown";
+    case "vector": {
+      if (t.of.kind === "primitive" && t.of.name === "u8") return "string";
+      const inner = argumentType(t.of);
+      if (inner === undefined) return undefined;
+      return inner.includes("|") ? `(${inner})[]` : `${inner}[]`;
+    }
+    case "struct": {
+      const kind = builtin(t);
+      if (kind === "String" || kind === "Object") return "string";
+      if (kind !== "Option") return undefined;
+      const inner = argumentType(t.args[0]!);
+      return inner === undefined ? undefined : `{ vec: [] | [${inner}] }`;
+    }
+    case "unsupported":
+      return undefined;
+  }
+}
+
+function renderView({ module, view }: ViewEntry, name: string): string {
+  const fn = `${module.address}::${module.name}::${view.name}`;
+  const types = view.params.map(argumentType);
+  if (types.includes(undefined)) {
+    return `// \`${fn}\` takes an argument the JSON view API cannot send, so it has no builder.`;
+  }
+  const typeArgs = Array.from({ length: view.typeParams }, (_, i) => `t${i}`);
+  const args = types.map((_, i) => `arg${i}`);
+  const params = [...typeArgs.map((a) => `${a}: string`), ...types.map((t, i) => `arg${i}: ${t}`)];
+  return [
+    `/** \`${fn}\`, a view */`,
+    `export const ${name} = (${params.join(", ")}): ViewRequest => ({`,
+    `  function: "${fn}",`,
+    `  typeArguments: [${typeArgs.join(", ")}],`,
+    `  functionArguments: [${args.join(", ")}],`,
+    "});",
+  ].join("\n");
+}
+
+/** `<function>View` where unique, `<module>_<function>View` where two targets share it. */
+function viewNames(views: ViewEntry[]): string[] {
+  const plain = count(views.map((v) => v.view.name));
+  const names = views.map(({ module, view }) =>
+    plain.get(view.name) === 1 ? `${camel(view.name)}View` : `${camel(module.name)}_${camel(view.name)}View`,
+  );
+  const taken = count(names);
+  return names.map((name, i) => (taken.get(name) === 1 ? name : `${name}_${views[i]!.module.address}`));
+}
+
 /**
  * TypeScript source declaring a type and a `defineEvent` descriptor for every
- * event struct in `targets`, plus types for the structs they reference.
+ * event struct in `targets`, plus types for the structs they reference, and a
+ * `ViewRequest` builder for each of their `#[view]` functions.
  */
 export async function generateEventTypes(targets: ModuleRef[], load: LoadModule): Promise<string> {
-  const entries = [...(await collect(targets, load)).values()].sort((a, b) =>
-    a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
-  );
+  const collected = await collect(targets, load);
+  const entries = [...collected.entries.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const key = ({ module, view }: ViewEntry) => `${moduleKey(module.address, module.name)}::${view.name}`;
+  const views = collected.views.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
   const names = assignNames(entries);
+  const builders = viewNames(views);
   const header = [
     `// Generated by streamd codegen from the on-chain ABIs of ${targets
       .map((t) => `${t.address}::${t.module}`)
       .join(", ")}.`,
     "// Do not edit: regenerate after a module upgrade.",
     "// u64, u128, u256, i64, i128 and i256 values are decimal strings, as the fullnode returns them.",
-    'import { defineEvent } from "@streamd/core";',
+    ...(entries.some((e) => e.struct.isEvent) ? ['import { defineEvent } from "@streamd/core";'] : []),
+    ...(views.length > 0 ? ['import type { ViewRequest } from "@streamd/core";'] : []),
   ];
-  return `${[header.join("\n"), ...entries.map((e) => render(e, names))].join("\n\n")}\n`;
+  const sections = [
+    header.join("\n"),
+    ...entries.map((e) => render(e, names)),
+    ...views.map((v, i) => renderView(v, builders[i]!)),
+  ];
+  return `${sections.join("\n\n")}\n`;
 }

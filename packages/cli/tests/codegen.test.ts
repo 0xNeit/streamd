@@ -226,3 +226,115 @@ client.on(Creation, (e) => {
   is(e.data.nope);
 });
 `;
+
+describe("generateEventTypes view builders", () => {
+  const fn = (name: string, params: string[], generics = 0, isView = true) => ({
+    name,
+    visibility: "public",
+    is_entry: false,
+    is_view: isView,
+    generic_type_params: Array.from({ length: generics }, () => ({ constraints: [] })),
+    params,
+    return: [],
+  });
+  const module = (address: string, name: string, functions: unknown[], structs: unknown[] = []) =>
+    parseModuleAbi({ abi: { address, name, structs, exposed_functions: functions } });
+  const generate = (...abis: ModuleAbi[]) =>
+    generateEventTypes(abis.map((a) => ({ address: a.address, module: a.name })), loader(abis).load);
+
+  it("writes a builder taking type arguments, then arguments", async () => {
+    const source = await generate(module("0x1", "coin", [fn("balance", ["address"], 1)]));
+    expect(source).toContain('import type { ViewRequest } from "@streamd/core";');
+    expect(source).not.toContain("defineEvent");
+    expect(source).toContain(`/** \`0x1::coin::balance\`, a view */
+export const balanceView = (t0: string, arg0: string): ViewRequest => ({
+  function: "0x1::coin::balance",
+  typeArguments: [t0],
+  functionArguments: [arg0],
+});`);
+  });
+
+  it("maps every argument kind to what the JSON view API takes", async () => {
+    const source = await generate(
+      module("0x1", "m", [
+        fn("many", [
+          "bool",
+          "u8",
+          "u32",
+          "u64",
+          "u256",
+          "address",
+          "vector<u8>",
+          "vector<u64>",
+          "vector<address>",
+          "0x1::string::String",
+          "0x1::object::Object<0x1::m::S>",
+          "0x1::option::Option<u64>",
+          "T0",
+        ], 1),
+      ]),
+    );
+    expect(source).toContain(
+      "(t0: string, arg0: boolean, arg1: number, arg2: number, arg3: string | bigint, arg4: string | bigint, " +
+        "arg5: string, arg6: string, arg7: (string | bigint)[], arg8: string[], arg9: string, arg10: string, " +
+        "arg11: { vec: [] | [string | bigint] }, arg12: unknown)",
+    );
+  });
+
+  it("ignores functions that are not views, and takes a snapshot with none", async () => {
+    const source = await generate(
+      module("0x1", "m", [fn("seen", []), fn("hidden", [], 0, false)], [struct("E", [["a", "u64"]])]),
+    );
+    expect(source).toContain("seenView");
+    expect(source).not.toContain("hidden");
+  });
+
+  it("comments out a view JSON cannot call", async () => {
+    const source = await generate(
+      module("0x1", "m", [
+        fn("signed", ["&signer"]),
+        fn("owned", ["signer"]),
+        fn("custom", ["0x1::m::Thing"]),
+        fn("nested", ["vector<0x1::m::Thing>"]),
+        fn("fine", []),
+      ]),
+    );
+    for (const name of ["signed", "owned", "custom", "nested"]) {
+      expect(source).toContain(`// \`0x1::m::${name}\` takes an argument`);
+      expect(source).not.toContain(`${name}View`);
+    }
+    expect(source).toContain("fineView");
+  });
+
+  it("qualifies a function name two modules share, and camel-cases", async () => {
+    const source = await generate(
+      module("0x1", "one_two", [fn("get_value", [])]),
+      module("0x2", "other", [fn("get_value", []), fn("only_here", [])]),
+    );
+    expect(source).toContain("export const oneTwo_getValueView");
+    expect(source).toContain("export const other_getValueView");
+    expect(source).toContain("export const onlyHereView");
+  });
+
+  it("separates the same module name at two addresses", async () => {
+    const source = await generate(module("0x1", "m", [fn("f", [])]), module("0x2", "m", [fn("f", [])]));
+    expect(source).toContain("export const m_fView_0x1");
+    expect(source).toContain("export const m_fView_0x2");
+  });
+
+  it("leaves event-only output without a view import, and fails only with neither", async () => {
+    const events = await generate(module("0x1", "m", [], [struct("E", [["a", "u64"]])]));
+    expect(events).not.toContain("ViewRequest");
+    await expect(generate(module("0x1", "m", [], [struct("S", [["a", "u64"]], false)]))).rejects.toThrow(
+      "declares no event structs or view functions",
+    );
+  });
+
+  it("keeps order stable whatever order the targets come in", async () => {
+    const a = module("0x1", "a", [fn("x", []), fn("y", [])]);
+    const b = module("0x1", "b", [fn("z", [])]);
+    const first = await generateEventTypes([{ address: "0x1", module: "a" }, { address: "0x1", module: "b" }], loader([a, b]).load);
+    const second = await generateEventTypes([{ address: "0x1", module: "b" }, { address: "0x1", module: "a" }], loader([a, b]).load);
+    expect(body(first)).toBe(body(second));
+  });
+});
