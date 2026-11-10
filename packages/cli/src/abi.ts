@@ -31,11 +31,19 @@ export interface StructAbi {
   variants: { name: string; fields: FieldAbi[] }[];
 }
 
+/** A `#[view]` function: what `withState` can call. */
+export interface ViewAbi {
+  name: string;
+  typeParams: number;
+  params: MoveType[];
+}
+
 export interface ModuleAbi {
   /** As the fullnode reports it: short for special addresses, long otherwise. */
   address: string;
   name: string;
   structs: StructAbi[];
+  views: ViewAbi[];
 }
 
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -157,16 +165,43 @@ function struct(value: unknown): StructAbi {
   };
 }
 
+function view(raw: Record<string, unknown>): ViewAbi {
+  const name = identifier(raw.name, "function");
+  if (!Array.isArray(raw.generic_type_params) || !Array.isArray(raw.params)) {
+    malformed(`function ${name} has no parameter list`);
+  }
+  return {
+    name,
+    typeParams: (raw.generic_type_params as unknown[]).length,
+    params: (raw.params as unknown[]).map((param) => {
+      if (typeof param !== "string") malformed(`function ${name} has a bad parameter`);
+      try {
+        return parseMoveType(param as string);
+      } catch {
+        return { kind: "unsupported", text: (param as string).slice(0, 200) } as const;
+      }
+    }),
+  };
+}
+
+function views(value: unknown): ViewAbi[] {
+  // A snapshot may keep only the structs; nodes before views omit is_view.
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) malformed("bad function list");
+  return (value as Record<string, unknown>[]).filter((f) => f?.is_view === true).map(view);
+}
+
 /** Validates a fullnode `/accounts/{address}/module/{name}` response. */
 export function parseModuleAbi(json: unknown): ModuleAbi {
   const abi = (json as { abi?: unknown } | null)?.abi as Record<string, unknown> | undefined;
   if (abi === undefined || abi === null || typeof abi !== "object") malformed("no abi");
-  const { address, name, structs } = abi!;
+  const { address, name, structs, exposed_functions: functions } = abi!;
   if (typeof address !== "string" || !ADDRESS.test(address)) malformed("bad address");
   if (!Array.isArray(structs)) malformed("no struct list");
   return {
     address: address as string,
     name: identifier(name, "module"),
     structs: (structs as unknown[]).map(struct),
+    views: views(functions),
   };
 }
