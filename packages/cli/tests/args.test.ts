@@ -513,3 +513,11 @@ describe("Movement networks", () => {
     expect(() => parseCommand(["tail", "--network", "moon", TYPE])).toThrow(/movement-mainnet/);
   });
 });
+
+describe("tail --cursor-file", () => {
+  it("is optional, and carried when given", () => {
+    expect(parseCommand(["tail", TYPE])).not.toHaveProperty("options.cursorFile");
+    expect(parseCommand(["tail", "--cursor-file", "c", TYPE])).toMatchObject({ options: { cursorFile: "c" } });
+    expect(() => parseCommand(["tail", "--cursor-file", "", TYPE])).toThrow(/--cursor-file must not be empty/);
+  });
+});

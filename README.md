@@ -1846,13 +1846,15 @@ has for long-lived handles, it fails at the start, with `--handle` as well.
 `--network` takes `mainnet`, `testnet`, `devnet`, `movement-mainnet` or `movement-testnet`, and
 `--node-url` overrides its fullnode.
 
-To pick up where a run stopped, pass the last printed `version` plus one as
-`--from-version`.
+To pick up where a run stopped, pass `--cursor-file <path>`: `tail` saves its position there and
+resumes from it, and a saved position beats `--from-version` and `--from-time`. It is at least
+once, since stdout has no acknowledgement: a restart can reprint part of the last page. By hand,
+pass the last printed `version` plus one as `--from-version`.
 
 Polling errors are reported on stderr and tailing continues until the subscription gives
 up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes
-(as when piped into `head`); `1` when the subscription stopped on an error, or output could not
-be written; `2` for invalid arguments; `130` on a second Ctrl-C.
+(as when piped into `head`); `1` when the subscription stopped on an error, or output or the
+cursor file could not be written; `2` for invalid arguments; `130` on a second Ctrl-C.
 
 ### Forward events to a webhook
 
