@@ -52,10 +52,14 @@ CREATE TABLE IF NOT EXISTS streamd_cursors (
 );
 `;
 
-export function ensureSchema(db: SqliteDatabase): void {
+export function requireDatabase(db: SqliteDatabase): void {
   if (typeof db?.exec !== "function" || typeof db.prepare !== "function") {
     throw new StreamdError("Expected a SQLite database with exec() and prepare()");
   }
+}
+
+export function ensureSchema(db: SqliteDatabase): void {
+  requireDatabase(db);
   db.exec(SCHEMA);
 }
 

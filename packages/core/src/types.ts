@@ -394,6 +394,48 @@ export interface TransferOptions {
    * (`"<creator>::<collection>::<name>::<property_version>"`).
    */
   asset?: string;
+  /**
+   * Only transfers this address or Aptos name sent or received, by the
+   * records' `from` and `to`. Those are direct owners, so a store held
+   * through an object reports the object. A name needs `aptos` in the client
+   * config and resolves once. Costs the same reads as no filter, since a
+   * deposit needs its withdraw to report `from`; `asset` is what saves reads.
+   */
+  account?: string;
+}
+
+/** One asset's balance at a version; `balances()` delivers these to `onChange`. */
+export interface BalanceChange {
+  /** The asset in long form, with APT always its fungible-asset address. */
+  asset: string;
+  /** Base units, read by view at the change's `version`. */
+  balance: bigint;
+}
+
+/** Options for `StreamdClient.balances`. Balances are read at the head, so nothing moves the start. */
+export interface BalancesOptions
+  extends Pick<
+    ListenerOptions,
+    "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "dedupWindow" | "onError" | "onCaughtUp" | "signal"
+  > {
+  /** The fungible-asset addresses or coin types to follow, one or a list (default: APT). */
+  asset?: string | readonly string[];
+  /** Called after a balance changes, with every balance known so far. A throw goes to `onError`. */
+  onChange?: (balances: ReadonlyMap<string, bigint>, change: StreamdEvent<BalanceChange>) => void;
+}
+
+/** A running `balances()`: one wallet's balances, kept current. */
+export interface Balances {
+  /** A copy of every balance known so far, by asset in long form. */
+  readonly value: ReadonlyMap<string, bigint>;
+  /** One asset's balance, given in any form; `undefined` until it is known. */
+  get(asset: string): bigint | undefined;
+  /** Resolves once following has started; rejects if the first read fails or it is stopped first. */
+  readonly ready: Promise<ReadonlyMap<string, bigint>>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
 }
 
 /** Options for `StreamdClient.transfers`. */

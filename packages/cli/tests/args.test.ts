@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { parseCommand, UsageError } from "../src/args.js";
-import type { ForwardOptions, TailOptions } from "../src/args.js";
+import type { StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
 const LONG_ADDR = `0x${"0".repeat(63)}1`;
@@ -255,4 +255,35 @@ describe("parseCommand codegen", () => {
     [["codegen", "--network", "moon", "0x1::coin"], /--network must be one of/],
     [["codegen", "--limit", "1", "0x1::coin"], /Unknown option/],
   ])("rejects %j", (argv, message) => rejects(argv, message));
+});
+
+describe("parseCommand store", () => {
+  function store(...argv: string[]): StoreOptions {
+    const parsed = parseCommand(["store", ...argv]);
+    if (parsed.command !== "store") throw new Error("expected a store command");
+    return parsed.options;
+  }
+
+  it("takes the source flags and a file", () => {
+    expect(store("--db", "e.db", "--network", "testnet", "--from-version", "5", "--poll-interval", "9", TYPE)).toEqual({
+      descriptor: { kind: "module", eventType: [TYPE] },
+      network: "testnet",
+      fromVersion: 5n,
+      pollInterval: 9,
+      db: "e.db",
+    });
+    expect(store("--db", "e.db", "--name", "swaps", TYPE).name).toBe("swaps");
+    expect(store("--db", "e.db", "--account", "0x1").descriptor).toEqual({ kind: "account", accountAddress: expect.any(String) });
+    expect(parseCommand(["store", "--help"])).toEqual({ command: "help" });
+  });
+
+  it.each([
+    [["store", TYPE], /store needs --db/],
+    [["store", "--db", "", TYPE], /--db must not be empty/],
+    [["store", "--db", "e.db"], /store needs at least one event type/],
+    [["store", "--db", "e.db", "--name", "", TYPE], /--name must not be empty/],
+    [["store", "--db", "e.db", "--limit", "1", TYPE], /limit/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
 });

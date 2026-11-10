@@ -1,6 +1,8 @@
 import { Aptos } from "@aptos-labs/ts-sdk";
 import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type {
+  Balances,
+  BalancesOptions,
   BatchCallback,
   EventAdapter,
   EventCallback,
@@ -51,6 +53,8 @@ import { startWatch } from "./watch.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { expectEvents } from "./expect.js";
 import { requireTransactionHash } from "./adapters/validate.js";
+import { addressOrName, resolveName } from "./names.js";
+import { startBalances } from "./balances.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
@@ -126,21 +130,25 @@ interface Listener {
   stop: () => void;
 }
 
-function resolveAdapter(config: StreamdConfig): EventAdapter {
+function resolveAptos(config: StreamdConfig): Aptos | undefined {
+  if (config.aptos === undefined) return undefined;
+  return config.aptos instanceof Aptos ? config.aptos : new Aptos(config.aptos);
+}
+
+function resolveAdapter(config: StreamdConfig, aptos: Aptos | undefined): EventAdapter {
   if (config.adapter !== undefined) return config.adapter;
-  if (config.aptos === undefined) {
+  if (aptos === undefined) {
     throw new StreamdError(
       "StreamdClient requires either `aptos` or `adapter` in config",
     );
   }
-  const aptos =
-    config.aptos instanceof Aptos ? config.aptos : new Aptos(config.aptos);
   return new FullnodeScanAdapter(aptos);
 }
 
 export class StreamdClient {
   private readonly defaults: ListenerDefaults;
   private readonly onError?: (error: Error) => void;
+  private readonly aptos?: Aptos;
   private readonly adapter: EventAdapter;
   private readonly query: EventQuery;
   /** Shared by every poller and query, so the cap holds client-wide. */
@@ -161,7 +169,8 @@ export class StreamdClient {
     this.defaults = resolveDefaults(config);
     this.onError = config.onError;
     this.limiter = resolveLimiter(config.maxConcurrentRequests);
-    this.adapter = resolveAdapter(config);
+    this.aptos = resolveAptos(config);
+    this.adapter = resolveAdapter(config, this.aptos);
     this.shared = new SharedFetches(this.adapter);
     this.query = new EventQuery(this.adapter, this.limiter);
     this.reduceHost = {
@@ -502,22 +511,67 @@ export class StreamdClient {
    * when it stands alone. An `object::Transfer` is reported, unpaired and
    * with `amount` 1, only when the object holds a `0x4::token::Token`,
    * checked once per object by view. `asset` narrows to one fungible asset,
-   * coin type or token before any owner is read. Like `reduce()`, it is not a listener for
+   * coin type or token before any owner is read; `account` keeps what one
+   * address sent or received. Like `reduce()`, it is not a listener for
    * `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
    */
   transfers(
     callback: EventCallback<Transfer>,
     options: TransferListenerOptions = {},
   ): Subscription {
-    const { asset, ...rest } = options;
+    const { asset, account, ...rest } = options;
+    const who = this.accountOf(account);
     return this.subscribe(
       TRANSFER_DESCRIPTOR,
       callback as EventCallback,
       rest,
       undefined,
       rest.id,
-      (source) => transferSource(source, asset),
+      (source) => transferSource(source, asset, who),
     );
+  }
+
+  /**
+   * Keep one wallet's balances current, by reading each at the head every
+   * `pollInterval`, so it cannot drift or fall behind. `asset` names what to
+   * follow, one or a list, since no view lists a wallet's assets; without
+   * it, APT is followed. `address` may be an Aptos name. Like `reduce()`, it
+   * is not a listener for `off()`
+   * or `listenerCount()`; `destroy()` ends it.
+   */
+  balances(address: string, options?: BalancesOptions): Balances {
+    if (address === undefined) throw new StreamdError("balances needs an address or Aptos name");
+    return startBalances(
+      {
+        adapter: this.adapter,
+        onError: this.onError,
+        subscribe: (callback, listener, wrap) =>
+          this.subscribe(TRANSFER_DESCRIPTOR, callback, listener, undefined, undefined, wrap),
+        track: this.reduceHost.track,
+      },
+      this.accountOf(address)!,
+      options,
+    );
+  }
+
+  /**
+   * `account` as a lazy address: a name resolves once, on first use, and a
+   * failed lookup is tried again by the next page.
+   */
+  private accountOf(account: string | undefined): (() => Promise<string>) | undefined {
+    if (account === undefined) return undefined;
+    const address = addressOrName(account);
+    if (address !== undefined) return () => Promise.resolve(address);
+    const aptos = this.aptos;
+    if (aptos === undefined) {
+      throw new StreamdError(`Resolving the Aptos name ${account} needs \`aptos\` in the client config`);
+    }
+    let resolved: Promise<string> | undefined;
+    return () =>
+      (resolved ??= resolveName(aptos, account).catch((err: unknown) => {
+        resolved = undefined;
+        throw err;
+      }));
   }
 
   /**
@@ -525,8 +579,8 @@ export class StreamdClient {
    * options `getEvents` takes; `where` and `limit` apply to the records.
    */
   async getTransfers(filter: TransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
-    const { asset, ...rest } = filter;
-    const query = new EventQuery(transferSource(this.adapter, asset), this.limiter);
+    const { asset, account, ...rest } = filter;
+    const query = new EventQuery(transferSource(this.adapter, asset, this.accountOf(account)), this.limiter);
     return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 

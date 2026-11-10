@@ -37,7 +37,7 @@ The repository is a Turborepo monorepo on Bun workspaces with four packages:
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core`.
 - `@streamd/store-sqlite` (`packages/store-sqlite`) - opt-in persistence: events written to a
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
-- `@streamd/react` (`packages/react`) - `useEvents` and `useLogs` hooks. `react` (>= 18) and
+- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies. See [React hooks](#react-hooks).
 
 ## Usage
@@ -1209,6 +1209,9 @@ const sub = streamd.transfers(
 );
 
 const recent = await streamd.getTransfers({ fromVersion: -10_000n, asset: "0xa" });
+
+// what one address sent or received; an Aptos name works too
+const mine = await streamd.getTransfers({ fromVersion: -10_000n, account: "alice.apt" });
 ```
 
 - **Sources.** One scan over `0x1::fungible_asset::Withdraw`/`Deposit`,
@@ -1229,6 +1232,13 @@ const recent = await streamd.getTransfers({ fromVersion: -10_000n, asset: "0xa" 
   form, the rest as stored, so a name containing `::` reads ambiguously) and
   the token amount. `asset` takes a token object address or a legacy id too;
   other objects are then dropped before any read.
+- **One account.** `account` keeps the records whose `from` or `to` is that
+  address. It filters finished records, because a deposit needs its withdraw to
+  report `from`, so it costs the same reads as no filter; add `asset` to save
+  them. `from` and `to` are direct owners, so a wallet does not match a store it
+  holds through an object. A name needs `aptos` in the client config and
+  resolves once per subscription or query, on the first page; an unregistered
+  one stops a subscription, and a query rejects.
 - **Pairing.** Within a transaction, in event order, a deposit pairs with the
   most recent unpaired withdraw of the same asset and amount. A deposit with
   none (a mint, or a fee-on-transfer token) has no `from`; a withdraw left over
@@ -1253,6 +1263,44 @@ const recent = await streamd.getTransfers({ fromVersion: -10_000n, asset: "0xa" 
   they do not appear. A legacy token offer and its claim land in different
   transactions and come out as a lone withdraw and a lone deposit. A transfers subscription is not a
   listener for `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+
+## Live balances
+
+`balances(address, options?)` keeps one wallet's balances current. `address` may be
+an Aptos name.
+
+```ts
+const wallet = streamd.balances("alice.apt", {
+  asset: ["0xa", usdc], // one or a list; omit for APT
+  onChange: (all, { data, version }) => console.log(version, data.asset, data.balance),
+});
+
+await wallet.ready;
+wallet.get("0xa"); // bigint, in base units
+wallet.value; // Map of every balance known so far
+wallet.unsubscribe();
+```
+
+- **Read at the head.** Every `pollInterval`, it reads the head version, then each
+  followed balance at that version, and reports what changed. A running total
+  built from transfers would drift, since gas moves APT with no withdraw event,
+  and a scan of the chain cannot keep up with mainnet.
+- **Which assets.** No view lists a wallet's assets, so `asset` names what to follow:
+  one, or a list. Without it, APT is followed. Finding what a wallet holds needs the
+  Indexer; a chain scan cannot keep up with mainnet and spends the same rate limit.
+- **What a balance is.** Fungible assets read the primary store, so secondary stores
+  and assets held through an object are not counted. Coin types read `coin::balance`,
+  which includes the paired fungible asset, so a coin and its paired asset are two
+  views of one holding. APT is one entry, under `0xa` in long form, counting both;
+  `get` takes any form.
+- **Tokens** have no balance here: a legacy token id is refused at the call, and a
+  token object rejects `ready`.
+- **Cost.** One head read and one view per followed asset every `pollInterval`
+  (default 1 second), so raise it for a long list on the anonymous rate limit.
+  `onChange` sees each poll's result, not every transaction in between.
+- **Failures.** `ready` rejects if the first read fails. A later failed read retries
+  with backoff, and `maxErrors` stops it; a view that aborts stops it at once. A balances handle is not a listener for
+  `off()` or `listenerCount()`.
 
 ## Data sources and their limits
 
@@ -1437,6 +1485,26 @@ const streamd = new StreamdClient({
   adapter: new CachingAdapter(new FullnodeScanAdapter(aptos), { maxEntries: 500 }),
 });
 ```
+
+Pass `store` to keep final pages past a restart. `@streamd/store-sqlite` ships
+one, and anything with `get(key)` and `set(key, page)` over strings, synchronous
+or not, works:
+
+```ts
+import { Database } from "bun:sqlite";
+import { SqlitePageStore } from "@streamd/store-sqlite";
+
+const store = new SqlitePageStore(new Database("pages.db"), { namespace: "mainnet" });
+const adapter = new CachingAdapter(new FullnodeScanAdapter(aptos), { store });
+```
+
+Memory is checked first, then the store, then the source. A store that fails or
+holds an unreadable entry counts as a miss and reaches `onStoreError`, so a broken
+cache never fails a read. A page's key names the request and not the network, so
+`namespace` is required: use one per network. `maxEntries` on `SqlitePageStore`
+drops the oldest written; without it the table grows without limit. A `bigint`
+inside an event's `data` comes back as a decimal string, as `serializeEvent`
+writes it.
 
 A cached page keeps being served after the fullnode prunes that history, where
 the node itself would answer 410. A custom adapter opts in by setting `final`
@@ -1657,6 +1725,15 @@ function Feed() {
 - **`useLogs(descriptor, options?)`** runs `client.getEvents` and returns
   `{ data, error, loading }`. `data` is the last successful result and stays through refetches
   and errors. Options are `getEvents`'s, without `signal`; it takes a list of descriptors too.
+- **`useTransfers(options?)`** follows `client.transfers` and returns the same
+  `{ events, error, status }` as `useEvents`, with each event's `data` a `Transfer`. It takes
+  `asset`, `account` and `maxEvents`; pass `null` to wait.
+- **`useReduction(descriptor, reducer, initial, options?)`** runs `client.reduce` and returns
+  `{ value, error, status }`. `value` is `initial` until the backfill finishes; `status` is
+  `"idle"`, `"loading"`, `"live"`, or `"stopped"` once the backfill fails, the reducer throws or
+  polling gives up. It restarts when the descriptor, options or `initial` change by value, and
+  calls the latest `reducer` without restarting. Keep `initial` plain, since it is compared by
+  value and a `Map` or class instance compares as empty.
 - **Keyed by value.** Inline descriptors and options are compared by value (bigints
   included), so a re-render with an equal one keeps the subscription or result. A different
   one resubscribes, starting `events` empty, or refetches, aborting the request it replaces.
@@ -1665,7 +1742,7 @@ function Feed() {
 - **Lifetime.** Unmounting unsubscribes or aborts, StrictMode's double mount included. Nothing
   polls or fetches during server rendering. Pass `null` as the descriptor to wait, for
   example until a wallet is connected.
-- **Errors.** Neither hook retries on its own: the subscription's backoff and `maxErrors`
+- **Errors.** No hook retries on its own: the subscription's backoff and `maxErrors`
   apply. `options.onError` still runs; the client's `onError` does not, since the error is in
   the hook's result. In a browser every visitor shares one anonymous rate limit per IP, and a
   rate-limited fullnode response can surface as a `StreamdNetworkError` without `retryAfter`,
@@ -1755,6 +1832,25 @@ cursor file cannot be read or written; `2` for invalid arguments. Run it under a
 that restarts on `1`.
 
 ### Generate event types
+
+`streamd store` follows the same descriptors as `tail` into a SQLite file, through
+[`storeEvents`](#store-events-in-sqlite). Run the same command again and it resumes where it
+stopped:
+
+```sh
+streamd store --db events.db 0x1::transaction_fee::FeeStatement --from-version 7984000000
+sqlite3 events.db 'SELECT count(*) FROM streamd_events'
+```
+
+- It uses the runtime's own SQLite: `bun:sqlite`, or `node:sqlite` on Node 22.5 or newer, which
+  prints one experimental warning on stderr.
+- The cursor is saved under `--name`, or by default under the network and descriptor, so one
+  file can follow several descriptors. A saved cursor beats `--from-version`, which only
+  seeds the first run.
+- Use one file per network, since events are keyed on `(version, eventIndex)`.
+- The file is in WAL mode with a 5 second busy timeout, so it can be queried while written.
+- Exit code 0 on Ctrl-C or SIGTERM, 1 when polling gives up, a write fails, or the file cannot
+  be opened.
 
 `streamd codegen` reads module ABIs from the fullnode and writes a TypeScript file with a type
 and a `defineEvent` descriptor for every `#[event]` struct, plus types for the structs those

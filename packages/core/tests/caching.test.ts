@@ -244,3 +244,100 @@ describe("CachingAdapter view", () => {
     expect(new CachingAdapter(new MemoryAdapter()).view).toBeUndefined();
   });
 });
+
+describe("CachingAdapter with a page store", () => {
+  const memoryStore = (entries = new Map<string, string>()) => ({
+    entries,
+    get: (key: string) => entries.get(key),
+    set: (key: string, page: string) => void entries.set(key, page),
+  });
+  const full: StreamdEvent = {
+    type: PING,
+    data: { n: "1" },
+    version: 2n ** 63n,
+    sequenceNumber: 7n,
+    eventIndex: 3,
+    transactionHash: "0xab",
+    timestamp: 9n,
+    sender: "0x1",
+    guid: { creationNumber: 4n, accountAddress: "0x2" },
+    entryFunction: { function: "0x1::m::f", typeArguments: [], arguments: ["1"] },
+  };
+  const finalPage: EventPage = { events: [full], nextCursor: "9", hasMore: true, final: true, throughVersion: 2n ** 63n };
+  const source = (page: EventPage = finalPage) => {
+    let fetches = 0;
+    const adapter: EventAdapter = { fetchEvents: async () => (fetches++, page) };
+    return { adapter, fetches: () => fetches };
+  };
+  const options: FetchOptions = { fromVersion: 1n, limit: 10 };
+
+  it("serves a restart from the store, with the page intact and no fetch", async () => {
+    const store = memoryStore();
+    const first = source();
+    await new CachingAdapter(first.adapter, { store }).fetchEvents(moduleDesc, options);
+    expect(store.entries.size).toBe(1);
+    const second = source();
+    const page = await new CachingAdapter(second.adapter, { store }).fetchEvents(moduleDesc, options);
+    expect(second.fetches()).toBe(0);
+    expect(page).toEqual(finalPage);
+  });
+
+  it("awaits an asynchronous store", async () => {
+    const entries = new Map<string, string>();
+    const store = {
+      get: async (key: string) => entries.get(key) ?? null,
+      set: async (key: string, page: string) => void entries.set(key, page),
+    };
+    await new CachingAdapter(source().adapter, { store }).fetchEvents(moduleDesc, options);
+    const second = source();
+    await new CachingAdapter(second.adapter, { store }).fetchEvents(moduleDesc, options);
+    expect(second.fetches()).toBe(0);
+  });
+
+  it("never stores a page that is not final, and keys by request", async () => {
+    const store = memoryStore();
+    await new CachingAdapter(source({ events: [], hasMore: false }).adapter, { store }).fetchEvents(moduleDesc, options);
+    expect(store.entries.size).toBe(0);
+    const cache = new CachingAdapter(source().adapter, { store });
+    await cache.fetchEvents(moduleDesc, options);
+    await cache.fetchEvents(moduleDesc, { ...options, limit: 11 });
+    expect(store.entries.size).toBe(2);
+  });
+
+  it("answers from memory before the store, and fills memory from it", async () => {
+    let reads = 0;
+    const inner = memoryStore();
+    const store = { get: (key: string) => (reads++, inner.get(key)), set: inner.set };
+    await new CachingAdapter(source().adapter, { store }).fetchEvents(moduleDesc, options);
+    reads = 0;
+    const cache = new CachingAdapter(source().adapter, { store });
+    await cache.fetchEvents(moduleDesc, options);
+    await cache.fetchEvents(moduleDesc, options);
+    expect(reads).toBe(1);
+  });
+
+  it("treats a failing or corrupt store as a miss, reporting each", async () => {
+    const errors: unknown[] = [];
+    const onStoreError = (err: unknown) => errors.push(err);
+    const broken = { get: () => { throw new Error("read"); }, set: () => { throw new Error("write"); } };
+    const a = source();
+    expect(await new CachingAdapter(a.adapter, { store: broken, onStoreError }).fetchEvents(moduleDesc, options)).toEqual(finalPage);
+    expect(a.fetches()).toBe(1);
+    expect(errors.map((e) => (e as Error).message)).toEqual(["read", "write"]);
+
+    for (const bad of ["not json", '{"events":"x","hasMore":true}', JSON.stringify({ events: [], hasMore: false })]) {
+      errors.length = 0;
+      const store = { get: () => bad, set: () => {} };
+      const b = source();
+      await new CachingAdapter(b.adapter, { store, onStoreError }).fetchEvents(moduleDesc, options);
+      expect(b.fetches()).toBe(1);
+      expect(errors).toHaveLength(1);
+    }
+  });
+
+  it("works without onStoreError, and refuses a store with no methods", async () => {
+    const broken = { get: () => Promise.reject(new Error("read")), set: () => Promise.reject(new Error("write")) };
+    expect(await new CachingAdapter(source().adapter, { store: broken }).fetchEvents(moduleDesc, options)).toEqual(finalPage);
+    expect(() => new CachingAdapter(source().adapter, { store: {} as never })).toThrow(StreamdError);
+  });
+});

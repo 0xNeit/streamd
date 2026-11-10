@@ -317,3 +317,50 @@ describe("transferSource", () => {
     expect(() => transferSource(adapter, "0x1::My Coll::Token #1::0")).not.toThrow();
   });
 });
+
+describe("transferSource account filter", () => {
+  const events = [
+    fa(1, 0, "Withdraw", "a1", "5"),
+    fa(1, 1, "Deposit", "b1", "5"),
+    fa(2, 0, "Withdraw", "b1", "7"),
+    fa(2, 1, "Deposit", "c1", "7"),
+    fa(3, 0, "Deposit", "a2", "9"),
+    fa(4, 0, "Withdraw", "a1", "3"),
+    fa(5, 0, "Withdraw", "a1", "2"),
+    fa(5, 1, "Deposit", "a1", "2"),
+    moved(6, 0, NFT, BOB, ALICE),
+    moved(7, 0, NFT, ALICE, CAROL),
+  ];
+  const of = (who: string) => async () => who;
+
+  it("keeps what the account sent or received, each once", async () => {
+    const source = transferSource(withViews(events).adapter, undefined, of(ALICE));
+    expect(await transfers(source)).toEqual([
+      { at: "1:1", asset: APT, amount: 5n, from: ALICE, to: BOB },
+      { at: "3:0", asset: USDC, amount: 9n, from: undefined, to: ALICE },
+      { at: "4:0", asset: APT, amount: 3n, from: ALICE, to: undefined },
+      { at: "5:1", asset: APT, amount: 2n, from: ALICE, to: ALICE },
+      { at: "6:0", asset: NFT, amount: 1n, from: BOB, to: ALICE },
+      { at: "7:0", asset: NFT, amount: 1n, from: ALICE, to: CAROL },
+    ]);
+  });
+
+  it("drops records between other accounts, and combines with asset and desc", async () => {
+    const carol = transferSource(withViews(events).adapter, undefined, of(CAROL));
+    expect((await transfers(carol)).map((t) => t.at)).toEqual(["2:1", "7:0"]);
+    const usdc = transferSource(withViews(events).adapter, USDC, of(ALICE));
+    expect((await transfers(usdc)).map((t) => t.at)).toEqual(["3:0"]);
+    const desc = transferSource(withViews(events).adapter, undefined, of(CAROL));
+    expect((await transfers(desc, { ...all, orderBy: "desc" })).map((t) => t.at)).toEqual(["7:0", "2:1"]);
+  });
+
+  it("resolves the account before fetching, and a failure fetches nothing", async () => {
+    const { adapter, calls } = withViews(events);
+    let fetched = 0;
+    const counted: EventAdapter = { ...adapter, fetchEvents: (d, o) => (fetched++, adapter.fetchEvents(d, o)) };
+    const source = transferSource(counted, undefined, () => Promise.reject(new StreamdError("no such name")));
+    await expect(transfers(source)).rejects.toThrow("no such name");
+    expect(fetched).toBe(0);
+    expect(calls).toEqual([]);
+  });
+});
