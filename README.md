@@ -1927,6 +1927,18 @@ takes the same descriptors as `tail`. Failed pages are retried. It exits 0 when 
 interrupted or piped into something that stops reading, such as `head`, 1 on failure, and 2 for
 bad usage.
 
+### Inspect a transaction
+
+`streamd tx <hash>` waits for a transaction to commit and prints its events as JSON lines:
+
+```sh
+streamd tx 0x5d16bc7f...
+```
+
+`--timeout <ms>` bounds the wait (default 20000). It exits 0 for a successful transaction, 1 if the
+transaction failed, with its VM status on stderr and nothing on stdout, or if it was not found in
+time, 2 for a malformed hash, and 130 if interrupted while waiting.
+
 ### Check event types
 
 `streamd check` says whether each event type can be emitted, before a `tail` or `forward` that

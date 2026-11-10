@@ -15,6 +15,7 @@ import type {
   SourceOptions,
   StoreOptions,
   TailOptions,
+  TxOptions,
 } from "./args.js";
 import { runCheck } from "./check.js";
 import { generateEventTypes } from "./codegen.js";
@@ -24,6 +25,7 @@ import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
 import { openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
+import { runTx } from "./tx.js";
 
 // The SDK logs notes for custom networks with console.info, which would corrupt JSON lines on stdout.
 console.info = console.error;
@@ -56,7 +58,7 @@ function aptosConfig(options: Pick<SourceOptions, "network" | "nodeUrl">): Aptos
 }
 
 /** A client for `options` and a signal that the first SIGINT or a SIGTERM aborts. */
-function setup(options: SourceOptions): { client: StreamdClient; controller: AbortController } {
+function setup(options: Pick<SourceOptions, "network" | "nodeUrl">): { client: StreamdClient; controller: AbortController } {
   const controller = new AbortController();
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
@@ -130,10 +132,26 @@ async function tail(options: TailOptions): Promise<number> {
 }
 
 async function query(options: QueryOptions): Promise<number> {
-  const { client, controller } = setup({ ...options });
+  const { client, controller } = setup(options);
   const out = stdout(controller);
   try {
     const code = await runQuery(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function tx(options: TxOptions): Promise<number> {
+  const { client, controller } = setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runTx(options, {
       client,
       write: out.write,
       error: (message) => process.stderr.write(`${message}\n`),
@@ -204,6 +222,7 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === "check") return check(parsed.options);
   if (parsed.command === "record") return record(parsed.options);
   if (parsed.command === "query") return query(parsed.options);
+  if (parsed.command === "tx") return tx(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 

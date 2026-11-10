@@ -40,6 +40,14 @@ export interface StoreOptions extends SourceOptions {
   name?: string;
 }
 
+export interface TxOptions {
+  hash: string;
+  network: Network;
+  nodeUrl?: string;
+  /** How long to wait for the transaction to commit, in ms. */
+  timeout?: number;
+}
+
 export interface QueryOptions {
   descriptor: EventDescriptor;
   network: Network;
@@ -85,6 +93,7 @@ export type ParsedCommand =
   | { command: "check"; options: CheckOptions }
   | { command: "record"; options: RecordOptions }
   | { command: "query"; options: QueryOptions }
+  | { command: "tx"; options: TxOptions }
   | { command: "codegen"; options: CodegenOptions };
 
 /** Bad command-line input: reported with usage, exit code 2. */
@@ -164,6 +173,13 @@ const QUERY_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const TX_OPTIONS = {
+  network: { type: "string" },
+  "node-url": { type: "string" },
+  timeout: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const CHECK_OPTIONS = {
   network: { type: "string" },
   "node-url": { type: "string" },
@@ -200,6 +216,7 @@ export const USAGE = `Usage:
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
   streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
+  streamd tx <hash>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
   streamd codegen [--out <file>] <address>::<module>...
@@ -210,6 +227,7 @@ saving its position to a cursor file once the webhook acknowledges it.
 store follows matching events into a SQLite file, resuming from the cursor
 saved there when run again.
 query reads a closed range of history as JSON lines, then exits.
+tx waits for a transaction and prints its events, exiting 1 if it failed.
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 codegen reads module ABIs and writes TypeScript types and defineEvent
@@ -232,7 +250,8 @@ Options:
   --cursor-file <path>   tail: save and resume from here; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE})
   --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
-  --timeout <ms>         forward: per-request timeout (default: ${DEFAULT_TIMEOUT})
+  --timeout <ms>         forward: per-request timeout (default: ${DEFAULT_TIMEOUT});
+                         tx: wait for commit (default: 20000)
   --header <h>           forward: request header 'Name: value', repeatable
   --db <file>            store: SQLite file to write (required)
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
@@ -527,6 +546,24 @@ function parseQuery(args: string[]): ParsedCommand {
   return { command: "query", options };
 }
 
+const TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/;
+
+function parseTx(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: TX_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const [hash, ...rest] = positionals;
+  if (hash === undefined || rest.length > 0) throw new UsageError("tx needs one transaction hash");
+  if (!TRANSACTION_HASH.test(hash)) throw new UsageError(`not a transaction hash: ${hash}`);
+  const options: TxOptions = { hash, network: network(values.network) };
+  const url = nodeUrl(values["node-url"]);
+  const timeout = integer("timeout", values.timeout, 0, MAX_TIMEOUT);
+  if (url !== undefined) options.nodeUrl = url;
+  if (timeout !== undefined) options.timeout = timeout;
+  return { command: "tx", options };
+}
+
 function parseCheck(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: CHECK_OPTIONS, allowPositionals: true, strict: true }),
@@ -582,6 +619,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "check") return parseCheck(rest);
   if (command === "record") return parseRecord(rest);
   if (command === "query") return parseQuery(rest);
+  if (command === "tx") return parseTx(rest);
   if (command === "codegen") return parseCodegen(rest);
   throw new UsageError(`unknown command: ${command}`);
 }
