@@ -42,7 +42,12 @@ function setup(options: SourceOptions): { client: StreamdClient; controller: Abo
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
   process.once("SIGTERM", () => controller.abort());
   const client = new StreamdClient({
-    aptos: new AptosConfig({ network: NETWORKS[options.network], fullnode: options.nodeUrl }),
+    aptos: new AptosConfig({
+      network: NETWORKS[options.network],
+      fullnode: options.nodeUrl,
+      // The SDK's default HTTP/2 hangs under Bun, with no error.
+      ...("Bun" in globalThis && { clientConfig: { http2: false } }),
+    }),
   });
   return { client, controller };
 }
