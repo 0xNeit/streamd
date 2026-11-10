@@ -1,5 +1,6 @@
 import type { StreamdClient } from "@streamd/core";
 import type { TailOptions } from "./args.js";
+import { readCursor, writeCursor } from "./cursor-file.js";
 import { formatEvent, message } from "./format.js";
 
 export interface TailIO {
@@ -21,12 +22,22 @@ export async function runTail(options: TailOptions, io: TailIO): Promise<number>
   let lastReported: unknown;
   const report = (err: unknown) => {
     lastReported = err;
-    io.error(`streamd: ${message(err)}`);
+    io.error(`streamd: ${typeof err === "string" ? err : message(err)}`);
   };
+  let saved: string | undefined;
+  if (options.cursorFile !== undefined) {
+    try {
+      saved = readCursor(options.cursorFile);
+    } catch (err) {
+      report(`cannot read cursor file: ${message(err)}`);
+      return 1;
+    }
+  }
   // Unset options are left out rather than passed as undefined, which would
   // override the client's own defaults when spread.
   const { fromVersion, fromTime, pollInterval } = options;
   const stream = io.client.stream(options.descriptor, {
+    ...(saved !== undefined && { cursor: saved }),
     ...(fromVersion !== undefined && { fromVersion }),
     ...(fromTime !== undefined && { fromTime }),
     ...(pollInterval !== undefined && { pollInterval }),
@@ -34,17 +45,34 @@ export async function runTail(options: TailOptions, io: TailIO): Promise<number>
     onError: report,
   });
 
+  /** Saves the stream's position if it moved; false when the file cannot be written. */
+  const checkpoint = (): boolean => {
+    const cursor = stream.cursor;
+    if (options.cursorFile === undefined || cursor === undefined || cursor === saved) return true;
+    try {
+      writeCursor(options.cursorFile, cursor);
+      saved = cursor;
+      return true;
+    } catch (err) {
+      report(`cannot write cursor file: ${message(err)}`);
+      return false;
+    }
+  };
+
   let printed = 0;
+  let code = 0;
   try {
     for await (const event of stream) {
       await io.write(`${formatEvent(event)}\n`);
+      if (!checkpoint()) return 1;
       if (options.limit !== undefined && ++printed >= options.limit) break;
     }
-    return 0;
   } catch (err) {
-    if (io.signal?.aborted) return 0;
-    // The error that stopped the subscription was the last one through onError.
-    if (err !== lastReported) report(err);
-    return 1;
+    if (!io.signal?.aborted) {
+      // The error that stopped the subscription was the last one through onError.
+      if (err !== lastReported) report(err);
+      code = 1;
+    }
   }
+  return checkpoint() ? code : 1;
 }

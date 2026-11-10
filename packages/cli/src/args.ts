@@ -18,6 +18,7 @@ export interface SourceOptions {
 
 export interface TailOptions extends SourceOptions {
   limit?: number;
+  cursorFile?: string;
 }
 
 export interface ForwardOptions extends SourceOptions {
@@ -117,7 +118,12 @@ const SOURCE_OPTIONS = {
 
 const FROM_TIME = { "from-time": { type: "string" } } as const;
 
-const TAIL_OPTIONS = { ...SOURCE_OPTIONS, ...FROM_TIME, limit: { type: "string" } } as const;
+const TAIL_OPTIONS = {
+  ...SOURCE_OPTIONS,
+  ...FROM_TIME,
+  limit: { type: "string" },
+  "cursor-file": { type: "string" },
+} as const;
 
 const FORWARD_OPTIONS = {
   ...SOURCE_OPTIONS,
@@ -223,7 +229,8 @@ Options:
   --poll-interval <ms>   delay between polls (default: 1000)
   --limit <n>            tail: exit after printing n events; record, query: stop after n
   --to <url>             forward: webhook URL (http or https, required)
-  --cursor-file <path>   forward: cursor file (default: ${DEFAULT_CURSOR_FILE})
+  --cursor-file <path>   tail: save and resume from here; forward: cursor file
+                         (default: ${DEFAULT_CURSOR_FILE})
   --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
   --timeout <ms>         forward: per-request timeout (default: ${DEFAULT_TIMEOUT})
   --header <h>           forward: request header 'Name: value', repeatable
@@ -428,6 +435,8 @@ function parseTail(args: string[]): ParsedCommand {
   const options: TailOptions = source("tail", values, positionals);
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
   if (limit !== undefined) options.limit = limit;
+  if (values["cursor-file"] === "") throw new UsageError("--cursor-file must not be empty");
+  if (values["cursor-file"] !== undefined) options.cursorFile = values["cursor-file"];
   return { command: "tail", options };
 }
 

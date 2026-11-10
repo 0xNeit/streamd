@@ -1,4 +1,7 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runTail } from "../src/tail.js";
 import type { TailOptions } from "../src/args.js";
 import { MemoryAdapter, StreamdClient, StreamdError, StreamdNetworkError } from "@streamd/core";
@@ -216,5 +219,73 @@ describe("runTail --from-time", () => {
         expect(seen[1]).not.toHaveProperty("fromTime");
       }),
     );
+  });
+});
+
+describe("runTail --cursor-file", () => {
+  const dir = () => mkdtempSync(join(tmpdir(), "streamd-tail-"));
+
+  /** Runs until `count` lines arrive, then lets the cursor land and aborts. */
+  async function until(adapter: EventAdapter, extra: Partial<TailOptions>, count: number) {
+    const controller = new AbortController();
+    const { lines, errors, io, client } = harness(adapter, controller.signal);
+    const running = runTail(options(extra), io);
+    for (let i = 0; i < 300 && lines.length < count; i++) await new Promise((r) => setTimeout(r, 2));
+    await new Promise((r) => setTimeout(r, 15));
+    controller.abort();
+    const code = await running;
+    client.destroy();
+    return { code, lines, errors };
+  }
+  const versions = (lines: string[]) => lines.map((l) => (JSON.parse(l) as { version: string }).version);
+
+  it("saves its position and resumes past what it printed", async () => {
+    const cursorFile = join(dir(), "c");
+    const events = [ev(1), ev(2)];
+    const first = await until(new MemoryAdapter(events), { fromVersion: 0n, cursorFile }, 2);
+    expect(first.code).toBe(0);
+    expect(versions(first.lines)).toEqual(["1", "2"]);
+    expect(readFileSync(cursorFile, "utf8").trim()).not.toBe("");
+
+    events.push(ev(3));
+    const second = await until(new MemoryAdapter(events), { fromVersion: 0n, cursorFile }, 1);
+    expect(versions(second.lines)).toEqual(["3"]);
+  });
+
+  it("prefers a saved cursor to a start option", async () => {
+    const cursorFile = join(dir(), "c");
+    const seen: Record<string, unknown>[] = [];
+    const client = {
+      stream: (_d: unknown, listener: Record<string, unknown>) => {
+        seen.push(listener);
+        return Object.assign((async function* () {})(), { cursor: undefined });
+      },
+    };
+    writeFileSync(cursorFile, "abc\n");
+    await runTail(options({ fromVersion: 5n, cursorFile }), { client: client as never, write: () => {}, error: () => {} });
+    expect(seen[0]).toMatchObject({ cursor: "abc" });
+  });
+
+  it("writes nothing without the flag", async () => {
+    const { code, lines } = await until(new MemoryAdapter([ev(1)]), { fromVersion: 0n }, 1);
+    expect(code).toBe(0);
+    expect(lines).toHaveLength(1);
+  });
+
+  it("exits 1 when the file cannot be read", async () => {
+    const path = dir();
+    const { lines, errors, io, client } = harness(new MemoryAdapter([ev(1)]));
+    expect(await runTail(options({ cursorFile: path }), io)).toBe(1);
+    expect(errors[0]).toContain("cannot read cursor file");
+    expect(lines).toEqual([]);
+    client.destroy();
+  });
+
+  it("exits 1 when the file cannot be written", async () => {
+    const parent = dir();
+    const cursorFile = join(parent, "no-such-dir", "c");
+    const { code, errors } = await until(new MemoryAdapter([ev(1), ev(2)]), { fromVersion: 0n, cursorFile }, 1);
+    expect(code).toBe(1);
+    expect(errors.join()).toContain("cannot write cursor file");
   });
 });
