@@ -113,7 +113,7 @@ function statusOf(module: MoveModuleBytecode | undefined, struct: string): Event
 }
 
 /** A read that treats 404 as absent. */
-async function readNode<T>(aptos: Aptos, path: string, label: string): Promise<T | undefined> {
+async function readNode<T extends {}>(aptos: Aptos, path: string, label: string): Promise<T | undefined> {
   try {
     const { data } = await getAptosFullNode<{}, T>({
       aptosConfig: aptos.config,

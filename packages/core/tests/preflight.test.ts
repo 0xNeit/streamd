@@ -236,7 +236,7 @@ describe("checkDescriptor on handles and resources", () => {
   });
 
   it("reports a field that is absent or not a handle", async () => {
-    const { aptos } = node({ data: { type: STORE, data: { n: "1" } } });
+    const { aptos } = node({ data: { type: STORE, data: { n: "1", other: handle("2") } } });
     for (const field of ["n", "missing"]) {
       expect(await checkDescriptor(aptos, byField(field))).toEqual({
         ok: false,
