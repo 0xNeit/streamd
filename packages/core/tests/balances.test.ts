@@ -99,8 +99,10 @@ describe("client.balances with an asset", () => {
     expect(wallet.get(`0x${USDC.slice(2).toUpperCase()}`)).toBe(150n);
     expect(wallet.value).toEqual(new Map([[USDC, 150n]]));
 
+    // A later head with the same balance is not a change.
+    state.head = 61n;
     const reads = state.reads.length;
-    await until(() => state.reads.length > reads + 5);
+    await until(() => state.reads.some((r) => r.version === 61n) && state.reads.length > reads + 5);
     expect(changes).toHaveLength(1);
     expect(state.scans).toBe(0);
     expect(client.listenerCount()).toBe(0);
@@ -126,11 +128,14 @@ describe("client.balances with an asset", () => {
     const client = new StreamdClient({ adapter });
     const wallet = client.balances(ALICE, { ...FAST, asset: USDC });
     await wallet.ready;
-    state.head = 40n;
+    state.head = 60n;
+    state.amounts.set(USDC, "210");
+    await until(() => wallet.get(USDC) === 210n);
+    state.head = 55n;
     state.amounts.set(USDC, "1");
     const before = state.reads.length;
     await new Promise((r) => setTimeout(r, 20));
-    expect(wallet.get(USDC)).toBe(200n);
+    expect(wallet.get(USDC)).toBe(210n);
     expect(state.reads.length).toBe(before);
     client.destroy();
   });
@@ -201,7 +206,8 @@ describe("client.balances without an asset", () => {
   });
 
   it("adds an asset once a transfer shows the wallet moving it, ignoring others' and tokens", async () => {
-    const { adapter, state } = chain([moved(51, NFT, BOB, ALICE), fa(52, "b1"), fa(53, "a1")]);
+    const events = [moved(51, NFT, BOB, ALICE), fa(52, "b1"), fa(53, "a1")];
+    const { adapter, state } = chain(events);
     const client = new StreamdClient({ adapter });
     const wallet = client.balances(ALICE, FAST);
     await wallet.ready;
@@ -213,6 +219,11 @@ describe("client.balances without an asset", () => {
     await new Promise((r) => setTimeout(r, 20));
     expect(state.reads.filter((r) => r.asset === NFT).length).toBe(nft);
     expect(wallet.value.has(NFT)).toBe(false);
+    // A later transfer of a known token does not put it back.
+    events.push(moved(54, NFT, ALICE, BOB));
+    state.head = 61n;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(state.reads.filter((r) => r.asset === NFT).length).toBe(nft);
     client.destroy();
   });
 
