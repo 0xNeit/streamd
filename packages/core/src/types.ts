@@ -32,6 +32,31 @@ export interface ModuleEventDescriptor<TData = unknown> {
   eventType: MoveEventType | readonly MoveEventType[];
 }
 
+declare const taggedEvent: unique symbol;
+
+/** One member of a `defineEvents` payload: a Move type and its payload type. Type-level only. */
+export interface TaggedEvent<TType extends string, TData> {
+  readonly [taggedEvent]: [TType, TData];
+}
+
+/**
+ * The event a caller receives for a descriptor's `TData`: `StreamdEvent<TData>`,
+ * unless `TData` is a `defineEvents` payload, when it is a union that narrows on
+ * `event.type`.
+ */
+export type EventOf<TData> = 0 extends 1 & TData
+  ? StreamdEvent<TData>
+  : [TData] extends [TaggedEvent<string, unknown>]
+    ? TaggedMember<TData>
+    : StreamdEvent<TData>;
+
+// Its own alias so that it distributes over the union; `type` is replaced, not
+// intersected, because an intersection with `string` does not discriminate.
+type TaggedMember<TData> =
+  TData extends TaggedEvent<infer TType, infer TPayload>
+    ? Omit<StreamdEvent<TPayload>, "type"> & { type: TType }
+    : never;
+
 /** Legacy EventHandle event, identified by account + handle + field */
 export interface HandleEventDescriptor {
   kind: "handle";
@@ -349,7 +374,7 @@ export interface EventExpectation {
   toEmit<TData = unknown>(
     descriptor: EventDescriptor<TData>,
     where?: EventPredicate,
-  ): Promise<StreamdEvent<TData>[]>;
+  ): Promise<EventOf<TData>[]>;
   /** Resolves when no event matches; rejects naming the ones that do. */
   notToEmit(descriptor: EventDescriptor, where?: EventPredicate): Promise<void>;
 }
@@ -634,7 +659,7 @@ export interface OnceOptions extends ListenerOptions {
 }
 
 /** Folds one event into the state; synchronous, and should not mutate `state`. */
-export type Reducer<S, TData = unknown> = (state: S, event: StreamdEvent<TData>) => S;
+export type Reducer<S, TData = unknown> = (state: S, event: EventOf<TData>) => S;
 
 /**
  * Options for `reduce()`. History options shape the backfill, live options
@@ -673,7 +698,7 @@ export interface ReduceOptions<S = unknown, TData = unknown>
    * during the backfill, whose result `ready` resolves with. A throw goes to
    * `onError` and does not stop the reduction.
    */
-  onChange?: (state: S, event: StreamdEvent<TData>) => void;
+  onChange?: (state: S, event: EventOf<TData>) => void;
 }
 
 /** A running `reduce()`: the reduced value, kept current as events arrive. */
@@ -907,7 +932,7 @@ export interface Subscription {
 }
 
 /** What `stream()` returns: its live events, and where to resume them. */
-export interface EventStream<TData = unknown> extends AsyncIterableIterator<StreamdEvent<TData>> {
+export interface EventStream<TData = unknown> extends AsyncIterableIterator<EventOf<TData>> {
   /**
    * As `Subscription.cursor`, moving past a page only once the loop has asked
    * past its last event; the `cursor` option until the loop first asks.
@@ -930,7 +955,7 @@ export interface EventStream<TData = unknown> extends AsyncIterableIterator<Stre
  * which the union would reject.
  */
 export type EventCallback<TData = unknown> = (
-  event: StreamdEvent<TData>,
+  event: EventOf<TData>,
 ) => void;
 
 /**
@@ -940,7 +965,7 @@ export type EventCallback<TData = unknown> = (
  * rejection goes to `onError` without counting toward `maxErrors`.
  */
 export type BatchCallback<TData = unknown> = (
-  events: StreamdEvent<TData>[],
+  events: EventOf<TData>[],
 ) => void;
 
 /**
@@ -955,7 +980,7 @@ export interface TransactionGroup<TData = unknown> {
   sender?: string;
   timestamp?: bigint;
   entryFunction?: EntryFunctionCall;
-  events: StreamdEvent<TData>[];
+  events: EventOf<TData>[];
 }
 
 /**
@@ -973,7 +998,7 @@ export type TransactionCallback<TData = unknown> = (
  * as the caller passed it. Otherwise as `EventCallback`.
  */
 export type WatchCallback<TData = unknown> = (
-  event: StreamdEvent<TData>,
+  event: EventOf<TData>,
   address: string,
 ) => void;
 

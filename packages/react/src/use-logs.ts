@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { EventDescriptor, EventFilter, StreamdClient, StreamdEvent } from "@streamd/core";
+import type { EventDescriptor, EventFilter, EventOf, StreamdClient } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
 import { toError, valueKey, withLatestFunctions } from "./key.js";
 
@@ -11,7 +11,7 @@ export interface UseLogsOptions extends Omit<EventFilter, "signal"> {
 
 export interface UseLogsResult<TData> {
   /** The last successful result; kept through later refetches and errors. */
-  data: StreamdEvent<TData>[] | undefined;
+  data: EventOf<TData>[] | undefined;
   /** The last request's failure, cleared by the next success. */
   error: Error | undefined;
   /** True while a request is in flight. */

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   StreamdError,
-  type StreamdEvent,
+  type EventOf,
   type Subscription,
   type SubscriptionOptions,
 } from "@streamd/core";
@@ -14,7 +14,7 @@ export type UseEventsStatus = "idle" | "live" | "stopped";
 
 export interface UseEventsResult<TData> {
   /** The most recent `maxEvents` delivered events, oldest first. */
-  events: StreamdEvent<TData>[];
+  events: EventOf<TData>[];
   /** The last polling or handler error, cleared when events next arrive. */
   error: Error | undefined;
   status: UseEventsStatus;
@@ -32,18 +32,19 @@ export function useFollowing<TData, TOptions extends Omit<SubscriptionOptions, "
   deps: unknown,
   listener: TOptions,
   maxEvents: number,
-  start: (deliver: (events: StreamdEvent<TData>[]) => void, options: TOptions) => Subscription,
+  start: (deliver: (events: EventOf<TData>[]) => void, options: TOptions) => Subscription,
 ): UseEventsResult<TData> {
   if (!Number.isSafeInteger(maxEvents) || maxEvents < 1) {
     throw new StreamdError(`Invalid maxEvents: ${String(maxEvents)} (expected a positive integer)`);
   }
   const latest = useRef({ listener, maxEvents });
   latest.current = { listener, maxEvents };
-  const [state, setState] = useState<UseEventsResult<TData>>(IDLE);
+  const idle = IDLE as unknown as UseEventsResult<TData>;
+  const [state, setState] = useState(idle);
 
   useEffect(() => {
     if (!enabled) {
-      setState(IDLE);
+      setState(idle);
       return;
     }
     let current = true;

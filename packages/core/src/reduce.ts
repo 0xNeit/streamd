@@ -1,4 +1,5 @@
 import type {
+  EventOf,
   EventCallback,
   EventDescriptor,
   EventFilter,
@@ -143,7 +144,7 @@ export function startReduction<S, TData>(
   /** Folds `event`, or stops and reports when the reducer throws. */
   const fold = (event: StreamdEvent): boolean => {
     try {
-      state = reducer(state, event as StreamdEvent<TData>);
+      state = reducer(state, event as unknown as EventOf<TData>);
     } catch (err) {
       const error = new StreamdError(`Reducer threw for ${eventId(event)}`, err);
       stop(error);
@@ -162,7 +163,7 @@ export function startReduction<S, TData>(
       descriptor,
       (event) => {
         if (after !== undefined && !isAfter(event, after)) return;
-        if (fold(event)) options.onChange?.(state, event as StreamdEvent<TData>);
+        if (fold(event)) options.onChange?.(state, event as unknown as EventOf<TData>);
       },
       {
         ...pick(options, LIVE_KEYS),

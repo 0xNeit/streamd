@@ -1045,6 +1045,34 @@ values still arrive as strings unless you name them in `decode` (below), in
 which case describe them as `bigint`. At runtime the descriptor is the same
 plain object you would write by hand.
 
+`defineEvents` combines several into one descriptor whose events narrow on `event.type`:
+
+```ts
+import { defineEvent, defineEvents } from "@streamd/core";
+
+const Transfers = defineEvents({
+  "0x1::fungible_asset::Deposit": defineEvent<{ store: string; amount: string }>(
+    "0x1::fungible_asset::Deposit",
+  ),
+  "0x1::fungible_asset::Withdraw": defineEvent<{ store: string; amount: string }>(
+    "0x1::fungible_asset::Withdraw",
+  ),
+});
+
+client.on(Transfers, (event) => {
+  if (event.type === "0x1::fungible_asset::Deposit") console.log("in", event.data.amount);
+  else console.log("out", event.data.amount);
+});
+```
+
+Each key must be the Move type of the descriptor it maps to, or it throws a `StreamdError`:
+one that did not match would make the types lie. It works with the catalog's descriptors in
+`@streamd/core/framework` too. Every method that hands you an event infers the narrowing type,
+which you can name as `EventOf<T>`. At runtime it is a `module` descriptor with a list of types.
+
+A function of your own that is generic over the payload should take and return `EventOf<T>`
+rather than `StreamdEvent<T>`, since TypeScript cannot resolve which one applies until `T` is known.
+
 ### Framework events
 
 `@streamd/core/framework` ships a typed descriptor for every `#[event]` struct in the common
