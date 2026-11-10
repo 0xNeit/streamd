@@ -404,22 +404,22 @@ export interface TransferOptions {
   account?: string;
 }
 
-/** One asset's balance as a transaction left it; `balances()` delivers these to `onChange`. */
+/** One asset's balance at a version; `balances()` delivers these to `onChange`. */
 export interface BalanceChange {
   /** The asset in long form, with APT always its fungible-asset address. */
   asset: string;
-  /** Base units, read by view at the event's version. */
+  /** Base units, read by view at the change's `version`. */
   balance: bigint;
 }
 
-/** Options for `StreamdClient.balances`. Balances start at the head, so nothing moves the start. */
+/** Options for `StreamdClient.balances`. Balances are read at the head, so nothing moves the start. */
 export interface BalancesOptions
   extends Pick<
     ListenerOptions,
     "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "dedupWindow" | "onError" | "onCaughtUp" | "signal"
   > {
-  /** Follow only this fungible-asset address or coin type, read once at the head before following. */
-  asset?: string;
+  /** The fungible-asset addresses or coin types to follow, one or a list (default: APT). */
+  asset?: string | readonly string[];
   /** Called after a balance changes, with every balance known so far. A throw goes to `onError`. */
   onChange?: (balances: ReadonlyMap<string, bigint>, change: StreamdEvent<BalanceChange>) => void;
 }
