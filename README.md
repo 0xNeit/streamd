@@ -1427,6 +1427,12 @@ const mine = await streamd.getTransfers({ fromVersion: -10_000n, account: "alice
   form, the rest as stored, so a name containing `::` reads ambiguously) and
   the token amount. `asset` takes a token object address or a legacy id too;
   other objects are then dropped before any read.
+- **Asset details.** `withAssetInfo: true` adds `symbol` and `decimals` to fungible-asset and
+  coin records, from `fungible_asset::symbol` and `decimals` or the `coin` module's, read
+  through `view` at the record's version and cached per asset, so each new asset costs two
+  reads. Records the `account` filter drops cost none, tokens have neither field, and an
+  asset whose view aborts is left without them. `formatAmount(amount, decimals)` turns base
+  units into a decimal string, every digit kept: `formatAmount(1_500_000n, 8)` is `"0.015"`.
 - **One account.** `account` keeps the records whose `from` or `to` is that
   address. It filters finished records, because a deposit needs its withdraw to
   report `from`, so it costs the same reads as no filter; add `asset` to save

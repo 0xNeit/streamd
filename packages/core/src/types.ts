@@ -409,6 +409,10 @@ export interface Transfer {
   from?: string;
   /** Owner of the receiving store, the coin or token account, or the object's new owner, in long form. */
   to?: string;
+  /** The asset's symbol, with `withAssetInfo`; absent for tokens and when the asset has none to read. */
+  symbol?: string;
+  /** The asset's decimals, with `withAssetInfo`; use `formatAmount` to apply them. */
+  decimals?: number;
 }
 
 export interface TransferOptions {
@@ -427,6 +431,11 @@ export interface TransferOptions {
    * deposit needs its withdraw to report `from`; `asset` is what saves reads.
    */
   account?: string;
+  /**
+   * Adds `symbol` and `decimals` to fungible-asset and coin records, read by
+   * two views per asset, cached. A view that aborts leaves them off.
+   */
+  withAssetInfo?: boolean;
 }
 
 /** One asset's balance at a version; `balances()` delivers these to `onChange`. */

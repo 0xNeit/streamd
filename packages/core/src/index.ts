@@ -14,6 +14,7 @@ export { CursorManager, eventId } from "./cursor.js";
 export { checkAdapter } from "./conformance.js";
 export { compareAdapters } from "./compare.js";
 export { defineEvent, defineEvents } from "./define.js";
+export { formatAmount } from "./transfers.js";
 export type { TaggedEvents } from "./define.js";
 export { listEventHandles } from "./handles.js";
 export { networks } from "./networks.js";
