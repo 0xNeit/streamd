@@ -199,3 +199,22 @@ describe("runTail with a stub client", () => {
     expect(errors).toEqual(["streamd: write failed: EIO"]);
   });
 });
+
+describe("runTail --from-time", () => {
+  it("passes the time through, and leaves it out when unset", () => {
+    const seen: unknown[] = [];
+    const client = {
+      stream: (_d: unknown, listener: unknown) => {
+        seen.push(listener);
+        return (async function* () {})();
+      },
+    };
+    const io = { client: client as never, write: () => {}, error: () => {} };
+    return runTail(options({ fromTime: 123n }), io).then(() =>
+      runTail(options(), io).then(() => {
+        expect(seen[0]).toMatchObject({ fromTime: 123n });
+        expect(seen[1]).not.toHaveProperty("fromTime");
+      }),
+    );
+  });
+});

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseCommand, UsageError } from "../src/args.js";
+import { parseCommand, parseTime, UsageError } from "../src/args.js";
 import type { StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
@@ -368,11 +368,69 @@ describe("parseCommand query", () => {
   });
 
   it.each([
-    [["query", TYPE], /query needs --from-version/],
+    [["query", TYPE], /query needs --from-version or --from-time/],
     [["query", "--from-version", "9", "--to-version", "5", TYPE], /must not be below/],
     [["query", "--from-version", "5", "--order", "up", TYPE], /--order must be asc or desc/],
     [["query", "--from-version", "5", "--limit", "0", TYPE], /--limit/],
     [["query", "--from-version", "5"], /query needs at least one event type/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
+
+describe("parseTime", () => {
+  const now = Date.UTC(2026, 10, 10, 12);
+
+  it.each([
+    ["90s", now - 90_000],
+    ["30m", now - 1_800_000],
+    ["2h", now - 7_200_000],
+    ["7d", now - 604_800_000],
+    ["0s", now],
+  ] as [string, number][])("reads the duration %s", (raw, ms) => {
+    expect(parseTime(raw, now)).toBe(BigInt(ms) * 1000n);
+  });
+
+  it.each([
+    ["2026-11-10", Date.UTC(2026, 10, 10)],
+    ["2026-11-10T09:30", Date.UTC(2026, 10, 10, 9, 30)],
+    ["2026-11-10T09:30:15", Date.UTC(2026, 10, 10, 9, 30, 15)],
+    ["2026-11-10T09:30:15.250Z", Date.UTC(2026, 10, 10, 9, 30, 15, 250)],
+    ["2026-11-10T09:30:00+01:00", Date.UTC(2026, 10, 10, 8, 30)],
+  ] as [string, number][])("reads %s, UTC unless it names an offset", (raw, ms) => {
+    expect(parseTime(raw, now)).toBe(BigInt(ms) * 1000n);
+  });
+
+  it("clamps a duration reaching before the epoch", () => {
+    expect(parseTime("99999999999d", now)).toBe(0n);
+  });
+
+  it.each(["", "2", "2x", "h", "-2h", "1.5h", "2026", "2026-13-45", "2026-11-10 09:30", "yesterday", "1969-01-01"])(
+    "refuses %j",
+    (raw) => {
+      expect(() => parseTime(raw, now)).toThrow(UsageError);
+    },
+  );
+});
+
+describe("--from-time", () => {
+  it("is taken by tail, forward and query", () => {
+    const at = ["--from-time", "2026-11-10"];
+    const micros = BigInt(Date.UTC(2026, 10, 10)) * 1000n;
+    expect(parseCommand(["tail", ...at, TYPE])).toMatchObject({ options: { fromTime: micros } });
+    expect(parseCommand(["forward", "--to", "https://h.example", ...at, TYPE])).toMatchObject({ options: { fromTime: micros } });
+    const query = parseCommand(["query", ...at, TYPE]);
+    expect(query).toMatchObject({ options: { fromTime: micros, toVersion: "head" } });
+    expect((query as { options: { fromVersion?: bigint } }).options.fromVersion).toBeUndefined();
+  });
+
+  it.each([
+    [["tail", "--from-time", "2h", "--from-version", "5", TYPE], /not both/],
+    [["query", "--from-time", "2h", "--from-version", "5", TYPE], /not both/],
+    [["tail", "--from-time", "soon", TYPE], /--from-time must be/],
+    [["query", TYPE], /query needs --from-version or --from-time/],
+    [["store", "--db", "e.db", "--from-time", "2h", TYPE], /from-time/],
+    [["record", "--from-time", "2h", "--to-version", "9", TYPE], /from-time/],
   ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
     expect(() => parseCommand(argv)).toThrow(pattern);
   });
