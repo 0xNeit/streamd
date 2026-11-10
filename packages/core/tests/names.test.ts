@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { AccountAddress, Network, type Aptos } from "@aptos-labs/ts-sdk";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
-import { resolveName } from "../src/names.js";
+import { primaryName, resolveName } from "../src/names.js";
 
 const TARGET = `0x${"a11ce".padStart(64, "0")}`;
 
@@ -99,5 +99,93 @@ describe("resolveName", () => {
 
   it("needs an Aptos instance for a name", async () => {
     await expect(resolveName({} as Aptos, "alice.apt")).rejects.toThrow("needs an Aptos instance");
+  });
+});
+
+describe("primaryName", () => {
+  function reverse(
+    primary: (address: string) => unknown,
+    forward: (name: string) => unknown = () => AccountAddress.from(TARGET),
+    config?: { network: Network },
+  ) {
+    const asked: string[] = [];
+    const names: string[] = [];
+    const aptos = {
+      config,
+      getPrimaryName: async ({ address }: { address: string }) => {
+        asked.push(address);
+        return primary(address);
+      },
+      getTargetAddress: async ({ name }: { name: string }) => {
+        names.push(name);
+        return forward(name);
+      },
+    } as unknown as Aptos;
+    return { aptos, asked, names };
+  }
+  const OTHER = `0x${"b0b".padStart(64, "0")}`;
+
+  it("returns a domain with .apt, asking in long form", async () => {
+    const one = `0x${"1".padStart(64, "0")}`;
+    const { aptos, asked, names } = reverse(() => "alice", () => AccountAddress.from(one));
+    expect(await primaryName(aptos, "0x1")).toBe("alice.apt");
+    expect(asked).toEqual([one]);
+    expect(names).toEqual(["alice.apt"]);
+  });
+
+  it("returns a subdomain with .apt", async () => {
+    expect(await primaryName(reverse(() => "sub.alice").aptos, TARGET)).toBe("sub.alice.apt");
+  });
+
+  it("gives undefined with no forward read when there is no name", async () => {
+    for (const none of [undefined, ""]) {
+      const { aptos, names } = reverse(() => none);
+      expect(await primaryName(aptos, TARGET)).toBeUndefined();
+      expect(names).toEqual([]);
+    }
+  });
+
+  it("gives undefined when the name now points elsewhere", async () => {
+    const { aptos } = reverse(() => "alice", () => AccountAddress.from(OTHER));
+    expect(await primaryName(aptos, TARGET)).toBeUndefined();
+  });
+
+  it("gives undefined when the name no longer resolves", async () => {
+    expect(await primaryName(reverse(() => "alice", () => undefined).aptos, TARGET)).toBeUndefined();
+  });
+
+  it("rejects a node failure on either read as a network error", async () => {
+    const down = () => {
+      throw apiError(503);
+    };
+    await expect(primaryName(reverse(down).aptos, TARGET)).rejects.toBeInstanceOf(StreamdNetworkError);
+    await expect(primaryName(reverse(() => "alice", down).aptos, TARGET)).rejects.toBeInstanceOf(
+      StreamdNetworkError,
+    );
+  });
+
+  it("rejects a 400 from the lookup as a StreamdError", async () => {
+    const refused = () => {
+      throw apiError(400);
+    };
+    const err = await primaryName(reverse(refused).aptos, TARGET).catch((e) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect(err.message).toContain("could not be read");
+  });
+
+  it("rejects on a network without ANS before any read", async () => {
+    const { aptos, asked } = reverse(() => "alice", undefined, { network: Network.CUSTOM });
+    await expect(primaryName(aptos, TARGET)).rejects.toThrow("no ANS on network custom");
+    expect(asked).toEqual([]);
+  });
+
+  it("throws on invalid input before any read", async () => {
+    const { aptos, asked } = reverse(() => "alice");
+    for (const bad of ["alice.apt", "0xzz", "", undefined as unknown as string]) {
+      await expect(primaryName(aptos, bad)).rejects.toBeInstanceOf(StreamdError);
+    }
+    await expect(primaryName({} as Aptos, TARGET)).rejects.toThrow("needs an Aptos instance");
+    expect(asked).toEqual([]);
   });
 });
