@@ -1,0 +1,78 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "aggregator_v2",
+  "structs": [
+   {
+    "name": "Aggregator",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": []
+     }
+    ],
+    "fields": [
+     {
+      "name": "value",
+      "type": "T0"
+     },
+     {
+      "name": "max_value",
+      "type": "T0"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AggregatorSnapshot",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": []
+     }
+    ],
+    "fields": [
+     {
+      "name": "value",
+      "type": "T0"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DerivedStringSnapshot",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "value",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "padding",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

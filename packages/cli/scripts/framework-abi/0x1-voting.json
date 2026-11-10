@@ -1,0 +1,348 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "voting",
+  "structs": [
+   {
+    "name": "CreateProposal",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "early_resolution_vote_threshold",
+      "type": "0x1::option::Option<u128>"
+     },
+     {
+      "name": "execution_hash",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "expiration_secs",
+      "type": "u64"
+     },
+     {
+      "name": "metadata",
+      "type": "0x1::simple_map::SimpleMap<0x1::string::String, vector<u8>>"
+     },
+     {
+      "name": "min_vote_threshold",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CreateProposalEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "early_resolution_vote_threshold",
+      "type": "0x1::option::Option<u128>"
+     },
+     {
+      "name": "execution_hash",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "expiration_secs",
+      "type": "u64"
+     },
+     {
+      "name": "metadata",
+      "type": "0x1::simple_map::SimpleMap<0x1::string::String, vector<u8>>"
+     },
+     {
+      "name": "min_vote_threshold",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Proposal",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "store"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": [
+       "store"
+      ]
+     }
+    ],
+    "fields": [
+     {
+      "name": "proposer",
+      "type": "address"
+     },
+     {
+      "name": "execution_content",
+      "type": "0x1::option::Option<T0>"
+     },
+     {
+      "name": "metadata",
+      "type": "0x1::simple_map::SimpleMap<0x1::string::String, vector<u8>>"
+     },
+     {
+      "name": "creation_time_secs",
+      "type": "u64"
+     },
+     {
+      "name": "execution_hash",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "min_vote_threshold",
+      "type": "u128"
+     },
+     {
+      "name": "expiration_secs",
+      "type": "u64"
+     },
+     {
+      "name": "early_resolution_vote_threshold",
+      "type": "0x1::option::Option<u128>"
+     },
+     {
+      "name": "yes_votes",
+      "type": "u128"
+     },
+     {
+      "name": "no_votes",
+      "type": "u128"
+     },
+     {
+      "name": "is_resolved",
+      "type": "bool"
+     },
+     {
+      "name": "resolution_time_secs",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RegisterForum",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "hosting_account",
+      "type": "address"
+     },
+     {
+      "name": "proposal_type_info",
+      "type": "0x1::type_info::TypeInfo"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RegisterForumEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "hosting_account",
+      "type": "address"
+     },
+     {
+      "name": "proposal_type_info",
+      "type": "0x1::type_info::TypeInfo"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ResolveProposal",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "yes_votes",
+      "type": "u128"
+     },
+     {
+      "name": "no_votes",
+      "type": "u128"
+     },
+     {
+      "name": "resolved_early",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Vote",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "num_votes",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "VoteEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "num_votes",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "VotePermission",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "VotingEvents",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "create_proposal_events",
+      "type": "0x1::event::EventHandle<0x1::voting::CreateProposalEvent>"
+     },
+     {
+      "name": "register_forum_events",
+      "type": "0x1::event::EventHandle<0x1::voting::RegisterForumEvent>"
+     },
+     {
+      "name": "resolve_proposal_events",
+      "type": "0x1::event::EventHandle<0x1::voting::ResolveProposal>"
+     },
+     {
+      "name": "vote_events",
+      "type": "0x1::event::EventHandle<0x1::voting::VoteEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "VotingForum",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": [
+       "store"
+      ]
+     }
+    ],
+    "fields": [
+     {
+      "name": "proposals",
+      "type": "0x1::table::Table<u64, 0x1::voting::Proposal<T0>>"
+     },
+     {
+      "name": "events",
+      "type": "0x1::voting::VotingEvents"
+     },
+     {
+      "name": "next_proposal_id",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

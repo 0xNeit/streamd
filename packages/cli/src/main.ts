@@ -1,21 +1,25 @@
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
-import { AptosConfig, getAptosFullNode, Network } from "@aptos-labs/ts-sdk";
-import { StreamdClient, StreamdError } from "@streamd/core";
+import { Aptos, AptosConfig, getAptosFullNode, Network } from "@aptos-labs/ts-sdk";
+import { FullnodeScanAdapter, StreamdClient, StreamdError, checkDescriptor } from "@streamd/core";
 import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
 import type {
+  CheckOptions,
   CodegenOptions,
   ForwardOptions,
   ParsedCommand,
+  RecordOptions,
   SourceOptions,
   StoreOptions,
   TailOptions,
 } from "./args.js";
+import { runCheck } from "./check.js";
 import { generateEventTypes } from "./codegen.js";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
+import { runRecord, writeAtomically } from "./record.js";
 import { openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
 
@@ -35,20 +39,22 @@ function parse(argv: string[]): ParsedCommand | undefined {
   }
 }
 
+function aptosConfig(options: Pick<SourceOptions, "network" | "nodeUrl">): AptosConfig {
+  return new AptosConfig({
+    network: NETWORKS[options.network],
+    fullnode: options.nodeUrl,
+    // The SDK's default HTTP/2 hangs under Bun, with no error.
+    ...("Bun" in globalThis && { clientConfig: { http2: false } }),
+  });
+}
+
 /** A client for `options` and a signal that the first SIGINT or a SIGTERM aborts. */
 function setup(options: SourceOptions): { client: StreamdClient; controller: AbortController } {
   const controller = new AbortController();
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
   process.once("SIGTERM", () => controller.abort());
-  const client = new StreamdClient({
-    aptos: new AptosConfig({
-      network: NETWORKS[options.network],
-      fullnode: options.nodeUrl,
-      // The SDK's default HTTP/2 hangs under Bun, with no error.
-      ...("Bun" in globalThis && { clientConfig: { http2: false } }),
-    }),
-  });
+  const client = new StreamdClient({ aptos: aptosConfig(options) });
   return { client, controller };
 }
 
@@ -106,17 +112,36 @@ async function tail(options: TailOptions): Promise<number> {
   }
 }
 
-async function codegen(options: CodegenOptions): Promise<number> {
-  const aptosConfig = new AptosConfig({
-    network: NETWORKS[options.network],
-    fullnode: options.nodeUrl,
+function record(options: RecordOptions): Promise<number> {
+  const controller = new AbortController();
+  process.once("SIGINT", () => controller.abort());
+  process.once("SIGTERM", () => controller.abort());
+  return runRecord(options, {
+    adapter: new FullnodeScanAdapter(new Aptos(aptosConfig(options))),
+    write: (text) =>
+      options.out === undefined ? void process.stdout.write(text) : writeAtomically(options.out, text),
+    error: (text) => process.stderr.write(`${text}\n`),
+    signal: controller.signal,
   });
+}
+
+function check(options: CheckOptions): Promise<number> {
+  const aptos = new Aptos(aptosConfig(options));
+  return runCheck(options, {
+    check: (descriptor) => checkDescriptor(aptos, descriptor),
+    write: (line) => process.stdout.write(line),
+    error: (text) => process.stderr.write(`${text}\n`),
+  });
+}
+
+async function codegen(options: CodegenOptions): Promise<number> {
+  const config = aptosConfig(options);
   // Both parts were validated as an address and an identifier before reaching the path.
   const load = async (address: string, module: string): Promise<ModuleAbi> => {
     let data: object;
     try {
       ({ data } = await getAptosFullNode<{}, object>({
-        aptosConfig,
+        aptosConfig: config,
         originMethod: "codegen",
         path: `accounts/${address}/module/${module}`,
       }));
@@ -143,6 +168,8 @@ async function main(argv: string[]): Promise<number> {
   }
   if (parsed.command === "codegen") return codegen(parsed.options);
   if (parsed.command === "store") return store(parsed.options);
+  if (parsed.command === "check") return check(parsed.options);
+  if (parsed.command === "record") return record(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 

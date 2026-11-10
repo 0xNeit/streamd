@@ -107,6 +107,7 @@ describe("parseModuleAbi", () => {
           variants: [{ name: "V1", fields: [{ name: "_0", type: { kind: "primitive", name: "bool" } }] }],
         },
       ],
+      views: [],
     });
   });
 
@@ -141,5 +142,31 @@ describe("parseModuleAbi", () => {
     for (const json of cases) {
       expect(() => parseModuleAbi(json)).toThrow("malformed module ABI");
     }
+  });
+});
+
+describe("parseModuleAbi views", () => {
+  const module = (functions: unknown) => ({ abi: { address: "0x1", name: "m", structs: [], exposed_functions: functions } });
+  const fn = { name: "f", is_view: true, generic_type_params: [{}], params: ["address", "&signer"] };
+
+  it("keeps views, with their type parameters and parsed arguments", () => {
+    expect(parseModuleAbi(module([fn, { ...fn, name: "g", is_view: false }])).views).toEqual([
+      {
+        name: "f",
+        typeParams: 1,
+        params: [{ kind: "primitive", name: "address" }, { kind: "unsupported", text: "&signer" }],
+      },
+    ]);
+  });
+
+  it("treats a missing list as none", () => {
+    expect(parseModuleAbi({ abi: { address: "0x1", name: "m", structs: [] } }).views).toEqual([]);
+  });
+
+  it("refuses malformed entries", () => {
+    expect(() => parseModuleAbi(module("x"))).toThrow("bad function list");
+    expect(() => parseModuleAbi(module([{ ...fn, name: "bad name" }]))).toThrow("function");
+    expect(() => parseModuleAbi(module([{ ...fn, params: "x" }]))).toThrow("parameter list");
+    expect(() => parseModuleAbi(module([{ ...fn, params: [1] }]))).toThrow("bad parameter");
   });
 });
