@@ -1470,6 +1470,24 @@ const streamd = new StreamdClient({
 });
 ```
 
+For ready-made numbers, wrap the adapter with `adapterMetrics`, which counts every method the
+adapter has, where `withHooks` sees only `fetchEvents`:
+
+```ts
+import { FullnodeScanAdapter, StreamdClient, adapterMetrics } from "@streamd/core";
+
+const metrics = adapterMetrics(new FullnodeScanAdapter(aptos));
+const streamd = new StreamdClient({ adapter: metrics.adapter });
+
+metrics.snapshot();
+// { fetchEvents: { requests: 12, errors: 1, rateLimited: 1, latency: { p50, p95, p99, max } }, view: ... }
+metrics.reset();
+```
+
+`requests` counts calls started, `errors` those that failed, and `rateLimited` the failures with
+status 429 or a `retryAfter` hint. Latency is in milliseconds over the most recent 1024 settled
+calls per method. A method that has not been called is absent.
+
 To skip the source when re-reading settled history, wrap an adapter with
 `CachingAdapter`. It stores only pages the adapter marks `final: true`,
 meaning the same request will always return the same page, and passes
