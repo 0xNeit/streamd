@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "../src/transfers.js";
-import type { EventAdapter, FetchOptions, StreamdEvent, Transfer, ViewRequest } from "../src/types.js";
+import type { EventAdapter, FetchOptions, ModuleEventDescriptor, MoveEventType, StreamdEvent, Transfer, ViewRequest } from "../src/types.js";
 
 const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
 const APT = long("a");
@@ -352,6 +352,29 @@ describe("transferSource account filter", () => {
     expect((await transfers(usdc)).map((t) => t.at)).toEqual(["3:0"]);
     const desc = transferSource(withViews(events).adapter, undefined, of(CAROL));
     expect((await transfers(desc, { ...all, orderBy: "desc" })).map((t) => t.at)).toEqual(["7:0", "2:1"]);
+  });
+
+  it("passes through raw events the predicate keeps, in identity order", async () => {
+    const fee = (version: number, eventIndex: number): StreamdEvent => ({
+      type: "0x1::transaction_fee::FeeStatement",
+      data: {},
+      version: BigInt(version),
+      sequenceNumber: 0n,
+      eventIndex,
+    });
+    const mixed = [fee(1, 2), ...events, fee(9, 0)];
+    const seen: string[] = [];
+    const source = transferSource(withViews(mixed).adapter, undefined, of(CAROL), (e, who) => {
+      seen.push(who);
+      return e.type.endsWith("FeeStatement") && e.version === 1n;
+    });
+    const descriptor: ModuleEventDescriptor = {
+      kind: "module",
+      eventType: [...(TRANSFER_DESCRIPTOR.eventType as MoveEventType[]), "0x1::transaction_fee::FeeStatement"],
+    };
+    const page = await source.fetchEvents(descriptor, all);
+    expect(page.events.map((e) => `${e.version}:${e.eventIndex}`)).toEqual(["1:2", "2:1", "7:0"]);
+    expect(new Set(seen)).toEqual(new Set([CAROL]));
   });
 
   it("resolves the account before fetching, and a failure fetches nothing", async () => {

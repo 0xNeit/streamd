@@ -88,6 +88,9 @@ export type {
 
 export type {
   AccountEventDescriptor,
+  BalanceChange,
+  Balances,
+  BalancesOptions,
   BatchCallback,
   TransactionCallback,
   TransactionGroup,

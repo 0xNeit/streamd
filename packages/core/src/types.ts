@@ -404,6 +404,40 @@ export interface TransferOptions {
   account?: string;
 }
 
+/** One asset's balance as a transaction left it; `balances()` delivers these to `onChange`. */
+export interface BalanceChange {
+  /** The asset in long form, with APT always its fungible-asset address. */
+  asset: string;
+  /** Base units, read by view at the event's version. */
+  balance: bigint;
+}
+
+/** Options for `StreamdClient.balances`. Balances start at the head, so nothing moves the start. */
+export interface BalancesOptions
+  extends Pick<
+    ListenerOptions,
+    "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "dedupWindow" | "onError" | "onCaughtUp" | "signal"
+  > {
+  /** Follow only this fungible-asset address or coin type, read once at the head before following. */
+  asset?: string;
+  /** Called after a balance changes, with every balance known so far. A throw goes to `onError`. */
+  onChange?: (balances: ReadonlyMap<string, bigint>, change: StreamdEvent<BalanceChange>) => void;
+}
+
+/** A running `balances()`: one wallet's balances, kept current. */
+export interface Balances {
+  /** A copy of every balance known so far, by asset in long form. */
+  readonly value: ReadonlyMap<string, bigint>;
+  /** One asset's balance, given in any form; `undefined` until it is known. */
+  get(asset: string): bigint | undefined;
+  /** Resolves once following has started; rejects if the first read fails or it is stopped first. */
+  readonly ready: Promise<ReadonlyMap<string, bigint>>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
+}
+
 /** Options for `StreamdClient.transfers`. */
 export type TransferListenerOptions = SubscriptionOptions & TransferOptions;
 

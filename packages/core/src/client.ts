@@ -1,6 +1,8 @@
 import { Aptos } from "@aptos-labs/ts-sdk";
 import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type {
+  Balances,
+  BalancesOptions,
   BatchCallback,
   EventAdapter,
   EventCallback,
@@ -52,6 +54,7 @@ import { eventsOf, previewEvents } from "./transaction.js";
 import { expectEvents } from "./expect.js";
 import { requireTransactionHash } from "./adapters/validate.js";
 import { addressOrName, resolveName } from "./names.js";
+import { BALANCE_DESCRIPTOR, startBalances } from "./balances.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
@@ -525,6 +528,29 @@ export class StreamdClient {
       undefined,
       rest.id,
       (source) => transferSource(source, asset, who),
+    );
+  }
+
+  /**
+   * Keep one wallet's balances current. Each balance is a view at the version
+   * a transaction changed it, signalled by transfers and by the wallet's own
+   * gas, so it cannot drift. With `asset` that balance is read at the head
+   * first; without it, no view lists a wallet's assets, so the map fills as
+   * they move. `address` may be an Aptos name. Like `reduce()`, it is not a
+   * listener for `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  balances(address: string, options?: BalancesOptions): Balances {
+    if (address === undefined) throw new StreamdError("balances needs an address or Aptos name");
+    return startBalances(
+      {
+        adapter: this.adapter,
+        onError: this.onError,
+        subscribe: (callback, listener, wrap) =>
+          this.subscribe(BALANCE_DESCRIPTOR, callback, listener, undefined, undefined, wrap),
+        track: this.reduceHost.track,
+      },
+      this.accountOf(address)!,
+      options,
     );
   }
 
