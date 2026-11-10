@@ -1,7 +1,8 @@
+import { createHmac } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseRetryAfter, serializeEvent } from "@streamd/core";
 import type { StreamdClient, Subscription } from "@streamd/core";
-import type { ForwardOptions } from "./args.js";
+import { SIGNATURE_HEADER, type ForwardOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { message } from "./format.js";
 
@@ -29,7 +30,13 @@ async function post(body: string, options: ForwardOptions, signal: AbortSignal):
   try {
     response = await fetch(options.to, {
       method: "POST",
-      headers: { "content-type": "application/json", ...options.headers },
+      headers: {
+        "content-type": "application/json",
+        ...options.headers,
+        ...(options.secret !== undefined && {
+          [SIGNATURE_HEADER]: `sha256=${createHmac("sha256", options.secret).update(body, "utf8").digest("hex")}`,
+        }),
+      },
       body,
       // Not following redirects keeps --header values from reaching another host.
       redirect: "manual",

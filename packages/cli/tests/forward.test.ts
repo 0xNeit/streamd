@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { createHmac } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -23,6 +24,7 @@ function ev(version: number): StreamdEvent {
 
 interface Received {
   body: unknown;
+  raw: string;
   headers: Headers;
 }
 
@@ -40,7 +42,8 @@ beforeEach(() => {
     hostname: "127.0.0.1",
     port: 0,
     fetch: async (req) => {
-      const entry = { body: await req.json(), headers: req.headers };
+      const raw = await req.text();
+      const entry = { body: JSON.parse(raw) as unknown, raw, headers: req.headers };
       received.push(entry);
       return handler(entry, received.length);
     },
@@ -88,6 +91,56 @@ async function until(condition: () => boolean, ms = 2000): Promise<void> {
 }
 
 const versions = (r: Received) => (r.body as { version: string }[]).map((e) => e.version);
+
+describe("runForward signing", () => {
+  const signature = (raw: string, secret: string) =>
+    `sha256=${createHmac("sha256", secret).update(raw, "utf8").digest("hex")}`;
+
+  async function forward(events: StreamdEvent[], extra: Partial<ForwardOptions>, done: () => boolean) {
+    const h = harness(new MemoryAdapter(events));
+    const run = runForward(options(extra), h.io);
+    await until(done);
+    h.controller.abort();
+    await run;
+    return h;
+  }
+
+  it("signs the exact bytes of the body, non-ASCII included", async () => {
+    const event = { ...ev(1), data: { memo: "caf\u00e9 \ud83d\ude80" } };
+    await forward([event], { secret: "key" }, () => existsSync(cursorFile()));
+    const { raw, headers } = received[0]!;
+    expect(raw).toContain("caf\u00e9");
+    expect(headers.get("x-streamd-signature")).toBe(signature(raw, "key"));
+    expect(headers.get("x-streamd-signature")).toMatch(/^sha256=[0-9a-f]{64}$/);
+  });
+
+  it("sends the same signature on a retry", async () => {
+    handler = (_r, n) => new Response("", { status: n === 1 ? 500 : 200 });
+    await forward([ev(1)], { secret: "key" }, () => existsSync(cursorFile()));
+    expect(received).toHaveLength(2);
+    expect(received[1]!.headers.get("x-streamd-signature")).toBe(received[0]!.headers.get("x-streamd-signature"));
+    expect(received[1]!.headers.get("x-streamd-signature")).toBe(signature(received[1]!.raw, "key"));
+  });
+
+  it("sends no signature without a secret", async () => {
+    await forward([ev(1)], {}, () => existsSync(cursorFile()));
+    expect(received[0]!.headers.has("x-streamd-signature")).toBe(false);
+  });
+
+  it("keeps the other headers alongside the signature", async () => {
+    await forward([ev(1)], { secret: "key", headers: { authorization: "Bearer t" } }, () => existsSync(cursorFile()));
+    expect(received[0]!.headers.get("authorization")).toBe("Bearer t");
+    expect(received[0]!.headers.get("x-streamd-signature")).toBeTruthy();
+  });
+
+  it("never prints the secret", async () => {
+    handler = () => new Response("", { status: 400 });
+    const h = harness(new MemoryAdapter([ev(1)]));
+    expect(await runForward(options({ secret: SECRET, to: `http://127.0.0.1:${server.port}/hook` }), h.io)).toBe(1);
+    expect(h.errors.length).toBeGreaterThan(0);
+    expect(h.errors.join("\n")).not.toContain(SECRET);
+  });
+});
 
 describe("runForward", () => {
   it("POSTs a batch as a JSON array and checkpoints after the ack", async () => {
