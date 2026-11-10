@@ -188,6 +188,9 @@ describe("parseCommand forward", () => {
     [["forward", "--to", URL_WITH_TOKEN, TYPE, "--retries", "101"], /--retries/],
     [["forward", "--to", URL_WITH_TOKEN, TYPE, "--timeout", "0"], /--timeout/],
     [["forward", "--to", URL_WITH_TOKEN, TYPE, "--cursor-file", ""], /--cursor-file/],
+    [["forward", "--to", URL_WITH_TOKEN, TYPE, "--secret", ""], /--secret/],
+    [["forward", "--to", URL_WITH_TOKEN, TYPE, "--secret", "k", "--header", "X-Streamd-Signature: x"], /x-streamd-signature/],
+    [["tail", TYPE, "--secret", "k"], /secret/],
   ])("rejects %j", (argv, message) => {
     rejects(argv as string[], message as RegExp);
   });
@@ -548,4 +551,32 @@ describe("parseCommand tx", () => {
   ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
     expect(() => parseCommand(argv)).toThrow(pattern);
   });
+});
+
+describe("forward secret", () => {
+  const ENV = "STREAMD_WEBHOOK_SECRET";
+  const secretOf = (...extra: string[]) => {
+    const parsed = parseCommand(["forward", "--to", "https://h.example", TYPE, ...extra]);
+    if (parsed.command !== "forward") throw new Error("expected a forward command");
+    return parsed.options.secret;
+  };
+  const withEnv = (value: string | undefined, run: () => void) => {
+    const before = process.env[ENV];
+    if (value === undefined) delete process.env[ENV];
+    else process.env[ENV] = value;
+    try {
+      run();
+    } finally {
+      if (before === undefined) delete process.env[ENV];
+      else process.env[ENV] = before;
+    }
+  };
+
+  it("takes the flag", () => withEnv(undefined, () => expect(secretOf("--secret", "k")).toBe("k")));
+  it("reads the environment", () => withEnv("e", () => expect(secretOf()).toBe("e")));
+  it("prefers the flag", () => withEnv("e", () => expect(secretOf("--secret", "k")).toBe("k")));
+  it("treats an empty environment variable as unset", () => withEnv("", () => expect(secretOf()).toBeUndefined()));
+  it("is unset by default", () => withEnv(undefined, () => expect(secretOf()).toBeUndefined()));
+  it("allows the header when not signing", () =>
+    withEnv(undefined, () => expect(secretOf("--header", "x-streamd-signature: mine")).toBeUndefined()));
 });

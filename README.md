@@ -1919,6 +1919,7 @@ streamd forward --to https://hooks.example.com/aptos \
 | `--retries <n>` | retries per batch after the first attempt (default `5`) |
 | `--timeout <ms>` | per-request timeout (default `10000`) |
 | `--header 'Name: value'` | extra request header, repeatable |
+| `--secret <key>` | sign each body (or set `STREAMD_WEBHOOK_SECRET`, which keeps it out of `ps` and shell history) |
 
 `--network`, `--node-url`, `--from-version` and `--poll-interval` work as for `tail`.
 
@@ -1928,11 +1929,27 @@ restart resumes after the last acknowledged batch and may resend the one in flig
 existing cursor file wins over `--from-version`, and only works with the descriptor and
 node that wrote it.
 
+With a secret, each POST carries `x-streamd-signature: sha256=<hex>`, an HMAC-SHA256 of the
+exact request body. Verify it against the raw bytes before parsing them, with a constant-time
+comparison:
+
+```ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+const expected = Buffer.from(`sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`);
+const given = Buffer.from(request.headers.get("x-streamd-signature") ?? "");
+const valid = given.length === expected.length && timingSafeEqual(given, expected);
+```
+
+The signature has no timestamp, so it proves origin and integrity but not freshness: a captured
+request can be replayed. Deduplicate on each event's `version` and `eventIndex`, which delivery
+being at least once already calls for.
+
 Network errors, timeouts, `408`, `429` and `5xx` are retried with exponential backoff from
 1s, capped at 60s; a `Retry-After` on `429` or `503` replaces the backoff for that wait.
 Any other status, redirects included, fails at once. The webhook receives only the body,
-the content type and your `--header` values, and neither the URL nor header values are
-printed.
+the content type, your `--header` values and any signature, and neither the URL, header
+values nor the secret are printed.
 
 Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST without moving the
 cursor; `1` when a batch fails past its retries, the subscription stops on an error, or the
