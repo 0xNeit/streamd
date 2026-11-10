@@ -287,3 +287,22 @@ describe("parseCommand store", () => {
     expect(() => parseCommand(argv)).toThrow(pattern);
   });
 });
+
+describe("parseCommand check", () => {
+  it("takes event types, a network and a node URL", () => {
+    expect(parseCommand(["check", "--network", "testnet", "--node-url", "https://n.example/v1", TYPE])).toEqual({
+      command: "check",
+      options: { descriptor: { kind: "module", eventType: [TYPE] }, network: "testnet", nodeUrl: "https://n.example/v1" },
+    });
+    expect(parseCommand(["check", "--help"])).toEqual({ command: "help" });
+  });
+
+  it.each([
+    [["check"], /^check needs at least one event type$/],
+    [["check", "nope"], /event type/i],
+    [["check", "--account", "0x1", TYPE], /account/],
+    [["check", "--handle", "x", TYPE], /handle/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});

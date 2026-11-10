@@ -1831,6 +1831,22 @@ cursor; `1` when a batch fails past its retries, the subscription stops on an er
 cursor file cannot be read or written; `2` for invalid arguments. Run it under a supervisor
 that restarts on `1`.
 
+### Check event types
+
+`streamd check` says whether each event type can be emitted, before a `tail` or `forward` that
+would otherwise wait in silence on a typo:
+
+```sh
+streamd check 0x1::fungible_asset::Deposit 0x1::coin::Depositt
+# event          0x1::fungible_asset::Deposit
+# missing-struct 0x1::coin::Depositt
+```
+
+The statuses are `event`, `legacy` (no `#[event]`, but a legacy `EventHandle` can emit it),
+`not-event`, `missing-module` and `missing-struct`. It exits 0 when every type is `event` or
+`legacy`, 1 when one is not or the fullnode fails, and 2 for bad usage. It takes event types
+only, not `--account` or `--handle`.
+
 ### Generate event types
 
 `streamd store` follows the same descriptors as `tail` into a SQLite file, through
