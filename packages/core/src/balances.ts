@@ -91,7 +91,6 @@ export function balanceSource(
   wanted?: string,
 ): EventAdapter {
   const notFungible = new Set<string>();
-  const trackApt = wanted === undefined || wanted === APT;
   const isFee = (event: StreamdEvent) => event.type === FEE_STATEMENT;
   const transfers = transferSource(
     adapter,
@@ -99,7 +98,7 @@ export function balanceSource(
     wanted === APT ? undefined : wanted,
     account,
     (event, who) =>
-      trackApt && isFee(event) && typeof event.sender === "string" && normalizeAddress(event.sender) === who,
+      isFee(event) && typeof event.sender === "string" && normalizeAddress(event.sender) === who,
   );
 
   const source: EventAdapter = {

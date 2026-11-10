@@ -137,6 +137,8 @@ describe("balanceSource", () => {
     expect((await changes(usdc)).map((c) => c.at)).toEqual(["1:0"]);
     const apt = balanceSource(chain(events).adapter, of(ALICE), APT);
     expect((await changes(apt)).map((c) => c.at)).toEqual(["2:0", "3:0"]);
+    const legacy = [coin(4, 0, "Deposit", ALICE, "0x1::aptos_coin::AptosCoin")];
+    expect((await changes(balanceSource(chain(legacy).adapter, of(ALICE), APT))).map((c) => c.asset)).toEqual([APT]);
   });
 
   it("fails the page when a view fails, and refuses a malformed amount", async () => {
