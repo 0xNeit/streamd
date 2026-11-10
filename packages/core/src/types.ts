@@ -858,6 +858,11 @@ export interface SubscriptionStatus {
   readonly lastSuccessAt: number | undefined;
 }
 
+export interface CloseOptions {
+  /** How long to wait for running handlers, in ms. Default 5000. */
+  timeout?: number;
+}
+
 export interface Subscription {
   /** Unique ID for this subscription */
   id: string;
@@ -865,6 +870,11 @@ export interface Subscription {
   unsubscribe(): void;
   /** `unsubscribe()`, so `using sub = client.on(...)` stops it at scope exit. */
   [Symbol.dispose](): void;
+  /**
+   * `unsubscribe()`, then waits for a handler already running, at most five
+   * seconds, so `await using` does not cut it off at scope exit.
+   */
+  [Symbol.asyncDispose](): Promise<void>;
   /**
    * Stop polling without ending the subscription; `resume()` carries on from
    * the same cursor and dedup window. No-op unless active.

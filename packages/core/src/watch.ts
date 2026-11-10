@@ -13,7 +13,7 @@ import { StreamdError } from "./errors.js";
 import { requireAddress } from "./adapters/validate.js";
 import { combinedStatus } from "./grouping.js";
 import { normalizeAddress } from "./filter.js";
-import { generateId, onAbort } from "./utils.js";
+import { ASYNC_DISPOSE, generateId, onAbort } from "./utils.js";
 
 /** What `watch()` needs from its client. */
 export type WatchHost = Pick<ReduceHost, "onError" | "subscribe" | "track">;
@@ -183,5 +183,10 @@ export function startWatch(
     },
     unsubscribe: end,
     [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: end,
+    [ASYNC_DISPOSE]: async () => {
+      const running = subs();
+      end();
+      await Promise.all(running.map((s) => s[ASYNC_DISPOSE]()));
+    },
   };
 }

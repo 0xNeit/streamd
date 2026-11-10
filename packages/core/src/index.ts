@@ -140,6 +140,7 @@ export type {
   Replay,
   ReplayOptions,
   ResourceDescriptor,
+  CloseOptions,
   StreamdConfig,
   StreamdEvent,
   Subscription,
