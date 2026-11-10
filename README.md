@@ -1373,6 +1373,20 @@ streamd.on({ kind: "account", accountAddress: alice }, onEvent);
 streamd.on(DEPOSITS, onEvent, { where: involvesAddress(alice) });
 ```
 
+`primaryName(aptos, address)` goes the other way, returning the name an address has set as
+its primary one, such as `alice.apt`, or `undefined` when it has none:
+
+```ts
+import { primaryName } from "@streamd/core";
+
+const name = await primaryName(aptos, event.sender);
+console.log(name ?? event.sender);
+```
+
+The name is resolved forward as a check, so one that no longer points back to the address
+counts as none. That is two reads when a name exists, and one when it does not, at the node's
+head; nothing is cached. A failed read rejects rather than returning `undefined`.
+
 `ownedBy(aptos, "alice.apt")` and `listEventHandles(aptos, "alice.apt")` take a
 name directly, since they already hold `aptos`: `ownedBy` resolves it on its
 first evaluation, once, and retries a failed resolution on the next.

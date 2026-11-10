@@ -1,5 +1,5 @@
 import { Network, type Aptos } from "@aptos-labs/ts-sdk";
-import { StreamdError } from "./errors.js";
+import { StreamdError, StreamdNetworkError } from "./errors.js";
 import { normalizeAddress } from "./filter.js";
 import { toStreamdError } from "./adapters/fullnode.js";
 import { requireAddress } from "./adapters/validate.js";
@@ -29,6 +29,13 @@ export function requireNameResolver(aptos: Aptos): void {
   }
 }
 
+function requireAns(aptos: Aptos, subject: string): void {
+  const network = aptos.config?.network;
+  if (network !== undefined && !ANS_NETWORKS.includes(network)) {
+    throw new StreamdError(`${subject} cannot be resolved: no ANS on network ${network}`);
+  }
+}
+
 /**
  * The long-form address an Aptos name (`alice.apt`, `sub.alice.apt`) points
  * to, read once through the ANS router at the node's head; an address is
@@ -42,10 +49,7 @@ export async function resolveName(aptos: Aptos, nameOrAddress: string): Promise<
   const address = addressOrName(nameOrAddress);
   if (address !== undefined) return address;
   requireNameResolver(aptos);
-  const network = aptos.config?.network;
-  if (network !== undefined && !ANS_NETWORKS.includes(network)) {
-    throw new StreamdError(`Aptos name ${nameOrAddress} cannot be resolved: no ANS on network ${network}`);
-  }
+  requireAns(aptos, `Aptos name ${nameOrAddress}`);
   let target;
   try {
     target = await aptos.getTargetAddress({ name: nameOrAddress });
@@ -62,4 +66,37 @@ export async function resolveName(aptos: Aptos, nameOrAddress: string): Promise<
     throw new StreamdError(`Aptos name ${nameOrAddress} is unregistered, expired or has no target address`);
   }
   return resolved;
+}
+
+/**
+ * The name `address` has set as its primary one, as `alice.apt`, or `undefined`
+ * when it has none. Read once at the node's head, and resolved forward, since a
+ * reverse record can outlive what it names: a name that no longer points back
+ * here counts as none. A failed read rejects rather than returning `undefined`.
+ */
+export async function primaryName(aptos: Aptos, address: string): Promise<string | undefined> {
+  const target = requireAddress(address);
+  if (typeof (aptos as { getPrimaryName?: unknown } | null)?.getPrimaryName !== "function") {
+    throw new StreamdError("Looking up a primary name needs an Aptos instance");
+  }
+  requireAns(aptos, `The primary name of ${target}`);
+  let name;
+  try {
+    name = await aptos.getPrimaryName({ address: target });
+  } catch (err) {
+    if ((err as { status?: unknown } | null)?.status === 400) {
+      throw new StreamdError(
+        `The primary name of ${target} could not be read: ${err instanceof Error ? err.message : "unknown error"}`,
+      );
+    }
+    throw toStreamdError(err, `the primary name of ${target}`);
+  }
+  if (!name) return undefined;
+  const full = `${name}.apt`;
+  try {
+    return (await resolveName(aptos, full)) === target ? full : undefined;
+  } catch (err) {
+    if (err instanceof StreamdError && !(err instanceof StreamdNetworkError)) return undefined;
+    throw err;
+  }
 }
