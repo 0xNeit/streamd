@@ -40,8 +40,10 @@ export {
   ofModule,
   ofType,
   some,
+  whereCompare,
   whereField,
 } from "./filter.js";
+export type { CompareOp } from "./filter.js";
 
 export { requireAddress, requireEventType, requireResourceType } from "./adapters/validate.js";
 

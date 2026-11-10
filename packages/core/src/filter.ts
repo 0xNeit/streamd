@@ -7,6 +7,7 @@ const ARRAY_INDEX = /^(0|[1-9]\d*)$/;
 export const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFAULT_MAX_DEPTH = 8;
 const MISSING: unique symbol = Symbol("missing");
+const DECIMAL_INTEGER = /^-?\d+$/;
 
 export type FieldPath = string | readonly (string | number)[];
 export type FieldValue = string | number | bigint | boolean | null;
@@ -170,6 +171,50 @@ export function whereField(
     }
     return actual === value;
   };
+}
+
+export type CompareOp = "==" | "!=" | "<" | "<=" | ">" | ">=";
+
+const COMPARISONS: Record<CompareOp, (actual: bigint, target: bigint) => boolean> = {
+  "==": (a, b) => a === b,
+  "!=": (a, b) => a !== b,
+  "<": (a, b) => a < b,
+  "<=": (a, b) => a <= b,
+  ">": (a, b) => a > b,
+  ">=": (a, b) => a >= b,
+};
+
+/**
+ * Matches events whose payload holds an integer at `path` that satisfies
+ * `op value`. Move integers arrive as decimal strings or numbers depending on
+ * their width, so both compare, as does a `decode`d bigint.
+ *
+ * A field that is missing or not an integer never matches, under `!=` too.
+ */
+export function whereCompare(
+  path: FieldPath,
+  op: CompareOp,
+  value: bigint | number | string,
+): SyncEventPredicate {
+  const segments = parseFieldPath(path);
+  if (!Object.hasOwn(COMPARISONS, op)) {
+    throw new StreamdError(`Unknown comparison operator: ${JSON.stringify(op)}`);
+  }
+  const compare = COMPARISONS[op];
+  const target = toInteger(value);
+  if (target === undefined) {
+    throw new StreamdError(`Comparison value must be an integer: ${String(value)}`);
+  }
+  return (event) => {
+    const actual = toInteger(readField(event.data, segments));
+    return actual !== undefined && compare(actual, target);
+  };
+}
+
+function toInteger(value: unknown): bigint | undefined {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return Number.isSafeInteger(value) ? BigInt(value) : undefined;
+  return typeof value === "string" && DECIMAL_INTEGER.test(value) ? BigInt(value) : undefined;
 }
 
 /**
