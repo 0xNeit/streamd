@@ -25,6 +25,9 @@ import { runRecord, writeAtomically } from "./record.js";
 import { openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
 
+// The SDK logs notes for custom networks with console.log, which would corrupt JSON lines on stdout.
+console.log = console.error;
+
 const NETWORKS = {
   mainnet: { network: Network.MAINNET },
   testnet: { network: Network.TESTNET },

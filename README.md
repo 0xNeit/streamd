@@ -1840,6 +1840,9 @@ streamd tail --account 0x1 --resource 0x1::block::BlockResource
 streamd tail --account 0x1 --creation-number 11
 ```
 
+A handle is followed from its first event, so on a node that has pruned those, as Aptos mainnet
+has for long-lived handles, it fails at the start, with `--handle` as well.
+
 `--network` takes `mainnet`, `testnet`, `devnet`, `movement-mainnet` or `movement-testnet`, and
 `--node-url` overrides its fullnode.
 
