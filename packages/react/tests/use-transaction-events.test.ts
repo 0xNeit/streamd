@@ -1,6 +1,6 @@
 import "./dom.js";
 import { describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { StrictMode, createElement } from "react";
 import { renderToString } from "react-dom/server";
 import {
   MemoryAdapter,
@@ -182,6 +182,14 @@ describe("useTransactionEvents", () => {
     await rerender(root, createElement(Tx, { client: other }));
     expect(t.results[before]).toEqual(LOADING);
     await waitFor(() => expect(t.last().data?.map((e) => e.version)).toEqual([9n]));
+    await unmount(root);
+  });
+
+  it("never reports the abort of StrictMode's first effect", async () => {
+    const t = setup();
+    const root = await render(createElement(StrictMode, null, t.el(A)));
+    await waitFor(() => expect(t.last().data?.length).toBe(2));
+    expect(t.results.every((r) => r.error === undefined)).toBe(true);
     await unmount(root);
   });
 
