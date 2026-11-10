@@ -239,7 +239,7 @@ describe("watch positions", () => {
   it("reports each address's position, long-form, and leaves out one with none", async () => {
     const { client, watch } = setup([ev(1, A), ev(2, B), ev(3, A)]);
     const w = watch([A, B], { fromVersion: 0n });
-    expect(w.positions).toEqual({});
+    expect(Object.keys(w.positions)).toEqual([]);
     await settle();
     expect(Object.keys(w.positions).sort()).toEqual([long(A), long(B)].sort());
     expect(typeof w.positions[long(A)]).toBe("string");
@@ -287,6 +287,14 @@ describe("watch positions", () => {
     await settle();
     b.client.destroy();
     expect(Object.keys(w2.positions)).toEqual([long(A)]);
+  });
+
+  it("holds no entry for a walk stopped before its first page", () => {
+    const { client, watch } = setup([ev(1, A)]);
+    const w = watch([A], { fromVersion: 0n });
+    w.unsubscribe();
+    expect(Object.keys(w.positions)).toEqual([]);
+    client.destroy();
   });
 
   it("keeps the position of a walk that gave up", async () => {

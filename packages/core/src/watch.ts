@@ -60,16 +60,15 @@ export function startWatch(
   }
   if (!Array.isArray(addresses)) throw new StreamdError("watch needs an array of addresses");
   const initial = addresses.map((a) => [requireAddress(a), a] as const);
-  const { positions, ...startOptions } = options;
   // Positions not in use: from the last run until a walk takes one, or left by a walk that ended.
-  const saved = readPositions(positions);
+  const saved = readPositions(options.positions);
 
   const walks = new Map<string, Walk>();
   const pending = new Set<string>();
   let ended = false;
   let paused = false;
   // A start position chosen at watch() is in the past by the time of a later add().
-  const { fromVersion, fromTime, signal, onCaughtUp, ...live } = startOptions;
+  const { fromVersion, fromTime, signal, onCaughtUp, positions, ...live } = options;
 
   const caughtUp = (key: string) => {
     if (pending.delete(key) && pending.size === 0) onCaughtUp?.();
@@ -86,7 +85,7 @@ export function startWatch(
       { kind: "account", accountAddress: address },
       ((event: StreamdEvent) => callback(event, address)) as EventCallback,
       {
-        ...(first ? startOptions : live),
+        ...(first ? options : live),
         ...(cursor !== undefined && { cursor }),
         signal: undefined,
         onCaughtUp: () => caughtUp(key),
