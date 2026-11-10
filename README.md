@@ -1678,6 +1678,27 @@ Each event is kept once, since a resumed `tail` can repeat lines. Blank lines
 are ignored, and any other unreadable line throws a `StreamdError` naming its
 line number, a truncated last line included.
 
+`adapter.push(...events)` appends to a running `MemoryAdapter`, so a test can
+drive a live subscription step by step:
+
+```ts
+const adapter = new MemoryAdapter();
+const streamd = new StreamdClient({ adapter });
+const next = streamd.once({ kind: "module", eventType: "0x1::test::Ping" });
+adapter.push({
+  type: "0x1::test::Ping",
+  data: {},
+  version: 1n,
+  sequenceNumber: 0n,
+  eventIndex: 0,
+});
+await next;
+```
+
+Each pushed event must be above the highest version the adapter holds, since
+a transaction never appears below one already read. Events in one call may
+share a version. Anything else throws a `StreamdError` and adds nothing.
+
 ## Networks
 
 streamd runs against any network that serves the Aptos fullnode REST API. For

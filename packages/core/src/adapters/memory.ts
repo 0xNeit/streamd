@@ -77,7 +77,7 @@ function parseLine(line: string, number: number, options: ParseEventOptions): St
  * and predicates offline without a fullnode.
  */
 export class MemoryAdapter implements EventAdapter {
-  private readonly events: readonly StreamdEvent[];
+  private readonly events: StreamdEvent[];
 
   constructor(events: readonly StreamdEvent[] = []) {
     this.events = [...events].sort(compareEvents);
@@ -101,6 +101,28 @@ export class MemoryAdapter implements EventAdapter {
       if (!events.has(id)) events.set(id, event);
     });
     return new MemoryAdapter([...events.values()]);
+  }
+
+  /**
+   * Appends events for a running subscription to pick up, as new transactions.
+   * Each must be above the highest version held: cursors and `throughVersion`
+   * have already promised nothing appears at or below it. Events in one call
+   * may share a version. An invalid call throws and adds nothing.
+   */
+  push(...events: StreamdEvent[]): void {
+    const added = events.sort(compareEvents);
+    const highest = this.events.at(-1)?.version;
+    added.forEach((event, i) => {
+      if (highest !== undefined && event.version <= highest) {
+        throw new StreamdError(
+          `Pushed version ${event.version} must be above the highest held, ${highest}`,
+        );
+      }
+      if (i > 0 && compareEvents(added[i - 1]!, event) === 0) {
+        throw new StreamdError(`Pushed the same event twice: ${eventId(event)}`);
+      }
+    });
+    this.events.push(...added);
   }
 
   /** The highest seeded version, or `0n` when empty. */
