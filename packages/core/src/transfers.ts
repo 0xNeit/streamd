@@ -73,11 +73,11 @@ function legacyTokenId(id: unknown): string | undefined {
 }
 
 /** Addresses inside a coin type or an asset address, in long form, for comparing. */
-function assetKey(asset: string): string {
+export function assetKey(asset: string): string {
   return asset.replace(HEX, (a) => normalizeAddress(a) ?? a);
 }
 
-function requireAsset(asset: unknown): string {
+export function requireAsset(asset: unknown): string {
   if (typeof asset !== "string" || asset === "") {
     throw new StreamdError("asset must be a fungible-asset metadata or token object address, a coin type, or a legacy token id");
   }
@@ -174,11 +174,13 @@ const byIdentity = (a: StreamdEvent, b: StreamdEvent) =>
  *
  * `account` resolves to the long-form address whose records to keep. It filters
  * finished records, since a deposit needs its withdraw to report `from`.
+ * `alsoKeep` passes raw events of that account through, among the records.
  */
 export function transferSource(
   adapter: EventAdapter,
   asset?: string,
   account?: () => Promise<string>,
+  alsoKeep?: (event: StreamdEvent, account: string) => boolean,
 ): EventAdapter {
   if (typeof adapter.view !== "function") {
     throw new StreamdError("transfers needs an adapter that implements view");
@@ -266,7 +268,13 @@ export function transferSource(
       const who = await account?.();
       const page = await adapter.fetchEvents(descriptor, options);
       let events = await toTransfers(page.events);
-      if (who !== undefined) events = events.filter(({ data }) => data.from === who || data.to === who);
+      if (who !== undefined) {
+        events = events.filter(({ data }) => data.from === who || data.to === who);
+        if (alsoKeep !== undefined) {
+          const raw = page.events.filter((e) => alsoKeep(e, who)) as StreamdEvent<Transfer>[];
+          events = [...events, ...raw].sort(byIdentity);
+        }
+      }
       if (options.orderBy === "desc") events.reverse();
       return { ...page, events };
     },
