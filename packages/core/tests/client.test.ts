@@ -3480,3 +3480,236 @@ describe("close and async disposal", () => {
     expect(finished).toEqual(["handler"]);
   });
 });
+
+describe("caughtUp", () => {
+  const desc: EventDescriptor = { kind: "module", eventType: "0x1::test::Event" };
+  const other: EventDescriptor = { kind: "module", eventType: "0x1::test::Other" };
+  const page: EventPage = { events: [makeEvent(1)], nextCursor: "1", hasMore: false };
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const hung: EventAdapter = { fetchEvents: () => new Promise<EventPage>(() => {}) };
+  const failing: EventAdapter = {
+    fetchEvents: () => Promise.reject(new StreamdNetworkError("down", 503)),
+  };
+  const rejection = (promise: Promise<unknown>) =>
+    promise.then(
+      () => undefined,
+      (err) => err,
+    );
+
+  function pending(promise: Promise<unknown>) {
+    let settled = false;
+    const mark = () => (settled = true);
+    void promise.then(mark, mark);
+    return () => !settled;
+  }
+
+  it("resolves after the page's handlers finish", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let entered!: () => void;
+    const inHandler = new Promise<void>((r) => (entered = r));
+    const client = new StreamdClient({ adapter: adapterOf([page]) });
+    const sub = client.on(
+      desc,
+      async () => {
+        entered();
+        await gate;
+      },
+      { pollInterval: 1 },
+    );
+    const waiting = pending(sub.caughtUp);
+    await inHandler;
+    await sleep(5);
+    expect(waiting()).toBe(true);
+    release();
+    await sub.caughtUp;
+    client.destroy();
+  });
+
+  it("stays resolved after unsubscribing, and still calls onCaughtUp", async () => {
+    let calls = 0;
+    const client = new StreamdClient({ adapter: adapterOf([page]) });
+    const sub = client.on(desc, () => {}, { pollInterval: 1, onCaughtUp: () => void calls++ });
+    await sub.caughtUp;
+    sub.unsubscribe();
+    await sub.caughtUp;
+    expect(calls).toBe(1);
+  });
+
+  it("resolves even when onCaughtUp throws", async () => {
+    const errors: unknown[] = [];
+    const client = new StreamdClient({ adapter: adapterOf([page]) });
+    const sub = client.on(desc, () => {}, {
+      pollInterval: 1,
+      onError: (err) => errors.push(err),
+      onCaughtUp: () => {
+        throw new Error("boom");
+      },
+    });
+    await sub.caughtUp;
+    client.destroy();
+    expect(errors).toHaveLength(1);
+  });
+
+  it("rejects on unsubscribe and destroy with a StreamdError", async () => {
+    for (const end of [
+      (s: Subscription) => s.unsubscribe(),
+      (_: Subscription, c: StreamdClient) => c.destroy(),
+    ]) {
+      const client = new StreamdClient({ adapter: hung });
+      const sub = client.on(desc, () => {});
+      end(sub, client);
+      const err = await rejection(sub.caughtUp);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect((err as Error).message).toBe("Subscription ended before catching up");
+    }
+  });
+
+  it("rejects with the signal's reason on abort, even when already aborted", async () => {
+    const reason = new Error("stop");
+    const controller = new AbortController();
+    const client = new StreamdClient({ adapter: hung });
+    const sub = client.on(desc, () => {}, { signal: controller.signal });
+    controller.abort(reason);
+    expect(await rejection(sub.caughtUp)).toBe(reason);
+    const late = client.on(desc, () => {}, { signal: controller.signal });
+    expect(await rejection(late.caughtUp)).toBe(reason);
+  });
+
+  it("rejects with the polling error when it gives up", async () => {
+    const client = new StreamdClient({ adapter: failing });
+    const sub = client.on(desc, () => {}, {
+      pollInterval: 1,
+      maxBackoff: 1,
+      maxErrors: 2,
+      onError: () => {},
+    });
+    const err = await rejection(sub.caughtUp);
+    expect(err).toBeInstanceOf(StreamdPollingError);
+    expect((err as StreamdPollingError).consecutiveFailures).toBe(2);
+  });
+
+  it("is never reported as unhandled", async () => {
+    const seen: unknown[] = [];
+    const listen = (reason: unknown) => seen.push(reason);
+    process.on("unhandledRejection", listen);
+    try {
+      const client = new StreamdClient({ adapter: hung });
+      client.on(desc, () => {}).unsubscribe();
+      client.onTransaction([desc, other], () => {}).unsubscribe();
+      client.watch(["0x1"], () => {}).unsubscribe();
+      await sleep(10);
+      expect(seen).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", listen);
+    }
+  });
+
+  it("stays pending through a pause and resolves after resuming", async () => {
+    const client = new StreamdClient({ adapter: adapterOf([page]) });
+    const sub = client.on(desc, () => {}, { pollInterval: 1 });
+    sub.pause();
+    const waiting = pending(sub.caughtUp);
+    await sleep(10);
+    expect(waiting()).toBe(true);
+    sub.resume();
+    await sub.caughtUp;
+    client.destroy();
+  });
+
+  it("works on onBatch", async () => {
+    const seen: number[] = [];
+    const client = new StreamdClient({ adapter: adapterOf([page]) });
+    const sub = client.onBatch(desc, (events) => void seen.push(events.length), { pollInterval: 1 });
+    await sub.caughtUp;
+    client.destroy();
+    expect(seen).toEqual([1]);
+  });
+
+  it("waits for every walk of a merged onTransaction", async () => {
+    let release!: () => void;
+    const gate = new Promise<EventPage>((r) => (release = () => r({ events: [], nextCursor: "0", hasMore: false })));
+    const adapter: EventAdapter = {
+      fetchEvents: (d) => {
+        const held = (d as { eventType: string }).eventType === "0x1::test::Other";
+        return held ? gate : Promise.resolve({ events: [], nextCursor: "0", hasMore: false });
+      },
+    };
+    const client = new StreamdClient({ adapter });
+    const sub = client.onTransaction([desc, other], () => {}, { pollInterval: 1 });
+    const waiting = pending(sub.caughtUp);
+    await sleep(10);
+    expect(waiting()).toBe(true);
+    release();
+    await sub.caughtUp;
+    client.destroy();
+  });
+
+  it("resolves a single onTransaction and rejects one that ends", async () => {
+    const client = new StreamdClient({ adapter: adapterOf([page]) });
+    const one = client.onTransaction(desc, () => {}, { pollInterval: 1 });
+    await one.caughtUp;
+    one.unsubscribe();
+    const ended = new StreamdClient({ adapter: hung }).onTransaction([desc, other], () => {});
+    ended.unsubscribe();
+    expect(await rejection(ended.caughtUp)).toBeInstanceOf(StreamdError);
+  });
+
+  describe("on watch", () => {
+    const ONE = "0x1";
+    const TWO = "0x2";
+
+    it("waits for every address given", async () => {
+      let release!: () => void;
+      const gate = new Promise<EventPage>((r) => (release = () => r({ events: [], nextCursor: "0", hasMore: false })));
+      const adapter: EventAdapter = {
+        fetchEvents: (d) =>
+          (d as { accountAddress: string }).accountAddress === TWO
+            ? gate
+            : Promise.resolve({ events: [], nextCursor: "0", hasMore: false }),
+      };
+      const client = new StreamdClient({ adapter });
+      const watch = client.watch([ONE, TWO], () => {}, { pollInterval: 1 });
+      const waiting = pending(watch.caughtUp);
+      await sleep(10);
+      expect(waiting()).toBe(true);
+      release();
+      await watch.caughtUp;
+      client.destroy();
+    });
+
+    it("resolves an empty watch", async () => {
+      await new StreamdClient({ adapter: hung }).watch([], () => {}).caughtUp;
+    });
+
+    it("no longer counts an address that gave up", async () => {
+      const adapter: EventAdapter = {
+        fetchEvents: (d) =>
+          (d as { accountAddress: string }).accountAddress === TWO
+            ? Promise.reject(new StreamdNetworkError("down", 503))
+            : Promise.resolve({ events: [], nextCursor: "0", hasMore: false }),
+      };
+      const client = new StreamdClient({ adapter });
+      const watch = client.watch([ONE, TWO], () => {}, {
+        pollInterval: 1,
+        maxBackoff: 1,
+        maxErrors: 1,
+        onError: () => {},
+      });
+      await watch.caughtUp;
+      client.destroy();
+    });
+
+    it("rejects when the whole watch ends first, with the reason on abort", async () => {
+      const client = new StreamdClient({ adapter: hung });
+      const ended = client.watch([ONE], () => {});
+      ended.unsubscribe();
+      expect(await rejection(ended.caughtUp)).toBeInstanceOf(StreamdError);
+      const reason = new Error("stop");
+      const controller = new AbortController();
+      const aborted = client.watch([ONE], () => {}, { signal: controller.signal });
+      controller.abort(reason);
+      expect(await rejection(aborted.caughtUp)).toBe(reason);
+    });
+  });
+});
