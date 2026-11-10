@@ -1264,6 +1264,43 @@ const mine = await streamd.getTransfers({ fromVersion: -10_000n, account: "alice
   transactions and come out as a lone withdraw and a lone deposit. A transfers subscription is not a
   listener for `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 
+## Live balances
+
+`balances(address, options?)` keeps one wallet's balances current. `address` may be
+an Aptos name.
+
+```ts
+const wallet = streamd.balances("alice.apt", {
+  asset: "0xa", // omit to fill the map as assets move
+  onChange: (all, { data }) => console.log(data.asset, data.balance),
+});
+
+await wallet.ready;
+wallet.get("0xa"); // bigint, in base units
+wallet.value; // Map of every balance known so far
+wallet.unsubscribe();
+```
+
+- **Read, never summed.** A balance is a view at the version a transaction changed
+  it. Gas leaves APT with no withdraw event, so a total folded from transfers would
+  drift. Transfers and the wallet's own `transaction_fee::FeeStatement` only signal
+  that a balance needs reading.
+- **Which assets.** No view lists a wallet's assets. With `asset`, that one is read
+  at the head before following. Without it, an asset appears the first time the
+  wallet's transfers or gas touch it.
+- **What a balance is.** Fungible assets read the primary store, so secondary stores
+  and assets held through an object are not counted. Coin types read `coin::balance`.
+  APT is one entry, under `0xa` in long form, and counts both coin and fungible
+  stores; `get` takes any form.
+- **Tokens.** Token objects and legacy tokens are skipped. A token object given as
+  `asset` rejects `ready`.
+- **Gaps.** A sponsored transaction's gas is charged to its fee payer, who is not its
+  sender, so an account that only sponsors is not refreshed by that alone.
+- **Cost.** It runs the `transfers` scan and its reads, plus one view per changed
+  asset per version. It starts at the head; `ready` rejects if the first read
+  fails, and a failed read later fails the poll, which retries. A balances handle
+  is not a listener for `off()` or `listenerCount()`.
+
 ## Data sources and their limits
 
 By default streamd reads from a fullnode with `FullnodeScanAdapter`:
