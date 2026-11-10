@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { Aptos, AptosConfig, getAptosFullNode, Network } from "@aptos-labs/ts-sdk";
-import { FullnodeScanAdapter, StreamdClient, StreamdError, checkDescriptor } from "@streamd/core";
+import { FullnodeScanAdapter, StreamdClient, StreamdError, checkDescriptor, networks } from "@streamd/core";
 import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
@@ -10,23 +10,32 @@ import type {
   CodegenOptions,
   ForwardOptions,
   ParsedCommand,
+  QueryOptions,
   RecordOptions,
   SourceOptions,
   StoreOptions,
   TailOptions,
+  TxOptions,
 } from "./args.js";
 import { runCheck } from "./check.js";
 import { generateEventTypes } from "./codegen.js";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
+import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
 import { openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
+import { runTx } from "./tx.js";
+
+// The SDK logs notes for custom networks with console.info, which would corrupt JSON lines on stdout.
+console.info = console.error;
 
 const NETWORKS = {
-  mainnet: Network.MAINNET,
-  testnet: Network.TESTNET,
-  devnet: Network.DEVNET,
+  mainnet: { network: Network.MAINNET },
+  testnet: { network: Network.TESTNET },
+  devnet: { network: Network.DEVNET },
+  "movement-mainnet": networks.movementMainnet,
+  "movement-testnet": networks.movementTestnet,
 } as const;
 
 function parse(argv: string[]): ParsedCommand | undefined {
@@ -41,15 +50,15 @@ function parse(argv: string[]): ParsedCommand | undefined {
 
 function aptosConfig(options: Pick<SourceOptions, "network" | "nodeUrl">): AptosConfig {
   return new AptosConfig({
-    network: NETWORKS[options.network],
-    fullnode: options.nodeUrl,
+    ...NETWORKS[options.network],
+    ...(options.nodeUrl !== undefined && { fullnode: options.nodeUrl }),
     // The SDK's default HTTP/2 hangs under Bun, with no error.
     ...("Bun" in globalThis && { clientConfig: { http2: false } }),
   });
 }
 
 /** A client for `options` and a signal that the first SIGINT or a SIGTERM aborts. */
-function setup(options: SourceOptions): { client: StreamdClient; controller: AbortController } {
+function setup(options: Pick<SourceOptions, "network" | "nodeUrl">): { client: StreamdClient; controller: AbortController } {
   const controller = new AbortController();
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
@@ -85,28 +94,70 @@ async function store(options: StoreOptions): Promise<number> {
   }
 }
 
-async function tail(options: TailOptions): Promise<number> {
-  const { client, controller } = setup(options);
+/** Writes to stdout with backpressure; a closed pipe (EPIPE, as when piped into `head`) aborts quietly. */
+function stdout(controller: AbortController) {
   const { signal } = controller;
-  let stdoutError: Error | undefined;
-  // A closed pipe (EPIPE, as when piped into `head`) ends the tail quietly.
+  let failure: Error | undefined;
   process.stdout.on("error", (err: NodeJS.ErrnoException) => {
-    if (err.code !== "EPIPE") stdoutError ??= err;
+    if (err.code !== "EPIPE") failure ??= err;
     controller.abort();
   });
+  return {
+    write: async (line: string) => {
+      if (!process.stdout.write(line)) await once(process.stdout, "drain", { signal });
+    },
+    /** `code`, or 1 with a message if stdout failed for any reason but a closed pipe. */
+    exitCode(code: number): number {
+      if (failure === undefined) return code;
+      process.stderr.write(`streamd: ${failure.message}\n`);
+      return 1;
+    },
+  };
+}
 
+async function tail(options: TailOptions): Promise<number> {
+  const { client, controller } = setup(options);
+  const out = stdout(controller);
   try {
     const code = await runTail(options, {
       client,
-      write: async (line) => {
-        if (!process.stdout.write(line)) await once(process.stdout, "drain", { signal });
-      },
+      write: out.write,
       error: (message) => process.stderr.write(`${message}\n`),
-      signal,
+      signal: controller.signal,
     });
-    if (stdoutError === undefined) return code;
-    process.stderr.write(`streamd: ${stdoutError.message}\n`);
-    return 1;
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function query(options: QueryOptions): Promise<number> {
+  const { client, controller } = setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runQuery(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function tx(options: TxOptions): Promise<number> {
+  const { client, controller } = setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runTx(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
   } finally {
     client.destroy();
   }
@@ -170,6 +221,8 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === "store") return store(parsed.options);
   if (parsed.command === "check") return check(parsed.options);
   if (parsed.command === "record") return record(parsed.options);
+  if (parsed.command === "query") return query(parsed.options);
+  if (parsed.command === "tx") return tx(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 

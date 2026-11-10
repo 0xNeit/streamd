@@ -94,6 +94,10 @@ export class EventPoller {
   private fromVersion?: bigint | "earliest";
   /** Cleared once the first poll has resolved it into `fromVersion`. */
   private fromTime?: bigint;
+  /** The start a run with no cursor resolved to; every page is bounded by it. */
+  private floor?: bigint;
+  /** Whether a page has reached `floor`, before which no position is worth saving. */
+  private reachedStart = false;
   private readonly where?: EventPredicate;
   private readonly decode?: (event: StreamdEvent) => StreamdEvent;
   private readonly withState?: StateRequestBuilder;
@@ -137,6 +141,8 @@ export class EventPoller {
 
   /** The adapter's resume token after the last finished page; see `ListenerOptions.cursor`. */
   get cursor(): string | undefined {
+    // Below its start a walk's position would resume delivering older events.
+    if (this.floor !== undefined && !this.reachedStart) return undefined;
     return this.position.token;
   }
 
@@ -144,7 +150,7 @@ export class EventPoller {
   get status(): SubscriptionStatus {
     return {
       active: this._active,
-      cursor: this.position.token,
+      cursor: this.cursor,
       lastVersion: this.lastVersion,
       consecutiveErrors: this.consecutiveErrors,
       lastSuccessAt: this.lastSuccessAt,
@@ -254,6 +260,8 @@ export class EventPoller {
               );
         this.fromVersion = fromVersion;
         this.fromTime = undefined;
+        // Only a run that began with no cursor has a start to hold; a cursor wins.
+        this.floor = fromVersion;
         if (!this.isCurrent(gen)) return;
       }
       const fetching = adapter.fetchEvents(this.descriptor, {
@@ -273,7 +281,18 @@ export class EventPoller {
       // not touch the cursor or the error budget the live run resumes with.
       if (!this.isCurrent(gen)) return;
 
-      const delivery = this.processPage(page, gen, viewer, run);
+      // Adapters honour fromVersion only on the first request, so account and
+      // handle walks, which start below it, are bounded here on every page.
+      const floor = this.floor;
+      if (floor !== undefined && !this.reachedStart) {
+        this.reachedStart =
+          (page.throughVersion !== undefined && page.throughVersion >= floor) ||
+          page.events.some((e) => e.version >= floor);
+      }
+      const bounded =
+        floor === undefined ? page : { ...page, events: page.events.filter((e) => e.version >= floor) };
+
+      const delivery = this.processPage(bounded, gen, viewer, run);
       // A failed page is this poll's error alone; later polls must not inherit it.
       this.delivering = delivery.catch(() => {});
       await delivery;

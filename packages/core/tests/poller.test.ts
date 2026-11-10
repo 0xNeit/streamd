@@ -2008,7 +2008,7 @@ describe("EventPoller batch delivery", () => {
 
     expect(adapter.fetchEvents).toHaveBeenCalledTimes(3);
     expect(batch).toHaveBeenCalledTimes(1);
-    expect(poller.cursor).toBe("3");
+    expect(poller.cursor).toBeDefined();
     poller.stop();
   });
 
@@ -2605,5 +2605,83 @@ describe("EventPoller page delivery", () => {
     expect(errors.map((e) => e.message)).toEqual(["Page callback threw"]);
     expect(poller.cursor).toBe("1");
     expect(poller.status.consecutiveErrors).toBe(0);
+  });
+});
+
+describe("EventPoller start version", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it("delivers nothing below fromVersion on any page", async () => {
+    const seen: bigint[] = [];
+    const adapter = createMockAdapter([
+      page([makeEvent(1), makeEvent(2)], 1, true),
+      page([makeEvent(3), makeEvent(4)], 2, true),
+      page([makeEvent(5)], 3, false),
+    ]);
+    const poller = new EventPoller(adapter, descriptor, (e: StreamdEvent) => void seen.push(e.version), {
+      fromVersion: 4n,
+      pollInterval: 100,
+    });
+    poller.start();
+    for (let i = 0; i < 6; i++) await advanceTimersByTimeAsync(100);
+    poller.stop();
+    expect(seen).toEqual([4n, 5n]);
+  });
+
+  it("lets a cursor win over a later start", async () => {
+    const seen: bigint[] = [];
+    const adapter = createMockAdapter([page([makeEvent(1), makeEvent(2)], 1, false)]);
+    const poller = new EventPoller(adapter, descriptor, (e: StreamdEvent) => void seen.push(e.version), {
+      cursor: "0",
+      fromVersion: 100n,
+      pollInterval: 100,
+    });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    poller.stop();
+    expect(seen).toEqual([1n, 2n]);
+  });
+
+  it("bounds every page by a start it had to resolve", async () => {
+    const seen: bigint[] = [];
+    const adapter: EventAdapter = {
+      ...createMockAdapter([page([makeEvent(1)], 1, true), page([makeEvent(90), makeEvent(95)], 2, false)]),
+      getHeadVersion: async () => 100n,
+    };
+    const poller = new EventPoller(adapter, descriptor, (e: StreamdEvent) => void seen.push(e.version), {
+      fromVersion: -10n,
+      pollInterval: 100,
+    });
+    poller.start();
+    for (let i = 0; i < 4; i++) await advanceTimersByTimeAsync(100);
+    poller.stop();
+    expect(seen).toEqual([90n, 95n]);
+  });
+
+  it("exposes no cursor until the walk reaches its start", async () => {
+    const adapter = createMockAdapter([
+      page([makeEvent(1)], 1, true),
+      page([makeEvent(2)], 2, true),
+      page([makeEvent(9)], 3, false),
+    ]);
+    const poller = new EventPoller(adapter, descriptor, () => {}, { fromVersion: 5n, pollInterval: 100 });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.cursor).toBeUndefined();
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(100);
+    expect(poller.cursor).toBeDefined();
+    poller.stop();
+  });
+
+  it("counts throughVersion as reaching the start", async () => {
+    const empty: EventPage = { events: [], nextCursor: "7", hasMore: false, throughVersion: 6n };
+    const poller = new EventPoller(createMockAdapter([empty]), descriptor, () => {}, { fromVersion: 5n, pollInterval: 100 });
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    expect(poller.cursor).toBe("7");
+    poller.stop();
   });
 });

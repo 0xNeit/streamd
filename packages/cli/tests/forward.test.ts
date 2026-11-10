@@ -304,3 +304,41 @@ describe("runForward", () => {
     expect(received).toEqual([]);
   });
 });
+
+describe("runForward --from-time", () => {
+  it("passes the time through with any saved cursor, which the poller prefers", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "streamd-forward-time-"));
+    const seen: Record<string, unknown>[] = [];
+    const client = {
+      onBatch: (_d: unknown, _cb: unknown, listener: Record<string, unknown>) => {
+        seen.push(listener);
+        return { unsubscribe() {}, active: true, cursor: undefined };
+      },
+    };
+    const run = async (cursorFile: string) => {
+      const controller = new AbortController();
+      const running = runForward(
+        {
+          descriptor: { kind: "module", eventType: ["0x1::m::E"] },
+          network: "mainnet",
+          fromTime: 123n,
+          to: "https://h.example",
+          cursorFile,
+          retries: 0,
+          timeout: 1000,
+          headers: {},
+        },
+        { client: client as never, error: () => {}, signal: controller.signal },
+      );
+      controller.abort();
+      await running;
+    };
+    await run(join(dir, "none.cursor"));
+    expect(seen[0]).toMatchObject({ fromTime: 123n });
+    expect(seen[0]).not.toHaveProperty("cursor");
+    const saved = join(dir, "saved.cursor");
+    writeFileSync(saved, "abc");
+    await run(saved);
+    expect(seen[1]).toMatchObject({ cursor: "abc" });
+  });
+});

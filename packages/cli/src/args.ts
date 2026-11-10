@@ -1,9 +1,9 @@
 import { parseArgs } from "node:util";
-import { requireAddress, requireEventType } from "@streamd/core";
+import { requireAddress, requireEventType, requireResourceType } from "@streamd/core";
 import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
 import type { ModuleRef } from "./codegen.js";
 
-export type Network = "mainnet" | "testnet" | "devnet";
+export type Network = "mainnet" | "testnet" | "devnet" | "movement-mainnet" | "movement-testnet";
 
 /** Where events come from: shared by `tail` and `forward`. */
 export interface SourceOptions {
@@ -11,11 +11,14 @@ export interface SourceOptions {
   network: Network;
   nodeUrl?: string;
   fromVersion?: bigint;
+  /** Microseconds since the epoch; never set with `fromVersion`. */
+  fromTime?: bigint;
   pollInterval?: number;
 }
 
 export interface TailOptions extends SourceOptions {
   limit?: number;
+  cursorFile?: string;
 }
 
 export interface ForwardOptions extends SourceOptions {
@@ -35,6 +38,26 @@ export interface StoreOptions extends SourceOptions {
   db: string;
   /** Name its cursor is saved under; derived from the network and descriptor when unset. */
   name?: string;
+}
+
+export interface TxOptions {
+  hash: string;
+  network: Network;
+  nodeUrl?: string;
+  /** How long to wait for the transaction to commit, in ms. */
+  timeout?: number;
+}
+
+export interface QueryOptions {
+  descriptor: EventDescriptor;
+  network: Network;
+  nodeUrl?: string;
+  /** Exactly one of `fromVersion` and `fromTime` is set. */
+  fromVersion?: bigint;
+  fromTime?: bigint;
+  toVersion: bigint | "head";
+  limit?: number;
+  order: "asc" | "desc";
 }
 
 export interface RecordOptions {
@@ -69,6 +92,8 @@ export type ParsedCommand =
   | { command: "store"; options: StoreOptions }
   | { command: "check"; options: CheckOptions }
   | { command: "record"; options: RecordOptions }
+  | { command: "query"; options: QueryOptions }
+  | { command: "tx"; options: TxOptions }
   | { command: "codegen"; options: CodegenOptions };
 
 /** Bad command-line input: reported with usage, exit code 2. */
@@ -79,13 +104,20 @@ export class UsageError extends Error {
   }
 }
 
-const NETWORKS: readonly Network[] = ["mainnet", "testnet", "devnet"];
+const NETWORKS: readonly Network[] = ["mainnet", "testnet", "devnet", "movement-mainnet", "movement-testnet"];
+const U64_MAX = 2n ** 64n - 1n;
 const MAX_TIMEOUT = 2_147_483_647;
 
-const SOURCE_OPTIONS = {
+const DESCRIPTOR_OPTIONS = {
   account: { type: "string" },
   handle: { type: "string" },
   field: { type: "string" },
+  resource: { type: "string" },
+  "creation-number": { type: "string" },
+} as const;
+
+const SOURCE_OPTIONS = {
+  ...DESCRIPTOR_OPTIONS,
   network: { type: "string" },
   "node-url": { type: "string" },
   "from-version": { type: "string" },
@@ -93,10 +125,18 @@ const SOURCE_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
-const TAIL_OPTIONS = { ...SOURCE_OPTIONS, limit: { type: "string" } } as const;
+const FROM_TIME = { "from-time": { type: "string" } } as const;
+
+const TAIL_OPTIONS = {
+  ...SOURCE_OPTIONS,
+  ...FROM_TIME,
+  limit: { type: "string" },
+  "cursor-file": { type: "string" },
+} as const;
 
 const FORWARD_OPTIONS = {
   ...SOURCE_OPTIONS,
+  ...FROM_TIME,
   to: { type: "string" },
   "cursor-file": { type: "string" },
   retries: { type: "string" },
@@ -111,15 +151,32 @@ const STORE_OPTIONS = {
 } as const;
 
 const RECORD_OPTIONS = {
-  account: { type: "string" },
-  handle: { type: "string" },
-  field: { type: "string" },
+  ...DESCRIPTOR_OPTIONS,
   network: { type: "string" },
   "node-url": { type: "string" },
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
   out: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const QUERY_OPTIONS = {
+  ...FROM_TIME,
+  ...DESCRIPTOR_OPTIONS,
+  network: { type: "string" },
+  "node-url": { type: "string" },
+  "from-version": { type: "string" },
+  "to-version": { type: "string" },
+  limit: { type: "string" },
+  order: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const TX_OPTIONS = {
+  network: { type: "string" },
+  "node-url": { type: "string" },
+  timeout: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -152,10 +209,14 @@ export const USAGE = `Usage:
   streamd tail [options] <eventType>...
   streamd tail --account <address> [options] [<eventType>...]
   streamd tail --account <address> --handle <struct> --field <name> [options]
+  streamd tail --account <address> --creation-number <n> [options]
+  streamd tail --account <address> --resource <type> [options]
   streamd forward --to <url> [options] <eventType>...
   streamd forward --to <url> --account <address> [...]
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
+  streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
+  streamd tx <hash>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
   streamd codegen [--out <file>] <address>::<module>...
@@ -165,6 +226,8 @@ forward POSTs each batch of matching events to a webhook as a JSON array,
 saving its position to a cursor file once the webhook acknowledges it.
 store follows matching events into a SQLite file, resuming from the cursor
 saved there when run again.
+query reads a closed range of history as JSON lines, then exits.
+tx waits for a transaction and prints its events, exiting 1 if it failed.
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 codegen reads module ABIs and writes TypeScript types and defineEvent
@@ -174,19 +237,26 @@ Options:
   --account <address>    events from transactions this account sent
   --handle <struct>      legacy event handle struct (with --account and --field)
   --field <name>         event handle field name
-  --network <name>       mainnet, testnet, or devnet (default: mainnet)
+  --creation-number <n>  event handle by creation number (with --account)
+  --resource <type>      every change to this resource (with --account)
+  --network <name>       mainnet, testnet, devnet, movement-mainnet, or movement-testnet
+                         (default: mainnet)
   --node-url <url>       fullnode URL, overriding the network's default
   --from-version <n>     start at this version instead of the chain head
+  --from-time <t>        tail, forward, query: start here, as 2h, 7d or an ISO date (UTC)
   --poll-interval <ms>   delay between polls (default: 1000)
-  --limit <n>            tail: exit after printing n events; record: stop after n
+  --limit <n>            tail: exit after printing n events; record, query: stop after n
   --to <url>             forward: webhook URL (http or https, required)
-  --cursor-file <path>   forward: cursor file (default: ${DEFAULT_CURSOR_FILE})
+  --cursor-file <path>   tail: save and resume from here; forward: cursor file
+                         (default: ${DEFAULT_CURSOR_FILE})
   --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
-  --timeout <ms>         forward: per-request timeout (default: ${DEFAULT_TIMEOUT})
+  --timeout <ms>         forward: per-request timeout (default: ${DEFAULT_TIMEOUT});
+                         tx: wait for commit (default: 20000)
   --header <h>           forward: request header 'Name: value', repeatable
   --db <file>            store: SQLite file to write (required)
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
-  --to-version <n>       record: end of the range (required)
+  --to-version <n>       record: end of the range (required); query: default the head
+  --order <asc|desc>     query: oldest or newest first (default: asc)
   --out <file>           codegen, record: write to this file instead of stdout
   -h, --help             show this help
 `;
@@ -214,6 +284,25 @@ function version(raw: string | undefined, flag = "from-version"): bigint | undef
     throw new UsageError(`--${flag} must be a non-negative integer: ${raw}`);
   }
   return BigInt(raw);
+}
+
+const DURATION = /^(\d+)([smhd])$/;
+const MS_PER: Record<string, bigint> = { s: 1000n, m: 60_000n, h: 3_600_000n, d: 86_400_000n };
+const ISO_TIME = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})?)?$/;
+
+/** Microseconds since the epoch for a duration before `now`, or an ISO date (UTC unless it names an offset). */
+export function parseTime(raw: string, now = Date.now()): bigint {
+  const duration = DURATION.exec(raw);
+  if (duration !== null) {
+    const ms = BigInt(now) - BigInt(duration[1]!) * MS_PER[duration[2]!]!;
+    return ms < 0n ? 0n : ms * 1000n;
+  }
+  const iso = ISO_TIME.exec(raw);
+  const ms = iso === null ? NaN : Date.parse(raw.includes("T") && iso[1] === undefined ? `${raw}Z` : raw);
+  if (Number.isNaN(ms) || ms < 0) {
+    throw new UsageError(`--from-time must be a duration such as 2h or an ISO date: ${raw}`);
+  }
+  return BigInt(ms) * 1000n;
 }
 
 function network(raw: string | undefined): Network {
@@ -269,6 +358,14 @@ interface DescriptorFlags {
   account?: string;
   handle?: string;
   field?: string;
+  resource?: string;
+  "creation-number"?: string;
+}
+
+function creationNumber(raw: string): bigint {
+  const number = /^\d+$/.test(raw) ? BigInt(raw) : -1n;
+  if (number < 0n || number > U64_MAX) throw new UsageError(`--creation-number must be a u64: ${raw}`);
+  return number;
 }
 
 function descriptor(
@@ -276,6 +373,22 @@ function descriptor(
   flags: DescriptorFlags,
   types: string[],
 ): EventDescriptor {
+  const number = flags["creation-number"];
+  if (flags.resource !== undefined || number !== undefined) {
+    if (flags.resource !== undefined && number !== undefined) {
+      throw new UsageError("set --resource or --creation-number, not both");
+    }
+    const flag = flags.resource !== undefined ? "--resource" : "--creation-number";
+    if (flags.account === undefined) throw new UsageError(`${flag} needs --account`);
+    if (flags.handle !== undefined || flags.field !== undefined) {
+      throw new UsageError(`${flag} cannot be combined with --handle or --field`);
+    }
+    if (types.length > 0) throw new UsageError(`event types cannot be combined with ${flag}`);
+    const accountAddress = wrap(() => requireAddress(flags.account!));
+    return flags.resource !== undefined
+      ? { kind: "resource", accountAddress, resourceType: wrap(() => requireResourceType(flags.resource)) as MoveEventType }
+      : { kind: "handle", accountAddress, creationNumber: creationNumber(number!) };
+  }
   const eventTypes = types.map((t) => wrap(() => requireEventType(t)));
   if (flags.handle !== undefined || flags.field !== undefined) {
     if (flags.handle === undefined || flags.field === undefined || flags.account === undefined) {
@@ -306,8 +419,15 @@ function descriptor(
 interface SourceFlags extends DescriptorFlags {
   network?: string;
   "node-url"?: string;
+  "from-time"?: string;
   "from-version"?: string;
   "poll-interval"?: string;
+}
+
+function startTime(values: { "from-time"?: string; "from-version"?: string }): bigint | undefined {
+  if (values["from-time"] === undefined) return undefined;
+  if (values["from-version"] !== undefined) throw new UsageError("set --from-time or --from-version, not both");
+  return parseTime(values["from-time"]);
 }
 
 function source(command: string, values: SourceFlags, positionals: string[]): SourceOptions {
@@ -317,9 +437,11 @@ function source(command: string, values: SourceFlags, positionals: string[]): So
   };
   const url = nodeUrl(values["node-url"]);
   const fromVersion = version(values["from-version"]);
+  const fromTime = startTime(values);
   const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
   if (url !== undefined) options.nodeUrl = url;
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
+  if (fromTime !== undefined) options.fromTime = fromTime;
   if (pollInterval !== undefined) options.pollInterval = pollInterval;
   return options;
 }
@@ -332,6 +454,8 @@ function parseTail(args: string[]): ParsedCommand {
   const options: TailOptions = source("tail", values, positionals);
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
   if (limit !== undefined) options.limit = limit;
+  if (values["cursor-file"] === "") throw new UsageError("--cursor-file must not be empty");
+  if (values["cursor-file"] !== undefined) options.cursorFile = values["cursor-file"];
   return { command: "tail", options };
 }
 
@@ -391,6 +515,55 @@ function parseRecord(args: string[]): ParsedCommand {
   return { command: "record", options };
 }
 
+function parseQuery(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: QUERY_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const fromVersion = version(values["from-version"]);
+  const fromTime = startTime(values);
+  if (fromVersion === undefined && fromTime === undefined) {
+    throw new UsageError("query needs --from-version or --from-time");
+  }
+  const toVersion = version(values["to-version"], "to-version") ?? "head";
+  if (toVersion !== "head" && fromVersion !== undefined && toVersion < fromVersion) {
+    throw new UsageError("--to-version must not be below --from-version");
+  }
+  const order = values.order ?? "asc";
+  if (order !== "asc" && order !== "desc") throw new UsageError(`--order must be asc or desc: ${order}`);
+  const options: QueryOptions = {
+    descriptor: descriptor("query", values, positionals),
+    network: network(values.network),
+    toVersion,
+    order,
+  };
+  if (fromVersion !== undefined) options.fromVersion = fromVersion;
+  if (fromTime !== undefined) options.fromTime = fromTime;
+  const url = nodeUrl(values["node-url"]);
+  const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  if (url !== undefined) options.nodeUrl = url;
+  if (limit !== undefined) options.limit = limit;
+  return { command: "query", options };
+}
+
+const TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/;
+
+function parseTx(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: TX_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const [hash, ...rest] = positionals;
+  if (hash === undefined || rest.length > 0) throw new UsageError("tx needs one transaction hash");
+  if (!TRANSACTION_HASH.test(hash)) throw new UsageError(`not a transaction hash: ${hash}`);
+  const options: TxOptions = { hash, network: network(values.network) };
+  const url = nodeUrl(values["node-url"]);
+  const timeout = integer("timeout", values.timeout, 0, MAX_TIMEOUT);
+  if (url !== undefined) options.nodeUrl = url;
+  if (timeout !== undefined) options.timeout = timeout;
+  return { command: "tx", options };
+}
+
 function parseCheck(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: CHECK_OPTIONS, allowPositionals: true, strict: true }),
@@ -445,6 +618,8 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "store") return parseStore(rest);
   if (command === "check") return parseCheck(rest);
   if (command === "record") return parseRecord(rest);
+  if (command === "query") return parseQuery(rest);
+  if (command === "tx") return parseTx(rest);
   if (command === "codegen") return parseCodegen(rest);
   throw new UsageError(`unknown command: ${command}`);
 }

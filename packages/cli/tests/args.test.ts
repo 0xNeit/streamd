@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseCommand, UsageError } from "../src/args.js";
+import { parseCommand, parseTime, UsageError } from "../src/args.js";
 import type { StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
@@ -339,6 +339,209 @@ describe("parseCommand record", () => {
     [["record", ...bounds], /record needs at least one event type/],
     [["record", ...bounds, "--out", "", TYPE], /--out must not be empty/],
     [["record", ...bounds, "--limit", "0", TYPE], /--limit/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
+
+describe("parseCommand query", () => {
+  it("defaults to ascending, ending at the head", () => {
+    expect(parseCommand(["query", "--from-version", "5", TYPE])).toEqual({
+      command: "query",
+      options: {
+        descriptor: { kind: "module", eventType: [TYPE] },
+        network: "mainnet",
+        fromVersion: 5n,
+        toVersion: "head",
+        order: "asc",
+      },
+    });
+    expect(parseCommand(["query", "--help"])).toEqual({ command: "help" });
+  });
+
+  it("takes a closed range, a limit, an order and the descriptor flags", () => {
+    expect(
+      parseCommand(["query", "--from-version", "5", "--to-version", "9", "--limit", "3", "--order", "desc", "--account", ADDR]),
+    ).toMatchObject({
+      options: { fromVersion: 5n, toVersion: 9n, limit: 3, order: "desc", descriptor: { kind: "account", accountAddress: LONG_ADDR } },
+    });
+  });
+
+  it.each([
+    [["query", TYPE], /query needs --from-version or --from-time/],
+    [["query", "--from-version", "9", "--to-version", "5", TYPE], /must not be below/],
+    [["query", "--from-version", "5", "--order", "up", TYPE], /--order must be asc or desc/],
+    [["query", "--from-version", "5", "--limit", "0", TYPE], /--limit/],
+    [["query", "--from-version", "5"], /query needs at least one event type/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
+
+describe("parseTime", () => {
+  const now = Date.UTC(2026, 10, 10, 12);
+
+  it.each([
+    ["90s", now - 90_000],
+    ["30m", now - 1_800_000],
+    ["2h", now - 7_200_000],
+    ["7d", now - 604_800_000],
+    ["0s", now],
+  ] as [string, number][])("reads the duration %s", (raw, ms) => {
+    expect(parseTime(raw, now)).toBe(BigInt(ms) * 1000n);
+  });
+
+  it.each([
+    ["2026-11-10", Date.UTC(2026, 10, 10)],
+    ["2026-11-10T09:30", Date.UTC(2026, 10, 10, 9, 30)],
+    ["2026-11-10T09:30:15", Date.UTC(2026, 10, 10, 9, 30, 15)],
+    ["2026-11-10T09:30:15.250Z", Date.UTC(2026, 10, 10, 9, 30, 15, 250)],
+    ["2026-11-10T09:30:00+01:00", Date.UTC(2026, 10, 10, 8, 30)],
+  ] as [string, number][])("reads %s, UTC unless it names an offset", (raw, ms) => {
+    expect(parseTime(raw, now)).toBe(BigInt(ms) * 1000n);
+  });
+
+  it("reads a date-time the same in any zone", () => {
+    const zone = process.env.TZ;
+    process.env.TZ = "America/New_York";
+    try {
+      expect(parseTime("2026-11-10T09:30", now)).toBe(BigInt(Date.UTC(2026, 10, 10, 9, 30)) * 1000n);
+    } finally {
+      process.env.TZ = zone;
+    }
+  });
+
+  it("clamps a duration reaching before the epoch", () => {
+    expect(parseTime("99999999999d", now)).toBe(0n);
+  });
+
+  it.each(["", "2", "2x", "h", "-2h", "1.5h", "2026", "2026-13-45", "2026-11-10 09:30", "yesterday", "1969-01-01"])(
+    "refuses %j",
+    (raw) => {
+      expect(() => parseTime(raw, now)).toThrow(UsageError);
+    },
+  );
+});
+
+describe("--from-time", () => {
+  it("is taken by tail, forward and query", () => {
+    const at = ["--from-time", "2026-11-10"];
+    const micros = BigInt(Date.UTC(2026, 10, 10)) * 1000n;
+    expect(parseCommand(["tail", ...at, TYPE])).toMatchObject({ options: { fromTime: micros } });
+    expect(parseCommand(["forward", "--to", "https://h.example", ...at, TYPE])).toMatchObject({ options: { fromTime: micros } });
+    const query = parseCommand(["query", ...at, TYPE]);
+    expect(query).toMatchObject({ options: { fromTime: micros, toVersion: "head" } });
+    expect((query as { options: { fromVersion?: bigint } }).options.fromVersion).toBeUndefined();
+  });
+
+  it.each([
+    [["tail", "--from-time", "2h", "--from-version", "5", TYPE], /not both/],
+    [["query", "--from-time", "2h", "--from-version", "5", TYPE], /not both/],
+    [["tail", "--from-time", "soon", TYPE], /--from-time must be/],
+    [["query", TYPE], /query needs --from-version or --from-time/],
+    [["store", "--db", "e.db", "--from-time", "2h", TYPE], /from-time/],
+    [["record", "--from-time", "2h", "--to-version", "9", TYPE], /from-time/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
+
+describe("every descriptor kind", () => {
+  const RESOURCE = "0x1::block::BlockResource";
+  const bounds = ["--from-version", "1", "--to-version", "2"];
+  const commands: [string, string[]][] = [
+    ["tail", []],
+    ["forward", ["--to", "https://h.example"]],
+    ["store", ["--db", "e.db"]],
+    ["query", bounds],
+    ["record", bounds],
+  ];
+
+  it.each(commands)("%s follows a resource", (command, extra) => {
+    expect(parseCommand([command, ...extra, "--account", ADDR, "--resource", RESOURCE])).toMatchObject({
+      options: { descriptor: { kind: "resource", accountAddress: LONG_ADDR, resourceType: RESOURCE } },
+    });
+  });
+
+  it.each(commands)("%s follows a handle by creation number", (command, extra) => {
+    expect(parseCommand([command, ...extra, "--account", ADDR, "--creation-number", "7"])).toMatchObject({
+      options: { descriptor: { kind: "handle", accountAddress: LONG_ADDR, creationNumber: 7n } },
+    });
+  });
+
+  it("takes the largest u64 creation number exactly", () => {
+    expect(parseCommand(["tail", "--account", ADDR, "--creation-number", "18446744073709551615"])).toMatchObject({
+      options: { descriptor: { creationNumber: 18446744073709551615n } },
+    });
+  });
+
+  it.each([
+    [["tail", "--resource", RESOURCE], /--resource needs --account/],
+    [["tail", "--creation-number", "7"], /--creation-number needs --account/],
+    [["tail", "--account", ADDR, "--resource", RESOURCE, "--creation-number", "7"], /not both/],
+    [["tail", "--account", ADDR, "--resource", RESOURCE, "--handle", "s", "--field", "f"], /cannot be combined/],
+    [["tail", "--account", ADDR, "--creation-number", "7", "--field", "f"], /cannot be combined/],
+    [["tail", "--account", ADDR, "--resource", RESOURCE, TYPE], /event types cannot be combined/],
+    [["tail", "--account", ADDR, "--creation-number", "7", TYPE], /event types cannot be combined/],
+    [["tail", "--account", ADDR, "--resource", "nope"], /resource|type/i],
+    [["tail", "--account", ADDR, "--creation-number", "x"], /must be a u64/],
+    [["tail", "--account", ADDR, "--creation-number", "18446744073709551616"], /must be a u64/],
+    [["check", "--account", ADDR, "--resource", RESOURCE], /account/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
+
+describe("Movement networks", () => {
+  it.each(["movement-mainnet", "movement-testnet"])("%s reaches every command", (name) => {
+    const net = ["--network", name];
+    const range = ["--from-version", "1", "--to-version", "2"];
+    for (const argv of [
+      ["tail", ...net, TYPE],
+      ["forward", "--to", "https://h.example", ...net, TYPE],
+      ["store", "--db", "e.db", ...net, TYPE],
+      ["query", ...range, ...net, TYPE],
+      ["record", ...range, ...net, TYPE],
+      ["check", ...net, TYPE],
+      ["codegen", ...net, "0x1::coin"],
+    ]) {
+      expect(parseCommand(argv)).toMatchObject({ options: { network: name } });
+    }
+  });
+
+  it("still refuses an unknown network, naming the choices", () => {
+    expect(() => parseCommand(["tail", "--network", "moon", TYPE])).toThrow(/movement-mainnet/);
+  });
+});
+
+describe("tail --cursor-file", () => {
+  it("is optional, and carried when given", () => {
+    expect(parseCommand(["tail", TYPE])).not.toHaveProperty("options.cursorFile");
+    expect(parseCommand(["tail", "--cursor-file", "c", TYPE])).toMatchObject({ options: { cursorFile: "c" } });
+    expect(() => parseCommand(["tail", "--cursor-file", "", TYPE])).toThrow(/--cursor-file must not be empty/);
+  });
+});
+
+describe("parseCommand tx", () => {
+  const HASH = `0x${"ab".repeat(32)}`;
+
+  it("takes a hash, a network, a node URL and a timeout", () => {
+    expect(parseCommand(["tx", HASH])).toEqual({ command: "tx", options: { hash: HASH, network: "mainnet" } });
+    expect(parseCommand(["tx", "--network", "testnet", "--node-url", "https://n.example/v1", "--timeout", "500", HASH])).toEqual({
+      command: "tx",
+      options: { hash: HASH, network: "testnet", nodeUrl: "https://n.example/v1", timeout: 500 },
+    });
+    expect(parseCommand(["tx", "--help"])).toEqual({ command: "help" });
+  });
+
+  it.each([
+    [["tx"], /tx needs one transaction hash/],
+    [["tx", HASH, HASH], /tx needs one transaction hash/],
+    [["tx", "0x12"], /not a transaction hash/],
+    [["tx", `${"ab".repeat(32)}`], /not a transaction hash/],
+    [["tx", `0x${"zz".repeat(32)}`], /not a transaction hash/],
+    [["tx", HASH, "--timeout", "soon"], /--timeout/],
+    [["tx", HASH, "--limit", "1"], /limit/],
   ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
     expect(() => parseCommand(argv)).toThrow(pattern);
   });

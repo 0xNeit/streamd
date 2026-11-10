@@ -80,6 +80,16 @@ describe("runStore", () => {
     expect(cursors(db)).toContain("mine");
   });
 
+  it("names the cursor for a handle by creation number", async () => {
+    const db = new Database(":memory:");
+    const descriptor = { kind: "handle", accountAddress: "0x1", creationNumber: 7n } as const;
+    const adapter: EventAdapter = { fetchEvents: async () => ({ events: [ev(1)], nextCursor: "1", hasMore: false }) };
+    const { code, errors } = await run(adapter, db, options({ descriptor }), () => cursors(db).length === 1);
+    expect(code).toBe(0);
+    expect(errors).toEqual([]);
+    expect(cursors(db)[0]).toContain('"creationNumber":"7"');
+  });
+
   it("exits 1 when polling gives up", async () => {
     const db = new Database(":memory:");
     const errors: string[] = [];

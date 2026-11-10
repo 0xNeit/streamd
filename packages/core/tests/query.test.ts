@@ -1276,3 +1276,31 @@ describe("EventQuery async where", () => {
     await expect(pending).rejects.toBe(reason);
   });
 });
+
+describe("a start version on every page", () => {
+  const ev2 = (version: number) => ({ type: "0x1::m::E", data: {}, version: BigInt(version), sequenceNumber: 0n, eventIndex: 0 });
+  /** Like the account and handle walks: starts at the beginning and pages by cursor, honouring fromVersion only on the first request. */
+  const fromTheStart = (pages: number[][]): EventAdapter => ({
+    fetchEvents: async (_d, o) => {
+      const at = o.cursor === undefined ? 0 : Number(o.cursor);
+      const events = pages[at]!.filter((v) => o.cursor !== undefined || o.fromVersion === undefined || BigInt(v) >= o.fromVersion).map(ev2);
+      return { events, nextCursor: String(at + 1), hasMore: at + 1 < pages.length };
+    },
+  });
+  const desc: EventDescriptor = { kind: "account", accountAddress: "0x1" };
+
+  it("delivers nothing below fromVersion on any page", async () => {
+    const events = await new EventQuery(fromTheStart([[1, 2], [3, 4], [5, 6]])).getEvents(desc, { fromVersion: 4n });
+    expect(events.map((e) => e.version)).toEqual([4n, 5n, 6n]);
+  });
+
+  it("counts a limit only over what is in range", async () => {
+    const events = await new EventQuery(fromTheStart([[1, 2], [3, 4], [5, 6]])).getEvents(desc, { fromVersion: 3n, limit: 2 });
+    expect(events.map((e) => e.version)).toEqual([3n, 4n]);
+  });
+
+  it("leaves a query with no start alone", async () => {
+    const events = await new EventQuery(fromTheStart([[1], [2]])).getEvents(desc, {});
+    expect(events.map((e) => e.version)).toEqual([1n, 2n]);
+  });
+});

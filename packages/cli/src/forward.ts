@@ -1,8 +1,8 @@
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseRetryAfter, serializeEvent } from "@streamd/core";
 import type { StreamdClient, Subscription } from "@streamd/core";
 import type { ForwardOptions } from "./args.js";
+import { readCursor, writeCursor } from "./cursor-file.js";
 import { message } from "./format.js";
 
 export interface ForwardIO {
@@ -16,29 +16,6 @@ export interface ForwardIO {
 }
 
 const MAX_RETRY_DELAY = 60_000;
-
-function readCursor(path: string): string | undefined {
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw err;
-  }
-  const cursor = text.trim();
-  if (cursor === "") throw new Error(`cursor file is empty: ${path}`);
-  return cursor;
-}
-
-// A rename replaces the file whole, so a crash mid-write never leaves a torn cursor.
-function writeCursor(path: string, cursor: string): void {
-  const temp = `${path}.${process.pid}.tmp`;
-  // Exclusive create: a link planted at the predictable name fails the write
-  // instead of redirecting it. A stale temp file from this pid is ours to drop.
-  rmSync(temp, { force: true });
-  writeFileSync(temp, `${cursor}\n`, { flag: "wx", mode: 0o600 });
-  renameSync(temp, path);
-}
 
 interface Attempt {
   ok: boolean;
@@ -151,7 +128,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     const onAbort = () => finish(0);
     io.signal.addEventListener("abort", onAbort, { once: true });
 
-    const { fromVersion, pollInterval } = options;
+    const { fromVersion, fromTime, pollInterval } = options;
     sub = io.client.onBatch(
       options.descriptor,
       async (events) => {
@@ -175,6 +152,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
       {
         ...(saved !== undefined && { cursor: saved }),
         ...(fromVersion !== undefined && { fromVersion }),
+        ...(fromTime !== undefined && { fromTime }),
         ...(pollInterval !== undefined && { pollInterval }),
         onError: (err) => {
           io.error(`streamd: ${message(err)}`);

@@ -1831,13 +1831,30 @@ the source has them, `transactionHash`, `timestamp`, `sender` and, last, `entryF
 {"type":"0x1::transaction_fee::FeeStatement","data":{"total_charge_gas_units":"7"},"version":"2817350001","sequenceNumber":"0","eventIndex":3,"transactionHash":"0x5c...","timestamp":"1730000000000000","sender":"0x9f..."}
 ```
 
-To pick up where a run stopped, pass the last printed `version` plus one as
-`--from-version`.
+Every command that takes a descriptor takes all four kinds. With `--account`, add
+`--handle` and `--field`, or `--creation-number <n>` for a handle by its number, or
+`--resource <type>` for every change to one resource:
+
+```sh
+streamd tail --account 0x1 --resource 0x1::block::BlockResource
+streamd tail --account 0x1 --creation-number 11
+```
+
+A handle is followed from its first event, so on a node that has pruned those, as Aptos mainnet
+has for long-lived handles, it fails at the start, with `--handle` as well.
+
+`--network` takes `mainnet`, `testnet`, `devnet`, `movement-mainnet` or `movement-testnet`, and
+`--node-url` overrides its fullnode.
+
+To pick up where a run stopped, pass `--cursor-file <path>`: `tail` saves its position there and
+resumes from it, and a saved position beats `--from-version` and `--from-time`. It is at least
+once, since stdout has no acknowledgement: a restart can reprint part of the last page. By hand,
+pass the last printed `version` plus one as `--from-version`.
 
 Polling errors are reported on stderr and tailing continues until the subscription gives
 up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes
-(as when piped into `head`); `1` when the subscription stopped on an error, or output could not
-be written; `2` for invalid arguments; `130` on a second Ctrl-C.
+(as when piped into `head`); `1` when the subscription stopped on an error, or output or the
+cursor file could not be written; `2` for invalid arguments; `130` on a second Ctrl-C.
 
 ### Forward events to a webhook
 
@@ -1877,6 +1894,50 @@ Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST without
 cursor; `1` when a batch fails past its retries, the subscription stops on an error, or the
 cursor file cannot be read or written; `2` for invalid arguments. Run it under a supervisor
 that restarts on `1`.
+
+### Start from a time
+
+`tail`, `forward` and `query` take `--from-time` instead of `--from-version`: a duration back from
+now (`90s`, `30m`, `2h`, `7d`) or an ISO date or date-time, which is UTC unless it names an offset:
+
+```sh
+streamd tail --from-time 2h 0x1::fungible_asset::Deposit
+streamd query --from-time 2026-11-10T09:00 --to-version 7985000000 0x1::coin::CoinDeposit
+```
+
+It starts at the first block stamped at or after that time. A time before the oldest block the
+node serves starts at that block. On `forward` a saved cursor beats it, so a restart does not
+rewind.
+
+### Query a range
+
+`streamd query` reads a closed range as JSON lines and exits:
+
+```sh
+streamd query --from-version 7984000000 --to-version 7984001000 0x1::fungible_asset::Deposit
+# the latest 10 up to the head, newest first
+streamd query --from-version 7984000000 --limit 10 --order desc 0x1::fungible_asset::Deposit
+# the last hour
+streamd query --from-time 1h 0x1::fungible_asset::Deposit
+```
+
+`--to-version` defaults to the head, read once when the query starts, so a busy type still ends.
+`--order desc` has to walk the whole range before it prints, since sources only page forward. It
+takes the same descriptors as `tail`. Failed pages are retried. It exits 0 when finished or when
+interrupted or piped into something that stops reading, such as `head`, 1 on failure, and 2 for
+bad usage.
+
+### Inspect a transaction
+
+`streamd tx <hash>` waits for a transaction to commit and prints its events as JSON lines:
+
+```sh
+streamd tx 0x5d16bc7f...
+```
+
+`--timeout <ms>` bounds the wait (default 20000). It exits 0 for a successful transaction, 1 if the
+transaction failed, with its VM status on stderr and nothing on stdout, or if it was not found in
+time, 2 for a malformed hash, and 130 if interrupted while waiting.
 
 ### Check event types
 

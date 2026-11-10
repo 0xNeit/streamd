@@ -388,8 +388,11 @@ export class EventQuery {
       // and cannot be pushed down to a remote source. `limit` counts what
       // survives it, so a restrictive predicate keeps paging rather than
       // returning short. Only an async predicate's result is awaited.
-      const decoded =
-        decode === undefined ? page.events : page.events.map(decode);
+      // Adapters honour fromVersion only on the first request, so account and
+      // handle walks, which start below it, are bounded here on every page.
+      const start = fromVersion;
+      const inRange = start === undefined ? page.events : page.events.filter((e) => e.version >= start);
+      const decoded = decode === undefined ? inRange : inRange.map(decode);
       const filtered = where === undefined ? decoded : filterEvents(decoded, where);
       const matched = Array.isArray(filtered) ? filtered : await raceAbort(filtered, signal);
 

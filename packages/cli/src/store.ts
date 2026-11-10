@@ -58,7 +58,10 @@ export async function runStore(options: StoreOptions, io: StoreIO): Promise<numb
     const onAbort = () => finish(0);
     io.signal.addEventListener("abort", onAbort, { once: true });
 
-    const name = options.name ?? `${options.network}:${JSON.stringify(options.descriptor)}`;
+    const descriptorName = JSON.stringify(options.descriptor, (_key, v: unknown) =>
+      typeof v === "bigint" ? v.toString() : v,
+    );
+    const name = options.name ?? `${options.network}:${descriptorName}`;
     const { fromVersion, pollInterval } = options;
     sub = storeEvents(io.client, store, options.descriptor, {
       name,
