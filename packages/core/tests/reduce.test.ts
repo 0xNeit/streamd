@@ -170,7 +170,7 @@ describe("reduce", () => {
 
   it("refuses options that leave no exact point to follow from", () => {
     const client = new StreamdClient({ adapter: growing([]).adapter });
-    for (const key of ["limit", "offset", "toVersion", "toBlock", "orderBy", "onCursor", "cursor", "id"]) {
+    for (const key of ["limit", "offset", "toVersion", "toBlock", "orderBy", "onCursor", "id"]) {
       const options = { [key]: 1 } as never;
       expect(() => client.reduce(descriptor, collect, [], options)).toThrow(StreamdError);
       expect(() => client.reduce(descriptor, collect, [], options)).toThrow(
@@ -429,5 +429,168 @@ describe("reduce typing", () => {
     // @ts-expect-error the state is a bigint, not a string
     const wrong: string = volume.value;
     void wrong;
+  });
+});
+
+describe("reduce resume", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const settle = (ms = 0) => advanceTimersByTimeAsync(ms);
+  const versions = (list: StreamdEvent[]) => list.map((e) => Number(e.version));
+  const none: StreamdEvent[] = [];
+
+  it("is undefined during the backfill and set once it has finished", async () => {
+    const client = new StreamdClient({ adapter: growing([ev(1), ev(2)]).adapter });
+    const r = client.reduce(descriptor, collect, none);
+    expect(r.cursor).toBeUndefined();
+    await r.ready;
+    await settle();
+    expect(r.cursor).toBeString();
+    r.unsubscribe();
+  });
+
+  it("continues from a saved value and cursor without reading the history", async () => {
+    const events = [ev(1), ev(2), ev(3)];
+    const first = new StreamdClient({ adapter: growing(events).adapter });
+    const a = first.reduce(descriptor, collect, none, { pollInterval: 10 });
+    await a.ready;
+    await settle(20);
+    const saved = { value: a.value, cursor: a.cursor! };
+    a.unsubscribe();
+
+    events.push(ev(4), ev(5));
+    const source = growing(events);
+    const client = new StreamdClient({ adapter: source.adapter });
+    const b = client.reduce(descriptor, collect, saved.value, { pollInterval: 10, cursor: saved.cursor, fromVersion: 0n });
+    expect(await b.ready).toBe(saved.value);
+    await settle(20);
+    expect(versions(b.value)).toEqual([1, 2, 3, 4, 5]);
+    expect(source.calls[0]!.cursor).toBe("3");
+    expect(source.calls.every((c) => c.cursor !== undefined)).toBe(true);
+    b.unsubscribe();
+  });
+
+  it("agrees with the value when saved partway through a page", async () => {
+    const events = [ev(1)];
+    const source = growing(events);
+    const first = new StreamdClient({ adapter: source.adapter });
+    const saves: { value: StreamdEvent[]; cursor: string }[] = [];
+    const a = first.reduce(descriptor, collect, none, {
+      pollInterval: 10,
+      batchSize: 10,
+      onChange: (value) => saves.push({ value, cursor: a.cursor! }),
+    });
+    await a.ready;
+    events.push(ev(2), ev(3, 0), ev(3, 1), ev(4));
+    await settle(20);
+    a.unsubscribe();
+    expect(versions(a.value)).toEqual([1, 2, 3, 3, 4]);
+
+    const mid = saves[1]!;
+    expect(versions(mid.value)).toEqual([1, 2, 3]);
+    const client = new StreamdClient({ adapter: growing(events).adapter });
+    const b = client.reduce(descriptor, collect, mid.value, { pollInterval: 10, batchSize: 10, cursor: mid.cursor });
+    await b.ready;
+    await settle(20);
+    expect(ids(b.value)).toEqual(["1:0", "2:0", "3:0", "3:1", "4:0"]);
+    b.unsubscribe();
+  });
+
+  it("is readable after unsubscribing, and survives JSON", async () => {
+    const events = [ev(1)];
+    const first = new StreamdClient({ adapter: growing(events).adapter });
+    const a = first.reduce(descriptor, collect, none, { pollInterval: 10 });
+    await a.ready;
+    await settle(20);
+    a.unsubscribe();
+    const cursor = JSON.parse(JSON.stringify(a.cursor)) as string;
+
+    events.push(ev(2));
+    const client = new StreamdClient({ adapter: growing(events).adapter });
+    const b = client.reduce(descriptor, collect, a.value, { pollInterval: 10, cursor });
+    await b.ready;
+    await settle(20);
+    expect(versions(b.value)).toEqual([1, 2]);
+    b.unsubscribe();
+  });
+
+  it("resumes on a source with no cursors, skipping what was folded", async () => {
+    const events = [ev(1), ev(2, 0), ev(2, 1)];
+    const first = new StreamdClient({ adapter: growing(events, false).adapter });
+    const a = first.reduce(descriptor, collect, none, { pollInterval: 10 });
+    await a.ready;
+    await settle();
+    const saved = { value: a.value, cursor: a.cursor! };
+    a.unsubscribe();
+
+    events.push(ev(3));
+    const source = growing(events, false);
+    const client = new StreamdClient({ adapter: source.adapter });
+    const b = client.reduce(descriptor, collect, saved.value, { pollInterval: 10, cursor: saved.cursor });
+    await b.ready;
+    await settle();
+    expect(source.calls[0]!.fromVersion).toBe(2n);
+    expect(ids(b.value)).toEqual(["1:0", "2:0", "2:1", "3:0"]);
+    b.unsubscribe();
+  });
+
+  it("takes an adapter cursor from onCursor", async () => {
+    const events = [ev(1), ev(2)];
+    const source = growing(events);
+    const client = new StreamdClient({ adapter: source.adapter });
+    const b = client.reduce(descriptor, collect, none, { pollInterval: 10, cursor: "1" });
+    await b.ready;
+    await settle();
+    expect(versions(b.value)).toEqual([2]);
+    b.unsubscribe();
+  });
+
+  it("follows on when nothing new has arrived, and still gives a cursor", async () => {
+    const events = [ev(1)];
+    const client = new StreamdClient({ adapter: growing(events).adapter });
+    const b = client.reduce(descriptor, collect, none, { pollInterval: 10, cursor: "1" });
+    await b.ready;
+    await settle(20);
+    expect(b.value).toEqual([]);
+    expect(b.cursor).toBeString();
+    b.unsubscribe();
+  });
+
+  it("leaves a position to retry from when the reducer throws", async () => {
+    const events = [ev(1), ev(2)];
+    const client = new StreamdClient({ adapter: growing(events).adapter, onError: () => {} });
+    const a = client.reduce(descriptor, (s: StreamdEvent[], e) => {
+      if (e.version === 3n) throw new Error("bad");
+      return [...s, e];
+    }, none, { pollInterval: 10 });
+    await a.ready;
+    events.push(ev(3));
+    await settle(20);
+    expect(a.active).toBe(false);
+    expect(versions(a.value)).toEqual([1, 2]);
+
+    const b = client.reduce(descriptor, collect, a.value, { pollInterval: 10, cursor: a.cursor! });
+    await b.ready;
+    await settle(20);
+    expect(versions(b.value)).toEqual([1, 2, 3]);
+    b.unsubscribe();
+  });
+
+  it("refuses a malformed reduction cursor at the call", () => {
+    const client = new StreamdClient({ adapter: growing([]).adapter });
+    for (const bad of [
+      "",
+      "streamd-reduction:",
+      "streamd-reduction:{}",
+      "streamd-reduction:[1,null,null]",
+      'streamd-reduction:["c","x",0]',
+      'streamd-reduction:["c","1",-1]',
+      'streamd-reduction:["c","1",null]',
+      "streamd-reduction:[null,null,null]",
+    ]) {
+      expect(() => client.reduce(descriptor, collect, none, { cursor: bad })).toThrow(StreamdError);
+    }
+    expect(() => client.reduce(descriptor, collect, none, { cursor: 5 as unknown as string })).toThrow(StreamdError);
   });
 });
