@@ -956,7 +956,14 @@ export type WatchCallback<TData = unknown> = (
  * `fromTime` apply only to the addresses given to `watch()`, not to `add()`.
  * No `cursor` (an account cursor belongs to one address) and no `id`.
  */
-export type WatchOptions = Omit<SubscriptionOptions, "id" | "cursor">;
+export type WatchOptions = Omit<SubscriptionOptions, "id" | "cursor"> & {
+  /**
+   * `Watch.positions` from an earlier run: each address continues from its
+   * own, ahead of `fromVersion` and `fromTime`. Addresses without one start as
+   * usual, and one for an address not in the list waits for `add()`.
+   */
+  positions?: Readonly<Record<string, string>>;
+};
 
 /** What `watch()` returns: a `Subscription` over every walk, grown and shrunk at runtime. */
 export interface Watch extends Subscription {
@@ -969,6 +976,12 @@ export interface Watch extends Subscription {
   remove(address: string): boolean;
   /** The watched addresses, in the order added, as passed. */
   readonly addresses: readonly string[];
+  /**
+   * Where each address stands, as long-form address to cursor, for
+   * `WatchOptions.positions` after a restart. Omits an address with no position
+   * yet, keeps a walk that gave up, and stays readable after unsubscribing.
+   */
+  readonly positions: Record<string, string>;
 }
 
 // ---- Adapter interface ----
