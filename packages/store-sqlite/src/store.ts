@@ -1,6 +1,6 @@
 import { StreamdError, normalizeAddress, parseEvent, serializeEvent } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
-import { ensureSchema, raisePrunedBefore, transaction, versionKey } from "./schema.js";
+import { PRUNED_BEFORE, ensureSchema, raisePrunedBefore, transaction, versionKey } from "./schema.js";
 import type { SqliteDatabase, SqliteStatement } from "./schema.js";
 
 /** A source cursor to save under `name` alongside a write. */
@@ -34,6 +34,7 @@ function requireName(name: unknown): string {
   if (typeof name !== "string" || name === "") {
     throw new StreamdError("A checkpoint name must be a non-empty string");
   }
+  if (name === PRUNED_BEFORE) throw new StreamdError(`"${name}" is reserved for the store`);
   return name;
 }
 

@@ -149,8 +149,15 @@ describe("SqliteEventStore.prune", () => {
     const db = new Database(":memory:");
     const store = new SqliteEventStore(db);
     store.write([ev(1n)]);
-    db.run("DROP TABLE streamd_meta");
+    db.run("DROP TABLE streamd_cursors");
     expect(() => store.prune({ beforeVersion: 5n })).toThrow();
     expect(versions(db)).toEqual([1n]);
+  });
+
+  it("keeps the name holding the edge away from callers", () => {
+    const store = new SqliteEventStore(new Database(":memory:"));
+    const name = "streamd:pruned-before";
+    expect(() => store.write([], { name, cursor: "x" })).toThrow("reserved");
+    expect(() => store.readCursor(name)).toThrow("reserved");
   });
 });

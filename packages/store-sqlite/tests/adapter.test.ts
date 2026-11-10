@@ -234,10 +234,26 @@ describe("StoreAdapter after prune", () => {
     expect(await adapter.getEarliestVersion()).toBe(8n);
   });
 
-  it("reports the head as stored, or just below the edge when emptied", async () => {
+  it("reports the head as stored, never below the edge", async () => {
     expect(await pruned(5n).adapter.getHeadVersion()).toBe(12n);
-    expect(await pruned(100n).adapter.getHeadVersion()).toBe(99n);
+    const emptied = pruned(100n);
+    expect(await emptied.adapter.getHeadVersion()).toBe(100n);
+    emptied.store.write([ev(2n, 0, SWAP)]);
+    expect(await emptied.adapter.getHeadVersion()).toBe(100n);
     expect(await seeded([]).getHeadVersion()).toBe(0n);
+  });
+
+  it("answers an emptied store's whole range with nothing rather than failing", async () => {
+    const client = new StreamdClient({ adapter: pruned(100n).adapter });
+    const events = await client.getEvents(swaps, { fromVersion: "earliest", toVersion: "head" });
+    expect(events).toEqual([]);
+  });
+
+  it("fails a relative start that reaches below the edge", async () => {
+    const client = new StreamdClient({ adapter: pruned(5n).adapter });
+    expectPruned(await failure(() => client.getEvents(swaps, { fromVersion: -100n })));
+    const recent = await client.getEvents(swaps, { fromVersion: -1n });
+    expect(recent.map((e) => e.version)).toEqual([11n, 12n]);
   });
 
   it("lets a client start from earliest after pruning", async () => {

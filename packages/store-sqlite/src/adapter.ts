@@ -110,10 +110,11 @@ export class StoreAdapter implements EventAdapter {
     this.db = db;
   }
 
-  /** The highest stored version, or just below the pruned edge when none is stored; `0n` for a new store. */
+  /** The highest stored version, never below the pruned edge; `0n` for a new store. */
   async getHeadVersion(): Promise<bigint> {
     const edge = prunedBefore(this.db);
-    return this.bound("MAX") ?? (edge > 0n ? edge - 1n : 0n);
+    const highest = this.bound("MAX") ?? 0n;
+    return highest > edge ? highest : edge;
   }
 
   /** The lowest readable version: the lowest stored, or the pruned edge if that is higher. */

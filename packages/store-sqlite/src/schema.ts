@@ -50,29 +50,27 @@ CREATE TABLE IF NOT EXISTS streamd_cursors (
   name TEXT PRIMARY KEY,
   cursor TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS streamd_meta (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
 `;
 
-const PRUNED_BEFORE = "pruned_before";
+// Kept among the cursors so that a database written before pruning existed
+// needs no new table, and stays readable on a read-only connection.
+export const PRUNED_BEFORE = "streamd:pruned-before";
 
 /** Raises the pruned edge; a lower `key` leaves it where it is. */
 export function raisePrunedBefore(db: SqliteDatabase, key: string): void {
   db.prepare(
-    `INSERT INTO streamd_meta (key, value) VALUES (?, ?)
-     ON CONFLICT (key) DO UPDATE SET value = max(value, excluded.value)`,
+    `INSERT INTO streamd_cursors (name, cursor) VALUES (?, ?)
+     ON CONFLICT (name) DO UPDATE SET cursor = max(cursor, excluded.cursor)`,
   ).run(PRUNED_BEFORE, key);
 }
 
 /** The lowest version still readable: `0n` until something is pruned. */
 export function prunedBefore(db: SqliteDatabase): bigint {
-  const row = db.prepare("SELECT value FROM streamd_meta WHERE key = ?").get(PRUNED_BEFORE) as
-    | { value: string }
+  const row = db.prepare("SELECT cursor FROM streamd_cursors WHERE name = ?").get(PRUNED_BEFORE) as
+    | { cursor: string }
     | null
     | undefined;
-  return row == null ? 0n : BigInt(row.value);
+  return row == null ? 0n : BigInt(row.cursor);
 }
 
 export function requireDatabase(db: SqliteDatabase): void {
