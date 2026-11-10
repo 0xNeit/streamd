@@ -10,11 +10,13 @@ import type {
   ForwardOptions,
   ParsedCommand,
   SourceOptions,
+  StoreOptions,
   TailOptions,
 } from "./args.js";
 import { generateEventTypes } from "./codegen.js";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
+import { openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
 
 const NETWORKS = {
@@ -50,6 +52,20 @@ async function forward(options: ForwardOptions): Promise<number> {
   try {
     return await runForward(options, {
       client,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+  } finally {
+    client.destroy();
+  }
+}
+
+async function store(options: StoreOptions): Promise<number> {
+  const { client, controller } = setup(options);
+  try {
+    return await runStore(options, {
+      client,
+      open: openDatabase,
       error: (message) => process.stderr.write(`${message}\n`),
       signal: controller.signal,
     });
@@ -121,6 +137,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (parsed.command === "codegen") return codegen(parsed.options);
+  if (parsed.command === "store") return store(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 
