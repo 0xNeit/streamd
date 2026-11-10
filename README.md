@@ -157,6 +157,22 @@ the head, after the first successful poll. It is not called again, even after a 
 resume. A throw from it goes to `onError` without counting toward `maxErrors`. `once()` and
 `stream()` accept it too.
 
+Every subscription also has `caughtUp`, a promise for the same moment:
+
+```ts
+const sub = streamd.on(descriptor, handle, { fromVersion: 3_000_000_000n });
+await sub.caughtUp;
+console.log("backfill done, now live");
+```
+
+It resolves after that page's handlers have finished, and it settles once. It rejects if the
+subscription ends first: with the `StreamdPollingError` when polling gives up, the signal's
+reason on abort, and a `StreamdError` on `unsubscribe()` or `destroy()`. If nobody awaits it, a
+rejection is not reported as unhandled. It stays pending through a pause. On `onTransaction()`
+with several descriptors it waits for every walk, and on `watch()` for every address given
+to it, where an address that gave up no longer counts and only the end of the whole watch
+rejects.
+
 ### Batch delivery
 
 ```ts

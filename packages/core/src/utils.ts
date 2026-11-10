@@ -174,3 +174,21 @@ export function fetchKey(d: EventDescriptor, options: FetchOptions): string | un
 // key is the one core-js polyfills it with.
 export const ASYNC_DISPOSE: typeof Symbol.asyncDispose =
   Symbol.asyncDispose ?? (Symbol.for("Symbol.asyncDispose") as typeof Symbol.asyncDispose);
+
+export interface Latch {
+  promise: Promise<void>;
+  resolve(): void;
+  reject(reason: unknown): void;
+}
+
+/** A promise settled from outside whose rejection is never reported as unhandled. */
+export function latch(): Latch {
+  let resolve!: () => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  promise.catch(() => {});
+  return { promise, resolve, reject };
+}

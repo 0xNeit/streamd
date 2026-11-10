@@ -897,6 +897,13 @@ export interface Subscription {
    * unsubscribing or stopping.
    */
   readonly status: SubscriptionStatus;
+  /**
+   * Resolves the first time the subscription reaches the head, just as
+   * `onCaughtUp` fires. Rejects if it ends first: with the polling error when
+   * it gives up, the signal's reason on abort, else a `StreamdError`. A
+   * rejection nobody is waiting for is not reported as unhandled.
+   */
+  readonly caughtUp: Promise<void>;
 }
 
 /** What `stream()` returns: its live events, and where to resume them. */

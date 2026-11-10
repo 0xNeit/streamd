@@ -41,7 +41,7 @@ import {
   StreamdError,
   StreamdTimeoutError,
 } from "./errors.js";
-import { ASYNC_DISPOSE, descriptorKey, generateId, onAbort } from "./utils.js";
+import { ASYNC_DISPOSE, descriptorKey, generateId, latch, onAbort } from "./utils.js";
 import { eventStream } from "./stream.js";
 import { RequestLimiter } from "./limiter.js";
 import { CursorManager } from "./cursor.js";
@@ -314,7 +314,9 @@ export class StreamdClient {
   ): Subscription {
     const id = callerId === undefined ? generateId() : this.claimId(callerId);
     let detach = () => {};
+    const reached = latch();
     const forget = () => {
+      reached.reject(new StreamdError("Subscription ended before catching up"));
       // A later subscription may hold this id by now; leave its entries alone.
       if (this.subscriptions.get(id)?.poller === poller) {
         this.subscriptions.delete(id);
@@ -330,10 +332,17 @@ export class StreamdClient {
       delivery,
       {
         ...resolved,
+        onCaughtUp: () => {
+          reached.resolve();
+          resolved.onCaughtUp?.();
+        },
         onError: (err) => {
           // Drop the subscription once the poller has given up and stopped
           // itself; a paused one reporting a late handler error stays.
-          if (!poller.active && !poller.paused) forget();
+          if (!poller.active && !poller.paused) {
+            reached.reject(err);
+            forget();
+          }
           (options?.onError ?? this.onError)?.(err);
         },
       },
@@ -348,7 +357,12 @@ export class StreamdClient {
       if (listener !== undefined) {
         this.listeners.set(id, { key: descriptorKey(descriptor), callback: listener, stop });
       }
-      detach = onAbort(options?.signal, forget);
+      detach = onAbort(options?.signal, () => {
+        reached.reject(options!.signal!.reason);
+        forget();
+      });
+    } else {
+      reached.reject(options?.signal?.reason);
     }
 
     const unsubscribe = () => {
@@ -369,6 +383,7 @@ export class StreamdClient {
       get status() {
         return poller.status;
       },
+      caughtUp: reached.promise,
       pause: () => poller.pause(),
       resume: () => poller.resume(),
       unsubscribe,

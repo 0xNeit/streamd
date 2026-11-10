@@ -221,6 +221,9 @@ export function startTransactions(
     walks.push(sub);
   });
 
+  const allCaughtUp = Promise.all(walks.map((w) => w.caughtUp)).then(() => {});
+  allCaughtUp.catch(() => {});
+
   return {
     id: walks[0]!.id,
     get active() {
@@ -235,6 +238,7 @@ export function startTransactions(
     get status() {
       return single ? { ...walks[0]!.status, cursor: checkpoint } : combinedStatus(walks, live());
     },
+    caughtUp: allCaughtUp,
     pause: () => walks.forEach((w) => w.pause()),
     resume: () => walks.forEach((w) => w.resume()),
     unsubscribe: end,
