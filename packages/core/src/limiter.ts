@@ -1,5 +1,5 @@
 import type { EventAdapter } from "./types.js";
-import { StreamdError } from "./errors.js";
+import { StreamdError, StreamdNetworkError } from "./errors.js";
 import { onAbort, raceAbort } from "./utils.js";
 
 interface Waiter {
@@ -12,6 +12,8 @@ interface Waiter {
  * Calls past either limit wait in one FIFO queue; a waiting call whose `drop`
  * signal aborts leaves the queue at once, so a stopped subscription costs the
  * source nothing and holds nothing.
+ * A call past `timeout` rejects and frees its slot, though the adapter call
+ * itself, which takes no signal, runs on uncounted.
  */
 export class RequestLimiter {
   private active = 0;
@@ -23,6 +25,7 @@ export class RequestLimiter {
   constructor(
     private readonly max = Infinity,
     perSecond = Infinity,
+    private readonly timeout?: number,
   ) {
     this.interval = 1000 / perSecond;
   }
@@ -38,7 +41,7 @@ export class RequestLimiter {
         this.active++;
         if (this.interval > 0) this.earliest = performance.now() + this.interval;
         // Wrapped so a task that throws synchronously still frees its slot.
-        raceAbort(new Promise<T>((r) => r(task())), signal)
+        raceAbort(this.withTimeout(new Promise<T>((r) => r(task()))), signal)
           .then(resolve, reject)
           .finally(() => {
             this.active--;
@@ -104,6 +107,19 @@ export class RequestLimiter {
         this.run(() => adapter.view!(request, ledgerVersion, descriptor), drop, signal);
     }
     return view;
+  }
+
+  // A network failure, because pollers and query retries stop at once on any other StreamdError.
+  private withTimeout<T>(work: Promise<T>): Promise<T> {
+    const ms = this.timeout;
+    if (ms === undefined) return work;
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(new StreamdNetworkError(`Adapter call timed out after ${ms}ms`)),
+        ms,
+      );
+      work.then(resolve, reject).finally(() => clearTimeout(timer));
+    });
   }
 
   private delay(): number {

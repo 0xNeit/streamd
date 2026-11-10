@@ -115,7 +115,8 @@ export async function eventsOf(
  * then returns all its events; `descriptor` only routes the lookup. Rejects
  * with `StreamdTransactionError` for a failed transaction. `timeout` bounds the
  * caller's wait, an in-flight lookup included, but the adapter gets no signal:
- * a hung lookup keeps its `maxConcurrentRequests` slot until it settles.
+ * a hung lookup keeps its `maxConcurrentRequests` slot until it settles or
+ * the client's `requestTimeout` passes.
  */
 export async function committedEvents(
   adapter: EventAdapter,

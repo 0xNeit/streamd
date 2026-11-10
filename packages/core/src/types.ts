@@ -812,6 +812,15 @@ export interface StreamdConfig {
    */
   maxRequestsPerSecond?: number;
   /**
+   * Fails any of those adapter calls still unfinished after this many ms, from
+   * when it started rather than when it joined the queue, as a
+   * `StreamdNetworkError`, so a listener backs off and counts it toward
+   * `maxErrors` and a query's `retries` retry it. Its slot frees, though the
+   * request itself runs on uncounted, since adapters take no signal. Omit for
+   * no timeout.
+   */
+  requestTimeout?: number;
+  /**
    * Listener options for every subscription this client creates. A call's own
    * value for a field wins; one it leaves `undefined` takes this one. A call's
    * `decode` replaces this list rather than adding to it. `pollInterval` here

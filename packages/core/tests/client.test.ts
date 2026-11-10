@@ -3177,3 +3177,86 @@ describe("transfers through the client", () => {
     });
   });
 });
+
+describe("requestTimeout", () => {
+  const desc: EventDescriptor = { kind: "module", eventType: "0x1::test::Event" };
+  const hung = () => new Promise<EventPage>(() => {});
+  const page: EventPage = { events: [makeEvent(1)], nextCursor: "1", hasMore: false };
+  const empty: EventPage = { events: [], nextCursor: "1", hasMore: false };
+
+  /** Hangs on the first `hangs` fetches, then serves one page and then empty ones. */
+  function sometimesHung(hangs: number): EventAdapter {
+    let calls = 0;
+    return {
+      fetchEvents: () => {
+        calls++;
+        if (calls <= hangs) return hung();
+        return Promise.resolve(calls === hangs + 1 ? page : empty);
+      },
+    };
+  }
+
+  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 31, "5" as unknown as number])(
+    "refuses %p at construction",
+    (requestTimeout) => {
+      expect(() => new StreamdClient({ adapter: sometimesHung(0), requestTimeout })).toThrow(
+        "Invalid requestTimeout",
+      );
+    },
+  );
+
+  it("takes a timeout at the longest timer", () => {
+    expect(() => new StreamdClient({ adapter: sometimesHung(0), requestTimeout: 2 ** 31 - 1 })).not.toThrow();
+  });
+
+  it("counts a hung poll toward maxErrors", async () => {
+    const client = new StreamdClient({ adapter: { fetchEvents: hung }, requestTimeout: 2 });
+    const errors: unknown[] = [];
+    let stopped!: () => void;
+    const finished = new Promise<void>((resolve) => (stopped = resolve));
+    const subscription = client.on(desc, () => {}, {
+      pollInterval: 1,
+      maxBackoff: 1,
+      maxErrors: 2,
+      onError: (err) => {
+        errors.push(err);
+        if (errors.length === 2) stopped();
+      },
+    });
+    await finished;
+    await new Promise((r) => setTimeout(r, 5));
+    expect(errors).toHaveLength(2);
+    expect((errors[0] as StreamdPollingError).cause).toBeInstanceOf(StreamdNetworkError);
+    expect((errors[1] as StreamdPollingError).consecutiveFailures).toBe(2);
+    expect(subscription.status.active).toBe(false);
+  });
+
+  it("recovers when the source does", async () => {
+    const client = new StreamdClient({ adapter: sometimesHung(2), requestTimeout: 2 });
+    const errors: unknown[] = [];
+    const event = await new Promise<StreamdEvent>((resolve) => {
+      client.on(desc, resolve, {
+        pollInterval: 1,
+        maxBackoff: 1,
+        maxErrors: 5,
+        onError: (err) => errors.push(err),
+      });
+    });
+    client.destroy();
+    expect(event.version).toBe(1n);
+    expect(errors).toHaveLength(2);
+  });
+
+  it("lets a query retry a hung page", async () => {
+    const client = new StreamdClient({ adapter: sometimesHung(1), requestTimeout: 2 });
+    const events = await client.getEvents(desc, { retries: 1, limit: 1 });
+    expect(events.map((e) => e.version)).toEqual([1n]);
+  });
+
+  it("rejects a query with no retries left", async () => {
+    const client = new StreamdClient({ adapter: sometimesHung(1), requestTimeout: 2 });
+    const err = await client.getEvents(desc, { limit: 1 }).catch((e) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect(err.message).toContain("timed out after 2ms");
+  });
+});
