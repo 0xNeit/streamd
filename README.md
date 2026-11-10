@@ -1868,6 +1868,11 @@ has for long-lived handles, it fails at the start, with `--handle` as well.
 `--network` takes `mainnet`, `testnet`, `devnet`, `movement-mainnet` or `movement-testnet`, and
 `--node-url` overrides its fullnode.
 
+`--format pretty` prints one aligned line per event instead of JSON, for reading in a terminal:
+UTC time, type without its address, shortened sender, and the payload clipped to 80 columns.
+Control characters in on-chain text print as `?`. Handle events have no time or sender, so those
+columns show `-`.
+
 To pick up where a run stopped, pass `--cursor-file <path>`: `tail` saves its position there and
 resumes from it, and a saved position beats `--from-version` and `--from-time`. It is at least
 once, since stdout has no acknowledgement: a restart can reprint part of the last page. By hand,
