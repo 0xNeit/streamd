@@ -37,7 +37,7 @@ The repository is a Turborepo monorepo on Bun workspaces with four packages:
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core`.
 - `@streamd/store-sqlite` (`packages/store-sqlite`) - opt-in persistence: events written to a
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
-- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
+- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies. See [React hooks](#react-hooks).
 
 ## Usage
@@ -1789,6 +1789,11 @@ function Feed() {
 - **`useLogs(descriptor, options?)`** runs `client.getEvents` and returns
   `{ data, error, loading }`. `data` is the last successful result and stays through refetches
   and errors. Options are `getEvents`'s, without `signal`; it takes a list of descriptors too.
+- **`useTransactionEvents(hash, options?)`** waits for a submitted transaction through
+  `client.eventsOf` and returns `{ data, error, loading, vmStatus }`. A transaction that failed
+  on chain sets `error` and `vmStatus`, the chain's status; one not found in time sets `error`
+  alone. It takes `eventsOf`'s options plus `descriptor`. Nothing from the previous hash is kept,
+  and a `null` hash waits for nothing.
 - **`useTransfers(options?)`** follows `client.transfers` and returns the same
   `{ events, error, status }` as `useEvents`, with each event's `data` a `Transfer`. It takes
   `asset`, `account` and `maxEvents`; pass `null` to wait.
