@@ -4,7 +4,7 @@ import {
   type EventDescriptor,
   type EventsOfOptions,
   type StreamdClient,
-  type StreamdEvent,
+  type EventOf,
 } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
 import { toError, valueKey, withLatestFunctions } from "./key.js";
@@ -19,7 +19,7 @@ export interface UseTransactionEventsOptions<TData = unknown> extends Omit<Event
 
 export interface UseTransactionEventsResult<TData> {
   /** The transaction's matching events, once it has committed successfully. */
-  data: StreamdEvent<TData>[] | undefined;
+  data: EventOf<TData>[] | undefined;
   /** Why there are no events: the transaction failed, was not found in time, or a lookup failed. */
   error: Error | undefined;
   /** True while waiting for the transaction. */

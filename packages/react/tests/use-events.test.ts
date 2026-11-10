@@ -2,7 +2,7 @@ import "./dom.js";
 import { describe, expect, it } from "bun:test";
 import { StrictMode, createElement } from "react";
 import { renderToString } from "react-dom/server";
-import {
+import { defineEvent, defineEvents,
   StreamdClient,
   StreamdError,
   StreamdNetworkError,
@@ -150,3 +150,17 @@ describe("useEvents", () => {
     }
   });
 });
+
+// Compiled by the typecheck and never run: a defineEvents descriptor narrows through the hook.
+export function narrowsOnType(): void {
+  const both = defineEvents({
+    "0x1::a::A": defineEvent<{ a: string }>("0x1::a::A"),
+    "0x1::b::B": defineEvent<{ b: number }>("0x1::b::B"),
+  });
+  for (const event of useEvents(both).events) {
+    // @ts-expect-error a member's field is not readable before narrowing
+    void event.data.a;
+    if (event.type === "0x1::a::A") void (event.data.a satisfies string);
+    else void (event.data.b satisfies number);
+  }
+}
