@@ -1070,6 +1070,9 @@ one that did not match would make the types lie. It works with the catalog's des
 `@streamd/core/framework` too. Every method that hands you an event infers the narrowing type,
 which you can name as `EventOf<T>`. At runtime it is a `module` descriptor with a list of types.
 
+A function of your own that is generic over the payload should take and return `EventOf<T>`
+rather than `StreamdEvent<T>`, since TypeScript cannot resolve which one applies until `T` is known.
+
 ### Framework events
 
 `@streamd/core/framework` ships a typed descriptor for every `#[event]` struct in the common
