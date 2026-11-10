@@ -306,3 +306,40 @@ describe("parseCommand check", () => {
     expect(() => parseCommand(argv)).toThrow(pattern);
   });
 });
+
+describe("parseCommand record", () => {
+  const bounds = ["--from-version", "5", "--to-version", "9"];
+
+  it("takes a closed range, a limit and a file", () => {
+    expect(parseCommand(["record", ...bounds, "--limit", "3", "--out", "r.json", TYPE])).toEqual({
+      command: "record",
+      options: {
+        descriptor: { kind: "module", eventType: [TYPE] },
+        network: "mainnet",
+        fromVersion: 5n,
+        toVersion: 9n,
+        limit: 3,
+        out: "r.json",
+      },
+    });
+    expect(parseCommand(["record", "--help"])).toEqual({ command: "help" });
+  });
+
+  it("takes the same descriptor flags as tail", () => {
+    const parsed = parseCommand(["record", ...bounds, "--account", ADDR]);
+    expect(parsed).toMatchObject({ options: { descriptor: { kind: "account", accountAddress: LONG_ADDR } } });
+  });
+
+  it.each([
+    [["record", TYPE], /needs --from-version and --to-version/],
+    [["record", "--from-version", "5", TYPE], /needs --from-version and --to-version/],
+    [["record", "--to-version", "5", TYPE], /needs --from-version and --to-version/],
+    [["record", "--from-version", "9", "--to-version", "5", TYPE], /must not be below/],
+    [["record", "--from-version", "5", "--to-version", "x", TYPE], /--to-version must be a non-negative integer/],
+    [["record", ...bounds], /record needs at least one event type/],
+    [["record", ...bounds, "--out", "", TYPE], /--out must not be empty/],
+    [["record", ...bounds, "--limit", "0", TYPE], /--limit/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});

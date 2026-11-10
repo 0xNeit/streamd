@@ -1,7 +1,7 @@
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { Aptos, AptosConfig, getAptosFullNode, Network } from "@aptos-labs/ts-sdk";
-import { StreamdClient, StreamdError, checkDescriptor } from "@streamd/core";
+import { FullnodeScanAdapter, StreamdClient, StreamdError, checkDescriptor } from "@streamd/core";
 import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
@@ -10,6 +10,7 @@ import type {
   CodegenOptions,
   ForwardOptions,
   ParsedCommand,
+  RecordOptions,
   SourceOptions,
   StoreOptions,
   TailOptions,
@@ -18,6 +19,7 @@ import { runCheck } from "./check.js";
 import { generateEventTypes } from "./codegen.js";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
+import { runRecord, writeAtomically } from "./record.js";
 import { openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
 
@@ -110,6 +112,19 @@ async function tail(options: TailOptions): Promise<number> {
   }
 }
 
+function record(options: RecordOptions): Promise<number> {
+  const controller = new AbortController();
+  process.once("SIGINT", () => controller.abort());
+  process.once("SIGTERM", () => controller.abort());
+  return runRecord(options, {
+    adapter: new FullnodeScanAdapter(new Aptos(aptosConfig(options))),
+    write: (text) =>
+      options.out === undefined ? void process.stdout.write(text) : writeAtomically(options.out, text),
+    error: (text) => process.stderr.write(`${text}\n`),
+    signal: controller.signal,
+  });
+}
+
 function check(options: CheckOptions): Promise<number> {
   const aptos = new Aptos(aptosConfig(options));
   return runCheck(options, {
@@ -154,6 +169,7 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === "codegen") return codegen(parsed.options);
   if (parsed.command === "store") return store(parsed.options);
   if (parsed.command === "check") return check(parsed.options);
+  if (parsed.command === "record") return record(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 
