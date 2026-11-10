@@ -10,6 +10,7 @@ import type {
   CodegenOptions,
   ForwardOptions,
   ParsedCommand,
+  QueryOptions,
   RecordOptions,
   SourceOptions,
   StoreOptions,
@@ -19,6 +20,7 @@ import { runCheck } from "./check.js";
 import { generateEventTypes } from "./codegen.js";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
+import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
 import { openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
@@ -85,28 +87,54 @@ async function store(options: StoreOptions): Promise<number> {
   }
 }
 
-async function tail(options: TailOptions): Promise<number> {
-  const { client, controller } = setup(options);
+/** Writes to stdout with backpressure; a closed pipe (EPIPE, as when piped into `head`) aborts quietly. */
+function stdout(controller: AbortController) {
   const { signal } = controller;
-  let stdoutError: Error | undefined;
-  // A closed pipe (EPIPE, as when piped into `head`) ends the tail quietly.
+  let failure: Error | undefined;
   process.stdout.on("error", (err: NodeJS.ErrnoException) => {
-    if (err.code !== "EPIPE") stdoutError ??= err;
+    if (err.code !== "EPIPE") failure ??= err;
     controller.abort();
   });
+  return {
+    write: async (line: string) => {
+      if (!process.stdout.write(line)) await once(process.stdout, "drain", { signal });
+    },
+    /** `code`, or 1 with a message if stdout failed for any reason but a closed pipe. */
+    exitCode(code: number): number {
+      if (failure === undefined) return code;
+      process.stderr.write(`streamd: ${failure.message}\n`);
+      return 1;
+    },
+  };
+}
 
+async function tail(options: TailOptions): Promise<number> {
+  const { client, controller } = setup(options);
+  const out = stdout(controller);
   try {
     const code = await runTail(options, {
       client,
-      write: async (line) => {
-        if (!process.stdout.write(line)) await once(process.stdout, "drain", { signal });
-      },
+      write: out.write,
       error: (message) => process.stderr.write(`${message}\n`),
-      signal,
+      signal: controller.signal,
     });
-    if (stdoutError === undefined) return code;
-    process.stderr.write(`streamd: ${stdoutError.message}\n`);
-    return 1;
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function query(options: QueryOptions): Promise<number> {
+  const { client, controller } = setup({ ...options });
+  const out = stdout(controller);
+  try {
+    const code = await runQuery(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
   } finally {
     client.destroy();
   }
@@ -170,6 +198,7 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === "store") return store(parsed.options);
   if (parsed.command === "check") return check(parsed.options);
   if (parsed.command === "record") return record(parsed.options);
+  if (parsed.command === "query") return query(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 

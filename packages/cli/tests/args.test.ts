@@ -343,3 +343,37 @@ describe("parseCommand record", () => {
     expect(() => parseCommand(argv)).toThrow(pattern);
   });
 });
+
+describe("parseCommand query", () => {
+  it("defaults to ascending, ending at the head", () => {
+    expect(parseCommand(["query", "--from-version", "5", TYPE])).toEqual({
+      command: "query",
+      options: {
+        descriptor: { kind: "module", eventType: [TYPE] },
+        network: "mainnet",
+        fromVersion: 5n,
+        toVersion: "head",
+        order: "asc",
+      },
+    });
+    expect(parseCommand(["query", "--help"])).toEqual({ command: "help" });
+  });
+
+  it("takes a closed range, a limit, an order and the descriptor flags", () => {
+    expect(
+      parseCommand(["query", "--from-version", "5", "--to-version", "9", "--limit", "3", "--order", "desc", "--account", ADDR]),
+    ).toMatchObject({
+      options: { fromVersion: 5n, toVersion: 9n, limit: 3, order: "desc", descriptor: { kind: "account", accountAddress: LONG_ADDR } },
+    });
+  });
+
+  it.each([
+    [["query", TYPE], /query needs --from-version/],
+    [["query", "--from-version", "9", "--to-version", "5", TYPE], /must not be below/],
+    [["query", "--from-version", "5", "--order", "up", TYPE], /--order must be asc or desc/],
+    [["query", "--from-version", "5", "--limit", "0", TYPE], /--limit/],
+    [["query", "--from-version", "5"], /query needs at least one event type/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
