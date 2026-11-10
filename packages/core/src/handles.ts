@@ -14,7 +14,13 @@ export interface EventHandleInfo {
   guid: EventGuid;
 }
 
-function handleParts(value: unknown): { counter: string; guid: EventGuid } | undefined {
+interface HandleParts {
+  counter: string;
+  guid: EventGuid;
+}
+
+/** The `EventHandle` this value is, if it is one. */
+export function handleParts(value: unknown): HandleParts | undefined {
   const v = value as {
     counter?: unknown;
     guid?: { id?: { addr?: unknown; creation_num?: unknown } };
@@ -30,6 +36,16 @@ function handleParts(value: unknown): { counter: string; guid: EventGuid } | und
         guid: { creationNumber: BigInt(id.creation_num), accountAddress: id.addr },
       }
     : undefined;
+}
+
+/** Every `EventHandle` anywhere inside a resource's data. */
+export function* findHandles(value: unknown): Generator<HandleParts> {
+  const parts = handleParts(value);
+  if (parts !== undefined) {
+    yield parts;
+  } else if (typeof value === "object" && value !== null) {
+    for (const child of Object.values(value)) yield* findHandles(child);
+  }
 }
 
 /**
