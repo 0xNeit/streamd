@@ -1,6 +1,6 @@
 import { StreamdError, StreamdNetworkError } from "./errors.js";
 import { UNSIGNED_INTEGER } from "./decode.js";
-import { TRANSFER_DESCRIPTOR, assetKey, requireAsset, transferSource } from "./transfers.js";
+import { TRANSFER_DESCRIPTOR, assetKey, requireAsset } from "./transfers.js";
 import { onAbort } from "./utils.js";
 import type {
   BalanceChange,
@@ -11,7 +11,6 @@ import type {
   ListenerOptions,
   StreamdEvent,
   Subscription,
-  Transfer,
   ViewRequest,
 } from "./types.js";
 
@@ -41,19 +40,21 @@ function balanceRequest(owner: string, asset: string): ViewRequest {
   };
 }
 
-/** `undefined` when the view aborts, which is how a token object answers. */
-async function balanceAt(
+/** Rejects with a non-network error, which stops a poller, when the view aborts, as for a token object. */
+async function requireBalance(
   adapter: EventAdapter,
   owner: string,
   asset: string,
   version: bigint,
-): Promise<bigint | undefined> {
+): Promise<bigint> {
   const request = balanceRequest(owner, asset);
   let result: unknown[];
   try {
     result = await adapter.view!(request, version, TRANSFER_DESCRIPTOR);
   } catch (err) {
-    if (err instanceof StreamdError && !(err instanceof StreamdNetworkError)) return undefined;
+    if (err instanceof StreamdError && !(err instanceof StreamdNetworkError)) {
+      throw new StreamdError(`Not a fungible asset or coin type: ${asset}`, err);
+    }
     throw err;
   }
   const amount = Array.isArray(result) ? result[0] : undefined;
@@ -64,8 +65,8 @@ async function balanceAt(
 }
 
 /**
- * `adapter` as a source of balance changes: each fetch reads every tracked
- * asset at one head version and returns those that differ from `known`, so
+ * `adapter` as a source of balance changes: each fetch reads every asset at
+ * one head version and returns those that differ from `known`, so
  * `EventPoller` supplies the interval, backoff and error budget. Reading
  * rather than following events is what keeps it exact: gas moves APT with no
  * withdraw, a coin can move as its paired fungible asset, and a scan of the
@@ -75,8 +76,7 @@ function balancePoll(
   adapter: EventAdapter,
   who: string,
   known: ReadonlyMap<string, bigint>,
-  tracked: Set<string>,
-  notFungible: Set<string>,
+  assets: readonly string[],
   from: bigint,
 ): EventAdapter {
   let latest = from;
@@ -87,14 +87,9 @@ function balancePoll(
       if (head < latest) return { events: [], nextCursor: String(latest), hasMore: false, throughVersion: latest };
       latest = head;
       const events: StreamdEvent[] = [];
-      let position = 0;
-      for (const asset of [...tracked]) {
-        const eventIndex = position++;
-        const balance = await balanceAt(adapter, who, asset, head);
-        if (balance === undefined) {
-          tracked.delete(asset);
-          notFungible.add(asset);
-        } else if (known.get(asset) !== balance) {
+      for (const [eventIndex, asset] of assets.entries()) {
+        const balance = await requireBalance(adapter, who, asset, head);
+        if (known.get(asset) !== balance) {
           events.push({
             type: balanceRequest(who, asset).function,
             data: { asset, balance } satisfies BalanceChange,
@@ -134,7 +129,7 @@ const ALLOWED: readonly string[] = [
   "signal",
 ] satisfies readonly (keyof BalancesOptions)[];
 
-/** `client.balances()`: read what is tracked at the head, then keep reading it. */
+/** `client.balances()`: read each asset at the head, then keep reading it. */
 export function startBalances(
   host: BalancesHost,
   account: () => Promise<string>,
@@ -148,16 +143,14 @@ export function startBalances(
     throw new StreamdError("balances needs an adapter that implements view and getHeadVersion");
   }
   const { asset: named, onChange, ...listener } = options;
-  const wanted = named === undefined ? undefined : canonical(requireAsset(named));
-  if (wanted !== undefined && LEGACY_TOKEN.test(wanted)) {
-    throw new StreamdError(`A legacy token has no balance to follow: ${named}`);
-  }
+  if (Array.isArray(named) && named.length === 0) throw new StreamdError("asset must not be an empty list");
+  const names: readonly string[] = named === undefined ? [APT] : typeof named === "string" ? [named] : named;
+  const assets = [...new Set(names.map((name) => canonical(requireAsset(name))))];
+  const token = assets.find((asset) => LEGACY_TOKEN.test(asset));
+  if (token !== undefined) throw new StreamdError(`A legacy token has no balance to follow: ${token}`);
 
   const amounts = new Map<string, bigint>();
-  const tracked = new Set([wanted ?? APT]);
-  const notFungible = new Set<string>();
   let polling: Subscription | undefined;
-  let discovery: Subscription | undefined;
   let stopped = false;
   const abandon = new AbortController();
   const report = (err: Error) => (options.onError ?? host.onError)?.(err);
@@ -168,7 +161,6 @@ export function startBalances(
     detachSignal();
     abandon.abort(reason);
     polling?.unsubscribe();
-    discovery?.unsubscribe();
   };
   const untrack = host.track(stop);
   const detachSignal = onAbort(options.signal, () => stop(options.signal!.reason));
@@ -182,11 +174,10 @@ export function startBalances(
     throwIfStopped();
     const who = await account();
     const head = await host.adapter.getHeadVersion!(TRANSFER_DESCRIPTOR);
-    const first = wanted ?? APT;
-    const balance = await balanceAt(host.adapter, who, first, head);
-    if (balance === undefined) throw new StreamdError(`Not a fungible asset or coin type: ${named ?? first}`);
+    const first: [string, bigint][] = [];
+    for (const asset of assets) first.push([asset, await requireBalance(host.adapter, who, asset, head)]);
     throwIfStopped();
-    amounts.set(first, balance);
+    for (const [asset, balance] of first) amounts.set(asset, balance);
 
     polling = host.subscribe(
       (event) => {
@@ -202,20 +193,8 @@ export function startBalances(
           report(err);
         },
       },
-      (source) => balancePoll(source, who, amounts, tracked, notFungible, head),
+      (source) => balancePoll(source, who, amounts, assets, head),
     );
-    if (wanted === undefined) {
-      const { onCaughtUp: _unused, ...scan } = listener;
-      discovery = host.subscribe(
-        (event) => {
-          const asset = canonical((event as StreamdEvent<Transfer>).data.asset);
-          if (!LEGACY_TOKEN.test(asset) && !notFungible.has(asset)) tracked.add(asset);
-        },
-        // A scan that gives up only stops new assets appearing, so polling carries on.
-        { ...scan, fromVersion: head, onError: report },
-        (source) => transferSource(source, undefined, account),
-      );
-    }
     return new Map(amounts);
   };
 

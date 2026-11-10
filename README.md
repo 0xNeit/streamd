@@ -1271,7 +1271,7 @@ an Aptos name.
 
 ```ts
 const wallet = streamd.balances("alice.apt", {
-  asset: "0xa", // omit to follow APT plus whatever the wallet is seen moving
+  asset: ["0xa", usdc], // one or a list; omit for APT
   onChange: (all, { data, version }) => console.log(version, data.asset, data.balance),
 });
 
@@ -1285,22 +1285,21 @@ wallet.unsubscribe();
   followed balance at that version, and reports what changed. A running total
   built from transfers would drift, since gas moves APT with no withdraw event,
   and a scan of the chain cannot keep up with mainnet.
-- **Which assets.** No view lists a wallet's assets. With `asset`, that one is
-  followed and nothing is scanned. Without it, APT is followed from the start and
-  a `transfers` scan adds each asset the wallet is seen moving. That scan can fall
-  behind on a busy chain, which only delays a new asset's first appearance; if it
-  gives up, the error is reported and the balances already followed carry on.
+- **Which assets.** No view lists a wallet's assets, so `asset` names what to follow:
+  one, or a list. Without it, APT is followed. Finding what a wallet holds needs the
+  Indexer; a chain scan cannot keep up with mainnet and spends the same rate limit.
 - **What a balance is.** Fungible assets read the primary store, so secondary stores
   and assets held through an object are not counted. Coin types read `coin::balance`,
-  which includes the paired fungible asset. APT is one entry, under `0xa` in long
-  form, counting both; `get` takes any form.
-- **Tokens.** Token objects and legacy tokens are skipped. A token object given as
-  `asset` rejects `ready`.
+  which includes the paired fungible asset, so a coin and its paired asset are two
+  views of one holding. APT is one entry, under `0xa` in long form, counting both;
+  `get` takes any form.
+- **Tokens** have no balance here: a legacy token id is refused at the call, and a
+  token object rejects `ready`.
 - **Cost.** One head read and one view per followed asset every `pollInterval`
   (default 1 second), so raise it for a long list on the anonymous rate limit.
   `onChange` sees each poll's result, not every transaction in between.
 - **Failures.** `ready` rejects if the first read fails. A later failed read retries
-  with backoff, and `maxErrors` stops it. A balances handle is not a listener for
+  with backoff, and `maxErrors` stops it; a view that aborts stops it at once. A balances handle is not a listener for
   `off()` or `listenerCount()`.
 
 ## Data sources and their limits

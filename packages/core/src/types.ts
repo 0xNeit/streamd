@@ -418,8 +418,8 @@ export interface BalancesOptions
     ListenerOptions,
     "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "dedupWindow" | "onError" | "onCaughtUp" | "signal"
   > {
-  /** Follow only this fungible-asset address or coin type, with no transfers scan. */
-  asset?: string;
+  /** The fungible-asset addresses or coin types to follow, one or a list (default: APT). */
+  asset?: string | readonly string[];
   /** Called after a balance changes, with every balance known so far. A throw goes to `onError`. */
   onChange?: (balances: ReadonlyMap<string, bigint>, change: StreamdEvent<BalanceChange>) => void;
 }

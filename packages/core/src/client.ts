@@ -533,10 +533,10 @@ export class StreamdClient {
 
   /**
    * Keep one wallet's balances current, by reading each at the head every
-   * `pollInterval`, so it cannot drift or fall behind. With `asset`, only
-   * that one is followed. Without it, no view lists a wallet's assets, so APT
-   * is followed and others join as a transfers scan sees them move. `address`
-   * may be an Aptos name. Like `reduce()`, it is not a listener for `off()`
+   * `pollInterval`, so it cannot drift or fall behind. `asset` names what to
+   * follow, one or a list, since no view lists a wallet's assets; without
+   * it, APT is followed. `address` may be an Aptos name. Like `reduce()`, it
+   * is not a listener for `off()`
    * or `listenerCount()`; `destroy()` ends it.
    */
   balances(address: string, options?: BalancesOptions): Balances {
