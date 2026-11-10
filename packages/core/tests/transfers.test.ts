@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
-import { TRANSFER_DESCRIPTOR, transferSource } from "../src/transfers.js";
+import { TRANSFER_DESCRIPTOR, formatAmount, transferSource } from "../src/transfers.js";
 import type { EventAdapter, FetchOptions, StreamdEvent, Transfer, ViewRequest } from "../src/types.js";
 
 const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
@@ -362,5 +362,179 @@ describe("transferSource account filter", () => {
     await expect(transfers(source)).rejects.toThrow("no such name");
     expect(fetched).toBe(0);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("transferSource with asset info", () => {
+  const COIN = "0x1::aptos_coin::AptosCoin";
+  const pairAt = (version: number, name = "a1", to = "b1"): StreamdEvent[] => [
+    fa(version, 0, "Withdraw", name, "100"),
+    fa(version, 1, "Deposit", to, "100"),
+  ];
+
+  /** `withViews` plus symbol and decimals, recording each info request in full. */
+  function infoViews(events: StreamdEvent[], fail?: () => unknown) {
+    const requests: { fn: string; args: unknown; types: unknown; version: bigint }[] = [];
+    const inner = withViews(events);
+    const adapter: EventAdapter = {
+      ...inner.adapter,
+      view: async (request: ViewRequest, version: bigint, descriptor) => {
+        if (!/::(symbol|decimals)$/.test(request.function)) {
+          return inner.adapter.view!(request, version, descriptor);
+        }
+        requests.push({
+          fn: request.function,
+          args: request.functionArguments,
+          types: request.typeArguments,
+          version,
+        });
+        const failure = fail?.();
+        if (failure !== undefined) throw failure;
+        return request.function.endsWith("symbol") ? ["APT"] : [8];
+      },
+    };
+    return { adapter, requests };
+  }
+
+  const fetch = async (source: EventAdapter, options: FetchOptions = all) =>
+    (await source.fetchEvents(TRANSFER_DESCRIPTOR, options)).events.map((e) => e.data as Transfer);
+
+  it("reads a fungible asset's details at the record's version", async () => {
+    const { adapter, requests } = infoViews(pairAt(7));
+    const [record] = await fetch(transferSource(adapter, undefined, undefined, true));
+    expect(record).toEqual({ asset: APT, amount: 100n, from: ALICE, to: BOB, symbol: "APT", decimals: 8 });
+    expect(requests.sort((a, b) => a.fn.localeCompare(b.fn))).toEqual([
+      { fn: "0x1::fungible_asset::decimals", args: [APT], types: ["0x1::object::ObjectCore"], version: 7n },
+      { fn: "0x1::fungible_asset::symbol", args: [APT], types: ["0x1::object::ObjectCore"], version: 7n },
+    ]);
+  });
+
+  it("reads a coin's details with its type argument", async () => {
+    const { adapter, requests } = infoViews([coin(3, 0, "Deposit", ALICE, "5")]);
+    const [record] = await fetch(transferSource(adapter, undefined, undefined, true));
+    expect(record!.symbol).toBe("APT");
+    expect(requests.map((r) => [r.fn, r.args, r.types]).sort()).toEqual([
+      ["0x1::coin::decimals", [], [COIN]],
+      ["0x1::coin::symbol", [], [COIN]],
+    ]);
+  });
+
+  it("accepts decimals reported as a string", async () => {
+    const inner = withViews(pairAt(1));
+    const adapter: EventAdapter = {
+      ...inner.adapter,
+      view: async (request, version, descriptor) => {
+        if (request.function.endsWith("::decimals")) return ["6"];
+        if (request.function.endsWith("::symbol")) return ["X"];
+        return inner.adapter.view!(request, version, descriptor);
+      },
+    };
+    const [record] = await fetch(transferSource(adapter, undefined, undefined, true));
+    expect(record!.decimals).toBe(6);
+  });
+
+  it("reads each asset once across pages", async () => {
+    const { adapter, requests } = infoViews([...pairAt(1), ...pairAt(2)]);
+    const source = transferSource(adapter, undefined, undefined, true);
+    await fetch(source, { fromVersion: 1n, toVersion: 1n, limit: 10 });
+    await fetch(source, { fromVersion: 2n, limit: 10 });
+    expect(requests).toHaveLength(2);
+  });
+
+  it("reads nothing with the option off", async () => {
+    const { adapter, requests } = infoViews(pairAt(1));
+    const [record] = await fetch(transferSource(adapter));
+    expect(record).not.toHaveProperty("symbol");
+    expect(requests).toEqual([]);
+  });
+
+  it("reads nothing for token records and adds no fields", async () => {
+    const { adapter, requests } = infoViews([
+      moved(1, 0, NFT, ALICE, BOB),
+      legacy(2, 0, "Deposit", ALICE),
+    ]);
+    const records = await fetch(transferSource(adapter, undefined, undefined, true));
+    expect(records).toHaveLength(2);
+    for (const record of records) expect(record).not.toHaveProperty("symbol");
+    expect(requests).toEqual([]);
+  });
+
+  it("reads nothing for records the account filter dropped", async () => {
+    const { adapter, requests } = infoViews(pairAt(1));
+    const records = await fetch(transferSource(adapter, undefined, () => Promise.resolve(CAROL), true));
+    expect(records).toEqual([]);
+    expect(requests).toEqual([]);
+  });
+
+  it("leaves the fields off when a view aborts, without asking again", async () => {
+    const { adapter, requests } = infoViews([...pairAt(1), ...pairAt(2)], () => new StreamdError("aborted"));
+    const records = await fetch(transferSource(adapter, undefined, undefined, true));
+    expect(records).toHaveLength(2);
+    expect(records[0]).not.toHaveProperty("symbol");
+    expect(requests).toHaveLength(2);
+  });
+
+  it("fails the page on a network failure, and reads again next time", async () => {
+    let failing = true;
+    const { adapter, requests } = infoViews(pairAt(1), () =>
+      failing ? new StreamdNetworkError("down", 503) : undefined,
+    );
+    const source = transferSource(adapter, undefined, undefined, true);
+    await expect(fetch(source)).rejects.toBeInstanceOf(StreamdNetworkError);
+    failing = false;
+    const [record] = await fetch(source);
+    expect(record!.symbol).toBe("APT");
+    expect(requests.length).toBeGreaterThan(2);
+  });
+
+  it.each([
+    ["a symbol that is not text", [7], [8]],
+    ["no symbol", [], [8]],
+    ["decimals that are not a number", ["APT"], ["x"]],
+    ["no decimals", ["APT"], []],
+    ["null decimals", ["APT"], [null]],
+  ])("rejects %s", async (_name, symbol, decimals) => {
+    const inner = withViews(pairAt(1));
+    const adapter: EventAdapter = {
+      ...inner.adapter,
+      view: async (request, version, descriptor) => {
+        if (request.function.endsWith("::symbol")) return symbol;
+        if (request.function.endsWith("::decimals")) return decimals;
+        return inner.adapter.view!(request, version, descriptor);
+      },
+    };
+    await expect(fetch(transferSource(adapter, undefined, undefined, true))).rejects.toThrow("malformed");
+  });
+});
+
+describe("formatAmount", () => {
+  it.each([
+    [0n, 8, "0"],
+    [100000000n, 8, "1"],
+    [150000000n, 8, "1.5"],
+    [1n, 8, "0.00000001"],
+    [1500000n, 8, "0.015"],
+    [123456789n, 3, "123456.789"],
+    [120n, 0, "120"],
+    [-150n, 2, "-1.5"],
+    [-1n, 3, "-0.001"],
+    [2n ** 127n, 6, "170141183460469231731687303715884.105728"],
+  ])("formats %p with %p decimals as %p", (amount, decimals, expected) => {
+    expect(formatAmount(amount as bigint, decimals as number)).toBe(expected as string);
+  });
+
+  it("handles the widest decimals", () => {
+    expect(formatAmount(1n, 255)).toBe(`0.${"0".repeat(254)}1`);
+  });
+
+  it.each([-1, 256, 1.5, Number.NaN, "8" as unknown as number, undefined as unknown as number])(
+    "refuses decimals of %p",
+    (decimals) => {
+      expect(() => formatAmount(1n, decimals)).toThrow(StreamdError);
+    },
+  );
+
+  it("refuses an amount that is not a bigint", () => {
+    expect(() => formatAmount(1 as unknown as bigint, 8)).toThrow(StreamdError);
   });
 });

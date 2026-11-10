@@ -570,7 +570,7 @@ export class StreamdClient {
     callback: EventCallback<Transfer>,
     options: TransferListenerOptions = {},
   ): Subscription {
-    const { asset, account, ...rest } = options;
+    const { asset, account, withAssetInfo, ...rest } = options;
     const who = this.accountOf(account);
     return this.subscribe(
       TRANSFER_DESCRIPTOR,
@@ -578,7 +578,7 @@ export class StreamdClient {
       rest,
       undefined,
       rest.id,
-      (source) => transferSource(source, asset, who),
+      (source) => transferSource(source, asset, who, withAssetInfo),
     );
   }
 
@@ -630,8 +630,9 @@ export class StreamdClient {
    * options `getEvents` takes; `where` and `limit` apply to the records.
    */
   async getTransfers(filter: TransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
-    const { asset, account, ...rest } = filter;
-    const query = new EventQuery(transferSource(this.adapter, asset, this.accountOf(account)), this.limiter);
+    const { asset, account, withAssetInfo, ...rest } = filter;
+    const source = transferSource(this.adapter, asset, this.accountOf(account), withAssetInfo);
+    const query = new EventQuery(source, this.limiter);
     return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
