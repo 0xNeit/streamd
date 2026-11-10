@@ -74,7 +74,7 @@ function serve(data: unknown) {
 }
 
 describe("listEventHandles", () => {
-  it("returns a handle descriptor, count and guid for each top-level EventHandle field", async () => {
+  it("returns a descriptor, place, count and guid for each EventHandle", async () => {
     const { aptos } = serve(resources);
     expect(await listEventHandles(aptos, ADDR)).toEqual([
       {
@@ -84,6 +84,8 @@ describe("listEventHandles", () => {
           eventHandleStruct: "0x1::account::Account",
           fieldName: "coin_register_events",
         },
+        resourceType: "0x1::account::Account",
+        path: ["coin_register_events"],
         count: 15n,
         guid: { creationNumber: 0n, accountAddress: ADDR },
       },
@@ -94,8 +96,17 @@ describe("listEventHandles", () => {
           eventHandleStruct: "0x1::account::Account",
           fieldName: "key_rotation_events",
         },
+        resourceType: "0x1::account::Account",
+        path: ["key_rotation_events"],
         count: 0n,
         guid: { creationNumber: 1n, accountAddress: ADDR },
+      },
+      {
+        descriptor: { kind: "handle", accountAddress: ADDR, creationNumber: 4n },
+        resourceType: FORUM,
+        path: ["events", "vote_events"],
+        count: 9n,
+        guid: { creationNumber: 4n, accountAddress: ADDR },
       },
       {
         descriptor: {
@@ -104,18 +115,48 @@ describe("listEventHandles", () => {
           eventHandleStruct: "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>",
           fieldName: "deposit_events",
         },
+        resourceType: "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>",
+        path: ["deposit_events"],
         count: 7n,
         guid: { creationNumber: 2n, accountAddress: ADDR },
       },
     ]);
   });
 
-  it("skips handles nested inside a struct field and malformed counters", async () => {
-    const { aptos } = serve(resources);
-    const fields = (await listEventHandles(aptos, ADDR)).map((h) => h.descriptor.fieldName);
-    expect(fields).not.toContain("events");
-    expect(fields).not.toContain("vote_events");
-    expect(fields).not.toContain("withdraw_events");
+  it("skips malformed handles at any depth", async () => {
+    const bad = { counter: "x", guid: { id: { addr: ADDR, creation_num: "3" } } };
+    const { aptos } = serve([{ type: "0x1::a::B", data: { top: bad, deep: { inner: [bad] } } }]);
+    expect(await listEventHandles(aptos, ADDR)).toEqual([]);
+  });
+
+  it("finds handles inside arrays and names their positions", async () => {
+    const { aptos } = serve([
+      { type: "0x1::a::B", data: { list: [{ n: "1" }, { h: handle("2", "6") }], flat: [handle("3", "7")] } },
+    ]);
+    expect((await listEventHandles(aptos, ADDR)).map((h) => [h.path, h.descriptor])).toEqual([
+      [["list", "1", "h"], { kind: "handle", accountAddress: ADDR, creationNumber: 6n }],
+      [["flat", "0"], { kind: "handle", accountAddress: ADDR, creationNumber: 7n }],
+    ]);
+  });
+
+  it("gives a nested handle the address in its guid, in long form", async () => {
+    const nested = { counter: "1", guid: { id: { addr: "0xb", creation_num: "5" } } };
+    const { aptos } = serve([{ type: "0x1::a::B", data: { outer: { h: nested } } }]);
+    const [found] = await listEventHandles(aptos, ADDR);
+    const other = "0x" + "0".repeat(63) + "b";
+    expect(found!.descriptor).toEqual({ kind: "handle", accountAddress: other, creationNumber: 5n });
+  });
+
+  it("returns a nested descriptor that fetches from the creation-number endpoint", async () => {
+    const { aptos, paths } = fakeNode((path) => {
+      if (path === `accounts/${ADDR}/resources`) {
+        return { data: [{ type: FORUM, data: { events: { vote_events: handle("9", "4") } } }] };
+      }
+      return { data: [] };
+    });
+    const [found] = await listEventHandles(aptos, ADDR);
+    await new FullnodeScanAdapter(aptos).fetchEvents(found!.descriptor, {});
+    expect(paths[1]).toStartWith(`accounts/${ADDR}/events/4`);
   });
 
   it("returns an empty list for an account with no resources", async () => {
@@ -140,7 +181,7 @@ describe("listEventHandles", () => {
     });
     const found = await listEventHandles(aptos, "alice.apt");
     expect(names).toEqual(["alice.apt"]);
-    expect(found.map((h) => h.descriptor.accountAddress)).toEqual([ADDR, ADDR, ADDR]);
+    expect(found.map((h) => h.descriptor.accountAddress)).toEqual([ADDR, ADDR, ADDR, ADDR]);
     expect(paths).toEqual([`accounts/${ADDR}/resources`]);
   });
 

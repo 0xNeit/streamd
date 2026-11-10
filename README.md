@@ -887,25 +887,36 @@ Module events have no handle, so `guid` is `undefined` on them.
 ### Discover event handles
 
 `listEventHandles(aptos, address)` (an address or an Aptos name) reads an account's resources and returns
-each `EventHandle` it finds as a ready-to-use `handle` descriptor, with the
-number of events emitted on it so far and its guid:
+each `EventHandle` it finds as a ready-to-use `handle` descriptor, with
+where it sits, the number of events emitted on it so far and its guid:
 
 ```ts
 import { Aptos } from "@aptos-labs/ts-sdk";
 import { listEventHandles } from "@streamd/core";
 
 const handles = await listEventHandles(new Aptos(), "0x1");
-// [{ descriptor: { kind: "handle", accountAddress, eventHandleStruct: "0x1::block::BlockResource", fieldName: "new_block_events" }, count: 1165098930n, guid: { creationNumber: 3n, accountAddress: "0x1" } }, ...]
+// [{ descriptor: { kind: "handle", accountAddress, eventHandleStruct: "0x1::block::BlockResource", fieldName: "new_block_events" }, resourceType: "0x1::block::BlockResource", path: ["new_block_events"], count: 1165098930n, guid: { creationNumber: 3n, accountAddress: "0x1" } }, ...]
 
-const blocks = handles.find((h) => h.descriptor.fieldName === "new_block_events");
+const blocks = handles.find((h) => h.path[0] === "new_block_events");
 if (blocks) client.on(blocks.descriptor, (event) => console.log(event.data));
 ```
 
 It takes an `Aptos` instance rather than living on the client, because a
-client may run on any adapter. Only handles stored directly on a resource field
-are listed, since the struct and field form cannot address one nested inside a
-struct field. A nested handle is still readable by creation number, taken from
-the `guid` in the resource data.
+client may run on any adapter.
+
+Handles nested inside a struct field are listed too. The struct and field form
+cannot address one, so its descriptor is by creation number, at the address in
+its guid. Each entry says where the handle sits, as `resourceType` and `path`:
+
+```ts
+const votes = handles.find((h) => h.path.join(".") === "events.vote_events");
+// { descriptor: { kind: "handle", accountAddress, creationNumber: 4n },
+//   resourceType: "0x1::voting::VotingForum<...>", path: ["events", "vote_events"], ... }
+```
+
+Because `descriptor` can be either form, check for `fieldName` before reading it,
+or match on `path`. Handles held in a table do not appear in resource data, so they
+are not listed.
 
 ### Check a descriptor
 
