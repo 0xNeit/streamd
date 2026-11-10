@@ -228,3 +228,133 @@ describe("watch", () => {
     expect(w.status.active).toBe(false);
   });
 });
+
+describe("watch positions", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  const long = (a: string) => normalizeAddress(a)!;
+  const settle = () => advanceTimersByTimeAsync(10);
+
+  it("reports each address's position, long-form, and leaves out one with none", async () => {
+    const { client, watch } = setup([ev(1, A), ev(2, B), ev(3, A)]);
+    const w = watch([A, B], { fromVersion: 0n });
+    expect(w.positions).toEqual({});
+    await settle();
+    expect(Object.keys(w.positions).sort()).toEqual([long(A), long(B)].sort());
+    expect(typeof w.positions[long(A)]).toBe("string");
+    client.destroy();
+  });
+
+  it("continues each address from its position after a restart", async () => {
+    const events = [ev(1, A), ev(2, B)];
+    const first = setup(events);
+    const w = first.watch([A, B], { fromVersion: 0n });
+    await settle();
+    first.client.destroy();
+    const saved = JSON.parse(JSON.stringify(w.positions)) as Record<string, string>;
+
+    const next = setup([...events, ev(3, A), ev(4, B)]);
+    next.watch([A, B], { positions: saved, fromVersion: 0n });
+    await settle();
+    next.client.destroy();
+    expect(next.log.sort()).toEqual(["3@0xa", "4@0xb"]);
+  });
+
+  it("starts an address without a position as usual", async () => {
+    const events = [ev(1, A), ev(2, B)];
+    const first = setup(events);
+    const w = first.watch([A], { fromVersion: 0n });
+    await settle();
+    first.client.destroy();
+
+    const next = setup([...events, ev(3, A)]);
+    next.watch([A, B], { positions: w.positions, fromVersion: 0n });
+    await settle();
+    next.client.destroy();
+    expect(next.log.sort()).toEqual(["2@0xb", "3@0xa"]);
+  });
+
+  it("stays readable after unsubscribe and destroy", async () => {
+    const a = setup([ev(1, A)]);
+    const w1 = a.watch([A], { fromVersion: 0n });
+    await settle();
+    w1.unsubscribe();
+    expect(Object.keys(w1.positions)).toEqual([long(A)]);
+
+    const b = setup([ev(1, A)]);
+    const w2 = b.watch([A], { fromVersion: 0n });
+    await settle();
+    b.client.destroy();
+    expect(Object.keys(w2.positions)).toEqual([long(A)]);
+  });
+
+  it("keeps the position of a walk that gave up", async () => {
+    let failing = false;
+    const memory = new MemoryAdapter([ev(1, A)]);
+    const adapter: EventAdapter = {
+      fetchEvents: async (d, o) => {
+        if (failing) throw new StreamdNetworkError("down");
+        return memory.fetchEvents(d, o);
+      },
+    };
+    const client = new StreamdClient({ adapter });
+    const w = client.watch([A], () => {}, { fromVersion: 0n, maxErrors: 1, pollInterval: 1, onError: () => {} });
+    await settle();
+    const before = w.positions[long(A)];
+    expect(before).toBeDefined();
+    failing = true;
+    await settle();
+    expect(w.addresses).toEqual([]);
+    expect(w.positions[long(A)]).toBe(before!);
+    client.destroy();
+  });
+
+  it("carries a position for an unwatched address, which add uses once", async () => {
+    const events = [ev(1, B), ev(2, B)];
+    const first = setup(events);
+    const w = first.watch([B], { fromVersion: 0n });
+    await settle();
+    first.client.destroy();
+    const saved = w.positions;
+
+    const next = setup([...events, ev(3, B)]);
+    const resumed = next.watch([], { positions: saved });
+    expect(resumed.positions).toEqual(saved);
+    resumed.add(B);
+    await settle();
+    expect(next.log).toEqual(["3@0xb"]);
+
+    resumed.remove(B);
+    expect(resumed.positions).toEqual({});
+    resumed.add(B);
+    await settle();
+    // With no position left it starts as on() would, which on MemoryAdapter is from the top.
+    expect(next.log).toEqual(["3@0xb", "1@0xb", "2@0xb", "3@0xb"]);
+    next.client.destroy();
+  });
+
+  it("treats short and long keys as the same address", async () => {
+    const events = [ev(1, A)];
+    const first = setup(events);
+    const w = first.watch([A], { fromVersion: 0n });
+    await settle();
+    first.client.destroy();
+
+    const next = setup([...events, ev(2, A)]);
+    next.watch([A], { positions: { [A]: w.positions[long(A)]! }, fromVersion: 0n });
+    await settle();
+    next.client.destroy();
+    expect(next.log).toEqual(["2@0xa"]);
+  });
+
+  it("refuses invalid positions at the call", () => {
+    const { watch } = setup([]);
+    for (const bad of [[], null, "x", 1]) {
+      expect(() => watch([A], { positions: bad as never })).toThrow(StreamdError);
+    }
+    expect(() => watch([A], { positions: { nope: "1" } })).toThrow(StreamdError);
+    expect(() => watch([A], { positions: { [A]: "" } })).toThrow(StreamdError);
+    expect(() => watch([A], { positions: { [A]: 1 as unknown as string } })).toThrow(StreamdError);
+  });
+});

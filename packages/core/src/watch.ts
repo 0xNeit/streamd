@@ -28,6 +28,21 @@ function statusOf(walks: Subscription[], active: boolean): SubscriptionStatus {
   return { active, cursor: undefined, lastVersion: undefined, consecutiveErrors: 0, lastSuccessAt: undefined };
 }
 
+function readPositions(positions: unknown): Map<string, string> {
+  if (positions === undefined) return new Map();
+  if (typeof positions !== "object" || positions === null || Array.isArray(positions)) {
+    throw new StreamdError("watch positions must be an object of address to cursor");
+  }
+  return new Map(
+    Object.entries(positions).map(([address, cursor]) => {
+      if (typeof cursor !== "string" || cursor === "") {
+        throw new StreamdError(`Invalid watch position for ${address}: expected a non-empty cursor`);
+      }
+      return [requireAddress(address), cursor];
+    }),
+  );
+}
+
 /**
  * Follow each address's `account` events with one walk per address, calling
  * `callback(event, address)`; walks are added and removed at runtime.
@@ -45,29 +60,42 @@ export function startWatch(
   }
   if (!Array.isArray(addresses)) throw new StreamdError("watch needs an array of addresses");
   const initial = addresses.map((a) => [requireAddress(a), a] as const);
+  const { positions, ...startOptions } = options;
+  // Positions not in use: from the last run until a walk takes one, or left by a walk that ended.
+  const saved = readPositions(positions);
 
   const walks = new Map<string, Walk>();
   const pending = new Set<string>();
   let ended = false;
   let paused = false;
   // A start position chosen at watch() is in the past by the time of a later add().
-  const { fromVersion, fromTime, signal, onCaughtUp, ...live } = options;
+  const { fromVersion, fromTime, signal, onCaughtUp, ...live } = startOptions;
 
   const caughtUp = (key: string) => {
     if (pending.delete(key) && pending.size === 0) onCaughtUp?.();
   };
 
+  const retain = (key: string, sub: Subscription) => {
+    if (sub.cursor !== undefined) saved.set(key, sub.cursor);
+  };
+
   const start = (key: string, address: string, first: boolean) => {
+    const cursor = saved.get(key);
+    saved.delete(key);
     const sub = host.subscribe(
       { kind: "account", accountAddress: address },
       ((event: StreamdEvent) => callback(event, address)) as EventCallback,
       {
-        ...(first ? options : live),
+        ...(first ? startOptions : live),
+        ...(cursor !== undefined && { cursor }),
         signal: undefined,
         onCaughtUp: () => caughtUp(key),
         onError: (err) => {
           // A walk that gave up on its own leaves the watch; the rest carry on.
-          if (!sub.active && !sub.paused && walks.get(key)?.sub === sub) drop(key);
+          if (!sub.active && !sub.paused && walks.get(key)?.sub === sub) {
+            retain(key, sub);
+            drop(key);
+          }
           (options.onError ?? host.onError)?.(err);
         },
       },
@@ -85,7 +113,10 @@ export function startWatch(
     if (ended) return;
     ended = true;
     paused = false;
-    for (const { sub } of walks.values()) sub.unsubscribe();
+    for (const [key, { sub }] of walks) {
+      retain(key, sub);
+      sub.unsubscribe();
+    }
     walks.clear();
     pending.clear();
     untrack();
@@ -130,6 +161,13 @@ export function startWatch(
     },
     get cursor() {
       return undefined;
+    },
+    get positions() {
+      const current = Object.fromEntries(saved);
+      for (const [key, { sub }] of walks) {
+        if (sub.cursor !== undefined) current[key] = sub.cursor;
+      }
+      return current;
     },
     get status() {
       return statusOf(subs(), !ended && !paused);

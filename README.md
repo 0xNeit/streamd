@@ -237,6 +237,21 @@ transaction touching the address, received ones included; an event in a transact
 between two watched addresses then arrives once for each. Narrow further with `where`, for
 example `ownedBy` or `involvesAddress`.
 
+To continue after a restart, save `watch.positions` and pass it back:
+
+```ts
+const watch = streamd.watch(addresses, handler, { fromVersion: 0n, positions: saved });
+// later, and again on shutdown:
+store(watch.positions);
+```
+
+`positions` is a JSON-safe object of long-form address to cursor. An address with a position
+continues from it, ahead of `fromVersion` and `fromTime`, and the others start as usual.
+Delivery is at least once, since a walk's position moves per page, so a restart can repeat
+part of a page. It stays readable after `unsubscribe()`, keeps a walk that gave up, and carries
+forward the position of an address you are not watching now, which `add()` then uses once.
+`remove()` forgets the address's position. An address with no position yet is left out.
+
 Addresses are checked when given (`StreamdError` for one that is not an Aptos address) and
 deduplicated by value, so `0x1` and its long form are one walk. `add(address)` returns
 `false` for an address already watched or a watch that has ended; the new walk starts
