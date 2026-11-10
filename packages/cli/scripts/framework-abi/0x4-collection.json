@@ -1,0 +1,368 @@
+{
+ "abi": {
+  "address": "0x4",
+  "name": "collection",
+  "structs": [
+   {
+    "name": "ConcurrentSupply",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "current_supply",
+      "type": "0x1::aggregator_v2::Aggregator<u64>"
+     },
+     {
+      "name": "total_minted",
+      "type": "0x1::aggregator_v2::Aggregator<u64>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "MutatorRef",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "self",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Burn",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "collection",
+      "type": "address"
+     },
+     {
+      "name": "index",
+      "type": "u64"
+     },
+     {
+      "name": "token",
+      "type": "address"
+     },
+     {
+      "name": "previous_owner",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "BurnEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "index",
+      "type": "u64"
+     },
+     {
+      "name": "token",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Collection",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "creator",
+      "type": "address"
+     },
+     {
+      "name": "description",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "name",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "uri",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "mutation_events",
+      "type": "0x1::event::EventHandle<0x4::collection::MutationEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ConcurrentBurnEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "collection_addr",
+      "type": "address"
+     },
+     {
+      "name": "index",
+      "type": "u64"
+     },
+     {
+      "name": "token",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ConcurrentMintEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "collection_addr",
+      "type": "address"
+     },
+     {
+      "name": "index",
+      "type": "0x1::aggregator_v2::AggregatorSnapshot<u64>"
+     },
+     {
+      "name": "token",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FixedSupply",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "current_supply",
+      "type": "u64"
+     },
+     {
+      "name": "max_supply",
+      "type": "u64"
+     },
+     {
+      "name": "total_minted",
+      "type": "u64"
+     },
+     {
+      "name": "burn_events",
+      "type": "0x1::event::EventHandle<0x4::collection::BurnEvent>"
+     },
+     {
+      "name": "mint_events",
+      "type": "0x1::event::EventHandle<0x4::collection::MintEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Mint",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "collection",
+      "type": "address"
+     },
+     {
+      "name": "index",
+      "type": "0x1::aggregator_v2::AggregatorSnapshot<u64>"
+     },
+     {
+      "name": "token",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "MintEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "index",
+      "type": "u64"
+     },
+     {
+      "name": "token",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Mutation",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "mutated_field_name",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "collection",
+      "type": "0x1::object::Object<0x4::collection::Collection>"
+     },
+     {
+      "name": "old_value",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "new_value",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "MutationEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "mutated_field_name",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SetMaxSupply",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "collection",
+      "type": "0x1::object::Object<0x4::collection::Collection>"
+     },
+     {
+      "name": "old_max_supply",
+      "type": "u64"
+     },
+     {
+      "name": "new_max_supply",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UnlimitedSupply",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "current_supply",
+      "type": "u64"
+     },
+     {
+      "name": "total_minted",
+      "type": "u64"
+     },
+     {
+      "name": "burn_events",
+      "type": "0x1::event::EventHandle<0x4::collection::BurnEvent>"
+     },
+     {
+      "name": "mint_events",
+      "type": "0x1::event::EventHandle<0x4::collection::MintEvent>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

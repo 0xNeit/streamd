@@ -1,0 +1,356 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "aptos_governance",
+  "structs": [
+   {
+    "name": "CreateProposal",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "proposer",
+      "type": "address"
+     },
+     {
+      "name": "stake_pool",
+      "type": "address"
+     },
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "execution_hash",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "proposal_metadata",
+      "type": "0x1::simple_map::SimpleMap<0x1::string::String, vector<u8>>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CreateProposalEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "proposer",
+      "type": "address"
+     },
+     {
+      "name": "stake_pool",
+      "type": "address"
+     },
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "execution_hash",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "proposal_metadata",
+      "type": "0x1::simple_map::SimpleMap<0x1::string::String, vector<u8>>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Vote",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "voter",
+      "type": "address"
+     },
+     {
+      "name": "stake_pool",
+      "type": "address"
+     },
+     {
+      "name": "num_votes",
+      "type": "u64"
+     },
+     {
+      "name": "should_pass",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "VoteEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     },
+     {
+      "name": "voter",
+      "type": "address"
+     },
+     {
+      "name": "stake_pool",
+      "type": "address"
+     },
+     {
+      "name": "num_votes",
+      "type": "u64"
+     },
+     {
+      "name": "should_pass",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ApprovedExecutionHashes",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "hashes",
+      "type": "0x1::simple_map::SimpleMap<u64, vector<u8>>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "GovernanceConfig",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "min_voting_threshold",
+      "type": "u128"
+     },
+     {
+      "name": "required_proposer_stake",
+      "type": "u64"
+     },
+     {
+      "name": "voting_duration_secs",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "GovernanceEvents",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "create_proposal_events",
+      "type": "0x1::event::EventHandle<0x1::aptos_governance::CreateProposalEvent>"
+     },
+     {
+      "name": "update_config_events",
+      "type": "0x1::event::EventHandle<0x1::aptos_governance::UpdateConfigEvent>"
+     },
+     {
+      "name": "vote_events",
+      "type": "0x1::event::EventHandle<0x1::aptos_governance::VoteEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "GovernancePermission",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "GovernanceResponsbility",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "signer_caps",
+      "type": "0x1::simple_map::SimpleMap<address, 0x1::account::SignerCapability>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RecordKey",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "stake_pool",
+      "type": "address"
+     },
+     {
+      "name": "proposal_id",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UpdateConfig",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "min_voting_threshold",
+      "type": "u128"
+     },
+     {
+      "name": "required_proposer_stake",
+      "type": "u64"
+     },
+     {
+      "name": "voting_duration_secs",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UpdateConfigEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "min_voting_threshold",
+      "type": "u128"
+     },
+     {
+      "name": "required_proposer_stake",
+      "type": "u64"
+     },
+     {
+      "name": "voting_duration_secs",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "VotingRecords",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "votes",
+      "type": "0x1::table::Table<0x1::aptos_governance::RecordKey, bool>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "VotingRecordsV2",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "votes",
+      "type": "0x1::smart_table::SmartTable<0x1::aptos_governance::RecordKey, u64>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}
