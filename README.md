@@ -550,7 +550,7 @@ why: the chain discards a failed transaction's events, so there is nothing to re
 not committed within `timeout` (default 20 seconds) rejects with `StreamdTimeoutError`, an
 abort with `signal.reason`, and a failed lookup at once with its error. The adapter is not
 told about a timeout or abort, so a lookup already in flight runs to completion and holds
-its `maxConcurrentRequests` slot until then. The hash must be
+its `maxConcurrentRequests` slot until then, or until the client's `requestTimeout`. The hash must be
 `0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which
 `FullnodeScanAdapter` and `MemoryAdapter` have and the wrapping adapters pass through.
 
@@ -771,8 +771,23 @@ the lookups behind `eventsOf()` and the simulations behind `previewEvents()` all
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, leaves
 the queue at once without reaching the adapter, and `destroy()` rejects every call still
-waiting. A call the adapter never settles holds its slot, so give a custom adapter its own
-timeouts. Omit the option for no limit.
+waiting. A call the adapter never settles holds its slot unless `requestTimeout` is set.
+Omit the option for no limit.
+
+### Time out a hung adapter call
+
+```ts
+const streamd = new StreamdClient({ aptos, requestTimeout: 15_000 });
+```
+
+An adapter call still unfinished after that many milliseconds fails with a
+`StreamdNetworkError`. A listener backs off and counts it toward `maxErrors`, and a query's
+`retries` retry it, as for any network failure. The clock starts when the call starts, so
+time spent waiting for `maxConcurrentRequests` or `maxRequestsPerSecond` does not count. It
+covers the calls those two options count. The slot frees at once, but adapters take no
+signal, so the request itself runs on, uncounted, until it ends. A module scan is one
+adapter call that may make several HTTP requests, so allow for that. Omit the option for no
+timeout.
 
 ### Shared polling
 
