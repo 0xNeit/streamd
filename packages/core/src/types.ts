@@ -394,6 +394,14 @@ export interface TransferOptions {
    * (`"<creator>::<collection>::<name>::<property_version>"`).
    */
   asset?: string;
+  /**
+   * Only transfers this address or Aptos name sent or received, by the
+   * records' `from` and `to`. Those are direct owners, so a store held
+   * through an object reports the object. A name needs `aptos` in the client
+   * config and resolves once. Costs the same reads as no filter, since a
+   * deposit needs its withdraw to report `from`; `asset` is what saves reads.
+   */
+  account?: string;
 }
 
 /** Options for `StreamdClient.transfers`. */
