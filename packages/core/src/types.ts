@@ -553,6 +553,13 @@ export interface ListenerOptions {
    */
   maxBackoff?: number;
   /**
+   * Lets a quiet subscription poll less often: each empty page doubles the
+   * wait from `pollInterval` up to this many ms, and a page with events returns
+   * it to `pollInterval`. A new event can then be seen up to this late. At or
+   * below `pollInterval` it never stretches. Omit to always wait `pollInterval`.
+   */
+  maxPollInterval?: number;
+  /**
    * Sliding-window capacity for deduplicating seen events by
    * `(version, eventIndex)` (default: 1000). Set to `0` to disable client-side
    * deduplication.
@@ -648,11 +655,19 @@ export interface ReduceOptions<S = unknown, TData = unknown>
       | "batchSize"
       | "maxErrors"
       | "maxBackoff"
+      | "maxPollInterval"
       | "dedupWindow"
       | "onError"
       | "onCaughtUp"
       | "signal"
     > {
+  /**
+   * `Reduction.cursor` from an earlier run, with its `value` as `initial`, to
+   * continue instead of reading the history again: `ready` resolves with
+   * `initial`, and the history options are ignored. An adapter cursor from
+   * `onCursor` works too.
+   */
+  cursor?: string;
   /**
    * Called after each live event is folded in, with the new state. Not called
    * during the backfill, whose result `ready` resolves with. A throw goes to
@@ -665,6 +680,13 @@ export interface ReduceOptions<S = unknown, TData = unknown>
 export interface Reduction<S> {
   /** The reduction of every event folded so far; the last good one once stopped. */
   readonly value: S;
+  /**
+   * Where `value` stands: save the two together, and pass them back as
+   * `initial` and `ReduceOptions.cursor` after a restart. Agrees with `value`
+   * at any moment, inside `onChange` too. Undefined until the backfill has
+   * finished; still readable after unsubscribing.
+   */
+  readonly cursor: string | undefined;
   /**
    * Resolves with the backfilled value once the history is folded and live
    * following has started. Rejects if the backfill fails, the reducer throws,
@@ -745,7 +767,7 @@ export interface Replay {
  */
 export type ListenerDefaults = Pick<
   ListenerOptions,
-  "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "dedupWindow" | "decode"
+  "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "maxPollInterval" | "dedupWindow" | "decode"
 >;
 
 // ---- Client config ----
@@ -783,6 +805,12 @@ export interface StreamdConfig {
    * request itself runs on uncounted, since adapters take no signal.
    */
   maxConcurrentRequests?: number;
+  /**
+   * Spaces the starts of those same adapter calls evenly, at most this many a
+   * second with no burst; a positive number, so `0.5` is one call every two
+   * seconds. Calls wait in order, in the same queue. Omit for no limit.
+   */
+  maxRequestsPerSecond?: number;
   /**
    * Listener options for every subscription this client creates. A call's own
    * value for a field wins; one it leaves `undefined` takes this one. A call's
@@ -928,7 +956,14 @@ export type WatchCallback<TData = unknown> = (
  * `fromTime` apply only to the addresses given to `watch()`, not to `add()`.
  * No `cursor` (an account cursor belongs to one address) and no `id`.
  */
-export type WatchOptions = Omit<SubscriptionOptions, "id" | "cursor">;
+export type WatchOptions = Omit<SubscriptionOptions, "id" | "cursor"> & {
+  /**
+   * `Watch.positions` from an earlier run: each address continues from its
+   * own, ahead of `fromVersion` and `fromTime`. Addresses without one start as
+   * usual, and one for an address not in the list waits for `add()`.
+   */
+  positions?: Readonly<Record<string, string>>;
+};
 
 /** What `watch()` returns: a `Subscription` over every walk, grown and shrunk at runtime. */
 export interface Watch extends Subscription {
@@ -941,6 +976,12 @@ export interface Watch extends Subscription {
   remove(address: string): boolean;
   /** The watched addresses, in the order added, as passed. */
   readonly addresses: readonly string[];
+  /**
+   * Where each address stands, as long-form address to cursor, for
+   * `WatchOptions.positions` after a restart. Omits an address with no position
+   * yet, keeps a walk that gave up, and stays readable after unsubscribing.
+   */
+  readonly positions: Record<string, string>;
 }
 
 // ---- Adapter interface ----

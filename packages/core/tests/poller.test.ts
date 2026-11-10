@@ -2685,3 +2685,137 @@ describe("EventPoller start version", () => {
     poller.stop();
   });
 });
+
+describe("EventPoller maxPollInterval", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  /** `script(n)` answers the nth fetch; gaps are the waits between fetches. */
+  function scripted(script: (n: number) => EventPage | Error) {
+    const at: number[] = [];
+    const fetchEvents = vi.fn(async (): Promise<EventPage> => {
+      at.push(Date.now());
+      const answer = script(at.length);
+      if (answer instanceof Error) throw answer;
+      return answer;
+    });
+    return { fetchEvents, gaps: () => at.slice(1).map((t, i) => t - at[i]!) };
+  }
+  const empty = (n: number) => page([], n);
+  const start = (a: { fetchEvents: EventAdapter["fetchEvents"] }, options: ListenerOptions) => {
+    const poller = new EventPoller(a, descriptor, vi.fn(), { maxErrors: 100, ...options });
+    poller.start();
+    return poller;
+  };
+
+  it("doubles the wait over empty pages up to the cap", async () => {
+    const a = scripted(empty);
+    const poller = start(a, { pollInterval: 100, maxPollInterval: 500 });
+    await advanceTimersByTimeAsync(2500);
+    poller.stop();
+    expect(a.gaps()).toEqual([100, 200, 400, 500, 500, 500]);
+  });
+
+  it("returns to pollInterval when an event arrives", async () => {
+    const a = scripted((n) => (n === 4 ? page([makeEvent(n)], n) : empty(n)));
+    const poller = start(a, { pollInterval: 100, maxPollInterval: 800 });
+    await advanceTimersByTimeAsync(1500);
+    poller.stop();
+    expect(a.gaps()).toEqual([100, 200, 400, 100, 100, 200, 400]);
+  });
+
+  it("counts an event where filters out as activity", async () => {
+    const a = scripted((n) => page([makeEvent(n)], n));
+    const poller = start(a, { pollInterval: 100, maxPollInterval: 800, where: () => false });
+    await advanceTimersByTimeAsync(350);
+    poller.stop();
+    expect(a.gaps()).toEqual([100, 100, 100]);
+  });
+
+  it("counts events below the start as activity", async () => {
+    const a = scripted((n) => page([makeEvent(n)], n));
+    const poller = start(a, { pollInterval: 100, maxPollInterval: 800, fromVersion: 1000n });
+    await advanceTimersByTimeAsync(350);
+    poller.stop();
+    expect(a.gaps()).toEqual([100, 100, 100]);
+  });
+
+  it("polls at once while the source has more, without stretching", async () => {
+    const a = scripted((n) => page([], n, n <= 3));
+    const poller = start(a, { pollInterval: 100, maxPollInterval: 800 });
+    await advanceTimersByTimeAsync(350);
+    poller.stop();
+    // The fake clock steps 1ms at a time, so a zero wait reads as 1.
+    expect(a.gaps()).toEqual([1, 1, 1, 100, 200]);
+  });
+
+  it("resets on a page with events that has more", async () => {
+    const a = scripted((n) => (n === 3 ? page([makeEvent(n)], n, true) : empty(n)));
+    const poller = start(a, { pollInterval: 100, maxPollInterval: 800 });
+    await advanceTimersByTimeAsync(700);
+    poller.stop();
+    expect(a.gaps()).toEqual([100, 200, 1, 100, 200]);
+  });
+
+  it("keeps errors on their own backoff and the quiet delay where it was", async () => {
+    const a = scripted((n) => (n === 3 ? new Error("network") : empty(n)));
+    const poller = start(a, { pollInterval: 100, maxPollInterval: 800 });
+    await advanceTimersByTimeAsync(900);
+    poller.stop();
+    expect(a.gaps()).toEqual([100, 200, 200, 400]);
+  });
+
+  it("starts over after a restart, and carries on after a resume", async () => {
+    const a = scripted(empty);
+    const poller = start(a, { pollInterval: 100, maxPollInterval: 800 });
+    await advanceTimersByTimeAsync(350);
+    poller.pause();
+    poller.resume();
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(400);
+    poller.stop();
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(150);
+    poller.stop();
+    const gaps = a.gaps();
+    expect(gaps.slice(0, 2)).toEqual([100, 200]);
+    expect(gaps[3]).toBeGreaterThanOrEqual(400);
+    expect(gaps[3]).toBeLessThan(410);
+    expect(gaps.at(-1)).toBe(100);
+  });
+
+  it("changes nothing when unset", async () => {
+    const a = scripted(empty);
+    const poller = start(a, { pollInterval: 100 });
+    await advanceTimersByTimeAsync(350);
+    poller.stop();
+    expect(a.gaps()).toEqual([100, 100, 100]);
+  });
+
+  it("never stretches at or below pollInterval", async () => {
+    for (const maxPollInterval of [100, 10, 0]) {
+      const a = scripted(empty);
+      const poller = start(a, { pollInterval: 100, maxPollInterval });
+      await advanceTimersByTimeAsync(350);
+      poller.stop();
+      expect(a.gaps()).toEqual([100, 100, 100]);
+    }
+  });
+
+  it("stretches from a pollInterval of zero", async () => {
+    const a = scripted(empty);
+    const poller = start(a, { pollInterval: 0, maxPollInterval: 4 });
+    await advanceTimersByTimeAsync(12);
+    poller.stop();
+    expect(a.gaps().slice(1, 5)).toEqual([1, 2, 4, 4]);
+  });
+
+  it("rejects an invalid value", () => {
+    for (const bad of [-1, Number.NaN, Infinity, 2_147_483_648, "5"]) {
+      expect(() =>
+        new EventPoller({ fetchEvents: vi.fn() }, descriptor, vi.fn(), { maxPollInterval: bad as number }),
+      ).toThrow(/maxPollInterval/);
+    }
+  });
+});

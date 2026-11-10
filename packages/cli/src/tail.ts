@@ -1,7 +1,7 @@
 import type { StreamdClient } from "@streamd/core";
 import type { TailOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
-import { formatEvent, message } from "./format.js";
+import { formatEvent, message, prettyEvent } from "./format.js";
 
 export interface TailIO {
   client: Pick<StreamdClient, "stream">;
@@ -14,7 +14,7 @@ export interface TailIO {
 }
 
 /**
- * Follows `options.descriptor`, writing each event as a JSON line, and
+ * Follows `options.descriptor`, writing one line per event, and
  * resolves to the process exit code: 0 when the limit is reached or the
  * signal aborts, 1 when the subscription stopped on an error or a write failed.
  */
@@ -59,11 +59,12 @@ export async function runTail(options: TailOptions, io: TailIO): Promise<number>
     }
   };
 
+  const render = options.format === "pretty" ? prettyEvent : formatEvent;
   let printed = 0;
   let code = 0;
   try {
     for await (const event of stream) {
-      await io.write(`${formatEvent(event)}\n`);
+      await io.write(`${render(event)}\n`);
       if (!checkpoint()) return 1;
       if (options.limit !== undefined && ++printed >= options.limit) break;
     }

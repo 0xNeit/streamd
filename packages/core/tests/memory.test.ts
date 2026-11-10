@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
+import { serializeEvent } from "../src/serialize.js";
 import type { EventDescriptor, StreamdEvent } from "../src/types.js";
 
 const PING = "0x1::test::Ping";
@@ -457,5 +458,50 @@ describe("MemoryAdapter resource descriptors", () => {
     ] as EventDescriptor[]) {
       await expect(adapter.fetchEvents(bad)).rejects.toBeInstanceOf(StreamdError);
     }
+  });
+});
+
+describe("MemoryAdapter.fromJsonLines", () => {
+  const lines = (...events: StreamdEvent[]) => events.map(serializeEvent).join("\n");
+  const versions = async (adapter: MemoryAdapter) =>
+    (await adapter.fetchEvents(accountDesc)).events.map((e) => `${e.version}:${e.eventIndex}`);
+
+  it("reads events in version order, restoring their bigints", async () => {
+    const adapter = MemoryAdapter.fromJsonLines(lines(ev(2), ev(1, 1), ev(1, 0)));
+    expect(await versions(adapter)).toEqual(["1:0", "1:1", "2:0"]);
+    expect((await adapter.fetchEvents(accountDesc)).events[0]).toEqual(ev(1, 0));
+  });
+
+  it("applies decode", async () => {
+    const adapter = MemoryAdapter.fromJsonLines(lines(ev(1, 0, PING, { amount: "7" })), { decode: ["amount"] });
+    expect((await adapter.fetchEvents(accountDesc)).events[0]!.data).toEqual({ amount: 7n });
+  });
+
+  it("ignores blank lines, a trailing newline and CRLF endings", async () => {
+    const text = `\n${serializeEvent(ev(1))}\r\n   \r\n${serializeEvent(ev(2))}\n`;
+    expect(await versions(MemoryAdapter.fromJsonLines(text))).toEqual(["1:0", "2:0"]);
+  });
+
+  it("keeps the first copy of a repeated event", async () => {
+    const first = ev(1, 0, PING, { copy: "first" });
+    const adapter = MemoryAdapter.fromJsonLines(lines(first, ev(2), ev(1, 0, PING, { copy: "second" }), ev(2)));
+    const { events } = await adapter.fetchEvents(accountDesc);
+    expect(events.map((e) => e.version)).toEqual([1n, 2n]);
+    expect(events[0]!.data).toEqual({ copy: "first" });
+  });
+
+  it("gives an empty adapter for empty text", async () => {
+    expect(await versions(MemoryAdapter.fromJsonLines(""))).toEqual([]);
+  });
+
+  it("names the line a bad event is on", () => {
+    expect(() => MemoryAdapter.fromJsonLines(`${serializeEvent(ev(1))}\n\nnot json`)).toThrow(/^Line 3: Cannot parse event/);
+    expect(() => MemoryAdapter.fromJsonLines('{"type":"")')).toThrow(/^Line 1: /);
+    expect(() => MemoryAdapter.fromJsonLines(serializeEvent(ev(1)).slice(0, -4))).toThrow(StreamdError);
+  });
+
+  it("refuses anything but a string", () => {
+    expect(() => MemoryAdapter.fromJsonLines(undefined as unknown as string)).toThrow(StreamdError);
+    expect(() => MemoryAdapter.fromJsonLines([] as unknown as string)).toThrow(StreamdError);
   });
 });

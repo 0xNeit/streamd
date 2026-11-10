@@ -19,7 +19,11 @@ export interface SourceOptions {
 export interface TailOptions extends SourceOptions {
   limit?: number;
   cursorFile?: string;
+  format?: "json" | "pretty";
 }
+
+export const SIGNATURE_HEADER = "x-streamd-signature";
+export const SECRET_ENV = "STREAMD_WEBHOOK_SECRET";
 
 export interface ForwardOptions extends SourceOptions {
   /** Webhook URL; may carry a token, so it is never printed. */
@@ -31,6 +35,8 @@ export interface ForwardOptions extends SourceOptions {
   timeout: number;
   /** Static request headers; values are never printed. */
   headers: Record<string, string>;
+  /** Signs each body with HMAC-SHA256; never printed. */
+  secret?: string;
 }
 
 export interface StoreOptions extends SourceOptions {
@@ -132,6 +138,7 @@ const TAIL_OPTIONS = {
   ...FROM_TIME,
   limit: { type: "string" },
   "cursor-file": { type: "string" },
+  format: { type: "string" },
 } as const;
 
 const FORWARD_OPTIONS = {
@@ -142,6 +149,7 @@ const FORWARD_OPTIONS = {
   retries: { type: "string" },
   timeout: { type: "string" },
   header: { type: "string", multiple: true },
+  secret: { type: "string" },
 } as const;
 
 const STORE_OPTIONS = {
@@ -249,10 +257,13 @@ Options:
   --to <url>             forward: webhook URL (http or https, required)
   --cursor-file <path>   tail: save and resume from here; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE})
+  --format <name>        tail: json, or pretty for aligned lines in UTC (default: json)
   --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
   --timeout <ms>         forward: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx: wait for commit (default: 20000)
   --header <h>           forward: request header 'Name: value', repeatable
+  --secret <s>           forward: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER}
+                         (or set ${SECRET_ENV}, which keeps it out of ps)
   --db <file>            store: SQLite file to write (required)
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
   --to-version <n>       record: end of the range (required); query: default the head
@@ -456,6 +467,12 @@ function parseTail(args: string[]): ParsedCommand {
   if (limit !== undefined) options.limit = limit;
   if (values["cursor-file"] === "") throw new UsageError("--cursor-file must not be empty");
   if (values["cursor-file"] !== undefined) options.cursorFile = values["cursor-file"];
+  if (values.format !== undefined) {
+    if (values.format !== "json" && values.format !== "pretty") {
+      throw new UsageError(`--format must be json or pretty: ${values.format}`);
+    }
+    options.format = values.format;
+  }
   return { command: "tail", options };
 }
 
@@ -473,6 +490,14 @@ function parseForward(args: string[]): ParsedCommand {
     headers: headers(values.header),
   };
   if (options.cursorFile === "") throw new UsageError("--cursor-file must not be empty");
+  if (values.secret === "") throw new UsageError("--secret must not be empty");
+  const secret = values.secret ?? (process.env[SECRET_ENV] || undefined);
+  if (secret !== undefined) {
+    if (SIGNATURE_HEADER in options.headers) {
+      throw new UsageError(`--header cannot set ${SIGNATURE_HEADER} when signing`);
+    }
+    options.secret = secret;
+  }
   return { command: "forward", options };
 }
 

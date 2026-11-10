@@ -44,6 +44,16 @@ function harness(adapter: EventAdapter, signal?: AbortSignal) {
 }
 
 describe("runTail", () => {
+  it("prints aligned lines with --format pretty, and JSON without it", async () => {
+    const pretty = harness(new MemoryAdapter([ev(1)]));
+    expect(await runTail(options({ limit: 1, format: "pretty" }), pretty.io)).toBe(0);
+    expect(pretty.lines[0]).toStartWith("-");
+    expect(pretty.lines[0]).toEndWith('{"amount":"10"}\n');
+    const json = harness(new MemoryAdapter([ev(1)]));
+    await runTail(options({ limit: 1, format: "json" }), json.io);
+    expect(JSON.parse(json.lines[0]!).version).toBe("1");
+  });
+
   it("prints events as JSON lines in order and exits 0 at the limit", async () => {
     const { lines, errors, io } = harness(new MemoryAdapter([ev(2), ev(1), ev(3)]));
     expect(await runTail(options({ limit: 2 }), io)).toBe(0);

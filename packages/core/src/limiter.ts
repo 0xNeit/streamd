@@ -8,15 +8,24 @@ interface Waiter {
 }
 
 /**
- * Caps how many adapter calls are in flight at once. Calls past the cap wait
- * in one FIFO queue; a waiting call whose `drop` signal aborts leaves the queue
- * at once, so a stopped subscription costs the source nothing and holds nothing.
+ * Caps how many adapter calls are in flight at once and spaces their starts.
+ * Calls past either limit wait in one FIFO queue; a waiting call whose `drop`
+ * signal aborts leaves the queue at once, so a stopped subscription costs the
+ * source nothing and holds nothing.
  */
 export class RequestLimiter {
   private active = 0;
   private readonly queue: Waiter[] = [];
+  private readonly interval: number;
+  private earliest = 0;
+  private timer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(private readonly max = Infinity) {}
+  constructor(
+    private readonly max = Infinity,
+    perSecond = Infinity,
+  ) {
+    this.interval = 1000 / perSecond;
+  }
 
   /**
    * `drop` removes the call while it still waits, rejecting with its reason.
@@ -27,6 +36,7 @@ export class RequestLimiter {
     return new Promise<T>((resolve, reject) => {
       const start = () => {
         this.active++;
+        if (this.interval > 0) this.earliest = performance.now() + this.interval;
         // Wrapped so a task that throws synchronously still frees its slot.
         raceAbort(new Promise<T>((r) => r(task())), signal)
           .then(resolve, reject)
@@ -35,7 +45,7 @@ export class RequestLimiter {
             this.next();
           });
       };
-      if (this.active < this.max) return start();
+      if (this.queue.length === 0 && this.active < this.max && this.delay() <= 0) return start();
       if (drop?.aborted) return reject(drop.reason);
       const waiter: Waiter = {
         start: () => (detach(), start()),
@@ -46,11 +56,14 @@ export class RequestLimiter {
         reject(drop!.reason);
       });
       this.queue.push(waiter);
+      this.next();
     });
   }
 
   /** Reject every waiting call, so a destroyed client holds none. */
   clear(): void {
+    clearTimeout(this.timer);
+    this.timer = undefined;
     for (const waiter of this.queue.splice(0)) {
       waiter.reject(new StreamdError("Request dropped: the client was destroyed"));
     }
@@ -93,8 +106,20 @@ export class RequestLimiter {
     return view;
   }
 
+  private delay(): number {
+    return this.earliest - performance.now();
+  }
+
   private next(): void {
     while (this.active < this.max && this.queue.length > 0) {
+      const delay = this.delay();
+      if (delay > 0) {
+        this.timer ??= setTimeout(() => {
+          this.timer = undefined;
+          this.next();
+        }, Math.ceil(delay));
+        return;
+      }
       this.queue.shift()!.start();
     }
   }

@@ -37,7 +37,7 @@ The repository is a Turborepo monorepo on Bun workspaces with four packages:
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core`.
 - `@streamd/store-sqlite` (`packages/store-sqlite`) - opt-in persistence: events written to a
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
-- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
+- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies. See [React hooks](#react-hooks).
 
 ## Usage
@@ -53,6 +53,7 @@ const sub = streamd.on(
     batchSize: 25,       // events fetched per poll (default 25)
     maxErrors: 10,       // consecutive failures before stopping (default 10)
     maxBackoff: 60_000,  // max backoff delay in ms on failures (default 60000)
+    maxPollInterval: 30_000, // poll less often while nothing arrives (default: off)
     dedupWindow: 1000,   // seen-event dedup window size, 0 to disable (default 1000)
     id: "deposits",      // sub.id; generated when omitted
     onError: (err) => console.error(err),
@@ -87,7 +88,10 @@ deduplication). On errors it backs off exponentially up to `maxBackoff` ms
 (default `60000`), and stops after `maxErrors` failures in a row. When the
 adapter's error carries a server's `Retry-After` hint (see below), it waits
 that long instead, still capped at `maxBackoff` and still counted as a
-failure. Invalid
+failure. With `maxPollInterval`, a quiet subscription polls less often: each empty page
+doubles the wait from `pollInterval` up to that many ms, and a page with events returns it to
+`pollInterval`, so a new event can be seen up to `maxPollInterval` late. An event `where`
+filters out still counts as activity. Invalid
 input, such as a malformed address or cursor, stops it at once, since retrying
 cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
 a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
@@ -111,8 +115,8 @@ streamd.on(deposits, handle);                           // polls every 3000 ms
 streamd.on(withdrawals, handle, { pollInterval: 500 }); // its own interval, still maxErrors 3
 ```
 
-`defaults` sets `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`, `dedupWindow`
-and `decode` for every `on()`, `onBatch()`, `once()` and `stream()` call on the client.
+`defaults` sets `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`, `maxPollInterval`,
+`dedupWindow` and `decode` for every `on()`, `onBatch()`, `once()` and `stream()` call on the client.
 A call's own value for a field wins, and one it leaves `undefined` takes the default; a
 call's `decode` replaces the default list rather than adding to it. `defaults.pollInterval`
 wins over `defaultPollInterval`. Start positions, `where`, `signal`, `onCaughtUp` and
@@ -233,6 +237,21 @@ transaction touching the address, received ones included; an event in a transact
 between two watched addresses then arrives once for each. Narrow further with `where`, for
 example `ownedBy` or `involvesAddress`.
 
+To continue after a restart, save `watch.positions` and pass it back:
+
+```ts
+const watch = streamd.watch(addresses, handler, { fromVersion: 0n, positions: saved });
+// later, and again on shutdown:
+store(watch.positions);
+```
+
+`positions` is a JSON-safe object of long-form address to cursor. An address with a position
+continues from it, ahead of `fromVersion` and `fromTime`, and the others start as usual.
+Delivery is at least once, since a walk's position moves per page, so a restart can repeat
+part of a page. It stays readable after `unsubscribe()`, keeps a walk that gave up, and carries
+forward the position of an address you are not watching now, which `add()` then uses once.
+`remove()` forgets the address's position. An address with no position yet is left out.
+
 Addresses are checked when given (`StreamdError` for one that is not an Aptos address) and
 deduplicated by value, so `0x1` and its long form are one walk. `add(address)` returns
 `false` for an address already watched or a watch that has ended; the new walk starts
@@ -348,6 +367,24 @@ backfill, listener options (`pollInterval`, `batchSize`, `maxErrors` and the res
 following, and `where` and `decode` (or the client's `defaults.decode`) apply to both.
 Options that would leave no exact point to follow from, such as `limit`, `toVersion` or
 `orderBy`, are refused.
+
+To survive a restart without refolding the history, save `value` and `cursor` together and pass
+them back:
+
+```ts
+const volume = streamd.reduce(Deposit, add, saved?.value ?? 0n, {
+  fromVersion: 0n,
+  cursor: saved?.cursor,
+  onChange: (value) => save({ value, cursor: volume.cursor }),
+});
+```
+
+`cursor` is `undefined` until the backfill has finished, and stays readable after
+`unsubscribe()`. It always agrees with `value`, inside `onChange` too, so each event is folded
+exactly once. With a cursor no history is read: `ready` resolves with the value you passed, and
+`fromVersion`, `fromBlock` and `fromTime` are ignored. It is an opaque, JSON-safe string, and only
+works with the descriptor and node that produced it. Keep `value` JSON-safe if you store it as
+JSON.
 
 A throwing reducer stops the reduction, since folding past a lost event would leave the
 value wrong: the error goes to `onError` (or the client's), `ready` rejects if the backfill
@@ -706,6 +743,19 @@ Aborting `on()` unsubscribes quietly without calling `onError`. Aborting
 `once()`, `stream()`, `getEvents()`, `getEventPages()` or `iterateEvents()` stops polling or
 paging and rejects with `signal.reason`. An already-aborted signal never
 fetches.
+
+### Limit the request rate
+
+```ts
+const streamd = new StreamdClient({ aptos, maxRequestsPerSecond: 2 });
+```
+
+Adapter calls start at least `1000 / maxRequestsPerSecond` ms apart, with no burst, across
+every subscription and query on the client. A fraction is allowed: `0.5` is one call every two
+seconds. It counts what `maxConcurrentRequests` counts, shares its queue, and combines with
+it. The unit is one adapter call, so a module-event scan may make several HTTP requests per
+call and needs a lower number. `ownedBy` predicates read through the SDK directly and are
+not counted.
 
 ### Limit concurrent requests
 
@@ -1084,7 +1134,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
+import { involvesAddress, whereField, whereCompare, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -1097,6 +1147,11 @@ streamd.on(
   (a dot-separated string such as `"store.owner"` or `"holders.0.owner"`, or an
   array of keys and indices such as `["store", "owner"]` or `["key.with.dots"]`).
   When `value` is an address, `0x1` and `0x000...01` count as the same address.
+- `whereCompare(path, op, value)` compares an integer in `data` using `==`,
+  `!=`, `<`, `<=`, `>` or `>=` (`whereCompare("amount", ">", 1_000_000n)`). The
+  field can be a decimal string, a number or a bigint, so `decode` is not
+  needed, and it compares at full precision. A field that is missing or not an
+  integer never matches, under `!=` too.
 - `involvesAddress(address, { fields?, maxDepth? })` matches events whose
   payload mentions the address anywhere. `0x1` and `0x000…01` count as the
   same address.
@@ -1611,6 +1666,18 @@ const streamd = new StreamdClient({
 });
 ```
 
+`MemoryAdapter.fromJsonLines(text, { decode? })` builds one from saved
+`streamd tail` output, so a captured stream can drive tests and `replay`:
+
+```ts
+const text = await readFile("deposits.jsonl", "utf8");
+const streamd = new StreamdClient({ adapter: MemoryAdapter.fromJsonLines(text) });
+```
+
+Each event is kept once, since a resumed `tail` can repeat lines. Blank lines
+are ignored, and any other unreadable line throws a `StreamdError` naming its
+line number, a truncated last line included.
+
 ## Networks
 
 streamd runs against any network that serves the Aptos fullnode REST API. For
@@ -1772,6 +1839,11 @@ function Feed() {
 - **`useLogs(descriptor, options?)`** runs `client.getEvents` and returns
   `{ data, error, loading }`. `data` is the last successful result and stays through refetches
   and errors. Options are `getEvents`'s, without `signal`; it takes a list of descriptors too.
+- **`useTransactionEvents(hash, options?)`** waits for a submitted transaction through
+  `client.eventsOf` and returns `{ data, error, loading, vmStatus }`. A transaction that failed
+  on chain sets `error` and `vmStatus`, the chain's status; one not found in time sets `error`
+  alone. It takes `eventsOf`'s options plus `descriptor`. Nothing from the previous hash is kept,
+  and a `null` hash waits for nothing.
 - **`useTransfers(options?)`** follows `client.transfers` and returns the same
   `{ events, error, status }` as `useEvents`, with each event's `data` a `Transfer`. It takes
   `asset`, `account` and `maxEvents`; pass `null` to wait.
@@ -1846,6 +1918,11 @@ has for long-lived handles, it fails at the start, with `--handle` as well.
 `--network` takes `mainnet`, `testnet`, `devnet`, `movement-mainnet` or `movement-testnet`, and
 `--node-url` overrides its fullnode.
 
+`--format pretty` prints one aligned line per event instead of JSON, for reading in a terminal:
+UTC time, type without its address, shortened sender, and the payload clipped to 80 columns.
+Control characters in on-chain text print as `?`. Handle events have no time or sender, so those
+columns show `-`.
+
 To pick up where a run stopped, pass `--cursor-file <path>`: `tail` saves its position there and
 resumes from it, and a saved position beats `--from-version` and `--from-time`. It is at least
 once, since stdout has no acknowledgement: a restart can reprint part of the last page. By hand,
@@ -1875,6 +1952,7 @@ streamd forward --to https://hooks.example.com/aptos \
 | `--retries <n>` | retries per batch after the first attempt (default `5`) |
 | `--timeout <ms>` | per-request timeout (default `10000`) |
 | `--header 'Name: value'` | extra request header, repeatable |
+| `--secret <key>` | sign each body (or set `STREAMD_WEBHOOK_SECRET`, which keeps it out of `ps` and shell history) |
 
 `--network`, `--node-url`, `--from-version` and `--poll-interval` work as for `tail`.
 
@@ -1884,11 +1962,27 @@ restart resumes after the last acknowledged batch and may resend the one in flig
 existing cursor file wins over `--from-version`, and only works with the descriptor and
 node that wrote it.
 
+With a secret, each POST carries `x-streamd-signature: sha256=<hex>`, an HMAC-SHA256 of the
+exact request body. Verify it against the raw bytes before parsing them, with a constant-time
+comparison:
+
+```ts
+import { createHmac, timingSafeEqual } from "node:crypto";
+
+const expected = Buffer.from(`sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`);
+const given = Buffer.from(request.headers.get("x-streamd-signature") ?? "");
+const valid = given.length === expected.length && timingSafeEqual(given, expected);
+```
+
+The signature has no timestamp, so it proves origin and integrity but not freshness: a captured
+request can be replayed. Deduplicate on each event's `version` and `eventIndex`, which delivery
+being at least once already calls for.
+
 Network errors, timeouts, `408`, `429` and `5xx` are retried with exponential backoff from
 1s, capped at 60s; a `Retry-After` on `429` or `503` replaces the backoff for that wait.
 Any other status, redirects included, fails at once. The webhook receives only the body,
-the content type and your `--header` values, and neither the URL nor header values are
-printed.
+the content type, your `--header` values and any signature, and neither the URL, header
+values nor the secret are printed.
 
 Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST without moving the
 cursor; `1` when a batch fails past its retries, the subscription stops on an error, or the
@@ -2028,6 +2122,20 @@ Each type describes the JSON the fullnode returns:
 | other structs | a generated interface |
 | enums | a union discriminated on `__variant__`, with that variant's fields beside it |
 | type parameters `T0`, `T1` | type parameters, defaulting to `unknown` |
+
+Each event with `u64`, `u128` or `u256` fields at its top level also gets a list of their names,
+ready for `decode`:
+
+```ts
+import { FungibleAsset_Deposit, FungibleAsset_DepositDecode } from "./events.js";
+
+client.on(FungibleAsset_Deposit, (e) => console.log(e.data.amount), { decode: FungibleAsset_DepositDecode });
+```
+
+The list is named `<Event>Decode`, with an underscore added if a struct already has that name.
+`event.data` keeps its generated type, which says `string` for those fields; `decode` makes
+them `bigint` at runtime. Signed integers are not listed, since `decode` reads unsigned digits
+only, and neither are nested fields.
 
 Signed integers follow the unsigned rule; none had been seen as event fields when this was
 written. A struct keeps its Move name unless two modules share it, in which case both become
