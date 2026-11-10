@@ -3472,8 +3472,9 @@ describe("close and async disposal", () => {
       );
       await entered.promise;
     })();
+    const done = settled(leaving);
     await sleep(5);
-    expect(finished).toEqual([]);
+    expect(done()).toBe(false);
     gate.resolve();
     await leaving;
     expect(finished).toEqual(["handler"]);
