@@ -1485,6 +1485,26 @@ const streamd = new StreamdClient({
 });
 ```
 
+Pass `store` to keep final pages past a restart. `@streamd/store-sqlite` ships
+one, and anything with `get(key)` and `set(key, page)` over strings, synchronous
+or not, works:
+
+```ts
+import { Database } from "bun:sqlite";
+import { SqlitePageStore } from "@streamd/store-sqlite";
+
+const store = new SqlitePageStore(new Database("pages.db"), { namespace: "mainnet" });
+const adapter = new CachingAdapter(new FullnodeScanAdapter(aptos), { store });
+```
+
+Memory is checked first, then the store, then the source. A store that fails or
+holds an unreadable entry counts as a miss and reaches `onStoreError`, so a broken
+cache never fails a read. A page's key names the request and not the network, so
+`namespace` is required: use one per network. `maxEntries` on `SqlitePageStore`
+drops the oldest written; without it the table grows without limit. A `bigint`
+inside an event's `data` comes back as a decimal string, as `serializeEvent`
+writes it.
+
 A cached page keeps being served after the fullnode prunes that history, where
 the node itself would answer 410. A custom adapter opts in by setting `final`
 on pages that cannot change; leave it unset when unsure. `RoutingAdapter` and
