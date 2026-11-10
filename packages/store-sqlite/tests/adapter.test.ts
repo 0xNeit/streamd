@@ -1,6 +1,13 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
-import { MemoryAdapter, StreamdClient, StreamdError, checkAdapter, eventId } from "@streamd/core";
+import {
+  MemoryAdapter,
+  StreamdClient,
+  StreamdError,
+  StreamdNetworkError,
+  checkAdapter,
+  eventId,
+} from "@streamd/core";
 import type { EventDescriptor, StreamdEvent } from "@streamd/core";
 import { SqliteEventStore, StoreAdapter } from "../src/index.js";
 
@@ -128,5 +135,130 @@ describe("StoreAdapter", () => {
       toVersion: "head",
     });
     expect(ids(same)).toEqual(ids(recent));
+  });
+});
+
+describe("StoreAdapter after prune", () => {
+  const swaps: EventDescriptor = { kind: "module", eventType: SWAP };
+
+  function pruned(beforeVersion: bigint, events = EVENTS) {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.write(events);
+    store.prune({ beforeVersion });
+    return { db, store, adapter: new StoreAdapter(db) };
+  }
+
+  async function failure(run: () => Promise<unknown>): Promise<unknown> {
+    return run().then(
+      () => undefined,
+      (err) => err,
+    );
+  }
+
+  function expectPruned(err: unknown) {
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(410);
+    expect((err as Error).message).toContain("oldest kept is 5");
+  }
+
+  it("fails a fromVersion below the edge as a pruned fullnode does", async () => {
+    const { adapter } = pruned(5n);
+    expectPruned(await failure(() => adapter.fetchEvents(swaps, { fromVersion: 4n })));
+  });
+
+  it("fails even a zero limit below the edge", async () => {
+    const { adapter } = pruned(5n);
+    expectPruned(await failure(() => adapter.fetchEvents(swaps, { fromVersion: 4n, limit: 0 })));
+  });
+
+  it("fails a cursor below the edge, however close", async () => {
+    const before = await seeded().fetchEvents(swaps, { fromVersion: 4n, limit: 1 });
+    expect(before.nextCursor).toBe("4:0");
+    const { adapter } = pruned(5n);
+    expectPruned(await failure(() => adapter.fetchEvents(swaps, { cursor: before.nextCursor })));
+  });
+
+  it("fails a range that ends below the edge", async () => {
+    const { adapter } = pruned(5n);
+    expectPruned(await failure(() => adapter.fetchEvents(swaps, { toVersion: 4n })));
+  });
+
+  it("starts at the oldest kept when given no start", async () => {
+    const { adapter } = pruned(5n);
+    const page = await adapter.fetchEvents(swaps, { limit: 1 });
+    expect(page.events.map((e) => e.version)).toEqual([5n]);
+  });
+
+  it("serves a read exactly at the edge", async () => {
+    const { adapter } = pruned(5n);
+    const page = await adapter.fetchEvents(swaps, { fromVersion: 5n, toVersion: 5n });
+    expect(page.events.map((e) => e.version)).toEqual([5n]);
+  });
+
+  it("keeps the edge when a later prune asks for less", async () => {
+    const { store, adapter } = pruned(5n);
+    store.prune({ beforeVersion: 2n });
+    expectPruned(await failure(() => adapter.fetchEvents(swaps, { fromVersion: 3n })));
+  });
+
+  it("raises the edge when a later prune asks for more", async () => {
+    const { store, adapter } = pruned(3n);
+    store.prune({ beforeVersion: 5n });
+    expectPruned(await failure(() => adapter.fetchEvents(swaps, { fromVersion: 3n })));
+  });
+
+  it("compares versions across digit counts", async () => {
+    const { adapter, store } = pruned(9n);
+    store.prune({ beforeVersion: 10n });
+    expect(await adapter.getEarliestVersion()).toBe(10n);
+  });
+
+  it("keeps the edge across new objects on the same database", async () => {
+    const { db } = pruned(5n);
+    const again = new StoreAdapter(db);
+    new SqliteEventStore(db);
+    expectPruned(await failure(() => again.fetchEvents(swaps, { fromVersion: 1n })));
+  });
+
+  it("reports the earliest as the edge, even above a late row or with nothing left", async () => {
+    const { store, adapter } = pruned(5n);
+    expect(await adapter.getEarliestVersion()).toBe(5n);
+    store.write([ev(2n, 0, SWAP)]);
+    expect(await adapter.getEarliestVersion()).toBe(5n);
+    expect(await pruned(100n).adapter.getEarliestVersion()).toBe(100n);
+  });
+
+  it("reports the lowest stored when that is above the edge", async () => {
+    const { adapter } = pruned(5n, EVENTS.filter((e) => e.version >= 8n));
+    expect(await adapter.getEarliestVersion()).toBe(8n);
+  });
+
+  it("reports the head as stored, never below the edge", async () => {
+    expect(await pruned(5n).adapter.getHeadVersion()).toBe(12n);
+    const emptied = pruned(100n);
+    expect(await emptied.adapter.getHeadVersion()).toBe(100n);
+    emptied.store.write([ev(2n, 0, SWAP)]);
+    expect(await emptied.adapter.getHeadVersion()).toBe(100n);
+    expect(await seeded([]).getHeadVersion()).toBe(0n);
+  });
+
+  it("answers an emptied store's whole range with nothing rather than failing", async () => {
+    const client = new StreamdClient({ adapter: pruned(100n).adapter });
+    const events = await client.getEvents(swaps, { fromVersion: "earliest", toVersion: "head" });
+    expect(events).toEqual([]);
+  });
+
+  it("fails a relative start that reaches below the edge", async () => {
+    const client = new StreamdClient({ adapter: pruned(5n).adapter });
+    expectPruned(await failure(() => client.getEvents(swaps, { fromVersion: -100n })));
+    const recent = await client.getEvents(swaps, { fromVersion: -1n });
+    expect(recent.map((e) => e.version)).toEqual([11n, 12n]);
+  });
+
+  it("lets a client start from earliest after pruning", async () => {
+    const client = new StreamdClient({ adapter: pruned(11n).adapter });
+    const events = await client.getEvents(swaps, { fromVersion: "earliest" });
+    expect(events.map((e) => e.version)).toEqual([11n, 12n]);
   });
 });

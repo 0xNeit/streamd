@@ -1823,8 +1823,19 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   rows arrive in version order, since its cursor is a position in the table; it sets no
   `throughVersion` for the same reason.
 - **Head and earliest** are the highest and lowest stored versions across the whole store,
-  `0n` when empty, so relative `fromVersion` and `toVersion: "head"` count from what is
-  stored. With no `cursor` or `fromVersion` a fetch starts at the earliest stored event.
+  `0n` for a store that was never pruned and holds nothing, so relative `fromVersion` and
+  `toVersion: "head"` count from what is stored. After a prune neither reports below the
+  edge. With no `cursor` or `fromVersion` a fetch starts at the earliest stored event.
+- **Retention.** `store.prune({ beforeVersion })` deletes every event below that version in
+  one transaction and leaves saved cursors alone. A `StoreAdapter` read whose `fromVersion`,
+  `cursor` or `toVersion` is below that edge then fails with a `StreamdNetworkError` (status
+  410), as a pruned fullnode does, rather than returning a short history. That includes a
+  relative `fromVersion` reaching below it, and a follower on a rare event: its cursor stays
+  at its last match, so it fails once the edge passes that match even if nothing it wanted
+  was deleted. Start such a follower again from `fromVersion: "earliest"`. With no start a
+  fetch begins at the oldest version kept. The edge only rises, and is kept under the
+  reserved cursor name `streamd:pruned-before`. SQLite reuses the freed pages; run `VACUUM`
+  yourself to shrink the file.
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
   first use.
 
