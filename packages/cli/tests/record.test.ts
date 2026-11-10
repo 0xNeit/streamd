@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryAdapter, StreamdClient, StreamdError, StreamdNetworkError, replayAdapter } from "@streamd/core";
@@ -107,13 +107,13 @@ describe("writeAtomically", () => {
     expect(readdirSync(d)).toEqual(["r.json"]);
   });
 
-  it("leaves the old file and no temporary behind on failure", () => {
+  it("leaves no temporary behind when the rename fails", () => {
     const d = dir();
-    const missing = join(d, "no-such-dir", "r.json");
-    expect(() => writeAtomically(missing, "x")).toThrow();
-    expect(existsSync(missing)).toBe(false);
-    const path = join(d, "keep.json");
-    writeFileSync(path, "old");
-    expect(readFileSync(path, "utf8")).toBe("old");
+    const target = join(d, "taken");
+    mkdirSync(target);
+    expect(() => writeAtomically(target, "x")).toThrow();
+    expect(readdirSync(d)).toEqual(["taken"]);
+    expect(() => writeAtomically(join(d, "no-such-dir", "r.json"), "x")).toThrow();
+    expect(existsSync(join(d, "no-such-dir"))).toBe(false);
   });
 });
