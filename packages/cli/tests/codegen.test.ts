@@ -399,7 +399,16 @@ export const balanceView = (t0: string, arg0: string): ViewRequest => ({
 
 describe("generateEventTypes whole accounts", () => {
   const helper = abi(DEX, "helper", [struct("Config", [["fee", "u64"]], false)]);
-  const pool = abi(DEX, "pool", [struct("Swapped", [["amount", "u64"]])]);
+  const pool = parseModuleAbi({
+    abi: {
+      address: DEX,
+      name: "pool",
+      structs: [struct("Swapped", [["amount", "u64"]])],
+      exposed_functions: [
+        { name: "reserves", visibility: "public", is_entry: false, is_view: true, generic_type_params: [], params: [], return: [] },
+      ],
+    },
+  });
   const lister = (abis: ModuleAbi[]) => {
     const calls: string[] = [];
     const list = async (address: string) => {
@@ -426,6 +435,7 @@ describe("generateEventTypes whole accounts", () => {
     const once = await generateEventTypes([{ address: DEX }], load, list);
     const both = await generateEventTypes([{ address: DEX }, { address: DEX, module: "pool" }], load, list);
     expect(calls).toEqual([]);
+    expect(once.match(/export const reservesView /g)).toHaveLength(1);
     expect(body(both)).toBe(body(once));
     const named = await generateEventTypes([{ address: DEX, module: "pool" }, { address: DEX }], load, list);
     expect(body(named)).toBe(body(once));
