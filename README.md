@@ -2003,10 +2003,10 @@ With `Bun.sql`, wrap it: `{ query: async (text, params = []) => ({ rows: await s
 - **No gaps, no duplicates,** as with SQLite: rows are keyed on `(version, eventIndex)`, a
   repeated write replaces its row, and the cursor moves only after its batch is stored.
 - **Queryable.** `streamd_events` holds `version` (`numeric`, exact for every u64), `event_index`,
-  `type`, `sender`, `guid_address`, `guid_creation` and the event as `jsonb`, so
-  `SELECT event->'data'->>'amount' FROM streamd_events WHERE type = '...'` works; integers in
-  `data` are decimal strings, as `serializeEvent` writes them. Saved cursors are in
-  `streamd_cursors`.
+  `type`, `sender`, `guid_address`, `guid_creation` and the event as the JSON text `serializeEvent`
+  writes, so `SELECT event::jsonb->'data'->>'amount' FROM streamd_events WHERE type = '...'` works.
+  It is `text` rather than `jsonb` because `jsonb` cannot hold a NUL character, which on-chain
+  strings may carry; the cast fails only on such a row. Saved cursors are in `streamd_cursors`.
 - `PostgresStoreAdapter` serves `module`, `account` (by stored `sender`) and `handle` (by
   `creationNumber`) descriptors, with the SQLite adapter's cursors, paging and options.
 - No `prune` or `PageStore` yet.
