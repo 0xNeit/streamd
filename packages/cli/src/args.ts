@@ -90,6 +90,22 @@ export interface RecordOptions {
   out?: string;
 }
 
+export interface CompareOptions {
+  descriptor: EventDescriptor;
+  network: Network;
+  nodeUrl?: string;
+  /** Sent to the first node as the SDK's API key; never printed. */
+  apiKey?: string;
+  /** The second node's fullnode URL. */
+  against: string;
+  fromVersion: bigint;
+  toVersion: bigint;
+  /** Most pages read from each node. */
+  maxPages?: number;
+  /** Page size. */
+  limit?: number;
+}
+
 export interface CheckOptions {
   descriptor: ModuleEventDescriptor;
   network: Network;
@@ -119,7 +135,8 @@ export type ParsedCommand =
   | { command: "record"; options: RecordOptions }
   | { command: "query"; options: QueryOptions }
   | { command: "tx"; options: TxOptions }
-  | { command: "codegen"; options: CodegenOptions };
+  | { command: "codegen"; options: CodegenOptions }
+  | { command: "compare"; options: CompareOptions };
 
 /** Bad command-line input: reported with usage, exit code 2. */
 export class UsageError extends Error {
@@ -179,6 +196,22 @@ const STORE_OPTIONS = {
   db: { type: "string" },
   name: { type: "string" },
 } as const;
+
+const COMPARE_OPTIONS = {
+  ...DESCRIPTOR_OPTIONS,
+  network: { type: "string" },
+  "node-url": { type: "string" },
+  "api-key": { type: "string" },
+  against: { type: "string" },
+  "from-version": { type: "string" },
+  "to-version": { type: "string" },
+  "max-pages": { type: "string" },
+  limit: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+/** The widest range `compare` walks, so one command stays a bounded job. */
+export const MAX_COMPARE_RANGE = 100_000n;
 
 const RECORD_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
@@ -256,6 +289,7 @@ export const USAGE = `Usage:
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
   streamd codegen [--out <file>] [--validators] (<address> | <address>::<module>)...
+  streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
 
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array,
@@ -266,6 +300,8 @@ query reads a closed range of history as JSON lines, then exits.
 tx waits for a transaction and prints its events, exiting 1 if it failed.
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
+compare reads one range from two nodes and prints what one has that the other
+does not, exiting 1 if they disagree.
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
 
@@ -283,7 +319,8 @@ Options:
   --from-version <n>     start at this version instead of the chain head
   --from-time <t>        tail, forward, query: start here, as 2h, 7d or an ISO date (UTC)
   --poll-interval <ms>   delay between polls (default: 1000)
-  --limit <n>            tail: exit after printing n events; record, query: stop after n
+  --limit <n>            tail: exit after printing n events; record, query: stop after n;
+                         compare: page size
   --to <url>             forward: webhook URL (http or https, required)
   --cursor-file <path>   tail: save and resume from here; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE})
@@ -302,6 +339,8 @@ Options:
   --order <asc|desc>     query: oldest or newest first (default: asc)
   --out <file>           codegen, record: write to this file instead of stdout
   --validators           codegen: also write an is<Type> runtime check per type
+  --against <url>        compare: the second node's fullnode URL (required)
+  --max-pages <n>        compare: most pages read from each node (default: 10)
   -h, --help             show this help
 `;
 
@@ -604,6 +643,42 @@ function parseRecord(args: string[]): ParsedCommand {
   return { command: "record", options };
 }
 
+function parseCompare(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: COMPARE_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (values.against === undefined) throw new UsageError("compare needs --against <url>, the node to compare with");
+  if (httpUrl(values.against) === undefined) {
+    throw new UsageError(`--against must be an http or https URL: ${values.against}`);
+  }
+  const fromVersion = version(values["from-version"]);
+  const toVersion = version(values["to-version"], "to-version");
+  if (fromVersion === undefined || toVersion === undefined) {
+    throw new UsageError("compare needs --from-version and --to-version, the range to compare");
+  }
+  if (toVersion < fromVersion) throw new UsageError("--to-version must not be below --from-version");
+  if (toVersion - fromVersion + 1n > MAX_COMPARE_RANGE) {
+    throw new UsageError(`compare covers at most ${MAX_COMPARE_RANGE} versions at a time`);
+  }
+  const options: CompareOptions = {
+    descriptor: descriptor("compare", values, positionals),
+    network: network(values.network),
+    against: values.against,
+    fromVersion,
+    toVersion,
+  };
+  const url = nodeUrl(values["node-url"]);
+  if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
+  const maxPages = integer("max-pages", values["max-pages"], 1, 1000);
+  if (maxPages !== undefined) options.maxPages = maxPages;
+  const limit = integer("limit", values.limit, 1, 1000);
+  if (limit !== undefined) options.limit = limit;
+  return { command: "compare", options };
+}
+
 function parseQuery(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: QUERY_OPTIONS, allowPositionals: true, strict: true }),
@@ -723,5 +798,6 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "query") return parseQuery(rest);
   if (command === "tx") return parseTx(rest);
   if (command === "codegen") return parseCodegen(rest);
+  if (command === "compare") return parseCompare(rest);
   throw new UsageError(`unknown command: ${command}`);
 }
