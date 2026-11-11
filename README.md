@@ -1251,8 +1251,8 @@ back.version; // bigint again
 `version`, `sequenceNumber` and `timestamp` always come back as `bigint`;
 `state` comes back as written.
 Inside `data`, every `bigint` is written as a decimal string, and only the
-top-level fields named in `decode` are turned back into `bigint`, by the same
-rule as the `decode` option; deeper ones stay strings. Malformed input throws
+fields named in `decode`, by path, are turned back into `bigint`, by the same
+rule as the `decode` option; the rest stay strings. Malformed input throws
 a `StreamdError`.
 
 ### Event identity
