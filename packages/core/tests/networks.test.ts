@@ -8,7 +8,7 @@ describe("networks", () => {
     expect(config.network).toBe(Network.CUSTOM);
     expect(config.getRequestUrl(AptosApiType.FULLNODE)).toBe(preset.fullnode);
     // The archive serves fullnode reads only; its Indexer is mainnet's own.
-    if ("indexer" in preset) expect(config.getRequestUrl(AptosApiType.INDEXER)).toBe(preset.indexer);
+    if (preset.indexer !== undefined) expect(config.getRequestUrl(AptosApiType.INDEXER)).toBe(preset.indexer);
     else expect(() => config.getRequestUrl(AptosApiType.INDEXER)).toThrow();
     expect(new URL(preset.fullnode).protocol).toBe("https:");
     expect(Number.isSafeInteger(preset.chainId)).toBe(true);
