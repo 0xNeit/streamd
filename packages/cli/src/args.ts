@@ -106,6 +106,8 @@ export interface CodegenOptions {
   apiKey?: string;
   /** File to write; stdout when unset. */
   out?: string;
+  /** Also write an `is<Type>` runtime check per generated type. */
+  validators?: boolean;
 }
 
 export type ParsedCommand =
@@ -223,6 +225,7 @@ const CODEGEN_OPTIONS = {
   "node-url": { type: "string" },
   "api-key": { type: "string" },
   out: { type: "string" },
+  validators: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -252,7 +255,7 @@ export const USAGE = `Usage:
   streamd tx <hash>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
-  streamd codegen [--out <file>] (<address> | <address>::<module>)...
+  streamd codegen [--out <file>] [--validators] (<address> | <address>::<module>)...
 
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array,
@@ -298,6 +301,7 @@ Options:
   --batch-size <n>       forward: most events per POST (default: 25)
   --order <asc|desc>     query: oldest or newest first (default: asc)
   --out <file>           codegen, record: write to this file instead of stdout
+  --validators           codegen: also write an is<Type> runtime check per type
   -h, --help             show this help
 `;
 
@@ -701,6 +705,7 @@ function parseCodegen(args: string[]): ParsedCommand {
     if (values.out === "") throw new UsageError("--out must not be empty");
     options.out = values.out;
   }
+  if (values.validators) options.validators = true;
   return { command: "codegen", options };
 }
 
