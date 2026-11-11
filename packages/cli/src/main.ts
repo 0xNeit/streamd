@@ -48,17 +48,20 @@ function parse(argv: string[]): ParsedCommand | undefined {
   }
 }
 
-function aptosConfig(options: Pick<SourceOptions, "network" | "nodeUrl">): AptosConfig {
+function aptosConfig(options: Pick<SourceOptions, "network" | "nodeUrl" | "apiKey">): AptosConfig {
   return new AptosConfig({
     ...NETWORKS[options.network],
     ...(options.nodeUrl !== undefined && { fullnode: options.nodeUrl }),
-    // The SDK's default HTTP/2 hangs under Bun, with no error.
-    ...("Bun" in globalThis && { clientConfig: { http2: false } }),
+    clientConfig: {
+      // The SDK's default HTTP/2 hangs under Bun, with no error.
+      ...("Bun" in globalThis && { http2: false }),
+      ...(options.apiKey !== undefined && { API_KEY: options.apiKey }),
+    },
   });
 }
 
 /** A client for `options` and a signal that the first SIGINT or a SIGTERM aborts. */
-function setup(options: Pick<SourceOptions, "network" | "nodeUrl">): { client: StreamdClient; controller: AbortController } {
+function setup(options: Pick<SourceOptions, "network" | "nodeUrl" | "apiKey">): { client: StreamdClient; controller: AbortController } {
   const controller = new AbortController();
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));

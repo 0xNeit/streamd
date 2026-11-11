@@ -10,6 +10,8 @@ export interface SourceOptions {
   descriptor: EventDescriptor;
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
   fromVersion?: bigint;
   /** Microseconds since the epoch; never set with `fromVersion`. */
   fromTime?: bigint;
@@ -54,6 +56,8 @@ export interface TxOptions {
   hash: string;
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
   /** How long to wait for the transaction to commit, in ms. */
   timeout?: number;
 }
@@ -62,6 +66,8 @@ export interface QueryOptions {
   descriptor: EventDescriptor;
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
   /** Exactly one of `fromVersion` and `fromTime` is set. */
   fromVersion?: bigint;
   fromTime?: bigint;
@@ -74,6 +80,8 @@ export interface RecordOptions {
   descriptor: EventDescriptor;
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
   fromVersion: bigint;
   toVersion: bigint;
   limit?: number;
@@ -85,12 +93,16 @@ export interface CheckOptions {
   descriptor: ModuleEventDescriptor;
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
 }
 
 export interface CodegenOptions {
   modules: ModuleRef[];
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
   /** File to write; stdout when unset. */
   out?: string;
 }
@@ -130,6 +142,7 @@ const SOURCE_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   "from-version": { type: "string" },
   "poll-interval": { type: "string" },
   help: { type: "boolean", short: "h" },
@@ -168,6 +181,7 @@ const RECORD_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -180,6 +194,7 @@ const QUERY_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -190,6 +205,7 @@ const QUERY_OPTIONS = {
 const TX_OPTIONS = {
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   timeout: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -197,12 +213,14 @@ const TX_OPTIONS = {
 const CHECK_OPTIONS = {
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
 const CODEGEN_OPTIONS = {
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   out: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -286,6 +304,21 @@ function wrap<T>(fn: () => T): T {
   } catch (err) {
     throw new UsageError(err instanceof Error ? err.message : String(err));
   }
+}
+
+export const API_KEY_ENV = "APTOS_API_KEY";
+const APTOS_NETWORKS: readonly Network[] = ["mainnet", "testnet", "devnet"];
+
+/**
+ * The flag is an explicit choice, sent to whatever node the command uses. The
+ * variable is meant for Aptos Labs' endpoints, so it is never sent to a custom
+ * node or another chain.
+ */
+function apiKey(flag: string | undefined, network: Network, url: string | undefined): string | undefined {
+  if (flag === "") throw new UsageError("--api-key must not be empty");
+  if (flag !== undefined) return flag;
+  if (url !== undefined || !APTOS_NETWORKS.includes(network)) return undefined;
+  return process.env[API_KEY_ENV] || undefined;
 }
 
 function integer(flag: string, raw: string | undefined, min: number, max: number) {
@@ -438,6 +471,7 @@ function descriptor(
 interface SourceFlags extends DescriptorFlags {
   network?: string;
   "node-url"?: string;
+  "api-key"?: string;
   "from-time"?: string;
   "from-version"?: string;
   "poll-interval"?: string;
@@ -459,6 +493,8 @@ function source(command: string, values: SourceFlags, positionals: string[]): So
   const fromTime = startTime(values);
   const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
   if (fromTime !== undefined) options.fromTime = fromTime;
   if (pollInterval !== undefined) options.pollInterval = pollInterval;
@@ -555,6 +591,8 @@ function parseRecord(args: string[]): ParsedCommand {
   const url = nodeUrl(values["node-url"]);
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   if (limit !== undefined) options.limit = limit;
   if (values.out !== undefined) options.out = values.out;
   return { command: "record", options };
@@ -587,6 +625,8 @@ function parseQuery(args: string[]): ParsedCommand {
   const url = nodeUrl(values["node-url"]);
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   if (limit !== undefined) options.limit = limit;
   return { command: "query", options };
 }
@@ -605,6 +645,8 @@ function parseTx(args: string[]): ParsedCommand {
   const url = nodeUrl(values["node-url"]);
   const timeout = integer("timeout", values.timeout, 0, MAX_TIMEOUT);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   if (timeout !== undefined) options.timeout = timeout;
   return { command: "tx", options };
 }
@@ -621,6 +663,8 @@ function parseCheck(args: string[]): ParsedCommand {
   };
   const url = nodeUrl(values["node-url"]);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   return { command: "check", options };
 }
 
@@ -649,6 +693,8 @@ function parseCodegen(args: string[]): ParsedCommand {
   };
   const url = nodeUrl(values["node-url"]);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   if (values.out !== undefined) {
     if (values.out === "") throw new UsageError("--out must not be empty");
     options.out = values.out;
