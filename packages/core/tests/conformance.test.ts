@@ -1,5 +1,4 @@
 import { describe, it, expect } from "bun:test";
-import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { checkAdapter } from "../src/conformance.js";
 import type { AdapterCheckReport } from "../src/conformance.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
