@@ -70,7 +70,7 @@ const options = (extra: Partial<ForwardOptions> = {}): ForwardOptions => ({
   ...extra,
 });
 
-function harness(adapter: EventAdapter, headVersion = () => adapter.getHeadVersion!()) {
+function harness(adapter: EventAdapter, headVersion = () => adapter.getHeadVersion!({ kind: "module", eventType: TYPE })) {
   const controller = new AbortController();
   const errors: string[] = [];
   const io: ForwardIO = {
