@@ -227,7 +227,7 @@ export const USAGE = `Usage:
   streamd tx <hash>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
-  streamd codegen [--out <file>] <address>::<module>...
+  streamd codegen [--out <file>] (<address> | <address>::<module>)...
 
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array,
@@ -239,7 +239,7 @@ tx waits for a transaction and prints its events, exiting 1 if it failed.
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 codegen reads module ABIs and writes TypeScript types and defineEvent
-descriptors for their event structs.
+descriptors for their event structs; a bare address covers all its modules.
 
 Options:
   --account <address>    events from transactions this account sent
@@ -605,9 +605,13 @@ function parseCheck(args: string[]): ParsedCommand {
 }
 
 function moduleRef(raw: string): ModuleRef {
+  if (!raw.includes("::")) {
+    wrap(() => requireAddress(raw));
+    return { address: raw };
+  }
   const [address = "", module = "", ...rest] = raw.split("::");
   if (rest.length > 0 || !MODULE_NAME.test(module)) {
-    throw new UsageError(`expected <address>::<module>: ${raw}`);
+    throw new UsageError(`expected <address> or <address>::<module>: ${raw}`);
   }
   wrap(() => requireAddress(address));
   return { address, module };
@@ -618,7 +622,7 @@ function parseCodegen(args: string[]): ParsedCommand {
     parseArgs({ args, options: CODEGEN_OPTIONS, allowPositionals: true, strict: true }),
   );
   if (values.help) return { command: "help" };
-  if (positionals.length === 0) throw new UsageError("codegen needs at least one <address>::<module>");
+  if (positionals.length === 0) throw new UsageError("codegen needs at least one <address> or <address>::<module>");
   const options: CodegenOptions = {
     modules: positionals.map(moduleRef),
     network: network(values.network),

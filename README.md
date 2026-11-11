@@ -2264,6 +2264,13 @@ events reference, fetched from whichever modules and accounts declare them.
 streamd codegen --out src/events.ts 0x1::fungible_asset 0x1::coin
 ```
 
+A bare address covers every module published there, skipping the ones with no `#[event]` struct
+and no `#[view]` function, and mixes with named modules:
+
+```sh
+streamd codegen --out src/protocol.ts 0x<protocol address>
+```
+
 ```ts
 import { FungibleAsset_Deposit, Coin_Deposit } from "./events.js";
 

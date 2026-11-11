@@ -204,7 +204,29 @@ async function codegen(options: CodegenOptions): Promise<number> {
     }
     return parseModuleAbi(data);
   };
-  const source = await generateEventTypes(options.modules, load);
+  const list = async (address: string): Promise<ModuleAbi[]> => {
+    const abis: ModuleAbi[] = [];
+    let start: string | undefined;
+    do {
+      let response: { data: unknown[]; headers: Record<string, unknown> };
+      try {
+        response = await getAptosFullNode<{}, unknown[]>({
+          aptosConfig: config,
+          originMethod: "codegen",
+          path: `accounts/${address}/modules`,
+          params: { limit: 100, ...(start === undefined ? {} : { start }) },
+        });
+      } catch (err) {
+        throw new StreamdError(`Fullnode request for the modules of ${address} failed: ${message(err)}`);
+      }
+      if (!Array.isArray(response.data)) throw new StreamdError(`Malformed module list for ${address}`);
+      abis.push(...response.data.map(parseModuleAbi));
+      const next = response.headers["x-aptos-cursor"];
+      start = typeof next === "string" && next !== "" && next !== start ? next : undefined;
+    } while (start !== undefined);
+    return abis;
+  };
+  const source = await generateEventTypes(options.modules, load, list);
   if (options.out === undefined) process.stdout.write(source);
   else await writeFile(options.out, source);
   return 0;

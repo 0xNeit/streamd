@@ -247,15 +247,23 @@ describe("parseCommand codegen", () => {
     });
   });
 
+  it("takes a bare address as every module at it", () => {
+    expect(parseCommand(["codegen", "0x1", `${LONG_ADDR}::coin`])).toEqual({
+      command: "codegen",
+      options: { modules: [{ address: ADDR }, { address: LONG_ADDR, module: "coin" }], network: "mainnet" },
+    });
+  });
+
   it("returns help", () => {
     expect(parseCommand(["codegen", "--help"])).toEqual({ command: "help" });
   });
 
   it.each([
-    [["codegen"], /at least one <address>::<module>/],
-    [["codegen", "0x1"], /expected <address>::<module>: 0x1/],
-    [["codegen", "0x1::coin::Deposit"], /expected <address>::<module>/],
-    [["codegen", "0x1::co-in"], /expected <address>::<module>/],
+    [["codegen"], /at least one <address> or <address>::<module>/],
+    [["codegen", "nothex"], /Not a valid Aptos address/],
+    [["codegen", "0x1::"], /expected <address> or <address>::<module>: 0x1::/],
+    [["codegen", "0x1::coin::Deposit"], /expected <address> or <address>::<module>/],
+    [["codegen", "0x1::co-in"], /expected <address> or <address>::<module>/],
     [["codegen", "nothex::coin"], /Not a valid Aptos address/],
     [["codegen", "--out", "", "0x1::coin"], /--out must not be empty/],
     [["codegen", "--network", "moon", "0x1::coin"], /--network must be one of/],
