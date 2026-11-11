@@ -10,6 +10,8 @@ export interface SourceOptions {
   descriptor: EventDescriptor;
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
   fromVersion?: bigint;
   /** Microseconds since the epoch; never set with `fromVersion`. */
   fromTime?: bigint;
@@ -24,6 +26,7 @@ export interface TailOptions extends SourceOptions {
 
 export const SIGNATURE_HEADER = "x-streamd-signature";
 export const SECRET_ENV = "STREAMD_WEBHOOK_SECRET";
+export const API_KEY_ENV = "APTOS_API_KEY";
 
 export interface ForwardOptions extends SourceOptions {
   /** Webhook URL; may carry a token, so it is never printed. */
@@ -37,6 +40,10 @@ export interface ForwardOptions extends SourceOptions {
   headers: Record<string, string>;
   /** Signs each body with HMAC-SHA256; never printed. */
   secret?: string;
+  /** Last version to deliver; the run exits 0 once past it. */
+  toVersion?: bigint;
+  /** Most events per POST. */
+  batchSize?: number;
 }
 
 export interface StoreOptions extends SourceOptions {
@@ -50,6 +57,8 @@ export interface TxOptions {
   hash: string;
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
   /** How long to wait for the transaction to commit, in ms. */
   timeout?: number;
 }
@@ -58,6 +67,8 @@ export interface QueryOptions {
   descriptor: EventDescriptor;
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
   /** Exactly one of `fromVersion` and `fromTime` is set. */
   fromVersion?: bigint;
   fromTime?: bigint;
@@ -70,6 +81,8 @@ export interface RecordOptions {
   descriptor: EventDescriptor;
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
   fromVersion: bigint;
   toVersion: bigint;
   limit?: number;
@@ -81,12 +94,16 @@ export interface CheckOptions {
   descriptor: ModuleEventDescriptor;
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
 }
 
 export interface CodegenOptions {
   modules: ModuleRef[];
   network: Network;
   nodeUrl?: string;
+  /** Sent to the fullnode as the SDK's API key; never printed. */
+  apiKey?: string;
   /** File to write; stdout when unset. */
   out?: string;
 }
@@ -126,6 +143,7 @@ const SOURCE_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   "from-version": { type: "string" },
   "poll-interval": { type: "string" },
   help: { type: "boolean", short: "h" },
@@ -150,6 +168,8 @@ const FORWARD_OPTIONS = {
   timeout: { type: "string" },
   header: { type: "string", multiple: true },
   secret: { type: "string" },
+  "to-version": { type: "string" },
+  "batch-size": { type: "string" },
 } as const;
 
 const STORE_OPTIONS = {
@@ -162,6 +182,7 @@ const RECORD_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -174,6 +195,7 @@ const QUERY_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -184,6 +206,7 @@ const QUERY_OPTIONS = {
 const TX_OPTIONS = {
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   timeout: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -191,12 +214,14 @@ const TX_OPTIONS = {
 const CHECK_OPTIONS = {
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
 const CODEGEN_OPTIONS = {
   network: { type: "string" },
   "node-url": { type: "string" },
+  "api-key": { type: "string" },
   out: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -227,7 +252,7 @@ export const USAGE = `Usage:
   streamd tx <hash>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
-  streamd codegen [--out <file>] <address>::<module>...
+  streamd codegen [--out <file>] (<address> | <address>::<module>)...
 
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array,
@@ -239,7 +264,7 @@ tx waits for a transaction and prints its events, exiting 1 if it failed.
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 codegen reads module ABIs and writes TypeScript types and defineEvent
-descriptors for their event structs.
+descriptors for their event structs; a bare address covers all its modules.
 
 Options:
   --account <address>    events from transactions this account sent
@@ -250,6 +275,8 @@ Options:
   --network <name>       mainnet, testnet, devnet, movement-mainnet, or movement-testnet
                          (default: mainnet)
   --node-url <url>       fullnode URL, overriding the network's default
+  --api-key <key>        fullnode API key, sent as a bearer token (or set ${API_KEY_ENV}, used
+                         only on mainnet, testnet and devnet without --node-url)
   --from-version <n>     start at this version instead of the chain head
   --from-time <t>        tail, forward, query: start here, as 2h, 7d or an ISO date (UTC)
   --poll-interval <ms>   delay between polls (default: 1000)
@@ -266,7 +293,9 @@ Options:
                          (or set ${SECRET_ENV}, which keeps it out of ps)
   --db <file>            store: SQLite file to write (required)
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
-  --to-version <n>       record: end of the range (required); query: default the head
+  --to-version <n>       record: end of the range (required); query: default the head;
+                         forward: deliver up to here, then exit 0
+  --batch-size <n>       forward: most events per POST (default: 25)
   --order <asc|desc>     query: oldest or newest first (default: asc)
   --out <file>           codegen, record: write to this file instead of stdout
   -h, --help             show this help
@@ -278,6 +307,20 @@ function wrap<T>(fn: () => T): T {
   } catch (err) {
     throw new UsageError(err instanceof Error ? err.message : String(err));
   }
+}
+
+const APTOS_NETWORKS: readonly Network[] = ["mainnet", "testnet", "devnet"];
+
+/**
+ * The flag is an explicit choice, sent to whatever node the command uses. The
+ * variable is meant for Aptos Labs' endpoints, so it is never sent to a custom
+ * node or another chain.
+ */
+function apiKey(flag: string | undefined, network: Network, url: string | undefined): string | undefined {
+  if (flag === "") throw new UsageError("--api-key must not be empty");
+  if (flag !== undefined) return flag;
+  if (url !== undefined || !APTOS_NETWORKS.includes(network)) return undefined;
+  return process.env[API_KEY_ENV] || undefined;
 }
 
 function integer(flag: string, raw: string | undefined, min: number, max: number) {
@@ -430,6 +473,7 @@ function descriptor(
 interface SourceFlags extends DescriptorFlags {
   network?: string;
   "node-url"?: string;
+  "api-key"?: string;
   "from-time"?: string;
   "from-version"?: string;
   "poll-interval"?: string;
@@ -451,6 +495,8 @@ function source(command: string, values: SourceFlags, positionals: string[]): So
   const fromTime = startTime(values);
   const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
   if (fromTime !== undefined) options.fromTime = fromTime;
   if (pollInterval !== undefined) options.pollInterval = pollInterval;
@@ -490,6 +536,18 @@ function parseForward(args: string[]): ParsedCommand {
     headers: headers(values.header),
   };
   if (options.cursorFile === "") throw new UsageError("--cursor-file must not be empty");
+  const toVersion = version(values["to-version"], "to-version");
+  if (toVersion !== undefined) {
+    if (options.fromVersion === undefined && options.fromTime === undefined) {
+      throw new UsageError("--to-version needs --from-version or --from-time, where the range starts");
+    }
+    if (options.fromVersion !== undefined && toVersion < options.fromVersion) {
+      throw new UsageError("--to-version must not be below --from-version");
+    }
+    options.toVersion = toVersion;
+  }
+  const batchSize = integer("batch-size", values["batch-size"], 1, Number.MAX_SAFE_INTEGER);
+  if (batchSize !== undefined) options.batchSize = batchSize;
   if (values.secret === "") throw new UsageError("--secret must not be empty");
   const secret = values.secret ?? (process.env[SECRET_ENV] || undefined);
   if (secret !== undefined) {
@@ -535,6 +593,8 @@ function parseRecord(args: string[]): ParsedCommand {
   const url = nodeUrl(values["node-url"]);
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   if (limit !== undefined) options.limit = limit;
   if (values.out !== undefined) options.out = values.out;
   return { command: "record", options };
@@ -567,6 +627,8 @@ function parseQuery(args: string[]): ParsedCommand {
   const url = nodeUrl(values["node-url"]);
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   if (limit !== undefined) options.limit = limit;
   return { command: "query", options };
 }
@@ -585,6 +647,8 @@ function parseTx(args: string[]): ParsedCommand {
   const url = nodeUrl(values["node-url"]);
   const timeout = integer("timeout", values.timeout, 0, MAX_TIMEOUT);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   if (timeout !== undefined) options.timeout = timeout;
   return { command: "tx", options };
 }
@@ -601,13 +665,19 @@ function parseCheck(args: string[]): ParsedCommand {
   };
   const url = nodeUrl(values["node-url"]);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   return { command: "check", options };
 }
 
 function moduleRef(raw: string): ModuleRef {
+  if (!raw.includes("::")) {
+    wrap(() => requireAddress(raw));
+    return { address: raw };
+  }
   const [address = "", module = "", ...rest] = raw.split("::");
   if (rest.length > 0 || !MODULE_NAME.test(module)) {
-    throw new UsageError(`expected <address>::<module>: ${raw}`);
+    throw new UsageError(`expected <address> or <address>::<module>: ${raw}`);
   }
   wrap(() => requireAddress(address));
   return { address, module };
@@ -618,13 +688,15 @@ function parseCodegen(args: string[]): ParsedCommand {
     parseArgs({ args, options: CODEGEN_OPTIONS, allowPositionals: true, strict: true }),
   );
   if (values.help) return { command: "help" };
-  if (positionals.length === 0) throw new UsageError("codegen needs at least one <address>::<module>");
+  if (positionals.length === 0) throw new UsageError("codegen needs at least one <address> or <address>::<module>");
   const options: CodegenOptions = {
     modules: positionals.map(moduleRef),
     network: network(values.network),
   };
   const url = nodeUrl(values["node-url"]);
   if (url !== undefined) options.nodeUrl = url;
+  const key = apiKey(values["api-key"], options.network, url);
+  if (key !== undefined) options.apiKey = key;
   if (values.out !== undefined) {
     if (values.out === "") throw new UsageError("--out must not be empty");
     options.out = values.out;

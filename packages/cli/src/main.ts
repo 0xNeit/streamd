@@ -48,17 +48,20 @@ function parse(argv: string[]): ParsedCommand | undefined {
   }
 }
 
-function aptosConfig(options: Pick<SourceOptions, "network" | "nodeUrl">): AptosConfig {
+function aptosConfig(options: Pick<SourceOptions, "network" | "nodeUrl" | "apiKey">): AptosConfig {
   return new AptosConfig({
     ...NETWORKS[options.network],
     ...(options.nodeUrl !== undefined && { fullnode: options.nodeUrl }),
-    // The SDK's default HTTP/2 hangs under Bun, with no error.
-    ...("Bun" in globalThis && { clientConfig: { http2: false } }),
+    clientConfig: {
+      // The SDK's default HTTP/2 hangs under Bun, with no error.
+      ...("Bun" in globalThis && { http2: false }),
+      ...(options.apiKey !== undefined && { API_KEY: options.apiKey }),
+    },
   });
 }
 
 /** A client for `options` and a signal that the first SIGINT or a SIGTERM aborts. */
-function setup(options: Pick<SourceOptions, "network" | "nodeUrl">): { client: StreamdClient; controller: AbortController } {
+function setup(options: Pick<SourceOptions, "network" | "nodeUrl" | "apiKey">): { client: StreamdClient; controller: AbortController } {
   const controller = new AbortController();
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
@@ -74,6 +77,7 @@ async function forward(options: ForwardOptions): Promise<number> {
       client,
       error: (message) => process.stderr.write(`${message}\n`),
       signal: controller.signal,
+      headVersion: () => new FullnodeScanAdapter(new Aptos(aptosConfig(options))).getHeadVersion(),
     });
   } finally {
     client.destroy();
@@ -204,7 +208,29 @@ async function codegen(options: CodegenOptions): Promise<number> {
     }
     return parseModuleAbi(data);
   };
-  const source = await generateEventTypes(options.modules, load);
+  const list = async (address: string): Promise<ModuleAbi[]> => {
+    const abis: ModuleAbi[] = [];
+    let start: string | undefined;
+    do {
+      let response: { data: unknown[]; headers: Record<string, unknown> };
+      try {
+        response = await getAptosFullNode<{}, unknown[]>({
+          aptosConfig: config,
+          originMethod: "codegen",
+          path: `accounts/${address}/modules`,
+          params: { limit: 100, ...(start === undefined ? {} : { start }) },
+        });
+      } catch (err) {
+        throw new StreamdError(`Fullnode request for the modules of ${address} failed: ${message(err)}`);
+      }
+      if (!Array.isArray(response.data)) throw new StreamdError(`Malformed module list for ${address}`);
+      abis.push(...response.data.map(parseModuleAbi));
+      const next = response.headers["x-aptos-cursor"];
+      start = typeof next === "string" && next !== "" && next !== start ? next : undefined;
+    } while (start !== undefined);
+    return abis;
+  };
+  const source = await generateEventTypes(options.modules, load, { list });
   if (options.out === undefined) process.stdout.write(source);
   else await writeFile(options.out, source);
   return 0;

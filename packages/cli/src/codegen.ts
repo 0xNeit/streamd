@@ -1,13 +1,24 @@
 import { normalizeAddress, StreamdError } from "@streamd/core";
 import type { FieldAbi, ModuleAbi, MoveType, StructAbi, ViewAbi } from "./abi.js";
 
+/** One module, or every module at `address` when `module` is unset. */
 export interface ModuleRef {
   address: string;
-  module: string;
+  module?: string;
 }
 
 /** Reads one module's ABI; called at most once per module. */
 export type LoadModule = (address: string, module: string) => Promise<ModuleAbi>;
+
+/** Reads every module's ABI at an account. */
+export type ListModules = (address: string) => Promise<ModuleAbi[]>;
+
+export interface GenerateOptions {
+  /** Expands targets that name no module. */
+  list?: ListModules;
+  /** Writes a `handle` descriptor builder per `EventHandle` field of a resource; default true. */
+  handles?: boolean;
+}
 
 interface Entry {
   key: string;
@@ -18,6 +29,13 @@ interface Entry {
 interface ViewEntry {
   module: ModuleAbi;
   view: ViewAbi;
+}
+
+interface HandleEntry {
+  module: ModuleAbi;
+  struct: StructAbi;
+  field: string;
+  payload: MoveType;
 }
 
 const FRAMEWORK = normalizeAddress("0x1")!;
@@ -39,6 +57,12 @@ function builtin(t: Extract<MoveType, { kind: "struct" }>) {
   return long(t.address) === FRAMEWORK ? BUILTINS[`${t.module}::${t.name}`] : undefined;
 }
 
+/** The payload type of a legacy `0x1::event::EventHandle<T>` field, if `t` is one. */
+const handlePayload = (t: MoveType): MoveType | undefined =>
+  t.kind === "struct" && long(t.address) === FRAMEWORK && t.module === "event" && t.name === "EventHandle"
+    ? t.args[0]
+    : undefined;
+
 const fieldsOf = (s: StructAbi): FieldAbi[] =>
   s.isEnum ? s.variants.flatMap((v) => v.fields) : s.fields;
 
@@ -46,7 +70,8 @@ const fieldsOf = (s: StructAbi): FieldAbi[] =>
 async function collect(
   targets: ModuleRef[],
   load: LoadModule,
-): Promise<{ entries: Map<string, Entry>; views: ViewEntry[] }> {
+  { list, handles: withHandles = true }: GenerateOptions,
+): Promise<{ entries: Map<string, Entry>; views: ViewEntry[]; handles: HandleEntry[] }> {
   const modules = new Map<string, Promise<ModuleAbi>>();
   const getModule = (address: string, name: string) => {
     const key = moduleKey(address, name);
@@ -75,14 +100,47 @@ async function collect(
 
   const pending: Entry[] = [];
   const views: ViewEntry[] = [];
-  for (const { address, module } of targets) {
-    const abi = await getModule(address, module);
+  const handles: HandleEntry[] = [];
+  const seen = new Set<string>();
+  const take = (abi: ModuleAbi): boolean => {
     const events = abi.structs.filter((s) => s.isEvent);
-    if (events.length === 0 && abi.views.length === 0) {
-      throw new StreamdError(`Module ${address}::${module} declares no event structs or view functions`);
-    }
+    const held = !withHandles
+      ? []
+      : abi.structs.flatMap((struct) =>
+          struct.isResource && !struct.isEnum
+            ? struct.fields.flatMap((f) => {
+                const payload = handlePayload(f.type);
+                return payload === undefined ? [] : [{ module: abi, struct, field: f.name, payload }];
+              })
+            : [],
+        );
+    if (events.length === 0 && abi.views.length === 0 && held.length === 0) return false;
+    if (seen.has(moduleKey(abi.address, abi.name))) return true;
+    seen.add(moduleKey(abi.address, abi.name));
     for (const s of events) pending.push(...add(abi, s));
     for (const view of abi.views) views.push({ module: abi, view });
+    handles.push(...held);
+    return true;
+  };
+  for (const { address, module } of targets) {
+    if (module !== undefined) {
+      if (!take(await getModule(address, module))) {
+        throw new StreamdError(`Module ${address}::${module} declares no event structs, event handles or view functions`);
+      }
+      continue;
+    }
+    if (list === undefined) throw new StreamdError(`No module listing to expand ${address}`);
+    let found = false;
+    for (const abi of await list(address)) {
+      if (long(abi.address) !== long(address)) {
+        throw new StreamdError(`Fullnode listed ${abi.address}::${abi.name} for account ${address}`);
+      }
+      modules.set(moduleKey(abi.address, abi.name), Promise.resolve(abi));
+      if (take(abi)) found = true;
+    }
+    if (!found) {
+      throw new StreamdError(`Account ${address} has no modules with event structs, event handles or view functions`);
+    }
   }
 
   const visit = async (owner: Entry, field: string, t: MoveType): Promise<void> => {
@@ -108,10 +166,13 @@ async function collect(
     pending.push(...add(abi, struct));
   };
 
+  for (const h of handles) {
+    await visit({ key: "", module: h.module, struct: h.struct }, h.field, h.payload);
+  }
   for (let entry = pending.shift(); entry !== undefined; entry = pending.shift()) {
     for (const f of fieldsOf(entry.struct)) await visit(entry, f.name, f.type);
   }
-  return { entries, views };
+  return { entries, views, handles };
 }
 
 const pascal = (snake: string) =>
@@ -274,6 +335,44 @@ function renderView({ module, view }: ViewEntry, name: string): string {
   ].join("\n");
 }
 
+const usesParam = (t: MoveType): boolean =>
+  t.kind === "param" || (t.kind === "vector" && usesParam(t.of)) || (t.kind === "struct" && t.args.some(usesParam));
+
+function renderHandle(h: HandleEntry, name: string, names: Map<string, string>): string {
+  const count = h.struct.typeParams;
+  const args = Array.from({ length: count }, (_, i) => `t${i}`);
+  const payload = tsType(h.payload, names);
+  const generics = usesParam(h.payload)
+    ? `<${Array.from({ length: count }, (_, i) => `T${i} = unknown`).join(", ")}>`
+    : "";
+  const struct = `${h.module.address}::${h.module.name}::${h.struct.name}`;
+  const tag = count === 0 ? `"${struct}"` : `\`${struct}<${args.map((a) => `\${${a}}`).join(", ")}>\``;
+  const params = ["accountAddress: string", ...args.map((a) => `${a}: string`)];
+  return [
+    `/** \`${h.field}\` on \`${struct}\`, a legacy event handle */`,
+    `export const ${name} = ${generics}(${params.join(", ")}): HandleEventDescriptor<${payload}> => ({`,
+    '  kind: "handle",',
+    "  accountAddress,",
+    `  eventHandleStruct: ${tag},`,
+    `  fieldName: "${h.field}",`,
+    "});",
+  ].join("\n");
+}
+
+/**
+ * `<Struct>_<Field>` where unique, `<Module>_<Struct>_<Field>` where two modules
+ * share it, and the address appended where even that collides.
+ */
+function handleNames(handles: HandleEntry[], taken: Set<string>): string[] {
+  const plain = handles.map((h) => `${h.struct.name}_${pascal(h.field)}`);
+  const counts = count(plain);
+  const names = handles.map((h, i) =>
+    counts.get(plain[i]!) === 1 && !taken.has(plain[i]!) ? plain[i]! : `${pascal(h.module.name)}_${plain[i]}`,
+  );
+  const again = count(names);
+  return names.map((name, i) => (again.get(name) === 1 && !taken.has(name) ? name : `${name}_${handles[i]!.module.address}`));
+}
+
 /** `<function>View` where unique, `<module>_<function>View` where two targets share it. */
 function viewNames(views: ViewEntry[]): string[] {
   const plain = count(views.map((v) => v.view.name));
@@ -286,29 +385,39 @@ function viewNames(views: ViewEntry[]): string[] {
 
 /**
  * TypeScript source declaring a type and a `defineEvent` descriptor for every
- * event struct in `targets`, plus types for the structs they reference, and a
- * `ViewRequest` builder for each of their `#[view]` functions.
+ * event struct in `targets`, plus types for the structs they reference, a
+ * `ViewRequest` builder for each of their `#[view]` functions, and a `handle`
+ * descriptor builder for each `EventHandle` field of their resources.
  */
-export async function generateEventTypes(targets: ModuleRef[], load: LoadModule): Promise<string> {
-  const collected = await collect(targets, load);
+export async function generateEventTypes(
+  targets: ModuleRef[],
+  load: LoadModule,
+  options: GenerateOptions = {},
+): Promise<string> {
+  const collected = await collect(targets, load, options);
   const entries = [...collected.entries.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const key = ({ module, view }: ViewEntry) => `${moduleKey(module.address, module.name)}::${view.name}`;
   const views = collected.views.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
   const names = assignNames(entries);
   const builders = viewNames(views);
+  const handleKey = (h: HandleEntry) => `${moduleKey(h.module.address, h.module.name)}::${h.struct.name}::${h.field}`;
+  const handles = collected.handles.sort((a, b) => (handleKey(a) < handleKey(b) ? -1 : handleKey(a) > handleKey(b) ? 1 : 0));
+  const handleBuilders = handleNames(handles, new Set([...names.values(), ...builders]));
   const header = [
     `// Generated by streamd codegen from the on-chain ABIs of ${targets
-      .map((t) => `${t.address}::${t.module}`)
+      .map((t) => (t.module === undefined ? t.address : `${t.address}::${t.module}`))
       .join(", ")}.`,
     "// Do not edit: regenerate after a module upgrade.",
     "// u64, u128, u256, i64, i128 and i256 values are decimal strings, as the fullnode returns them.",
     ...(entries.some((e) => e.struct.isEvent) ? ['import { defineEvent } from "@streamd/core";'] : []),
     ...(views.length > 0 ? ['import type { ViewRequest } from "@streamd/core";'] : []),
+    ...(handles.length > 0 ? ['import type { HandleEventDescriptor } from "@streamd/core";'] : []),
   ];
   const sections = [
     header.join("\n"),
     ...entries.map((e) => render(e, names)),
     ...views.map((v, i) => renderView(v, builders[i]!)),
+    ...handles.map((h, i) => renderHandle(h, handleBuilders[i]!, names)),
   ];
   return `${sections.join("\n\n")}\n`;
 }

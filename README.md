@@ -37,6 +37,8 @@ The repository is a Turborepo monorepo on Bun workspaces with four packages:
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core`.
 - `@streamd/store-sqlite` (`packages/store-sqlite`) - opt-in persistence: events written to a
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
+- `@streamd/store-postgres` (`packages/store-postgres`) - the same over a Postgres client you
+  supply. See [Store events in Postgres](#store-events-in-postgres).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies. See [React hooks](#react-hooks).
 
@@ -187,6 +189,27 @@ your handler once per poll with that page's new events that pass `where`, in ord
 handler is awaited before the cursor moves past the page, so a crash or a stop mid-batch
 redelivers the whole page on resume. A throw or rejection goes to `onError` without counting
 toward `maxErrors`, and polling moves on to the next page.
+
+### Several descriptors at once
+
+```ts
+streamd.on([Swap, Deposit, { kind: "account", accountAddress: treasury }], (event) => {
+  // every match from all three, in (version, eventIndex) order, each event once
+});
+```
+
+`on`, `onBatch`, `once` and `stream` take a list of descriptors of any kinds. Each gets its own
+walk, and events are held by version until every walk has passed it, then delivered in order;
+an event two descriptors match arrives once. With typed descriptors, `event.data` is the union
+of their payloads. `onBatch` gets everything one release frees, so a batch always holds whole
+transactions. A throw from an `on` handler goes to `onError` and the rest of the transaction
+still arrives.
+
+A list cannot resume: the `cursor` option is refused and `sub.cursor` is `undefined`, so
+restart from a version instead. It is not a listener for `off()`, `removeAllListeners()` or
+`listenerCount()`; `unsubscribe()` or `destroy()` ends it, and a walk that gives up ends the
+rest. `where`, `decode` and `withState` run on each walk. A one-element list is that
+descriptor, with everything a single descriptor does.
 
 ### Group by transaction
 
@@ -401,6 +424,18 @@ exactly once. With a cursor no history is read: `ready` resolves with the value 
 `fromVersion`, `fromBlock` and `fromTime` are ignored. It is an opaque, JSON-safe string, and only
 works with the descriptor and node that produced it. Keep `value` JSON-safe if you store it as
 JSON.
+
+Pass a list of descriptors to fold several streams into one value, each event once, in
+`(version, eventIndex)` order across them:
+
+```ts
+const net = streamd.reduce([Deposit, Withdraw], (n, e) => e.type === Deposit.eventType ? n + 1 : n - 1, 0);
+```
+
+A merged backfill has no adapter cursor to follow from, so the reduction reads the head once,
+folds the merged history up to it, and follows the merged live tail from there; the adapter
+needs `getHeadVersion`. Its `cursor` resumes it the same way as above. An adapter cursor from
+`onCursor` cannot resume a list, and is refused.
 
 A throwing reducer stops the reduction, since folding past a lost event would leave the
 value wrong: the error goes to `onError` (or the client's), `ready` rejects if the backfill
@@ -1126,7 +1161,7 @@ and no events now generates too.
 ### Decode integers
 
 Move `u64`, `u128` and `u256` values arrive as decimal strings. Name the
-top-level `data` fields you want as `bigint`:
+`data` fields you want as `bigint`:
 
 ```ts
 const Deposit = defineEvent<{ store: string; amount: bigint }>(
@@ -1145,6 +1180,12 @@ const big = await client.getEvents(Deposit, { decode: ["amount"], limit: 10 });
 values. An event without the field is left alone. A named field holding
 anything other than an unsigned decimal string is an error: a subscription
 reports it through `onError` and skips the event, and a query rejects.
+
+A name below the top level is a dotted path, and `*` steps into every element of an array:
+`"pool.reserve"`, `"legs.*.amount"`, `"fees.*"`, or `"limit.vec.*"` for an `Option<u64>`. A key
+missing at any depth leaves the event alone, as a missing top-level field does; a value that is
+there but does not fit the path, such as `*` on something that is not an array, is the same
+error. `parseEvent` takes the same paths.
 
 ### State at the event's version
 
@@ -1210,8 +1251,8 @@ back.version; // bigint again
 `version`, `sequenceNumber` and `timestamp` always come back as `bigint`;
 `state` comes back as written.
 Inside `data`, every `bigint` is written as a decimal string, and only the
-top-level fields named in `decode` are turned back into `bigint`, by the same
-rule as the `decode` option; deeper ones stay strings. Malformed input throws
+fields named in `decode`, by path, are turned back into `bigint`, by the same
+rule as the `decode` option; the rest stay strings. Malformed input throws
 a `StreamdError`.
 
 ### Event identity
@@ -1971,6 +2012,44 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
   first use.
 
+## Store events in Postgres
+
+`@streamd/store-postgres` does what `@streamd/store-sqlite` does, over a Postgres client you
+supply: anything with `query(text, params)` resolving to `{ rows }`, which `pg`'s `Client` and
+`Pool` and PGlite already are. It has no driver dependency, and the tables are created on first
+use.
+
+```ts
+import pg from "pg";
+import { StreamdClient } from "@streamd/core";
+import { PostgresEventStore, PostgresStoreAdapter, storeEvents } from "@streamd/store-postgres";
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const store = new PostgresEventStore(pool);
+
+// Resolves once it has read the cursor saved under "swaps"; a restart resumes from there.
+const sub = await storeEvents(streamd, store, descriptor, { name: "swaps", fromVersion: -100_000n });
+
+const local = new StreamdClient({ adapter: new PostgresStoreAdapter(pool) });
+```
+
+With `Bun.sql`, wrap it: `{ query: async (text, params = []) => ({ rows: await sql.unsafe(text, params) }) }`.
+
+- **One statement per write.** A batch and its cursor are written by a single `INSERT` whose
+  parts are data-modifying CTEs, so they land together without a transaction, and a `Pool`
+  that runs each query on any connection is safe. Rows go in as one JSON parameter, so no
+  driver's array encoding matters and the parameter count is the same for any batch.
+- **No gaps, no duplicates,** as with SQLite: rows are keyed on `(version, eventIndex)`, a
+  repeated write replaces its row, and the cursor moves only after its batch is stored.
+- **Queryable.** `streamd_events` holds `version` (`numeric`, exact for every u64), `event_index`,
+  `type`, `sender`, `guid_address`, `guid_creation` and the event as the JSON text `serializeEvent`
+  writes, so `SELECT event::jsonb->'data'->>'amount' FROM streamd_events WHERE type = '...'` works.
+  It is `text` rather than `jsonb` because `jsonb` cannot hold a NUL character, which on-chain
+  strings may carry; the cast fails only on such a row. Saved cursors are in `streamd_cursors`.
+- `PostgresStoreAdapter` serves `module`, `account` (by stored `sender`) and `handle` (by
+  `creationNumber`) descriptors, with the SQLite adapter's cursors, paging and options.
+- No `prune` or `PageStore` yet.
+
 ## React hooks
 
 `@streamd/react` ties a subscription or a query to a component's lifetime.
@@ -1999,7 +2078,12 @@ function Feed() {
   returns `{ events, error, status }`: the most recent `maxEvents` events (default 100), oldest
   first; the last error, cleared when events next arrive; and `status`, `"idle"` (no
   descriptor, or not mounted yet), `"live"`, or `"stopped"` once `maxErrors` is reached.
-  Options are `on()`'s, without `signal`.
+  Options are `on()`'s, without `signal`. With `history: n` and a `fromVersion` or `fromTime`,
+  it first reads the `n` most recent matches between that start and the head, shows them in one
+  update (`status` is `"loading"` until then), and follows live from exactly where the read
+  ended, so a feed opens full rather than filling page by page:
+  `useEvents(Swap, { fromVersion: -100_000n, history: 20 })`. A failed read stops the hook with
+  its error.
 - **`useLogs(descriptor, options?)`** runs `client.getEvents` and returns
   `{ data, error, loading }`. `data` is the last successful result and stays through refetches
   and errors. Options are `getEvents`'s, without `signal`; it takes a list of descriptors too.
@@ -2082,6 +2166,12 @@ has for long-lived handles, it fails at the start, with `--handle` as well.
 `--network` takes `mainnet`, `testnet`, `devnet`, `movement-mainnet` or `movement-testnet`, and
 `--node-url` overrides its fullnode.
 
+Every command takes `--api-key <key>` for a keyed fullnode, sent as `Authorization: Bearer`, the
+SDK's API key. Without the flag, `APTOS_API_KEY` from the environment is used, but only on
+`mainnet`, `testnet` or `devnet` with no `--node-url`, so a key meant for Aptos Labs' endpoints
+never reaches a custom node or Movement; pass `--api-key` to send one there, as `--api-key "$NODE_KEY"` so the key stays out of shell
+history. The key is never printed.
+
 `--format pretty` prints one aligned line per event instead of JSON, for reading in a terminal:
 UTC time, type without its address, shortened sender, and the payload clipped to 80 columns.
 Control characters in on-chain text print as `?`. Handle events have no time or sender, so those
@@ -2117,6 +2207,8 @@ streamd forward --to https://hooks.example.com/aptos \
 | `--timeout <ms>` | per-request timeout (default `10000`) |
 | `--header 'Name: value'` | extra request header, repeatable |
 | `--secret <key>` | sign each body (or set `STREAMD_WEBHOOK_SECRET`, which keeps it out of `ps` and shell history) |
+| `--batch-size <n>` | most events per POST (default `25`); a page larger than it, since sources return whole transactions, goes in several |
+| `--to-version <n>` | deliver the range up to this version, then exit `0` |
 
 `--network`, `--node-url`, `--from-version` and `--poll-interval` work as for `tail`.
 
@@ -2148,9 +2240,22 @@ Any other status, redirects included, fails at once. The webhook receives only t
 the content type, your `--header` values and any signature, and neither the URL, header
 values nor the secret are printed.
 
+`--to-version` turns `forward` into a backfill job. It needs `--from-version` or `--from-time`
+(a saved cursor still wins), and the bound must already be history: the head is read once, and a
+bound above it fails. Nothing above the bound is sent. The run ends with exit `0` when the walk
+catches up, saving the cursor, or at the first page that crosses the bound, once that page's
+events up to the bound are acknowledged. The cursor then stays before that page, so a later run
+past the bound resends those events rather than skipping the rest.
+
+```sh
+streamd forward --to https://hooks.example.com/backfill --from-version 3000000000 \
+  --to-version 3001000000 --batch-size 100 0x1::coin::CoinDeposit
+```
+
 Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST without moving the
-cursor; `1` when a batch fails past its retries, the subscription stops on an error, or the
-cursor file cannot be read or written; `2` for invalid arguments. Run it under a supervisor
+cursor; `1` when a batch fails past its retries, the subscription stops on an error, the
+cursor file cannot be read or written, or `--to-version` is above the head; `2` for invalid
+arguments. Run it under a supervisor
 that restarts on `1`.
 
 ### Start from a time
@@ -2262,6 +2367,25 @@ events reference, fetched from whichever modules and accounts declare them.
 
 ```sh
 streamd codegen --out src/events.ts 0x1::fungible_asset 0x1::coin
+```
+
+It also writes a typed `handle` descriptor builder for each legacy `0x1::event::EventHandle<T>`
+field of a resource (a struct with `key`) in the modules it reads, named `<Struct>_<Field>` and
+taking the account address, then a generic resource's type arguments:
+
+```ts
+import { CoinStore_DepositEvents } from "./events.js";
+
+client.on(CoinStore_DepositEvents(wallet, "0x1::aptos_coin::AptosCoin"), (e) => console.log(e.data.amount));
+```
+
+Handles nested below a resource's top level have no builder; reach them by `creationNumber`.
+
+A bare address covers every module published there, skipping the ones with no `#[event]` struct,
+event handle or `#[view]` function, and mixes with named modules:
+
+```sh
+streamd codegen --out src/protocol.ts 0x<protocol address>
 ```
 
 ```ts

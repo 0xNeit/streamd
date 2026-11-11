@@ -119,7 +119,7 @@ export function combinedStatus(walks: Subscription[], active: boolean): Subscrip
 export function startTransactions(
   host: TransactionHost,
   descriptor: EventDescriptor | readonly EventDescriptor[],
-  callback: TransactionCallback,
+  callback: TransactionCallback | { batch: (groups: TransactionGroup[]) => unknown },
   options: SubscriptionOptions = {},
 ): Subscription {
   const descriptors: readonly EventDescriptor[] = Array.isArray(descriptor)
@@ -158,12 +158,13 @@ export function startTransactions(
     for (const w of walks) w.unsubscribe();
   };
 
-  const deliver = async (group: TransactionGroup) => {
+  const deliver = async (groups: TransactionGroup[]) => {
     try {
-      const result: unknown = callback(group);
+      const result: unknown =
+        typeof callback === "function" ? callback(groups[0]!) : callback.batch(groups);
       if (isThenable(result)) await result;
     } catch (err) {
-      report(new StreamdError(`Transaction callback threw for ${group.version}`, err));
+      report(new StreamdError(`Transaction callback threw for ${groups[0]!.version}`, err));
     }
   };
 
@@ -174,13 +175,21 @@ export function startTransactions(
     const ready = [...buffer.keys()]
       .filter((v) => v <= limit)
       .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    for (const version of ready) {
-      // A pause or stop between groups leaves the rest buffered.
-      if (!live()) return;
+    const take = (version: bigint) => {
       const events = [...buffer.get(version)!.values()].sort((a, b) => a.eventIndex - b.eventIndex);
       buffer.delete(version);
       for (const e of events) released.mark(e);
-      await deliver(groupOf(version, events));
+      return groupOf(version, events);
+    };
+    if (typeof callback !== "function") {
+      // A batch takes everything released at once.
+      if (ready.length > 0 && live()) await deliver(ready.map(take));
+    } else {
+      for (const version of ready) {
+        // A pause or stop between groups leaves the rest buffered.
+        if (!live()) return;
+        await deliver([take(version)]);
+      }
     }
     if (single && buffer.size === 0 && live() && nextCursor !== undefined) checkpoint = nextCursor;
   };

@@ -144,6 +144,7 @@ export type {
   ResourceDescriptor,
   CloseOptions,
   EventOf,
+  DescriptorData,
   TaggedEvent,
   StreamdConfig,
   StreamdEvent,

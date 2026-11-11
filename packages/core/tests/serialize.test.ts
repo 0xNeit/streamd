@@ -141,4 +141,15 @@ describe("serializeEvent state", () => {
     const bad = serializeEvent(event).replace('"state":["10",{"inner":"2"}]', '"state":"10"');
     expect(() => parseEvent(bad)).toThrow('"state" must be an array');
   });
+  it("restores nested decode paths after a round trip", () => {
+    const event: StreamdEvent = {
+      type: "0x1::m::E",
+      data: { legs: [{ amount: 2n ** 70n }], limit: { vec: [9n] } },
+      version: 1n,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+    };
+    const back = parseEvent(serializeEvent(event), { decode: ["legs.*.amount", "limit.vec.*"] });
+    expect(back.data).toEqual(event.data);
+  });
 });

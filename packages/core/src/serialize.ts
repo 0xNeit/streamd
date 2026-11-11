@@ -32,8 +32,8 @@ export function serializeEvent(event: StreamdEvent): string {
 
 export interface ParseEventOptions {
   /**
-   * Top-level `data` fields to turn back into `bigint`, as the `decode`
-   * listener and query option does. Bigints nested deeper stay decimal strings.
+   * `data` fields, by path, to turn back into `bigint`, as the `decode`
+   * listener and query option does. Unnamed bigints stay decimal strings.
    */
   decode?: readonly string[];
 }

@@ -9,8 +9,14 @@ import { withLatestFunctions } from "./key.js";
 
 export const DEFAULT_MAX_EVENTS = 100;
 
-/** `idle` before mount, on the server, or with nothing to follow; `stopped` once polling gives up. */
-export type UseEventsStatus = "idle" | "live" | "stopped";
+/**
+ * `idle` before mount, on the server, or with nothing to follow; `loading`
+ * while a `history` read runs; `stopped` once polling gives up.
+ */
+export type UseEventsStatus = "idle" | "loading" | "live" | "stopped";
+
+/** What the hook needs of a running subscription. */
+export type Following = Pick<Subscription, "unsubscribe" | "active" | "paused">;
 
 export interface UseEventsResult<TData> {
   /** The most recent `maxEvents` delivered events, oldest first. */
@@ -32,7 +38,8 @@ export function useFollowing<TData, TOptions extends Omit<SubscriptionOptions, "
   deps: unknown,
   listener: TOptions,
   maxEvents: number,
-  start: (deliver: (events: EventOf<TData>[]) => void, options: TOptions) => Subscription,
+  start: (deliver: (events: EventOf<TData>[]) => void, options: TOptions) => Following,
+  initial: UseEventsStatus = "live",
 ): UseEventsResult<TData> {
   if (!Number.isSafeInteger(maxEvents) || maxEvents < 1) {
     throw new StreamdError(`Invalid maxEvents: ${String(maxEvents)} (expected a positive integer)`);
@@ -48,9 +55,9 @@ export function useFollowing<TData, TOptions extends Omit<SubscriptionOptions, "
       return;
     }
     let current = true;
-    let sub: Subscription | undefined;
+    let sub: Following | undefined;
     const opts = withLatestFunctions(listener, () => latest.current.listener);
-    setState({ events: [], error: undefined, status: "live" });
+    setState({ events: [], error: undefined, status: initial });
     sub = start(
       (batch) => {
         if (!current) return;
@@ -75,7 +82,7 @@ export function useFollowing<TData, TOptions extends Omit<SubscriptionOptions, "
       sub.unsubscribe();
     };
     // `key` stands for the inputs by value.
-  }, [deps, key, enabled]);
+  }, [deps, key, enabled, initial]);
 
   return state;
 }

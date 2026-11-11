@@ -26,6 +26,8 @@ export interface StructAbi {
   name: string;
   isEvent: boolean;
   isEnum: boolean;
+  /** Has `key`, so it can sit at an account and its handles can be read by struct and field. */
+  isResource: boolean;
   typeParams: number;
   fields: FieldAbi[];
   variants: { name: string; fields: FieldAbi[] }[];
@@ -155,6 +157,7 @@ function struct(value: unknown): StructAbi {
     name,
     isEvent: isEvent as boolean,
     isEnum: isEnum as boolean,
+    isResource: Array.isArray(raw.abilities) && raw.abilities.includes("key"),
     typeParams: (raw.generic_type_params as unknown[]).length,
     fields: fields(raw.fields, name),
     variants: (variants as unknown[]).map((variant) => {

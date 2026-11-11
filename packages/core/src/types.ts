@@ -58,8 +58,10 @@ type TaggedMember<TData> =
     : never;
 
 /** Legacy EventHandle event, identified by account + handle + field */
-export interface HandleEventDescriptor {
+export interface HandleEventDescriptor<TData = unknown> {
   kind: "handle";
+  /** Type-only payload carrier, as on `ModuleEventDescriptor`; codegen's handle builders set it. */
+  [eventData]?(data: TData): void;
   accountAddress: string;
   eventHandleStruct: string;
   fieldName: string;
@@ -113,9 +115,20 @@ export interface ResourceDescriptor {
   resourceType: MoveEventType;
 }
 
+/**
+ * The payload type a descriptor carries, `unknown` for one without; over a
+ * union of descriptors, the union of their payloads. What a list of
+ * descriptors given to `on`, `onBatch`, `once` or `stream` delivers.
+ */
+export type DescriptorData<TDescriptor> = TDescriptor extends ModuleEventDescriptor<infer TData>
+  ? TData
+  : TDescriptor extends HandleEventDescriptor<infer TData>
+    ? TData
+    : unknown;
+
 export type EventDescriptor<TData = unknown> =
   | ModuleEventDescriptor<TData>
-  | HandleEventDescriptor
+  | HandleEventDescriptor<TData>
   | CreationNumberEventDescriptor
   | AccountEventDescriptor
   | ResourceDescriptor;
@@ -294,8 +307,9 @@ export interface EventFilter {
    */
   where?: EventPredicate;
   /**
-   * Top-level `data` fields whose decimal strings (u64, u128, u256) become
-   * `bigint`, before `where` runs. An event without the field is left as is;
+   * `data` fields whose decimal strings (u64, u128, u256) become `bigint`,
+   * before `where` runs. A name is a dotted path, `*` for every element of an
+   * array (`"legs.*.amount"`). An event without the field is left as is;
    * one holding anything else rejects the query with a `StreamdError`.
    */
   decode?: readonly string[];
@@ -349,7 +363,7 @@ export interface EventFilter {
 export interface EventsOfOptions {
   /** Keep only events satisfying this predicate, after `decode`; a rejection rejects the call. */
   where?: EventPredicate;
-  /** Top-level `data` fields turned from decimal strings into `bigint`, as `EventFilter.decode`. */
+  /** `data` fields, by path, turned from decimal strings into `bigint`, as `EventFilter.decode`. */
   decode?: readonly string[];
   /**
    * How long to wait for the transaction to be committed, in ms (default
@@ -385,7 +399,7 @@ export interface PreviewEventsOptions {
   signerPublicKey?: PublicKey;
   /** Keep only events satisfying this predicate, after `decode`. */
   where?: EventPredicate;
-  /** Top-level `data` fields turned from decimal strings into `bigint`, as `EventFilter.decode`. */
+  /** `data` fields, by path, turned from decimal strings into `bigint`, as `EventFilter.decode`. */
   decode?: readonly string[];
 }
 
@@ -610,8 +624,9 @@ export interface ListenerOptions {
    */
   where?: EventPredicate;
   /**
-   * Top-level `data` fields whose decimal strings (u64, u128, u256) become
-   * `bigint`, before `where` runs. An event without the field is left as is;
+   * `data` fields whose decimal strings (u64, u128, u256) become `bigint`,
+   * before `where` runs. A name is a dotted path, `*` for every element of an
+   * array (`"legs.*.amount"`). An event without the field is left as is;
    * one holding anything else is skipped and reported through `onError`,
    * without counting toward `maxErrors`.
    */

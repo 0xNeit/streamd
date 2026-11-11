@@ -164,3 +164,71 @@ export function narrowsOnType(): void {
     else void (event.data.b satisfies number);
   }
 }
+
+describe("useEvents history", () => {
+  const HISTORY = { ...FAST, history: 3 } satisfies UseEventsOptions;
+  const many = () => Array.from({ length: 8 }, (_, i) => ev(BigInt(i + 1)));
+
+  it("shows loading, then the last n events in one update, then live ones with none repeated", async () => {
+    const t = setup(many());
+    const seen: UseEventsResult<unknown>[] = [];
+    function Probe() {
+      seen.push(useEvents({ kind: "module", eventType: TYPE }, { ...HISTORY }));
+      return null;
+    }
+    const root = await render(createElement(StreamdProvider, { client: t.client }, createElement(Probe)));
+    await waitFor(() => expect(seen.at(-1)!.events.map((e) => e.version)).toEqual([6n, 7n, 8n]));
+    expect(seen.some((r) => r.status === "loading")).toBe(true);
+    // Never a partial history on screen: lengths go 0, then 3.
+    expect([...new Set(seen.map((r) => r.events.length))]).toEqual([0, 3]);
+    t.adapter.events.push(ev(9n), ev(10n));
+    await waitFor(() => expect(seen.at(-1)!.events.map((e) => e.version)).toEqual([6n, 7n, 8n, 9n, 10n]));
+    expect(seen.at(-1)!.status).toBe("live");
+    await unmount(root);
+  });
+
+  it("keeps maxEvents as the ceiling, and applies where to the read", async () => {
+    const t = setup(many());
+    const root = await render(
+      t.el(TYPE, { ...FAST, history: 10, maxEvents: 4, where: (e) => e.version % 2n === 0n }),
+    );
+    await waitFor(() => expect(t.versions()).toEqual([2n, 4n, 6n, 8n]));
+    t.adapter.events.push(ev(9n), ev(10n));
+    await waitFor(() => expect(t.versions()).toEqual([4n, 6n, 8n, 10n]));
+    await unmount(root);
+  });
+
+  it("stops with the error when the read fails", async () => {
+    const t = setup(many());
+    t.adapter.failing = true;
+    const errors: Error[] = [];
+    const root = await render(t.el(TYPE, { ...HISTORY, onError: (e) => errors.push(e) }));
+    await waitFor(() => expect(t.last().status).toBe("stopped"));
+    expect(t.last().error).toBeInstanceOf(StreamdNetworkError);
+    expect(errors).toHaveLength(1);
+    expect(t.subscribes()).toBe(0);
+    await unmount(root);
+  });
+
+  it("refuses history without a start or not a positive integer", () => {
+    const t = setup();
+    for (const options of [{ history: 3 }, { fromVersion: 0n, history: 0 }, { fromVersion: 0n, history: 1.5 }]) {
+      expect(() => renderToString(t.el(TYPE, options as UseEventsOptions))).toThrow(StreamdError);
+    }
+  });
+
+  it("leaves nothing running when unmounted during the read", async () => {
+    const t = setup(many());
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const fetch = t.adapter.fetchEvents.bind(t.adapter);
+    t.adapter.fetchEvents = async (d, o) => (await gate, fetch(d, o));
+    const root = await render(t.el(TYPE, HISTORY));
+    expect(t.last().status).toBe("loading");
+    await unmount(root);
+    release();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(t.subscribes()).toBe(0);
+    expect(t.client.listenerCount()).toBe(0);
+  });
+});
