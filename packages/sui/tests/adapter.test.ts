@@ -224,7 +224,6 @@ describe("SuiAdapter versions as bounds", () => {
     expect(lag.statusCode).toBeUndefined();
   });
 
-
   it("searches past checkpoints the node has pruned below its reported lowest", async () => {
     // Service info says checkpoint 0 is the lowest, but 0 and 1 are gone.
     const { client } = fakeLedger(SIZES, EVENTS, undefined, 2n);
