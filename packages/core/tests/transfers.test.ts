@@ -601,6 +601,44 @@ describe("transfers with requestTimeout", () => {
     expect(errors).toHaveLength(1);
   });
 
+  it("starts no reads from a page abandoned while its fetch was still running", async () => {
+    const inner = withViews([fa(1, 0, "Withdraw", "a1", "100"), fa(1, 1, "Deposit", "b1", "100")]);
+    let fetches = 0;
+    // The first page's fetch outlives its timeout; reads hang until just after it returns.
+    // Timeout at 100, retry at about 101 whose fetch returns at about 181; the first returns at 160.
+    const delays = [160, 80];
+    const started = performance.now();
+    const adapter: EventAdapter = {
+      ...inner.adapter,
+      fetchEvents: async (d, o) => {
+        const delay = delays[fetches++] ?? 0;
+        await new Promise((r) => setTimeout(r, delay));
+        return inner.adapter.fetchEvents(d, o);
+      },
+      view: (request, version, descriptor) =>
+        performance.now() - started < 170
+          ? new Promise<never>(() => {})
+          : inner.adapter.view!(request, version, descriptor),
+    };
+    const client = new StreamdClient({ adapter, requestTimeout: 100 });
+    const errors: unknown[] = [];
+    const record = await new Promise<StreamdEvent<Transfer> | undefined>((resolve) => {
+      client.transfers(resolve, {
+        fromVersion: 0n,
+        pollInterval: 1,
+        maxBackoff: 1,
+        maxErrors: 2,
+        onError: (err) => {
+          errors.push(err);
+          if (errors.length === 2) resolve(undefined);
+        },
+      });
+    });
+    client.destroy();
+    expect(record?.data.amount).toBe(100n);
+    expect(errors).toHaveLength(1);
+  });
+
   it("recovers a live subscription from a hung read", async () => {
     const { adapter } = firstViewHangs();
     const client = new StreamdClient({ adapter, requestTimeout: 2 });

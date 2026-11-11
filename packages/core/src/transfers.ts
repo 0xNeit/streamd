@@ -220,6 +220,7 @@ export function transferSource(
   // starts belongs to one the caller gave up on, perhaps at its timeout before
   // this read's own: joining it would fail the retry too.
   let loads: (() => void)[] = [];
+  let generation = 0;
   const track = (drop: () => void) => void loads.push(drop);
   const metadata = memo<string | undefined>((asset) => asset !== undefined, track);
   const infos = memo<AssetInfo | undefined>(() => true, track);
@@ -334,9 +335,15 @@ export function transferSource(
 
   const source: EventAdapter = {
     fetchEvents: async (descriptor, options) => {
+      const mine = ++generation;
+      // A page overtaken while it waited was abandoned; its reads would only be joined.
+      const overtaken = () => {
+        if (generation !== mine) throw new StreamdNetworkError("Transfer page abandoned for a newer one");
+      };
       for (const drop of loads.splice(0)) drop();
       const who = await account?.();
       const page = await adapter.fetchEvents(descriptor, options);
+      overtaken();
       let events = await toTransfers(page.events);
       if (who !== undefined) events = events.filter(({ data }) => data.from === who || data.to === who);
       if (withAssetInfo) events = await Promise.all(events.map(withInfo));
