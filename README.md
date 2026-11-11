@@ -2420,6 +2420,29 @@ has an end. Failed pages are retried and not recorded, and the file appears only
 query has succeeded. Without `--out` the recording goes to stdout. It exits 0 on success, 1 on
 failure, 130 if interrupted and 2 for bad usage.
 
+### Compare two nodes
+
+`streamd compare` reads one range from two fullnodes through
+[`compareAdapters`](#data-sources-and-their-limits) and prints what they disagree on, to check a
+node against a reference:
+
+```sh
+streamd compare --node-url http://my-node:8080/v1 --against https://api.mainnet.aptoslabs.com/v1 \
+  --from-version 8002810605 --to-version 8002811605 0x1::fungible_asset::Deposit
+```
+
+The command's node (`--network`, or `--node-url`, with its `--api-key`) is compared with
+`--against`, which gets no API key. Each finding is a JSON line, events written as `tail` writes
+them: `{"kind":"missing","event":…}` for one only the first node has, `"extra"` for one only the
+second has, and `{"kind":"different","id","fields","a","b"}`. A last line, `"kind":"summary"`,
+gives `ok`, the window both nodes covered, `matched`, the pages read and any errors. Events are
+identified by version and index, so an event dropped from a transaction also shows the next one
+there as missing and extra.
+
+The range is required and at most 100,000 versions; `--max-pages` (default 10) caps each walk and
+`--limit` sets the page size. It exits 0 when the nodes agree, 1 when they disagree, a node fails
+or no window was compared, and 2 for bad usage.
+
 ### Generate event types
 
 `streamd store` follows the same descriptors as `tail` into a SQLite file, through
