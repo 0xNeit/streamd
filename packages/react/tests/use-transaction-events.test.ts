@@ -4,15 +4,15 @@ import { StrictMode, createElement } from "react";
 import { renderToString } from "react-dom/server";
 import {
   MemoryAdapter,
-  StreamdClient,
   StreamdNetworkError,
   StreamdTimeoutError,
   StreamdTransactionError,
   type EventDescriptor,
-  type EventsOfOptions,
   type StreamdEvent,
   type TransactionEvents,
 } from "@streamd/core";
+import { AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { AptosClient, type EventsOfOptions } from "@streamd/aptos";
 import {
   StreamdProvider,
   useTransactionEvents,
@@ -31,6 +31,10 @@ function tagged(version: bigint, hash: string, type = TYPE): StreamdEvent {
   return { ...ev(version, type), transactionHash: hash };
 }
 
+function aptosClient(adapter: ConstructorParameters<typeof AptosClient>[0]["adapter"]): AptosClient {
+  return new AptosClient({ adapter, aptos: new AptosConfig({ network: Network.DEVNET, clientConfig: { http2: false } }) });
+}
+
 function setup() {
   const memory = new MemoryAdapter([tagged(1n, A), { ...tagged(1n, A, OTHER), eventIndex: 1 }, tagged(2n, B)]);
   const lookups: string[] = [];
@@ -45,7 +49,7 @@ function setup() {
       return memory.getTransactionEvents(hash);
     },
   };
-  const client = new StreamdClient({ adapter });
+  const client = aptosClient(adapter);
   const signals: AbortSignal[] = [];
   const eventsOf = client.eventsOf.bind(client);
   client.eventsOf = ((h: string, d: EventDescriptor<never> | undefined, o: EventsOfOptions) => {
@@ -171,8 +175,8 @@ describe("useTransactionEvents", () => {
 
   it("uses a different client's own request, not the previous client's result", async () => {
     const t = setup();
-    const other = new StreamdClient({ adapter: new MemoryAdapter([tagged(9n, A)]) });
-    function Tx({ client }: { client: StreamdClient }) {
+    const other = aptosClient(new MemoryAdapter([tagged(9n, A)]));
+    function Tx({ client }: { client: AptosClient }) {
       t.results.push(useTransactionEvents(A, { client }));
       return null;
     }

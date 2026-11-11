@@ -1,6 +1,7 @@
+import { testClient } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
 import { AccountAddress, type Aptos } from "@aptos-labs/ts-sdk";
-import { MemoryAdapter, StreamdClient, StreamdError, StreamdNetworkError, every, ofType } from "@streamd/core";
+import { MemoryAdapter, StreamdError, StreamdNetworkError, every, ofType } from "@streamd/core";
 import { ownedBy } from "../src/ownership.js";
 import type { EventDescriptor, StreamdEvent } from "@streamd/core";
 
@@ -209,7 +210,7 @@ describe("ownedBy through the client", () => {
 
   it("keeps only events on stores the wallet owns in a query", async () => {
     const adapter = new MemoryAdapter([deposit(1), deposit(2), deposit(3, "0x1::other::Deposit"), deposit(4)]);
-    const events = await new StreamdClient({ adapter }).getEvents(deposits, {
+    const events = await testClient({ adapter }).getEvents(deposits, {
       fromVersion: 0n,
       where: every(ofType(DEPOSIT), ownedBy(ownsStores([2, 3, 4]), wallet)),
     });
@@ -220,7 +221,7 @@ describe("ownedBy through the client", () => {
     let reads = 0;
     const errors: Error[] = [];
     const seen: bigint[] = [];
-    const sub = new StreamdClient({ adapter: new MemoryAdapter([deposit(1), deposit(2)]) }).on(
+    const sub = testClient({ adapter: new MemoryAdapter([deposit(1), deposit(2)]) }).on(
       deposits,
       (e) => void seen.push(e.version),
       {

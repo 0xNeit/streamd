@@ -1,5 +1,6 @@
 import { createContext, createElement, useContext, type ReactNode } from "react";
 import { StreamdError, type StreamdClient } from "@streamd/core";
+import type { AptosClient } from "@streamd/aptos";
 
 const ClientContext = createContext<StreamdClient | undefined>(undefined);
 
@@ -23,4 +24,13 @@ export function useStreamdClient(client?: StreamdClient): StreamdClient {
     );
   }
   return resolved;
+}
+
+/** `useStreamdClient`, refusing a client without the Aptos methods. */
+export function useAptosClient(client?: AptosClient): AptosClient {
+  const resolved = useStreamdClient(client);
+  if (typeof (resolved as { eventsOf?: unknown }).eventsOf !== "function") {
+    throw new StreamdError("This hook needs an AptosClient from @streamd/aptos");
+  }
+  return resolved as AptosClient;
 }

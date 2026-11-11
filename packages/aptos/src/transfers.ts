@@ -1,15 +1,10 @@
-import { StreamdError, StreamdNetworkError } from "./errors.js";
-import { normalizeAddress } from "./filter.js";
-import { UNSIGNED_INTEGER } from "./decode.js";
-import { RequestLimiter } from "./limiter.js";
-import { requireAddress } from "./adapters/validate.js";
-import type {
-  EventAdapter,
-  ModuleEventDescriptor,
-  StreamdEvent,
-  Transfer,
-  ViewRequest,
-} from "./types.js";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import { normalizeAddress } from "@streamd/core";
+import { UNSIGNED_INTEGER } from "@streamd/core";
+import { RequestLimiter } from "@streamd/core";
+import { requireAddress } from "@streamd/core";
+import type { EventAdapter, ModuleEventDescriptor, StreamdEvent, ViewRequest } from "@streamd/core";
+import type { Transfer } from "./types.js";
 
 const FA_WITHDRAW = "0x1::fungible_asset::Withdraw";
 const FA_DEPOSIT = "0x1::fungible_asset::Deposit";

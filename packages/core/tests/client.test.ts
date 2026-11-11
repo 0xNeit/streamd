@@ -5,7 +5,6 @@ import {
   captureMicrotaskThrows,
   mocked,
 } from "./timers.js";
-import { AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { FallbackAdapter } from "../src/adapters/fallback.js";
 import { withHooks } from "../src/adapters/hooks.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
@@ -20,7 +19,6 @@ import type {
   ModuleEventDescriptor,
   StreamdEvent,
   Subscription,
-  Transfer,
 } from "../src/types.js";
 import {
   StreamdError,
@@ -29,11 +27,6 @@ import {
   StreamdTimeoutError,
 } from "../src/errors.js";
 
-function makeAptos() {
-  // Constructing the SDK performs no network I/O; the injected adapter below
-  // is what actually serves events.
-  return new Aptos(new AptosConfig({ network: Network.DEVNET, clientConfig: { http2: false } }));
-}
 
 function makeEvent(version: number, eventIndex = 0): StreamdEvent {
   return {
@@ -68,7 +61,6 @@ describe("StreamdClient", () => {
 
   it("creates subscriptions with on()", () => {
     const client = new StreamdClient({
-      aptos: makeAptos(),
       adapter: adapterOf([]),
     });
     const sub = client.on(
@@ -87,7 +79,6 @@ describe("StreamdClient", () => {
 
   it("destroy stops all subscriptions", () => {
     const client = new StreamdClient({
-      aptos: makeAptos(),
       adapter: adapterOf([]),
     });
     const sub1 = client.on(
@@ -107,7 +98,7 @@ describe("StreamdClient", () => {
 
   it("on() forgets a subscription whose signal aborts", async () => {
     const adapter = adapterOf([]);
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const controller = new AbortController();
     const onError = vi.fn();
     const sub = client.on({ kind: "module", eventType: "0x1::test::Event" }, () => {}, {
@@ -128,7 +119,7 @@ describe("StreamdClient", () => {
 
   it("on() with an already-aborted signal never polls", async () => {
     const adapter = adapterOf([]);
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const sub = client.on({ kind: "module", eventType: "0x1::test::Event" }, () => {}, {
       signal: AbortSignal.abort(),
     });
@@ -140,7 +131,7 @@ describe("StreamdClient", () => {
   });
 
   it("on() detaches from the signal on unsubscribe", () => {
-    const client = new StreamdClient({ aptos: makeAptos(), adapter: adapterOf([]) });
+    const client = new StreamdClient({ adapter: adapterOf([]) });
     const controller = new AbortController();
     const remove = vi.spyOn(controller.signal, "removeEventListener");
     const sub = client.on({ kind: "module", eventType: "0x1::test::Event" }, () => {}, {
@@ -158,7 +149,7 @@ describe("StreamdClient", () => {
       { events: mockEvents, nextCursor: "101", hasMore: false },
     ]);
 
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const events = await client.getEvents(
       { kind: "module", eventType: "0x1::test::Event" },
       { fromVersion: 50n, limit: 10 },
@@ -184,7 +175,7 @@ describe("StreamdClient", () => {
       { events: [makeEvent(25)], nextCursor: "30", hasMore: false },
     ]);
 
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const events = await client.getEvents({
       kind: "module",
       eventType: "0x1::test::Event",
@@ -227,7 +218,7 @@ describe("StreamdClient", () => {
       { events: [makeEvent(3), makeEvent(4)], nextCursor: "5", hasMore: true },
     ]);
 
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const events = await client.getEvents(
       { kind: "module", eventType: "0x1::test::Event" },
       { limit: 3 },
@@ -261,7 +252,7 @@ describe("StreamdClient", () => {
       },
     ]);
 
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const events = await client.getEvents(
       { kind: "module", eventType: "0x1::test::Event" },
       { where: involvesAddress("0x1") },
@@ -277,7 +268,7 @@ describe("StreamdClient", () => {
   it("does not forward `where` to the adapter", async () => {
     // Predicates are functions and cannot be pushed to a remote source.
     const adapter = adapterOf([]);
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
 
     await client.getEvents(
       { kind: "module", eventType: "0x1::test::Event" },
@@ -303,7 +294,7 @@ describe("StreamdClient", () => {
     ]);
     const received: bigint[] = [];
 
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const sub = client.on(
       { kind: "module", eventType: "0x1::test::Event" },
       (e) => received.push(e.version),
@@ -331,7 +322,6 @@ describe("StreamdClient", () => {
     };
 
     const client = new StreamdClient({
-      aptos: makeAptos(),
       adapter: adapterOf([page, page]),
     });
     const events = await client.getEvents(
@@ -406,7 +396,7 @@ describe("StreamdClient", () => {
       })),
     };
 
-    const client = new StreamdClient({ aptos: makeAptos(), adapter: endless });
+    const client = new StreamdClient({ adapter: endless });
     const events = await client.getEvents(
       { kind: "module", eventType: "0x1::test::Event" },
       { limit: 100, maxPages: 3, where: () => false },
@@ -422,7 +412,7 @@ describe("StreamdClient", () => {
     const first = adapterOf([
       { events: [makeEvent(1)], nextCursor: "2", hasMore: false },
     ]);
-    const client = new StreamdClient({ aptos: makeAptos(), adapter: first });
+    const client = new StreamdClient({ adapter: first });
     const sub = client.on({ kind: "module", eventType: "0x1::test::Event" }, () => {});
     await advanceTimersByTimeAsync(0);
     client.destroy();
@@ -430,7 +420,7 @@ describe("StreamdClient", () => {
     expect(saved).toBe("2");
 
     const second = adapterOf([]);
-    const restarted = new StreamdClient({ aptos: makeAptos(), adapter: second });
+    const restarted = new StreamdClient({ adapter: second });
     restarted.on({ kind: "module", eventType: "0x1::test::Event" }, () => {}, {
       cursor: saved,
     });
@@ -445,7 +435,7 @@ describe("StreamdClient", () => {
       { events: [makeEvent(10)], nextCursor: "5", hasMore: false },
     ]);
 
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const events = await client.getEvents({
       kind: "account",
       accountAddress: "0x1",
@@ -467,7 +457,7 @@ describe("StreamdClient", () => {
       { events: [mockEvent], nextCursor: "201", hasMore: false },
     ]);
 
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
 
     const promise = client.once({
       kind: "module",
@@ -490,7 +480,7 @@ describe("StreamdClient", () => {
       }),
     };
 
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const promise = client.once(
       { kind: "module", eventType: "0x1::test::Event" },
       { pollInterval: 100, maxErrors: 2 },
@@ -521,7 +511,7 @@ describe("StreamdClient", () => {
   }
 
   it("on() forgets a subscription that stopped itself after maxErrors", async () => {
-    const client = new StreamdClient({ aptos: makeAptos(), adapter: failing() });
+    const client = new StreamdClient({ adapter: failing() });
     const errors: Error[] = [];
     const sub = client.on(
       { kind: "module", eventType: "0x1::test::Event" },
@@ -539,7 +529,7 @@ describe("StreamdClient", () => {
   });
 
   it("once() forgets its subscription when polling gives up", async () => {
-    const client = new StreamdClient({ aptos: makeAptos(), adapter: failing() });
+    const client = new StreamdClient({ adapter: failing() });
     const promise = client.once(
       { kind: "module", eventType: "0x1::test::Event" },
       { pollInterval: 100, maxErrors: 2 },
@@ -582,7 +572,7 @@ describe("StreamdClient", () => {
       fetchEvents: vi.fn(async () => ({ events: [event], nextCursor: "2", hasMore: false })),
     };
 
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const promise = client.once(
       { kind: "module", eventType: "0x1::test::Event" },
       {
@@ -617,7 +607,7 @@ describe("StreamdClient", () => {
       fetchEvents: vi.fn(async () => pages[i++] ?? { events: [], nextCursor: "2", hasMore: false }),
     };
     const onError = vi.fn();
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const promise = client.once(
       { kind: "module", eventType: "0x1::test::Event" },
       {
@@ -648,7 +638,7 @@ describe("StreamdClient", () => {
       fetchEvents: vi.fn(async () => ({ events: [bad, good], nextCursor: "3", hasMore: false })),
     };
     const onError = vi.fn();
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const promise = client.once(
       { kind: "module", eventType: "0x1::test::Event" },
       { pollInterval: 100, decode: ["amount"], onError },
@@ -679,7 +669,7 @@ describe("StreamdClient", () => {
     };
 
     const surfaced = captureMicrotaskThrows();
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const promise = client.once(
       { kind: "module", eventType: "0x1::test::Event" },
       {
@@ -708,7 +698,7 @@ describe("StreamdClient", () => {
 
   it("once() rejects with the signal reason on abort and stops fetching", async () => {
     const adapter = adapterOf([]);
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const controller = new AbortController();
     const onError = vi.fn();
     const reason = new Error("caller cancelled");
@@ -739,7 +729,7 @@ describe("StreamdClient", () => {
     const adapter = adapterOf([
       { events: [makeEvent(1)], nextCursor: "2", hasMore: false },
     ]);
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const reason = new Error("already aborted");
     const promise = client.once(
       { kind: "module", eventType: "0x1::test::Event" },
@@ -759,7 +749,7 @@ describe("StreamdClient", () => {
 
   it("once() rejects with StreamdTimeoutError when the timeout elapses", async () => {
     const adapter = adapterOf([]);
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const controller = new AbortController();
     const remove = vi.spyOn(controller.signal, "removeEventListener");
     const onError = vi.fn();
@@ -793,7 +783,7 @@ describe("StreamdClient", () => {
       { events: [], nextCursor: "1", hasMore: false },
       { events: [makeEvent(42)], nextCursor: "43", hasMore: false },
     ]);
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const controller = new AbortController();
     const remove = vi.spyOn(controller.signal, "removeEventListener");
     const clear = vi.spyOn(globalThis, "clearTimeout");
@@ -818,7 +808,7 @@ describe("StreamdClient", () => {
     const adapter = adapterOf([
       { events: [makeEvent(1)], nextCursor: "2", hasMore: false },
     ]);
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
 
     for (const bad of [-1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
       let outcome: unknown = "pending";
@@ -847,7 +837,7 @@ describe("StreamdClient", () => {
       { events: [enriched], nextCursor: "11", hasMore: false },
       { events: [enriched], nextCursor: "11", hasMore: false },
     ]);
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
 
     const events = await client.getEvents(descriptor);
@@ -920,7 +910,7 @@ describe("StreamdClient", () => {
       hasMore: false,
     };
     const adapter = adapterOf([page, page, page, page]);
-    const client = new StreamdClient({ aptos: makeAptos(), adapter });
+    const client = new StreamdClient({ adapter });
     const descriptor = {
       kind: "module",
       eventType: ["0x1::test::Ping", "0x1::test::Pong"],
@@ -972,7 +962,6 @@ describe("StreamdClient", () => {
       };
       const clientErrors: Error[] = [];
       const client = new StreamdClient({
-        aptos: makeAptos(),
         adapter,
         onError: (err) => clientErrors.push(err),
       });
@@ -1003,7 +992,6 @@ describe("StreamdClient", () => {
       const subOnError = vi.fn();
       const onceOnError = vi.fn();
       const client = new StreamdClient({
-        aptos: makeAptos(),
         adapter: failing(),
         onError: clientOnError,
       });
@@ -1043,7 +1031,6 @@ describe("StreamdClient", () => {
       };
       const clientOnError = vi.fn();
       const client = new StreamdClient({
-        aptos: makeAptos(),
         adapter,
         onError: clientOnError,
       });
@@ -1066,7 +1053,6 @@ describe("StreamdClient", () => {
     it("does not call config.onError on abort or once() timeout", async () => {
       const clientOnError = vi.fn();
       const client = new StreamdClient({
-        aptos: makeAptos(),
         adapter: adapterOf([]),
         onError: clientOnError,
       });
@@ -1091,7 +1077,6 @@ describe("StreamdClient", () => {
 
     it("rethrows a throwing config.onError on a microtask without stalling on() or once()", async () => {
       const client = new StreamdClient({
-        aptos: makeAptos(),
         adapter: failing(),
         onError: () => {
           throw new Error("client handler bug");
@@ -1126,11 +1111,10 @@ describe("StreamdClient", () => {
     const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
 
     it("throws StreamdError when constructed without an adapter", () => {
-      expect(() => new StreamdClient({} as never)).toThrow(StreamdError);
-      expect(() => new StreamdClient({ aptos: makeAptos() } as never)).toThrow(/requires an `adapter`/);
+      expect(() => new StreamdClient({} as never)).toThrow(/requires an `adapter`/);
     });
 
-    it("drives getEvents, getEventPages, on, once, stream, and cursor resume offline without an Aptos instance", async () => {
+    it("drives getEvents, getEventPages, on, once, stream, and cursor resume offline", async () => {
       const e1 = { ...makeEvent(10, 0), data: { owner: "0x1", v: 1 } };
       const e2 = { ...makeEvent(10, 1), data: { owner: "0x2", v: 2 } };
       const e3 = { ...makeEvent(20, 0), data: { owner: "0x1", v: 3 } };
@@ -2969,159 +2953,6 @@ describe("async where on listeners", () => {
     resolve(true);
     await new Promise((r) => setTimeout(r, 10));
     expect(delivered).toEqual([]);
-  });
-});
-
-describe("transfers through the client", () => {
-  const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
-  const [ALICE, BOB, USDC] = [long("a11ce"), long("b0b"), long("bae2")];
-  const owners: Record<string, string> = { [long("1")]: ALICE, [long("2")]: BOB, [long("3")]: BOB };
-  const fa = (version: number, eventIndex: number, side: string, store: number, amount = "5"): StreamdEvent => ({
-    type: `0x1::fungible_asset::${side}`,
-    data: { store: long(String(store)), amount },
-    version: BigInt(version),
-    sequenceNumber: 0n,
-    eventIndex,
-  });
-  const events = [fa(1, 0, "Withdraw", 1), fa(1, 1, "Deposit", 2), fa(2, 0, "Deposit", 3, "8")];
-  const withViews = (fail?: () => boolean): EventAdapter => {
-    const memory = new MemoryAdapter(events);
-    return {
-      fetchEvents: (d, o) => memory.fetchEvents(d, o),
-      view: async (request, _version) => {
-        if (fail?.()) throw new StreamdNetworkError("unavailable", 503);
-        const store = String(request.functionArguments![0]);
-        if (request.function === "0x1::object::owner") return [owners[store]];
-        return [{ inner: store === long("3") ? long("a") : USDC }];
-      },
-    };
-  };
-
-  it("returns paired records from getTransfers, narrowed by asset", async () => {
-    const client = new StreamdClient({ adapter: withViews() });
-    const all = await client.getTransfers({ fromVersion: 0n });
-    expect(all.map((e) => e.data)).toEqual([
-      { asset: USDC, amount: 5n, from: ALICE, to: BOB },
-      { asset: long("a"), amount: 8n, from: undefined, to: BOB },
-    ]);
-    const apt = await client.getTransfers({ fromVersion: 0n, asset: "0xa" });
-    expect(apt.map((e) => e.version)).toEqual([2n]);
-    await expect(client.getTransfers({ asset: "nope" })).rejects.toBeInstanceOf(StreamdError);
-  });
-
-  it("returns coin, token object and legacy token records together in identity order", async () => {
-    const NFT = long("deed");
-    const LEGACY_ID = { token_data_id: { creator: ALICE, collection: "Apes", name: "Ape #1" }, property_version: "0" };
-    const memory = new MemoryAdapter([
-      ...events,
-      { type: "0x1::object::Transfer", data: { object: NFT, from: ALICE, to: BOB }, version: 3n, sequenceNumber: 0n, eventIndex: 0 },
-      { type: "0x3::token::TokenWithdraw", data: { account: BOB, id: LEGACY_ID, amount: "1" }, version: 3n, sequenceNumber: 0n, eventIndex: 1 },
-      { type: "0x3::token::TokenDeposit", data: { account: ALICE, id: LEGACY_ID, amount: "1" }, version: 3n, sequenceNumber: 0n, eventIndex: 2 },
-    ]);
-    const views = withViews();
-    const client = new StreamdClient({
-      adapter: {
-        fetchEvents: (d, o) => memory.fetchEvents(d, o),
-        view: async (request, version) =>
-          request.function === "0x4::token::creator" ? [ALICE] : views.view!(request, version),
-      },
-    });
-    const records = await client.getTransfers({ fromVersion: 0n });
-    expect(records.map((e) => [`${e.version}:${e.eventIndex}`, e.data])).toEqual([
-      ["1:1", { asset: USDC, amount: 5n, from: ALICE, to: BOB }],
-      ["2:0", { asset: long("a"), amount: 8n, from: undefined, to: BOB }],
-      ["3:0", { asset: NFT, amount: 1n, from: ALICE, to: BOB }],
-      ["3:2", { asset: `${ALICE}::Apes::Ape #1::0`, amount: 1n, from: BOB, to: ALICE }],
-    ]);
-  });
-
-  it("follows live, retrying a poll whose view failed and delivering each transfer once", async () => {
-    let reads = 0;
-    const errors: Error[] = [];
-    const seen: Transfer[] = [];
-    const client = new StreamdClient({ adapter: withViews(() => ++reads === 1) });
-    const sub = client.transfers((e) => void seen.push(e.data), {
-      fromVersion: 0n,
-      pollInterval: 1,
-      onError: (err) => errors.push(err),
-    });
-    expect(client.listenerCount()).toBe(0);
-    for (let i = 0; i < 200 && seen.length < 2; i++) await new Promise((r) => setTimeout(r, 2));
-    expect(seen.map((t) => t.amount)).toEqual([5n, 8n]);
-    expect(errors).toHaveLength(1);
-    expect((errors[0] as StreamdError).cause).toBeInstanceOf(StreamdNetworkError);
-    expect(sub.status.consecutiveErrors).toBe(0);
-    client.destroy();
-    expect(sub.active).toBe(false);
-  });
-
-  it("refuses an adapter without view", () => {
-    const client = new StreamdClient({ adapter: new MemoryAdapter(events) });
-    expect(() => client.transfers(() => {})).toThrow(StreamdError);
-  });
-
-  describe("account", () => {
-    const named = (lookup: () => Promise<AccountAddress | undefined>) => {
-      const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET }));
-      let lookups = 0;
-      aptos.getTargetAddress = () => (lookups++, lookup());
-      return { client: new StreamdClient({ adapter: withViews(), aptos }), lookups: () => lookups };
-    };
-    const alice = AccountAddress.from(ALICE);
-
-    it("keeps one account's records, for an address in any form", async () => {
-      const client = new StreamdClient({ adapter: withViews() });
-      const sent = await client.getTransfers({ fromVersion: 0n, account: `0x${ALICE.slice(2).toUpperCase()}` });
-      expect(sent.map((e) => e.version)).toEqual([1n]);
-      const bob = await client.getTransfers({ fromVersion: 0n, account: BOB });
-      expect(bob.map((e) => e.version)).toEqual([1n, 2n]);
-    });
-
-    it("resolves a name once for a query", async () => {
-      const { client, lookups } = named(async () => alice);
-      const records = await client.getTransfers({ fromVersion: 0n, account: "alice.apt" });
-      expect(records.map((e) => e.version)).toEqual([1n]);
-      expect(lookups()).toBe(1);
-    });
-
-    it("refuses a malformed value at the call, and a name without aptos", async () => {
-      const client = new StreamdClient({ adapter: withViews() });
-      expect(() => client.transfers(() => {}, { account: "0xnothex" })).toThrow(StreamdError);
-      expect(() => client.transfers(() => {}, { account: "alice.apt" })).toThrow("aptos");
-      await expect(client.getTransfers({ account: "alice.apt" })).rejects.toThrow("aptos");
-    });
-
-    it("stops a listener on an unregistered name, and retries a failed lookup", async () => {
-      const gone = named(async () => undefined);
-      const errors: Error[] = [];
-      const stopped = gone.client.transfers(() => {}, {
-        fromVersion: 0n,
-        pollInterval: 1,
-        account: "nobody.apt",
-        onError: (err) => errors.push(err),
-      });
-      for (let i = 0; i < 200 && stopped.active; i++) await new Promise((r) => setTimeout(r, 2));
-      expect(stopped.active).toBe(false);
-      expect(errors[0]!.message).toContain("nobody.apt");
-
-      let calls = 0;
-      const flaky = named(async () => {
-        if (++calls === 1) throw new TypeError("fetch failed");
-        return alice;
-      });
-      const seen: Transfer[] = [];
-      const sub = flaky.client.transfers((e) => void seen.push(e.data), {
-        fromVersion: 0n,
-        pollInterval: 1,
-        maxBackoff: 1,
-        account: "alice.apt",
-        onError: () => {},
-      });
-      for (let i = 0; i < 200 && seen.length < 1; i++) await new Promise((r) => setTimeout(r, 2));
-      expect(seen.map((t) => t.from)).toEqual([ALICE]);
-      expect(flaky.lookups()).toBe(2);
-      sub.unsubscribe();
-    });
   });
 });
 

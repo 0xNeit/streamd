@@ -1,17 +1,9 @@
-import type {
-  EventAdapter,
-  EventDescriptor,
-  EventExpectation,
-  EventPredicate,
-  ExpectEventsOptions,
-  ExpectPreviewOptions,
-  EventOf,
-  StreamdEvent,
-} from "./types.js";
-import { StreamdAssertionError } from "./errors.js";
-import type { RequestLimiter } from "./limiter.js";
+import type { EventAdapter, EventDescriptor, EventPredicate, EventOf, StreamdEvent } from "@streamd/core";
+import type { EventExpectation, ExpectEventsOptions, ExpectPreviewOptions } from "./types.js";
+import { StreamdAssertionError } from "@streamd/core";
+import type { RequestLimiter } from "@streamd/core";
 import { committedEvents, narrower, simulatedEvents } from "./transaction.js";
-import { descriptorKey, raceAbort } from "./utils.js";
+import { descriptorKey, raceAbort } from "@streamd/core";
 
 function bigintToString(_key: string, value: unknown): unknown {
   return typeof value === "bigint" ? value.toString() : value;

@@ -7,18 +7,22 @@ deduplication, backoff and client-side filtering handled for you.
 
 ```ts
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { StreamdClient } from "@streamd/core";
-import { FullnodeScanAdapter } from "@streamd/aptos";
+import { AptosClient } from "@streamd/aptos";
 
-const streamd = new StreamdClient({
-  adapter: new FullnodeScanAdapter(new Aptos(new AptosConfig({ network: Network.MAINNET }))),
-});
+const streamd = new AptosClient({ aptos: new Aptos(new AptosConfig({ network: Network.MAINNET })) });
 
 streamd.on(
   { kind: "module", eventType: "0x1::transaction_fee::FeeStatement" },
   (event) => console.log(event.version, event.transactionHash, event.data),
 );
 ```
+
+`AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
+`transfers`, `getTransfers`, `balances`, `eventsOf`, `expectEvents`, `previewEvents` and
+`expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
+`AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
+examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
+adapter.
 
 ## Install
 
@@ -35,9 +39,11 @@ The repository is a Turborepo monorepo on Bun workspaces. Every package ships ES
 TypeScript types:
 
 - `@streamd/core` (`packages/core`) - the client engine: subscriptions, queries, merges,
-  reductions and the `EventAdapter` contract, with the chain-neutral adapters.
-- `@streamd/aptos` (`packages/aptos`) - Aptos: `FullnodeScanAdapter`, `IndexerAccountAdapter`,
-  the network presets, `checkDescriptor`, `listEventHandles`, `ownedBy`, and the
+  reductions and the `EventAdapter` contract, with the chain-neutral adapters. It depends on no
+  chain SDK.
+- `@streamd/aptos` (`packages/aptos`) - Aptos: `AptosClient`, `FullnodeScanAdapter`,
+  `IndexerAccountAdapter`, the network presets, `checkDescriptor`, `listEventHandles`, `ownedBy`,
+  `resolveName`, `primaryName`, and the
   `@streamd/aptos/framework` event catalog. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer dependency.
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core` and
   `@streamd/aptos`.
@@ -48,7 +54,8 @@ TypeScript types:
 - `@streamd/sui` (`packages/sui`) - `SuiAdapter`, the same client over Sui events. `@mysten/sui`
   is a peer dependency. See [Sui](#sui).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
-  `@aptos-labs/ts-sdk` are peer dependencies. See [React hooks](#react-hooks).
+  `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents` and `useTransfers` take an
+  `AptosClient`. See [React hooks](#react-hooks).
 
 ## Usage
 
@@ -1443,7 +1450,8 @@ the ANS router at the node's head. An address comes back in long form with no
 read. Resolve up front, then pass the address anywhere one is taken:
 
 ```ts
-import { involvesAddress, resolveName } from "@streamd/core";
+import { involvesAddress } from "@streamd/core";
+import { resolveName } from "@streamd/aptos";
 
 const alice = await resolveName(aptos, "alice.apt");
 streamd.on({ kind: "account", accountAddress: alice }, onEvent);
@@ -1454,7 +1462,7 @@ streamd.on(DEPOSITS, onEvent, { where: involvesAddress(alice) });
 its primary one, such as `alice.apt`, or `undefined` when it has none:
 
 ```ts
-import { primaryName } from "@streamd/core";
+import { primaryName } from "@streamd/aptos";
 
 const name = await primaryName(aptos, event.sender);
 console.log(name ?? event.sender);
@@ -2215,10 +2223,10 @@ function Feed() {
   `client.eventsOf` and returns `{ data, error, loading, vmStatus }`. A transaction that failed
   on chain sets `error` and `vmStatus`, the chain's status; one not found in time sets `error`
   alone. It takes `eventsOf`'s options plus `descriptor`. Nothing from the previous hash is kept,
-  and a `null` hash waits for nothing.
+  and a `null` hash waits for nothing. It needs an `AptosClient`.
 - **`useTransfers(options?)`** follows `client.transfers` and returns the same
   `{ events, error, status }` as `useEvents`, with each event's `data` a `Transfer`. It takes
-  `asset`, `account` and `maxEvents`; pass `null` to wait.
+  `asset`, `account` and `maxEvents`; pass `null` to wait. It needs an `AptosClient`.
 - **`useReduction(descriptor, reducer, initial, options?)`** runs `client.reduce` and returns
   `{ value, error, status }`. `value` is `initial` until the backfill finishes; `status` is
   `"idle"`, `"loading"`, `"live"`, or `"stopped"` once the backfill fails, the reducer throws or

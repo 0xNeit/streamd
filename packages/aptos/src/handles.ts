@@ -2,7 +2,7 @@ import type { Aptos } from "@aptos-labs/ts-sdk";
 import type { CreationNumberEventDescriptor, EventGuid, HandleEventDescriptor } from "@streamd/core";
 import { toStreamdError } from "@streamd/core";
 import { normalizeAddress } from "@streamd/core";
-import { resolveName } from "@streamd/core";
+import { resolveName } from "./names.js";
 
 export interface EventHandleInfo {
   /** By struct and field for a top-level handle, by creation number for a nested one. */

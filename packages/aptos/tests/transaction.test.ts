@@ -1,19 +1,10 @@
+import { testClient } from "./helpers.js";
 import { describe, it, expect, spyOn } from "bun:test";
-import { StreamdClient } from "../src/client.js";
-import { MemoryAdapter } from "../src/adapters/memory.js";
-import {
-  StreamdError,
-  StreamdNetworkError,
-  StreamdTimeoutError,
-  StreamdTransactionError,
-} from "../src/errors.js";
+import { MemoryAdapter } from "@streamd/core";
+import { StreamdError, StreamdNetworkError, StreamdTimeoutError, StreamdTransactionError } from "@streamd/core";
 import type { PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
-import type {
-  EventAdapter,
-  StreamdEvent,
-  TransactionEvents,
-  TransactionSimulation,
-} from "../src/types.js";
+import type { EventAdapter, StreamdEvent, TransactionEvents } from "@streamd/core";
+import type { AptosTransactionSimulation } from "../src/index.js";
 
 const HASH = `0x${"cd".repeat(32)}`;
 const PING = "0x1::test::Ping";
@@ -65,7 +56,7 @@ function lookup(result: TransactionEvents | Error = committed, misses = 0) {
 }
 
 function client(adapter: EventAdapter, extra: object = {}) {
-  return new StreamdClient({ adapter, defaults: { pollInterval: 5 }, ...extra });
+  return testClient({ adapter, defaults: { pollInterval: 5 }, ...extra });
 }
 
 describe("eventsOf", () => {
@@ -260,7 +251,7 @@ describe("eventsOf", () => {
   it("waits at least 100ms between lookups whatever pollInterval says", async () => {
     for (const pollInterval of [0, -5, Number.NaN, 3e9]) {
       const { adapter, calls } = lookup(committed, Infinity);
-      const c = new StreamdClient({ adapter, defaults: { pollInterval } });
+      const c = testClient({ adapter, defaults: { pollInterval } });
       await c.eventsOf(HASH, undefined, { timeout: 150 }).catch(() => {});
       expect(calls.length).toBeLessThanOrEqual(3);
     }
@@ -313,11 +304,11 @@ const simulatedRun: TransactionEvents = {
 };
 
 function simulator(result: TransactionEvents | Error = simulatedRun) {
-  const calls: { simulation: TransactionSimulation; descriptor: unknown }[] = [];
+  const calls: { simulation: AptosTransactionSimulation; descriptor: unknown }[] = [];
   const adapter: EventAdapter = {
     fetchEvents: async () => ({ events: [], hasMore: false }),
     async simulateTransactionEvents(simulation, descriptor) {
-      calls.push({ simulation, descriptor });
+      calls.push({ simulation: simulation as AptosTransactionSimulation, descriptor });
       if (result instanceof Error) throw result;
       return result;
     },

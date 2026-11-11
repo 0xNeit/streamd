@@ -1,10 +1,11 @@
 import { StreamdTransactionError } from "@streamd/core";
-import type { StreamdClient, StreamdEvent } from "@streamd/core";
+import type { StreamdEvent } from "@streamd/core";
+import type { AptosClient } from "@streamd/aptos";
 import type { TxOptions } from "./args.js";
 import { formatEvent, message } from "./format.js";
 
 export interface TxIO {
-  client: Pick<StreamdClient, "eventsOf">;
+  client: Pick<AptosClient, "eventsOf">;
   /** Writes one output line; a returned promise is awaited, for backpressure. */
   write(line: string): void | Promise<void>;
   /** Reports one diagnostic message, without a trailing newline. */

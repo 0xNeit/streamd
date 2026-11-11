@@ -1,9 +1,10 @@
+import { testClient } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
-import { MemoryAdapter } from "../src/adapters/memory.js";
-import { StreamdClient } from "../src/client.js";
-import { StreamdError, StreamdNetworkError } from "../src/errors.js";
+import { MemoryAdapter } from "@streamd/core";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
 import { TRANSFER_DESCRIPTOR, formatAmount, transferSource } from "../src/transfers.js";
-import type { EventAdapter, FetchOptions, StreamdEvent, Transfer, ViewRequest } from "../src/types.js";
+import type { EventAdapter, FetchOptions, StreamdEvent, ViewRequest } from "@streamd/core";
+import type { Transfer } from "../src/types.js";
 
 const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
 const APT = long("a");
@@ -562,7 +563,7 @@ describe("transfers with requestTimeout", () => {
 
   it("lets getTransfers retry past a hung read", async () => {
     const { adapter, views } = firstViewHangs();
-    const client = new StreamdClient({ adapter, requestTimeout: 2 });
+    const client = testClient({ adapter, requestTimeout: 2 });
     const records = await client.getTransfers({ fromVersion: 0n, retries: 3 });
     expect(records.map((r) => r.data.amount)).toEqual([100n]);
     expect(views()).toBeGreaterThan(1);
@@ -582,7 +583,7 @@ describe("transfers with requestTimeout", () => {
       view: (request, version, descriptor) =>
         ++views === 1 ? new Promise<never>(() => {}) : inner.adapter.view!(request, version, descriptor),
     };
-    const client = new StreamdClient({ adapter, requestTimeout: 50 });
+    const client = testClient({ adapter, requestTimeout: 50 });
     const errors: unknown[] = [];
     const record = await new Promise<StreamdEvent<Transfer> | undefined>((resolve) => {
       client.transfers(resolve, {
@@ -620,7 +621,7 @@ describe("transfers with requestTimeout", () => {
           ? new Promise<never>(() => {})
           : inner.adapter.view!(request, version, descriptor),
     };
-    const client = new StreamdClient({ adapter, requestTimeout: 100 });
+    const client = testClient({ adapter, requestTimeout: 100 });
     const errors: unknown[] = [];
     const record = await new Promise<StreamdEvent<Transfer> | undefined>((resolve) => {
       client.transfers(resolve, {
@@ -660,7 +661,7 @@ describe("transfers with requestTimeout", () => {
         return inner.adapter.view!(request, version, descriptor);
       },
     };
-    const client = new StreamdClient({ adapter, requestTimeout: 100 });
+    const client = testClient({ adapter, requestTimeout: 100 });
     const errors: unknown[] = [];
     const record = await new Promise<StreamdEvent<Transfer> | undefined>((resolve) => {
       client.transfers(resolve, {
@@ -695,7 +696,7 @@ describe("transfers with requestTimeout", () => {
         return request.function === OWNER ? [ALICE] : [{ inner: "0xa" }];
       },
     };
-    const client = new StreamdClient({ adapter, requestTimeout: 100 });
+    const client = testClient({ adapter, requestTimeout: 100 });
     const late: number[] = [];
     await new Promise<void>((resolve) => {
       client.transfers(() => resolve(), {
@@ -769,7 +770,7 @@ describe("transfers with requestTimeout", () => {
 
   it("recovers a live subscription from a hung read", async () => {
     const { adapter } = firstViewHangs();
-    const client = new StreamdClient({ adapter, requestTimeout: 2 });
+    const client = testClient({ adapter, requestTimeout: 2 });
     const record = await new Promise<StreamdEvent<Transfer>>((resolve) => {
       client.transfers(resolve, {
         fromVersion: 0n,

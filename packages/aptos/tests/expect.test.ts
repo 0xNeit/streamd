@@ -1,16 +1,12 @@
+import { testClient } from "./helpers.js";
 import { describe, it, expect } from "bun:test";
-import { StreamdClient } from "../src/client.js";
-import { MemoryAdapter } from "../src/adapters/memory.js";
-import { RoutingAdapter } from "../src/adapters/routing.js";
-import { whereField } from "../src/filter.js";
-import {
-  StreamdAssertionError,
-  StreamdError,
-  StreamdTimeoutError,
-  StreamdTransactionError,
-} from "../src/errors.js";
-import type { EventAdapter, StreamdEvent, TransactionEvents } from "../src/types.js";
+import { MemoryAdapter } from "@streamd/core";
+import { RoutingAdapter } from "@streamd/core";
+import { whereField } from "@streamd/core";
+import { StreamdAssertionError, StreamdError, StreamdTimeoutError, StreamdTransactionError } from "@streamd/core";
+import type { EventAdapter, StreamdEvent, TransactionEvents } from "@streamd/core";
 import type { PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
+import type { AptosTransactionSimulation } from "../src/index.js";
 
 const HASH = `0x${"cd".repeat(32)}`;
 const PING = "0x1::test::Ping";
@@ -50,7 +46,7 @@ const committed = (events: StreamdEvent[]): TransactionEvents => ({
 });
 
 function client(adapter: EventAdapter) {
-  return new StreamdClient({ adapter, defaults: { pollInterval: 5 } });
+  return testClient({ adapter, defaults: { pollInterval: 5 } });
 }
 
 async function failure(promise: Promise<unknown>): Promise<StreamdAssertionError> {
@@ -177,11 +173,11 @@ describe("expectPreview", () => {
     const adapter: EventAdapter = {
       fetchEvents: async () => ({ events: [], hasMore: false }),
       async simulateTransactionEvents(simulation, descriptor) {
-        calls.push({ key: simulation.signerPublicKey, descriptor });
+        calls.push({ key: (simulation as AptosTransactionSimulation).signerPublicKey, descriptor });
         return result;
       },
     };
-    return { client: new StreamdClient({ adapter }), calls };
+    return { client: testClient({ adapter }), calls };
   }
   const pings = { kind: "module", eventType: PING } as const;
   const missing = { kind: "module", eventType: MISSING } as const;
@@ -225,7 +221,7 @@ describe("expectPreview", () => {
     const err = (await client.expectPreview(TRANSACTION).toEmit(pings).catch((e: unknown) => e)) as StreamdTransactionError;
     expect(err).toBeInstanceOf(StreamdTransactionError);
     expect(err.vmStatus).toBe("Move abort 0x1::coin: 0x10006");
-    const plain = new StreamdClient({ adapter: new MemoryAdapter([]) });
+    const plain = testClient({ adapter: new MemoryAdapter([]) });
     await expect(plain.expectPreview(TRANSACTION).toEmit(pings)).rejects.toThrow("simulateTransactionEvents");
   });
 });

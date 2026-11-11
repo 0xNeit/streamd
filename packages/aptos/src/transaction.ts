@@ -1,23 +1,12 @@
-import type {
-  EventAdapter,
-  EventDescriptor,
-  EventsOfOptions,
-  PreviewEventsOptions,
-  StreamdEvent,
-  TransactionEvents,
-} from "./types.js";
-import { StreamdError, StreamdTimeoutError, StreamdTransactionError } from "./errors.js";
-import { filterEvents, normalizeAddress } from "./filter.js";
-import { fieldDecoder } from "./decode.js";
-import type { RequestLimiter } from "./limiter.js";
-import { onAbort, raceAbort, sleep } from "./utils.js";
-import {
-  handlePath,
-  moduleTypeFilter,
-  requireAddress,
-  requireSimulation,
-  requireTransactionHash,
-} from "./adapters/validate.js";
+import type { EventAdapter, EventDescriptor, StreamdEvent, TransactionEvents } from "@streamd/core";
+import type { EventsOfOptions, PreviewEventsOptions } from "./types.js";
+import { requireSimulation } from "./simulation.js";
+import { StreamdError, StreamdTimeoutError, StreamdTransactionError } from "@streamd/core";
+import { filterEvents, normalizeAddress } from "@streamd/core";
+import { fieldDecoder } from "@streamd/core";
+import type { RequestLimiter } from "@streamd/core";
+import { onAbort, raceAbort, sleep } from "@streamd/core";
+import { handlePath, moduleTypeFilter, requireAddress, requireTransactionHash } from "@streamd/core";
 
 /** Matches the SDK's own `waitForTransaction` default. */
 const DEFAULT_TRANSACTION_TIMEOUT = 20_000;

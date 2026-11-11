@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import { advanceTimersByTimeAsync, captureMicrotaskThrows } from "./timers.js";
-import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { StreamdClient } from "../src/client.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdError, StreamdPollingError } from "../src/errors.js";

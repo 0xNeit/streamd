@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { AccountAddress, Network, type Aptos } from "@aptos-labs/ts-sdk";
-import { StreamdError, StreamdNetworkError } from "../src/errors.js";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
 import { primaryName, resolveName } from "../src/names.js";
 
 const TARGET = `0x${"a11ce".padStart(64, "0")}`;

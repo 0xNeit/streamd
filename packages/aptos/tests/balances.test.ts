@@ -1,8 +1,9 @@
+import { testClient } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
-import { MemoryAdapter } from "../src/adapters/memory.js";
-import { StreamdClient } from "../src/client.js";
-import { StreamdError, StreamdNetworkError } from "../src/errors.js";
-import type { BalanceChange, EventAdapter, EventDescriptor, FetchOptions, StreamdEvent, ViewRequest } from "../src/types.js";
+import { MemoryAdapter } from "@streamd/core";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import type { EventAdapter, EventDescriptor, FetchOptions, StreamdEvent, ViewRequest } from "@streamd/core";
+import type { BalanceChange } from "../src/types.js";
 
 const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
 const APT = long("a");
@@ -59,7 +60,7 @@ const FAST = { pollInterval: 1, maxBackoff: 1 };
 describe("client.balances with an asset", () => {
   it("reads it at the head, reports changes, and scans nothing", async () => {
     const { adapter, state } = chain();
-    const client = new StreamdClient({ adapter });
+    const client = testClient({ adapter });
     const changes: StreamdEvent<BalanceChange>[] = [];
     const wallet = client.balances(ALICE, { ...FAST, asset: USDC, onChange: (_, c) => changes.push(c) });
     expect((await wallet.ready).get(USDC)).toBe(200n);
@@ -87,7 +88,7 @@ describe("client.balances with an asset", () => {
 
   it("updates a coin type with no events at all, as a paired coin needs", async () => {
     const { adapter, state } = chain();
-    const client = new StreamdClient({ adapter });
+    const client = testClient({ adapter });
     const wallet = client.balances(ALICE, { ...FAST, asset: COIN });
     await wallet.ready;
     state.head = 51n;
@@ -100,7 +101,7 @@ describe("client.balances with an asset", () => {
 
   it("skips a head that went backwards, so a balance cannot flip to an older value", async () => {
     const { adapter, state } = chain();
-    const client = new StreamdClient({ adapter });
+    const client = testClient({ adapter });
     const wallet = client.balances(ALICE, { ...FAST, asset: USDC });
     await wallet.ready;
     state.head = 60n;
@@ -118,7 +119,7 @@ describe("client.balances with an asset", () => {
   it("retries after a failed view, and stops when polling gives up", async () => {
     const { adapter, state } = chain();
     const errors: Error[] = [];
-    const client = new StreamdClient({ adapter });
+    const client = testClient({ adapter });
     const wallet = client.balances(ALICE, { ...FAST, asset: USDC, maxErrors: 3, onError: (e) => errors.push(e) });
     await wallet.ready;
     state.failViews = new StreamdNetworkError("unavailable", 503);
@@ -137,21 +138,21 @@ describe("client.balances with an asset", () => {
 
   it("rejects ready on a token object or a failed first read, and reports it", async () => {
     const errors: Error[] = [];
-    const client = new StreamdClient({ adapter: chain().adapter, onError: (e) => errors.push(e) });
+    const client = testClient({ adapter: chain().adapter, onError: (e) => errors.push(e) });
     const token = client.balances(ALICE, { asset: NFT });
     await expect(token.ready).rejects.toThrow("Not a fungible");
     expect(token.active).toBe(false);
     expect(errors).toHaveLength(1);
     const down = chain();
     down.state.failViews = new StreamdNetworkError("unavailable", 503);
-    await expect(new StreamdClient({ adapter: down.adapter }).balances(ALICE, { asset: USDC }).ready).rejects.toBeInstanceOf(StreamdNetworkError);
+    await expect(testClient({ adapter: down.adapter }).balances(ALICE, { asset: USDC }).ready).rejects.toBeInstanceOf(StreamdNetworkError);
   });
 
   it("refuses a malformed amount as a failed poll", async () => {
     const { adapter } = chain();
     const errors: Error[] = [];
     let odd = false;
-    const client = new StreamdClient({
+    const client = testClient({
       adapter: { ...adapter, view: async (r, v) => (odd ? ["-1"] : adapter.view!(r, v)) },
     });
     const wallet = client.balances(ALICE, { ...FAST, asset: USDC, onError: (e) => errors.push(e) });
@@ -166,7 +167,7 @@ describe("client.balances with an asset", () => {
 describe("client.balances with several assets, or none", () => {
   it("follows APT when none is named, in either form", async () => {
     const { adapter, state } = chain();
-    const client = new StreamdClient({ adapter });
+    const client = testClient({ adapter });
     const wallet = client.balances(ALICE, FAST);
     await wallet.ready;
     expect(wallet.get("0xa")).toBe(100n);
@@ -182,7 +183,7 @@ describe("client.balances with several assets, or none", () => {
 
   it("reads a list at one version each poll, once per asset however named", async () => {
     const { adapter, state } = chain();
-    const client = new StreamdClient({ adapter });
+    const client = testClient({ adapter });
     const wallet = client.balances(ALICE, { ...FAST, asset: ["0xa", "0x1::aptos_coin::AptosCoin", USDC, COIN] });
     expect(await wallet.ready).toEqual(new Map([[APT, 100n], [USDC, 200n], [COIN_KEY, 300n]]));
     expect(state.reads.slice(0, 3).map((r) => r.version)).toEqual([50n, 50n, 50n]);
@@ -201,7 +202,7 @@ describe("client.balances with several assets, or none", () => {
   it("stops and reports when a followed asset's view aborts later", async () => {
     const { adapter, state } = chain();
     const errors: Error[] = [];
-    const client = new StreamdClient({ adapter });
+    const client = testClient({ adapter });
     const wallet = client.balances(ALICE, { ...FAST, asset: USDC, onError: (e) => errors.push(e) });
     await wallet.ready;
     state.failViews = new StreamdError("aborted");
@@ -214,19 +215,19 @@ describe("client.balances with several assets, or none", () => {
 
 describe("client.balances input and lifetime", () => {
   it("refuses bad input at the call", () => {
-    const client = new StreamdClient({ adapter: chain().adapter });
+    const client = testClient({ adapter: chain().adapter });
     expect(() => client.balances("0xnothex")).toThrow(StreamdError);
     expect(() => client.balances(ALICE, { fromVersion: 1n } as never)).toThrow("Unsupported balances option");
     expect(() => client.balances(ALICE, { asset: "nope" })).toThrow(StreamdError);
     expect(() => client.balances(ALICE, { asset: `${ALICE}::Apes::Ape::0` })).toThrow("legacy token");
     expect(() => client.balances(ALICE, { asset: [] })).toThrow("empty");
     expect(() => client.balances(ALICE, { asset: ["0xa", "nope"] })).toThrow(StreamdError);
-    expect(() => new StreamdClient({ adapter: new MemoryAdapter([]) }).balances(ALICE)).toThrow("view");
+    expect(() => testClient({ adapter: new MemoryAdapter([]) }).balances(ALICE)).toThrow("view");
   });
 
   it("stops reading after unsubscribe", async () => {
     const { adapter, state } = chain();
-    const client = new StreamdClient({ adapter });
+    const client = testClient({ adapter });
     const wallet = client.balances(ALICE, { ...FAST, asset: USDC });
     await wallet.ready;
     const start = state.reads.length;
@@ -241,7 +242,7 @@ describe("client.balances input and lifetime", () => {
 
   it("stops with its signal, rejecting a first read still running", async () => {
     const controller = new AbortController();
-    const client = new StreamdClient({ adapter: chain().adapter });
+    const client = testClient({ adapter: chain().adapter });
     const wallet = client.balances(ALICE, { asset: USDC, signal: controller.signal });
     controller.abort(new StreamdError("cancelled"));
     await expect(wallet.ready).rejects.toThrow("cancelled");

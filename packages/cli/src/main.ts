@@ -1,8 +1,8 @@
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { Aptos, AptosConfig, getAptosFullNode, Network } from "@aptos-labs/ts-sdk";
-import { StreamdClient, StreamdError } from "@streamd/core";
-import { FullnodeScanAdapter, checkDescriptor, networks } from "@streamd/aptos";
+import { StreamdError } from "@streamd/core";
+import { AptosClient, FullnodeScanAdapter, checkDescriptor, networks } from "@streamd/aptos";
 import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
@@ -64,12 +64,12 @@ function aptosConfig(options: Pick<SourceOptions, "network" | "nodeUrl" | "apiKe
 }
 
 /** A client for `options` and a signal that the first SIGINT or a SIGTERM aborts. */
-function setup(options: Pick<SourceOptions, "network" | "nodeUrl" | "apiKey">): { client: StreamdClient; controller: AbortController } {
+function setup(options: Pick<SourceOptions, "network" | "nodeUrl" | "apiKey">): { client: AptosClient; controller: AbortController } {
   const controller = new AbortController();
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
   process.once("SIGTERM", () => controller.abort());
-  const client = new StreamdClient({ adapter: new FullnodeScanAdapter(new Aptos(aptosConfig(options))) });
+  const client = new AptosClient({ aptos: new Aptos(aptosConfig(options)) });
   return { client, controller };
 }
 
