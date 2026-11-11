@@ -39,6 +39,8 @@ The repository is a Turborepo monorepo on Bun workspaces with four packages:
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
 - `@streamd/store-postgres` (`packages/store-postgres`) - the same over a Postgres client you
   supply. See [Store events in Postgres](#store-events-in-postgres).
+- `@streamd/sui` (`packages/sui`) - `SuiAdapter`, the same client over Sui events. `@mysten/sui`
+  is a peer dependency. See [Sui](#sui).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies. See [React hooks](#react-hooks).
 
@@ -1704,6 +1706,36 @@ const streamd = new StreamdClient({
   }),
 });
 ```
+
+### Sui
+
+`@streamd/sui` serves Sui events through the same client, from Sui's gRPC API (public Sui nodes no
+longer answer JSON-RPC):
+
+```ts
+import { SuiGrpcClient } from "@mysten/sui/grpc";
+import { StreamdClient } from "@streamd/core";
+import { SuiAdapter } from "@streamd/sui";
+
+const sui = new StreamdClient({
+  adapter: new SuiAdapter(new SuiGrpcClient({ network: "mainnet", baseUrl: "https://fullnode.mainnet.sui.io:443" })),
+});
+sui.on({ kind: "module", eventType: "0x3::validator::StakingRequestEvent" }, (e) => console.log(e.version, e.data));
+```
+
+- **Versions are Sui's global transaction numbers:** the running total before the event's
+  checkpoint plus the transaction's index in it, so `fromVersion: -1000n` means 1000 transactions
+  back, as on Aptos. Each checkpoint's summary is read once and kept.
+- **Events:** `type` with long addresses, `data` the event's JSON (u64 and wider as decimal
+  strings, so `decode` works), `eventIndex` Sui's, `sequenceNumber` `0n`, `transactionHash` the
+  base58 digest, `sender`, and `timestamp` from the checkpoint. There is no `guid` or
+  `entryFunction`.
+- **Descriptors:** `module` (a type or a list, in one request) and `account` (events from
+  transactions the address sent, optionally narrowed by `eventTypes`). Sui has no event handles
+  or account resources, so `handle` and `resource` are refused.
+- **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
+  a version before that fails with `410`. `fromTime`, views, simulations and transaction lookups
+  are not served yet.
 
 ### Spreading load across fullnodes
 
