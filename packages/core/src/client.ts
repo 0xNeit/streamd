@@ -51,6 +51,7 @@ import { SharedFetches } from "./shared.js";
 import { startReduction, type ReduceHost } from "./reduce.js";
 import { startReplay } from "./replay.js";
 import { startTransactions, type TransactionHost } from "./grouping.js";
+import { isThenable } from "./filter.js";
 import { startWatch } from "./watch.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { expectEvents } from "./expect.js";
@@ -237,11 +238,11 @@ export class StreamdClient {
    * single scan.
    */
   on<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     callback: EventCallback<TData>,
     options?: SubscriptionOptions,
   ): Subscription {
-    return this.subscribe(descriptor, callback as EventCallback, options, callback, options?.id);
+    return this.follow(descriptor, callback as EventCallback, options, callback, options?.id);
   }
 
   /**
@@ -249,12 +250,21 @@ export class StreamdClient {
    * `callback(events)` call, at most `batchSize` of them.
    */
   onBatch<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     callback: BatchCallback<TData>,
     options?: SubscriptionOptions,
   ): Subscription {
+    const merged = mergeable(descriptor);
+    if (Array.isArray(merged)) {
+      return startTransactions(
+        this.transactionHost,
+        merged,
+        { batch: (groups) => (callback as BatchCallback)(groups.flatMap((g) => g.events)) },
+        options,
+      );
+    }
     return this.subscribe(
-      descriptor,
+      merged as EventDescriptor,
       { batch: callback as BatchCallback },
       options,
       callback,
@@ -305,6 +315,45 @@ export class StreamdClient {
     options?: WatchOptions,
   ): Watch {
     return startWatch(this.reduceHost, addresses, callback as WatchCallback, options);
+  }
+
+  /**
+   * One descriptor follows as one walk; a list of them is merged through the
+   * transaction buffer, so events arrive in version order, each once.
+   */
+  private follow(
+    descriptor: EventDescriptor | readonly EventDescriptor[],
+    callback: EventCallback,
+    options?: ListenerOptions,
+    listener?: unknown,
+    id?: string,
+  ): Subscription {
+    const merged = mergeable(descriptor);
+    if (!Array.isArray(merged)) return this.subscribe(merged as EventDescriptor, callback, options, listener, id);
+    const report = (error: Error) => {
+      try {
+        (options?.onError ?? this.onError)?.(error);
+      } catch (thrown) {
+        queueMicrotask(() => {
+          throw thrown;
+        });
+      }
+    };
+    return startTransactions(
+      this.transactionHost,
+      merged,
+      async (group) => {
+        for (const event of group.events) {
+          try {
+            const result: unknown = callback(event);
+            if (isThenable(result)) await result;
+          } catch (err) {
+            report(new StreamdError(`Event callback threw for ${event.version}:${event.eventIndex}`, err));
+          }
+        }
+      },
+      options,
+    );
   }
 
   private subscribe(
@@ -421,7 +470,7 @@ export class StreamdClient {
    * throwing `withState` builder goes to `onError` and is skipped, as for `on()`.
    */
   once<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     options?: OnceOptions,
   ): Promise<EventOf<TData>> {
     const badTimeout = checkTimeout(options?.timeout);
@@ -442,7 +491,7 @@ export class StreamdClient {
       // Only a synchronous throw counts: a rejection fails the poll and is retried.
       let whereThrew = false;
       const where = options?.where;
-      const sub = this.subscribe(
+      const sub = this.follow(
         descriptor,
         ((event: EventOf<TData>) => (close(), resolve(event))) as unknown as EventCallback,
         {
@@ -487,14 +536,14 @@ export class StreamdClient {
    * later, as for `on()`.
    */
   stream<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     options?: ListenerOptions,
   ): EventStream<TData> {
     // Registered only once the stream subscribes, so an unused stream costs nothing.
     const close = () => void stream.return?.();
     const stream = eventStream<TData>(
       (callback, onError) => {
-        const sub = this.subscribe(descriptor, callback as EventCallback, {
+        const sub = this.follow(descriptor, callback as EventCallback, {
           ...options,
           signal: undefined,
           onError: (err) => {
@@ -836,4 +885,13 @@ export class StreamdClient {
   async [ASYNC_DISPOSE](): Promise<void> {
     await this.close();
   }
+}
+
+/** A lone descriptor, or a list of two or more to merge; one in a list is followed alone. */
+function mergeable(
+  descriptor: EventDescriptor | readonly EventDescriptor[],
+): EventDescriptor | readonly EventDescriptor[] {
+  if (!Array.isArray(descriptor)) return descriptor as EventDescriptor;
+  if (descriptor.length === 0) throw new StreamdError("At least one descriptor is needed");
+  return descriptor.length === 1 ? descriptor[0]! : descriptor;
 }
