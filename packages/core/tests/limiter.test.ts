@@ -201,6 +201,16 @@ describe("RequestLimiter", () => {
     expect(await after).toBe(3);
   });
 
+  it("never starts a task whose drop signal already aborted, even with a free slot", async () => {
+    const controller = new AbortController();
+    controller.abort(new Error("gone"));
+    let ran = false;
+    const limiter = new RequestLimiter(4);
+    await expect(limiter.run(async () => void (ran = true), controller.signal)).rejects.toThrow("gone");
+    expect(ran).toBe(false);
+    expect(await limiter.run(async () => "next")).toBe("next");
+  });
+
   it("rejects a task queued with an already-aborted drop signal without queueing it", async () => {
     const limiter = new RequestLimiter(1);
     const h = harness();

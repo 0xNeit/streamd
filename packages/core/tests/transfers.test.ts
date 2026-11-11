@@ -639,6 +639,134 @@ describe("transfers with requestTimeout", () => {
     expect(errors).toHaveLength(1);
   });
 
+  it("starts no asset-info read from a page overtaken during its store reads", async () => {
+    // Timeout at 100: the first page's store reads end at about 110, after the retry
+    // started at about 101. Asset-info reads hang until 180, and the retry's begin after it.
+    const inner = withViews([fa(1, 0, "Withdraw", "a1", "100"), fa(1, 1, "Deposit", "b1", "100")]);
+    let fetches = 0;
+    const started = performance.now();
+    const adapter: EventAdapter = {
+      ...inner.adapter,
+      fetchEvents: async (d, o) => {
+        await new Promise((r) => setTimeout(r, ++fetches === 1 ? 60 : 80));
+        return inner.adapter.fetchEvents(d, o);
+      },
+      view: async (request, version, descriptor) => {
+        if (/::(symbol|decimals)$/.test(request.function)) {
+          if (performance.now() - started < 180) return new Promise<never>(() => {});
+          return request.function.endsWith("symbol") ? ["APT"] : [8];
+        }
+        if (fetches === 1) await new Promise((r) => setTimeout(r, 50));
+        return inner.adapter.view!(request, version, descriptor);
+      },
+    };
+    const client = new StreamdClient({ adapter, requestTimeout: 100 });
+    const errors: unknown[] = [];
+    const record = await new Promise<StreamdEvent<Transfer> | undefined>((resolve) => {
+      client.transfers(resolve, {
+        fromVersion: 0n,
+        withAssetInfo: true,
+        pollInterval: 10,
+        maxBackoff: 20,
+        maxErrors: 2,
+        onError: (err) => {
+          errors.push(err);
+          if (errors.length === 2) resolve(undefined);
+        },
+      });
+    });
+    client.destroy();
+    expect(record?.data.symbol).toBe("APT");
+    expect(errors).toHaveLength(1);
+  });
+
+  it("lets no queued read from a given-up page delay the page after an outage", async () => {
+    // Twenty deposits to different stores, so every page needs twenty uncached reads.
+    const events = Array.from({ length: 20 }, (_, i) => fa(i + 1, 0, "Deposit", (i + 1).toString(16), "100"));
+    const memory = new MemoryAdapter(events);
+    const started = performance.now();
+    const healed = 600;
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => memory.fetchEvents(d, o),
+      getHeadVersion: () => memory.getHeadVersion(),
+      view: async (request) => {
+        if (performance.now() - started < healed) return new Promise<never>(() => {});
+        await new Promise((r) => setTimeout(r, 5));
+        return request.function === OWNER ? [ALICE] : [{ inner: "0xa" }];
+      },
+    };
+    const client = new StreamdClient({ adapter, requestTimeout: 100 });
+    const late: number[] = [];
+    await new Promise<void>((resolve) => {
+      client.transfers(() => resolve(), {
+        fromVersion: 0n,
+        pollInterval: 10,
+        maxBackoff: 20,
+        maxErrors: 100,
+        batchSize: 20,
+        onError: () => {
+          const at = performance.now() - started;
+          // A page started before the source healed may still fail one timeout later.
+          if (at > healed + 100) late.push(Math.round(at));
+        },
+      });
+    });
+    client.destroy();
+    expect(late).toEqual([]);
+  });
+
+  it("starts no read for a page after the next page began", async () => {
+    // The first page's metadata reads end slowly, after its page failed and a second began.
+    const events = Array.from({ length: 4 }, (_, i) => fa(i + 1, 0, "Deposit", (i + 1).toString(16), "100"));
+    const memory = new MemoryAdapter(events);
+    let fetches = 0;
+    const late: string[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => (++fetches, memory.fetchEvents(d, o)),
+      getHeadVersion: () => memory.getHeadVersion(),
+      view: async (request, version) => {
+        if (fetches === 1 && request.function === METADATA) {
+          if (version === 1n) throw new StreamdNetworkError("down", 503);
+          await new Promise((r) => setTimeout(r, 30));
+          return [{ inner: "0xa" }];
+        }
+        if (fetches > 1 && request.function === OWNER && version > 1n && version < 5n) late.push(`${version}`);
+        return request.function === OWNER ? [ALICE] : [{ inner: "0xa" }];
+      },
+    };
+    const source = transferSource(adapter);
+    await expect(source.fetchEvents(TRANSFER_DESCRIPTOR, all)).rejects.toBeInstanceOf(StreamdNetworkError);
+    const second = await source.fetchEvents(TRANSFER_DESCRIPTOR, all);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(second.events).toHaveLength(4);
+    // Owner reads for versions 2 to 4 come from the second page alone: one each.
+    expect(late.sort()).toEqual(["2", "3", "4"]);
+  });
+
+  it("frees the slots of a given-up page's running reads for the next page", async () => {
+    // The first page's four reads hang; the second page's versions are past the outage.
+    const stores = (versions: number[]) => versions.map((v) => fa(v, 0, "Deposit", v.toString(16), "1"));
+    let calls = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: async () => ({
+        events: ++calls === 1 ? stores([1, 2, 3, 4]) : stores([101]),
+        nextCursor: "x",
+        hasMore: false,
+      }),
+      view: async (request, version) => {
+        if (version < 100n) return new Promise<never>(() => {});
+        return request.function === OWNER ? [ALICE] : [{ inner: "0xa" }];
+      },
+    };
+    const source = transferSource(adapter, undefined, undefined, false, 1000);
+    source.fetchEvents(TRANSFER_DESCRIPTOR, all).catch(() => {});
+    await new Promise((r) => setTimeout(r, 30));
+    const started = performance.now();
+    const page = await source.fetchEvents(TRANSFER_DESCRIPTOR, all);
+    expect(page.events).toHaveLength(1);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
   it("recovers a live subscription from a hung read", async () => {
     const { adapter } = firstViewHangs();
     const client = new StreamdClient({ adapter, requestTimeout: 2 });
