@@ -60,6 +60,7 @@ function withHistory<TData>(
       onCursor: (c) => (cursor = c),
     })
     .then((events) => {
+      // A read can settle in the same tick as an unmount, before its abort lands.
       if (ended) return;
       if (cursor === undefined) {
         return fail(new StreamdError("The history read gave no cursor to follow from"));
@@ -112,7 +113,7 @@ export function useEvents<TData = unknown>(
     (deliver, opts) =>
       history === undefined
         ? client.onBatch<TData>(descriptor!, deliver, opts)
-        : withHistory(client, descriptor!, Math.min(history, maxEvents), deliver, opts),
+        : withHistory(client, descriptor!, history, deliver, opts),
     history === undefined ? "live" : "loading",
   );
 }
