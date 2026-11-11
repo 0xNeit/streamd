@@ -8,9 +8,10 @@ deduplication, backoff and client-side filtering handled for you.
 ```ts
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { StreamdClient } from "@streamd/core";
+import { FullnodeScanAdapter } from "@streamd/aptos";
 
 const streamd = new StreamdClient({
-  aptos: new Aptos(new AptosConfig({ network: Network.MAINNET })),
+  adapter: new FullnodeScanAdapter(new Aptos(new AptosConfig({ network: Network.MAINNET }))),
 });
 
 streamd.on(
@@ -30,11 +31,15 @@ bun install
 bun run build
 ```
 
-The repository is a Turborepo monorepo on Bun workspaces with four packages:
+The repository is a Turborepo monorepo on Bun workspaces. Every package ships ESM, CommonJS and
+TypeScript types:
 
-- `@streamd/core` (`packages/core`) - the library. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer
-  dependency, and it ships ESM, CommonJS and TypeScript types.
-- `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core`.
+- `@streamd/core` (`packages/core`) - the client engine: subscriptions, queries, merges,
+  reductions and the `EventAdapter` contract, with the chain-neutral adapters.
+- `@streamd/aptos` (`packages/aptos`) - Aptos: `FullnodeScanAdapter`, `IndexerAccountAdapter`
+  and the network presets. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer dependency.
+- `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core` and
+  `@streamd/aptos`.
 - `@streamd/store-sqlite` (`packages/store-sqlite`) - opt-in persistence: events written to a
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
 - `@streamd/store-postgres` (`packages/store-postgres`) - the same over a Postgres client you
@@ -97,7 +102,7 @@ doubles the wait from `pollInterval` up to that many ms, and a page with events 
 `pollInterval`, so a new event can be seen up to `maxPollInterval` late. An event `where`
 filters out still counts as activity. Invalid
 input, such as a malformed address or cursor, stops it at once, since retrying
-cannot fix it. Pass `onError` to `new StreamdClient({ aptos, onError })` to set
+cannot fix it. Pass `onError` to `new StreamdClient({ adapter: new FullnodeScanAdapter(aptos), onError })` to set
 a client-wide fallback for any `on()`, `once()`, or `stream()` call that omits
 its own `onError`.
 
@@ -111,7 +116,7 @@ It cannot be a client-wide default.
 
 ```ts
 const streamd = new StreamdClient({
-  aptos,
+  adapter: new FullnodeScanAdapter(aptos),
   defaults: { pollInterval: 3000, maxErrors: 3, decode: ["amount"] },
 });
 
@@ -826,7 +831,7 @@ fetches.
 ### Limit the request rate
 
 ```ts
-const streamd = new StreamdClient({ aptos, maxRequestsPerSecond: 2 });
+const streamd = new StreamdClient({ adapter: new FullnodeScanAdapter(aptos), maxRequestsPerSecond: 2 });
 ```
 
 Adapter calls start at least `1000 / maxRequestsPerSecond` ms apart, with no burst, across
@@ -839,7 +844,7 @@ not counted.
 ### Limit concurrent requests
 
 ```ts
-const streamd = new StreamdClient({ aptos, maxConcurrentRequests: 4 });
+const streamd = new StreamdClient({ adapter: new FullnodeScanAdapter(aptos), maxConcurrentRequests: 4 });
 ```
 
 At most that many adapter calls run at once across every subscription and query on the
@@ -856,7 +861,7 @@ Omit the option for no limit.
 ### Time out a hung adapter call
 
 ```ts
-const streamd = new StreamdClient({ aptos, requestTimeout: 15_000 });
+const streamd = new StreamdClient({ adapter: new FullnodeScanAdapter(aptos), requestTimeout: 15_000 });
 ```
 
 An adapter call still unfinished after that many milliseconds fails with a
@@ -1606,7 +1611,7 @@ For deep history, implement `EventAdapter` against your own index (a
 self-hosted processor or third-party indexer) and pass it in:
 
 ```ts
-const streamd = new StreamdClient({ aptos, adapter: myIndexAdapter });
+const streamd = new StreamdClient({ adapter: myIndexAdapter });
 ```
 
 An adapter has one required method, `fetchEvents(descriptor, options)`, returning
@@ -1657,7 +1662,8 @@ fields named). Like `checkAdapter` it only reads, reports instead of throwing, a
 test runner:
 
 ```ts
-import { compareAdapters, FullnodeScanAdapter } from "@streamd/core";
+import { compareAdapters } from "@streamd/core";
+import { FullnodeScanAdapter } from "@streamd/aptos";
 
 const report = await compareAdapters(
   myIndexAdapter,
@@ -1687,12 +1693,8 @@ Combine sources with `RoutingAdapter` (by descriptor `kind`, with an optional
 call when one fails, while still rejecting invalid input at once):
 
 ```ts
-import {
-  FallbackAdapter,
-  FullnodeScanAdapter,
-  RoutingAdapter,
-  StreamdClient,
-} from "@streamd/core";
+import { FallbackAdapter, RoutingAdapter, StreamdClient } from "@streamd/core";
+import { FullnodeScanAdapter } from "@streamd/aptos";
 
 const fullnode = new FallbackAdapter([
   new FullnodeScanAdapter(primaryAptos),
@@ -1743,7 +1745,8 @@ sui.on({ kind: "module", eventType: "0x3::validator::StakingRequestEvent" }, (e)
 provider's, so no single one sets the rate:
 
 ```ts
-import { FullnodeScanAdapter, PoolAdapter, StreamdClient } from "@streamd/core";
+import { PoolAdapter, StreamdClient } from "@streamd/core";
+import { FullnodeScanAdapter } from "@streamd/aptos";
 
 const streamd = new StreamdClient({
   adapter: new PoolAdapter([new FullnodeScanAdapter(ownNode), new FullnodeScanAdapter(providerNode)], {
@@ -1769,7 +1772,8 @@ those `410`s to it:
 
 ```ts
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { ArchiveFallbackAdapter, FullnodeScanAdapter, StreamdClient, networks } from "@streamd/core";
+import { ArchiveFallbackAdapter, StreamdClient } from "@streamd/core";
+import { FullnodeScanAdapter, networks } from "@streamd/aptos";
 
 const streamd = new StreamdClient({
   adapter: new ArchiveFallbackAdapter(
@@ -1798,7 +1802,8 @@ fullnode, one read per transaction. It serves `account` descriptors only, so rou
 other kinds elsewhere:
 
 ```ts
-import { FullnodeScanAdapter, IndexerAccountAdapter, RoutingAdapter, StreamdClient } from "@streamd/core";
+import { RoutingAdapter, StreamdClient } from "@streamd/core";
+import { FullnodeScanAdapter, IndexerAccountAdapter } from "@streamd/aptos";
 
 const streamd = new StreamdClient({
   adapter: new RoutingAdapter({
@@ -1828,7 +1833,8 @@ that throws fails that fetch. `getHeadVersion`, `getEarliestVersion` and `getBlo
 through unhooked:
 
 ```ts
-import { FullnodeScanAdapter, StreamdClient, withHooks } from "@streamd/core";
+import { StreamdClient, withHooks } from "@streamd/core";
+import { FullnodeScanAdapter } from "@streamd/aptos";
 
 const streamd = new StreamdClient({
   adapter: withHooks(new FullnodeScanAdapter(aptos), {
@@ -1843,7 +1849,8 @@ For ready-made numbers, wrap the adapter with `adapterMetrics`, which counts eve
 adapter has, where `withHooks` sees only `fetchEvents`:
 
 ```ts
-import { FullnodeScanAdapter, StreamdClient, adapterMetrics } from "@streamd/core";
+import { StreamdClient, adapterMetrics } from "@streamd/core";
+import { FullnodeScanAdapter } from "@streamd/aptos";
 
 const metrics = adapterMetrics(new FullnodeScanAdapter(aptos));
 const streamd = new StreamdClient({ adapter: metrics.adapter });
@@ -1866,7 +1873,8 @@ chain head; a page that tails the head is never cached. Entries are dropped
 least recently used past `maxEntries` (default 1000):
 
 ```ts
-import { CachingAdapter, FullnodeScanAdapter, StreamdClient } from "@streamd/core";
+import { CachingAdapter, StreamdClient } from "@streamd/core";
+import { FullnodeScanAdapter } from "@streamd/aptos";
 
 const streamd = new StreamdClient({
   adapter: new CachingAdapter(new FullnodeScanAdapter(aptos), { maxEntries: 500 }),
@@ -1909,7 +1917,8 @@ requests with no network:
 
 ```ts
 import { readFile, writeFile } from "node:fs/promises";
-import { FullnodeScanAdapter, StreamdClient, recordingAdapter, replayAdapter } from "@streamd/core";
+import { StreamdClient, recordingAdapter, replayAdapter } from "@streamd/core";
+import { FullnodeScanAdapter } from "@streamd/aptos";
 
 const recorder = recordingAdapter(new FullnodeScanAdapter(aptos));
 await new StreamdClient({ adapter: recorder }).getEvents(descriptor, { fromVersion: 3_000_000_000n });
@@ -2002,10 +2011,11 @@ verified against. Each is shaped as SDK settings, so it passes straight to
 
 ```ts
 import { Aptos, AptosConfig } from "@aptos-labs/ts-sdk";
-import { IndexerAccountAdapter, StreamdClient, networks } from "@streamd/core";
+import { StreamdClient } from "@streamd/core";
+import { IndexerAccountAdapter, networks } from "@streamd/aptos";
 
 const aptos = new Aptos(new AptosConfig({ ...networks.movementMainnet, clientConfig: { http2: false } }));
-const streamd = new StreamdClient({ aptos });
+const streamd = new StreamdClient({ adapter: new FullnodeScanAdapter(aptos) });
 const received = new IndexerAccountAdapter(aptos);
 ```
 
