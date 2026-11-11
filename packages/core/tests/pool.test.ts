@@ -42,7 +42,7 @@ describe("PoolAdapter", () => {
     const log: string[] = [];
     const pool = new PoolAdapter([node("a", log), node("b", log)]);
     const onA = await pool.fetchEvents(d, { limit: 2 });
-    const onB = await pool.fetchEvents({ kind: "module", eventType: [T] }, { limit: 2 });
+    const onB = await pool.fetchEvents({ kind: "module", eventType: [T, "0x1::test::Other"] }, { limit: 2 });
     expect(onB.nextCursor).toBe(onA.nextCursor!);
     await pool.fetchEvents(d, { cursor: onA.nextCursor, limit: 1 });
     expect(log).toEqual(["a start", "b start", `a ${onA.nextCursor}`]);
