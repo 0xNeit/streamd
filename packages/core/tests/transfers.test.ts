@@ -743,6 +743,30 @@ describe("transfers with requestTimeout", () => {
     expect(late.sort()).toEqual(["2", "3", "4"]);
   });
 
+  it("frees the slots of a given-up page's running reads for the next page", async () => {
+    // The first page's four reads hang; the second page's versions are past the outage.
+    const stores = (versions: number[]) => versions.map((v) => fa(v, 0, "Deposit", v.toString(16), "1"));
+    let calls = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: async () => ({
+        events: ++calls === 1 ? stores([1, 2, 3, 4]) : stores([101]),
+        nextCursor: "x",
+        hasMore: false,
+      }),
+      view: async (request, version) => {
+        if (version < 100n) return new Promise<never>(() => {});
+        return request.function === OWNER ? [ALICE] : [{ inner: "0xa" }];
+      },
+    };
+    const source = transferSource(adapter, undefined, undefined, false, 1000);
+    source.fetchEvents(TRANSFER_DESCRIPTOR, all).catch(() => {});
+    await new Promise((r) => setTimeout(r, 30));
+    const started = performance.now();
+    const page = await source.fetchEvents(TRANSFER_DESCRIPTOR, all);
+    expect(page.events).toHaveLength(1);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
   it("recovers a live subscription from a hung read", async () => {
     const { adapter } = firstViewHangs();
     const client = new StreamdClient({ adapter, requestTimeout: 2 });

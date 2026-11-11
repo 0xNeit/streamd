@@ -221,7 +221,8 @@ export function transferSource(
   // this read's own: joining it would fail the retry too.
   let loads: (() => void)[] = [];
   let generation = 0;
-  // Aborted when the next page starts, so reads a given-up page queued leave the queue.
+  // Aborted when the next page starts: reads a given-up page queued leave the queue, and
+  // those it had started free their slots, though the requests themselves run on.
   let page = new AbortController();
   const track = (drop: () => void) => void loads.push(drop);
   const metadata = memo<string | undefined>((asset) => asset !== undefined, track);
@@ -243,7 +244,7 @@ export function transferSource(
     for (const at of version > 0n ? [version, version - 1n] : [version]) {
       let result: unknown[];
       try {
-        result = await limiter.run(() => adapter.view!(request, at, TRANSFER_DESCRIPTOR), signal);
+        result = await limiter.run(() => adapter.view!(request, at, TRANSFER_DESCRIPTOR), signal, signal);
       } catch (err) {
         if (err instanceof StreamdError && !(err instanceof StreamdNetworkError)) continue;
         throw err;
@@ -274,7 +275,7 @@ export function transferSource(
         typeArguments: [coin ? asset : "0x1::object::ObjectCore"],
         functionArguments: coin ? [] : [asset],
       };
-      return limiter.run(() => adapter.view!(request, version, TRANSFER_DESCRIPTOR), signal);
+      return limiter.run(() => adapter.view!(request, version, TRANSFER_DESCRIPTOR), signal, signal);
     };
     let symbol: unknown[];
     let decimals: unknown[];
