@@ -26,6 +26,17 @@ export async function storeEvents(
 ): Promise<Subscription> {
   const { name, ...listener } = options;
   const cursor = listener.cursor ?? (await store.readCursor(name));
+  // These run off the poller's stack, so route throws as it does: to onError,
+  // and a throw from onError itself to an uncaught error on a microtask.
+  const report = (error: Error) => {
+    try {
+      listener.onError?.(error);
+    } catch (thrown) {
+      queueMicrotask(() => {
+        throw thrown;
+      });
+    }
+  };
   const subscription: Subscription = client.onBatch(
     descriptor,
     async (events) => {
@@ -54,10 +65,16 @@ export async function storeEvents(
       onCaughtUp: () => {
         // Every page so far is stored, so the live cursor is safe to save. A
         // failed save reaches onError, and onCaughtUp is still called.
-        store
+        void store
           .write([], { name, cursor: subscription.cursor })
-          .catch((err: unknown) => listener.onError?.(new StreamdError("Saving the cursor on catching up failed", err)))
-          .finally(() => listener.onCaughtUp?.());
+          .catch((err: unknown) => report(new StreamdError("Saving the cursor on catching up failed", err)))
+          .then(() => {
+            try {
+              listener.onCaughtUp?.();
+            } catch (err) {
+              report(new StreamdError("onCaughtUp threw", err));
+            }
+          });
       },
     },
   );

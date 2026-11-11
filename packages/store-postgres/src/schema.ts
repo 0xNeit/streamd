@@ -27,7 +27,7 @@ const SCHEMA = [
     sender text,
     guid_address text,
     guid_creation numeric(39, 0),
-    event jsonb NOT NULL,
+    event text NOT NULL,
     PRIMARY KEY (version, event_index)
   )`,
   "CREATE INDEX IF NOT EXISTS streamd_events_type ON streamd_events (type, version, event_index)",

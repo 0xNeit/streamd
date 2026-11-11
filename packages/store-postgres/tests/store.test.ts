@@ -12,8 +12,8 @@ function ev(version: bigint, eventIndex = 0, extra: Partial<StreamdEvent> = {}):
 }
 
 async function rows(db: PGlite): Promise<StreamdEvent[]> {
-  const { rows } = await db.query<{ event: unknown }>("SELECT event FROM streamd_events ORDER BY version, event_index");
-  return rows.map((r) => parseEvent(JSON.stringify(r.event)));
+  const { rows } = await db.query<{ event: string }>("SELECT event FROM streamd_events ORDER BY version, event_index");
+  return rows.map((r) => parseEvent(r.event));
 }
 
 describe("PostgresEventStore", () => {
@@ -50,6 +50,13 @@ describe("PostgresEventStore", () => {
       guid_address: `0x${"0".repeat(63)}1`,
       guid_creation: (2n ** 128n - 1n).toString(),
     });
+  });
+
+  it("stores text Postgres's jsonb cannot hold, such as a NUL character", async () => {
+    const db = new PGlite();
+    const event = ev(1n, 0, { data: { s: "a\u0000b", lone: "\ud800" } });
+    await new PostgresEventStore(db).write([event]);
+    expect((await rows(db))[0]!.data).toEqual({ s: "a\u0000b", lone: "\ud800" });
   });
 
   it("writes nothing when one event of a batch is bad", async () => {

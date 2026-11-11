@@ -46,7 +46,7 @@ function requireName(name: unknown): string {
 // since a driver told the parameter is jsonb may encode the string as a JSON string.
 const WRITE = `
 WITH incoming AS (
-  SELECT (r->>0)::numeric, (r->>1)::integer, r->>2, r->>3, r->>4, (r->>5)::numeric, (r->>6)::jsonb
+  SELECT (r->>0)::numeric, (r->>1)::integer, r->>2, r->>3, r->>4, (r->>5)::numeric, r->>6
   FROM jsonb_array_elements($1::text::jsonb) AS r
 ), written AS (
   INSERT INTO streamd_events (version, event_index, type, sender, guid_address, guid_creation, event)

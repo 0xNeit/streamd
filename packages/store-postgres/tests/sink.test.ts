@@ -168,4 +168,39 @@ describe("storeEvents", () => {
     restarted.destroy();
     expect(await stored(db)).toEqual(history(6).map(eventId));
   });
+
+  it("stores an event holding a NUL character and carries on", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    const events = history(3);
+    events[1] = { ...events[1]!, data: { s: "a\u0000b" } };
+    const client = new StreamdClient({ adapter: new MemoryAdapter(events) });
+    const errors: Error[] = [];
+    const sub = await caughtUp((onCaughtUp) =>
+      storeEvents(client, store, swaps, { name: "swaps", batchSize: 1, onCaughtUp, onError: (e) => errors.push(e) }),
+    );
+    sub.unsubscribe();
+    client.destroy();
+    expect(errors).toEqual([]);
+    expect(await stored(db)).toEqual(events.map(eventId));
+  });
+
+  it("sends a throwing onCaughtUp to onError", async () => {
+    const store = new PostgresEventStore(new PGlite());
+    const client = new StreamdClient({ adapter: new MemoryAdapter(history(2)) });
+    const reached = new Promise<Error>((resolve) => {
+      void storeEvents(client, store, swaps, {
+        name: "swaps",
+        onCaughtUp: () => {
+          throw new Error("boom");
+        },
+        onError: resolve,
+      });
+    });
+    const error = await reached;
+    expect(error.message).toBe("onCaughtUp threw");
+    expect((error.cause as Error).message).toBe("boom");
+    client.destroy();
+
+  });
 });

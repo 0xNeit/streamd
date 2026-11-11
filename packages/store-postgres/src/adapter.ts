@@ -1,5 +1,5 @@
 import { StreamdError, parseEvent, requireAddress, requireEventType } from "@streamd/core";
-import type { EventAdapter, EventDescriptor, EventPage, FetchOptions, StreamdEvent } from "@streamd/core";
+import type { EventAdapter, EventDescriptor, EventPage, FetchOptions } from "@streamd/core";
 import { ensureSchema, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 
@@ -66,9 +66,6 @@ function count(value: number | undefined, label: string, fallback: number): numb
   return value;
 }
 
-// jsonb comes back parsed from most drivers and as text from some.
-const eventOf = (value: unknown): StreamdEvent =>
-  parseEvent(typeof value === "string" ? value : JSON.stringify(value));
 
 /**
  * Serves events a `PostgresEventStore` wrote, as an `EventAdapter`. It
@@ -115,7 +112,7 @@ export class PostgresStoreAdapter implements EventAdapter {
 
     await ensureSchema(this.client);
     const { rows } = await this.client.query(sql, params);
-    const events = rows.slice(0, limit).map((r) => eventOf(r.event));
+    const events = rows.slice(0, limit).map((r) => parseEvent(String(r.event)));
     const last = events.at(-1);
     const page: EventPage = {
       events,

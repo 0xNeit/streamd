@@ -144,17 +144,4 @@ describe("PostgresStoreAdapter", () => {
       "9:0", "10:0", "100:0", `${2n ** 64n - 1n}:0`,
     ]);
   });
-
-  it("reads events stored as text by a driver that returns jsonb unparsed", async () => {
-    const db = new PGlite();
-    await new PostgresEventStore(db).write([ev(1n, 0, SWAP, { data: { amount: 2n ** 70n } })]);
-    const adapter = new PostgresStoreAdapter({
-      query: async (text, params) => {
-        const result = await db.query<Record<string, unknown>>(text, params);
-        return { rows: result.rows.map((r) => ("event" in r ? { event: JSON.stringify(r.event) } : r)) };
-      },
-    });
-    const [event] = (await adapter.fetchEvents(swaps)).events;
-    expect(event!.data).toEqual({ amount: (2n ** 70n).toString() });
-  });
 });
