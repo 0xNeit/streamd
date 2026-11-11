@@ -1705,6 +1705,30 @@ const streamd = new StreamdClient({
 });
 ```
 
+### Spreading load across fullnodes
+
+`PoolAdapter` shares reads among several fullnodes of one chain, such as your own node and a
+provider's, so no single one sets the rate:
+
+```ts
+import { FullnodeScanAdapter, PoolAdapter, StreamdClient } from "@streamd/core";
+
+const streamd = new StreamdClient({
+  adapter: new PoolAdapter([new FullnodeScanAdapter(ownNode), new FullnodeScanAdapter(providerNode)], {
+    cooldown: 30_000, // the default
+  }),
+});
+```
+
+- **Each walk stays on one node.** A read with no cursor takes the next node in turn, and the
+  cursors its pages return lead back to that node, since nodes trail one another by a few
+  versions. The 1024 most recent cursors are remembered; an older one starts a new walk.
+- **A rate-limited node is set aside.** A `429` sets that node aside for its `Retry-After`, or
+  `cooldown` without one, and the same call moves to the next node; the walk carries on there.
+  With every node set aside, the `429` reaches the subscription's backoff. Other failures are
+  rethrown: for failover, wrap the pool in `FallbackAdapter`, or the nodes in it.
+- The other adapter methods rotate the same way, and exist only when every node has them.
+
 ### History the fullnode has pruned
 
 The public Aptos mainnet fullnode keeps about two weeks of history and answers older reads with
