@@ -103,14 +103,21 @@ describe("PoolAdapter", () => {
   });
 
   it("forgets old cursors past its bound, treating them as new walks", async () => {
-    const log: string[] = [];
-    const pool = new PoolAdapter([node("a", log), node("b", log)]);
-    const first = await pool.fetchEvents(d, { limit: 1 });
-    for (let i = 0; i < 1100; i++) await pool.fetchEvents(d, { fromVersion: BigInt((i % 9) + 1), limit: 1 + (i % 50) });
-    log.length = 0;
-    // The first walk started on a; 1101 calls later rotation is on b, which a forgotten cursor gets.
-    await pool.fetchEvents(d, { cursor: first.nextCursor, limit: 1 });
-    expect(log).toEqual([`b ${first.nextCursor}`]);
+    const seen: string[] = [];
+    let n = 0;
+    const counting = (name: string): EventAdapter => ({
+      fetchEvents: async (_d, o) => (seen.push(`${name} ${o.cursor ?? "start"}`), { events: [], nextCursor: `c${n++}`, hasMore: false }),
+    });
+    const pool = new PoolAdapter([counting("a"), counting("b")]);
+    await pool.fetchEvents(d, {}); // a, cursor c0
+    await pool.fetchEvents(d, { cursor: "c0" }); // still a, cursor c1
+    for (let i = 0; i < 1024; i++) await pool.fetchEvents(d, {});
+    seen.length = 0;
+    // c1 belonged to a but is older than the 1024 most recent, so rotation picks b;
+    // c1025 is recent, from a walk that started on a.
+    await pool.fetchEvents(d, { cursor: "c1" });
+    await pool.fetchEvents(d, { cursor: "c1025" });
+    expect(seen).toEqual(["b c1", "a c1025"]);
   });
 
   it("refuses an empty pool and a bad cooldown", () => {
