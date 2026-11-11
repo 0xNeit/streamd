@@ -4,7 +4,7 @@ import { FullnodeScanAdapter } from "../../src/fullnode.js";
 import { StreamdClient } from "@streamd/core";
 import { involvesAddress } from "@streamd/core";
 import { ownedBy } from "../../src/index.js";
-import { resolveName } from "@streamd/core";
+import { resolveName } from "../../src/index.js";
 import { StreamdError } from "@streamd/core";
 import type { EventDescriptor, StreamdEvent } from "@streamd/core";
 

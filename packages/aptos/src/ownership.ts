@@ -2,7 +2,7 @@ import type { Aptos } from "@aptos-labs/ts-sdk";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
 import { normalizeAddress } from "@streamd/core";
 import { RequestLimiter } from "@streamd/core";
-import { addressOrName, requireNameResolver, resolveName } from "@streamd/core";
+import { addressOrName, requireNameResolver, resolveName } from "./names.js";
 import type { EventPredicate, StreamdEvent } from "@streamd/core";
 
 const DEFAULT_FIELDS = ["store", "object", "token", "token_address"];

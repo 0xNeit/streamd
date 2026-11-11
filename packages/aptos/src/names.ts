@@ -1,8 +1,8 @@
 import { Network, type Aptos } from "@aptos-labs/ts-sdk";
-import { StreamdError, StreamdNetworkError } from "./errors.js";
-import { normalizeAddress } from "./filter.js";
-import { toStreamdError } from "./errors.js";
-import { requireAddress } from "./adapters/validate.js";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import { normalizeAddress } from "@streamd/core";
+import { toStreamdError } from "@streamd/core";
+import { requireAddress } from "@streamd/core";
 
 const LABEL = "[a-z\\d][a-z\\d-]{1,61}[a-z\\d]";
 const ANS_NAME = new RegExp(`^(?:${LABEL}\\.)?${LABEL}(?:\\.apt)?$`);

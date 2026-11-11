@@ -1,0 +1,1 @@
+{"compilerOptions":{"target":"ES2022","module":"ESNext","moduleResolution":"bundler","strict":true,"noUnusedLocals":true,"noUnusedParameters":true,"noPropertyAccessFromIndexSignature":true,"noEmit":true,"skipLibCheck":true,"types":[],"paths":{"@streamd/core":["/Users/nate/Documents/GitHub/experiments/streamd/packages/core/dist/index.d.ts"]}},"files":["shapes.ts","use.ts"]}

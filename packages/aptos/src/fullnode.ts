@@ -15,9 +15,10 @@ import type {
   ResourceDescriptor,
   StreamdEvent,
   TransactionEvents,
-  TransactionSimulation,
   ViewRequest,
 } from "@streamd/core";
+import { requireSimulation } from "./simulation.js";
+import type { AptosTransactionSimulation } from "./types.js";
 import { StreamdError, StreamdNetworkError, toStreamdError } from "@streamd/core";
 import { normalizeAddress } from "@streamd/core";
 import {
@@ -28,7 +29,6 @@ import {
   requireAddress,
   requireLedgerVersion,
   requireResourceType,
-  requireSimulation,
   requireTransactionHash,
   requireViewRequest,
   validateOffset,
@@ -344,7 +344,7 @@ export class FullnodeScanAdapter implements EventAdapter {
    * message and status but not its `cause`, which holds the request: header
    * API key and transaction bytes. The message still names the node URL.
    */
-  async simulateTransactionEvents(simulation: TransactionSimulation): Promise<TransactionEvents> {
+  async simulateTransactionEvents(simulation: AptosTransactionSimulation): Promise<TransactionEvents> {
     const { transaction, signerPublicKey, secondarySignersPublicKeys, feePayerPublicKey } =
       requireSimulation(simulation);
     let responses: unknown;

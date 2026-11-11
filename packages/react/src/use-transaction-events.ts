@@ -1,12 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import {
-  StreamdTransactionError,
-  type EventDescriptor,
-  type EventsOfOptions,
-  type StreamdClient,
-  type EventOf,
-} from "@streamd/core";
-import { useStreamdClient } from "./context.js";
+import { StreamdTransactionError, type EventDescriptor, type EventOf } from "@streamd/core";
+import type { AptosClient, EventsOfOptions } from "@streamd/aptos";
+import { useAptosClient } from "./context.js";
 import { toError, valueKey, withLatestFunctions } from "./key.js";
 
 /** `eventsOf` options, minus `signal`: the hook aborts on unmount and on input change. */
@@ -14,7 +9,7 @@ export interface UseTransactionEventsOptions<TData = unknown> extends Omit<Event
   /** Keep only the events this descriptor matches. */
   descriptor?: EventDescriptor<TData>;
   /** Use this client instead of the nearest `StreamdProvider`'s. */
-  client?: StreamdClient;
+  client?: AptosClient;
 }
 
 export interface UseTransactionEventsResult<TData> {
@@ -38,13 +33,13 @@ export function useTransactionEvents<TData = unknown>(
   options: UseTransactionEventsOptions<TData> = {},
 ): UseTransactionEventsResult<TData> {
   const { client: explicit, descriptor, ...filter } = options;
-  const client = useStreamdClient(explicit);
+  const client = useAptosClient(explicit);
   const latest = useRef(filter);
   latest.current = filter;
   const key = valueKey([transactionHash, descriptor, filter]);
   const [finished, setFinished] = useState<{
     key: string;
-    client: StreamdClient;
+    client: AptosClient;
     result: UseTransactionEventsResult<TData>;
   }>();
 

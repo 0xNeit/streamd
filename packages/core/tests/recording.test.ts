@@ -399,8 +399,7 @@ describe("recording transaction lookups", () => {
     const replay = replayAdapter(JSON.stringify(recorder));
     expect(await replay.getTransactionEvents!(hash)).toEqual(live);
     expect(await replay.getTransactionEvents!(missing)).toBeUndefined();
-    const events = await new StreamdClient({ adapter: replay }).eventsOf(hash);
-    expect(events).toEqual([seeded]);
+    expect((await replay.getTransactionEvents!(hash))?.events).toEqual([seeded]);
     await expect(replay.getTransactionEvents!(`0x${"aa".repeat(32)}`)).rejects.toBeInstanceOf(StreamdError);
   });
 

@@ -1,4 +1,4 @@
-export { StreamdClient } from "./client.js";
+export { StreamdClient, checkTimeout } from "./client.js";
 export { CachingAdapter } from "./adapters/caching.js";
 export { FallbackAdapter } from "./adapters/fallback.js";
 export { ArchiveFallbackAdapter } from "./adapters/archive.js";
@@ -15,10 +15,11 @@ export { CursorManager, eventId } from "./cursor.js";
 export { checkAdapter } from "./conformance.js";
 export { compareAdapters } from "./compare.js";
 export { defineEvent, defineEvents } from "./define.js";
-export { formatAmount } from "./transfers.js";
 export type { TaggedEvents } from "./define.js";
-export { addressOrName, primaryName, requireNameResolver, resolveName } from "./names.js";
 export { RequestLimiter } from "./limiter.js";
+// Building blocks the chain packages use for their own client methods.
+export { UNSIGNED_INTEGER, fieldDecoder } from "./decode.js";
+export { descriptorKey, onAbort, raceAbort, sleep } from "./utils.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
 export {
   StreamdAssertionError,
@@ -33,6 +34,7 @@ export {
 
 export {
   every,
+  filterEvents,
   fromFunction,
   fromSender,
   involvesAddress,
@@ -57,7 +59,6 @@ export {
   requireEventType,
   requireLedgerVersion,
   requireResourceType,
-  requireSimulation,
   requireTransactionHash,
   requireViewRequest,
   validateOffset,
@@ -103,9 +104,6 @@ export type {
 
 export type {
   AccountEventDescriptor,
-  BalanceChange,
-  Balances,
-  BalancesOptions,
   BatchCallback,
   TransactionCallback,
   TransactionGroup,
@@ -124,10 +122,6 @@ export type {
   EventPage,
   EventPredicate,
   SyncEventPredicate,
-  EventExpectation,
-  EventsOfOptions,
-  ExpectEventsOptions,
-  ExpectPreviewOptions,
   EventStream,
   FetchOptions,
   HandleEventDescriptor,
@@ -136,11 +130,6 @@ export type {
   ModuleEventDescriptor,
   MoveEventType,
   OnceOptions,
-  PreviewEventsOptions,
-  Transfer,
-  TransferFilter,
-  TransferListenerOptions,
-  TransferOptions,
   ReduceOptions,
   Reducer,
   Reduction,

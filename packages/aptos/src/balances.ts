@@ -1,18 +1,9 @@
-import { StreamdError, StreamdNetworkError } from "./errors.js";
-import { UNSIGNED_INTEGER } from "./decode.js";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import { UNSIGNED_INTEGER } from "@streamd/core";
 import { TRANSFER_DESCRIPTOR, assetKey, requireAsset } from "./transfers.js";
-import { onAbort } from "./utils.js";
-import type {
-  BalanceChange,
-  Balances,
-  BalancesOptions,
-  EventAdapter,
-  EventCallback,
-  ListenerOptions,
-  StreamdEvent,
-  Subscription,
-  ViewRequest,
-} from "./types.js";
+import { onAbort } from "@streamd/core";
+import type { EventAdapter, EventCallback, ListenerOptions, StreamdEvent, Subscription, ViewRequest } from "@streamd/core";
+import type { BalanceChange, Balances, BalancesOptions } from "./types.js";
 
 const APT = `0x${"a".padStart(64, "0")}`;
 const APT_COIN = "0x1::aptos_coin::AptosCoin";
