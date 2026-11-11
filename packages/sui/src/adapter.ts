@@ -76,7 +76,7 @@ function networkError(err: unknown): never {
   if (err instanceof StreamdError) throw err;
   const code = (err as { code?: unknown } | null)?.code;
   // A checkpoint the node no longer has is pruned history, as a 410 is on the Aptos fullnode.
-  const status = code === "RESOURCE_EXHAUSTED" ? 429 : code === "NOT_FOUND" ? 410 : undefined;
+  const status = code === "RESOURCE_EXHAUSTED" ? 429 : code === "NOT_FOUND" || code === "OUT_OF_RANGE" ? 410 : undefined;
   throw new StreamdNetworkError(`Sui gRPC request failed: ${err instanceof Error ? err.message : String(err)}`, status);
 }
 
@@ -191,8 +191,9 @@ export class SuiAdapter implements EventAdapter {
     const { fromVersion, toVersion } = options;
     // Without a cursor or a start, a walk starts at the head, as on the Aptos fullnode.
     const startCheckpoint =
-      after !== undefined ? undefined : fromVersion !== undefined ? await this.checkpointOf(fromVersion) : (await this.latest()).sequence;
-    const endCheckpoint = toVersion === undefined ? undefined : await this.checkpointOf(toVersion);
+      after !== undefined ? undefined : fromVersion !== undefined ? await this.startOf(fromVersion) : (await this.latest()).sequence;
+    // The node's end bound is exclusive: stop after the checkpoint holding toVersion.
+    const endCheckpoint = toVersion === undefined ? undefined : (await this.checkpointOf(toVersion)) + 1n;
 
     const frames: ListEventsFrame[] = [];
     try {
@@ -254,6 +255,20 @@ export class SuiAdapter implements EventAdapter {
   /** Transactions before `checkpoint`: the version of its first one. */
   private async base(checkpoint: bigint): Promise<bigint> {
     return checkpoint === 0n ? 0n : (await this.summary(checkpoint - 1n)).total;
+  }
+
+  /**
+   * The checkpoint to start a walk from `version` at. The lowest checkpoint
+   * the node keeps cannot place its own versions, which need the one before,
+   * so a start that lands there is pruned history.
+   */
+  private async startOf(version: bigint): Promise<bigint> {
+    const checkpoint = await this.checkpointOf(version);
+    const placeable = await this.readable(checkpoint === 0n ? 0n : checkpoint - 1n);
+    if (checkpoint > 0n && placeable === undefined) {
+      throw new StreamdNetworkError(`Version ${version} is older than this Sui node keeps`, 410);
+    }
+    return checkpoint;
   }
 
   /** The earliest checkpoint whose running total passes `version`, found by bisection. */
