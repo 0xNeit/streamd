@@ -396,3 +396,77 @@ export const balanceView = (t0: string, arg0: string): ViewRequest => ({
     expect(body(first)).toBe(body(second));
   });
 });
+
+describe("generateEventTypes whole accounts", () => {
+  const helper = abi(DEX, "helper", [struct("Config", [["fee", "u64"]], false)]);
+  const pool = parseModuleAbi({
+    abi: {
+      address: DEX,
+      name: "pool",
+      structs: [struct("Swapped", [["amount", "u64"]])],
+      exposed_functions: [
+        { name: "reserves", visibility: "public", is_entry: false, is_view: true, generic_type_params: [], params: [], return: [] },
+      ],
+    },
+  });
+  const lister = (abis: ModuleAbi[]) => {
+    const calls: string[] = [];
+    const list = async (address: string) => {
+      calls.push(address);
+      return abis.filter((a) => normalizeAddress(a.address) === normalizeAddress(address));
+    };
+    return { list, calls };
+  };
+
+  it("expands an account to its modules, skipping those with nothing, without loading them", async () => {
+    const { load, calls } = loader([]);
+    const { list, calls: listed } = lister([helper, pool]);
+    const source = await generateEventTypes([{ address: DEX }], load, list);
+    expect(listed).toEqual([DEX]);
+    expect(calls).toEqual([]);
+    expect(source).toContain("export interface Swapped");
+    expect(source).not.toContain("Config");
+    expect(source).toContain(`ABIs of ${DEX}.`);
+  });
+
+  it("generates a module both named and covered by its account once", async () => {
+    const { load, calls } = loader([helper, pool]);
+    const { list } = lister([helper, pool]);
+    const once = await generateEventTypes([{ address: DEX }], load, list);
+    const both = await generateEventTypes([{ address: DEX }, { address: DEX, module: "pool" }], load, list);
+    expect(calls).toEqual([]);
+    expect(once.match(/export const reservesView /g)).toHaveLength(1);
+    expect(body(both)).toBe(body(once));
+    const named = await generateEventTypes([{ address: DEX, module: "pool" }, { address: DEX }], load, list);
+    expect(body(named)).toBe(body(once));
+  });
+
+  it("still fails on a named module with nothing, and on an account yielding nothing", async () => {
+    const { load } = loader([helper, pool]);
+    const { list } = lister([helper, pool]);
+    await expect(generateEventTypes([{ address: DEX }, { address: DEX, module: "helper" }], load, list)).rejects.toThrow(
+      `Module ${DEX}::helper declares no event structs or view functions`,
+    );
+    await expect(generateEventTypes([{ address: DEX }], load, lister([helper]).list)).rejects.toThrow(
+      `Account ${DEX} has no modules with event structs or view functions`,
+    );
+    await expect(generateEventTypes([{ address: BEEF }], load, list)).rejects.toThrow(`Account ${BEEF} has no modules`);
+  });
+
+  it("refuses a listing naming another account, and an account target with no lister", async () => {
+    const { load } = loader();
+    await expect(generateEventTypes([{ address: BEEF }], load, async () => [pool])).rejects.toThrow(
+      `Fullnode listed ${DEX}::pool for account ${BEEF}`,
+    );
+    await expect(generateEventTypes([{ address: DEX }], load)).rejects.toThrow("No module listing");
+  });
+
+  it("follows references out of a listed module through load", async () => {
+    const outer = abi(DEX, "outer", [struct("Wrapped", [["inner", `${BEEF}::lib::Inner`]])]);
+    const lib = abi(BEEF, "lib", [struct("Inner", [["x", "u8"]], false)]);
+    const { load, calls } = loader([lib]);
+    const source = await generateEventTypes([{ address: DEX }], load, lister([outer]).list);
+    expect(calls).toEqual([`${BEEF}::lib`]);
+    expect(source).toContain("export interface Inner");
+  });
+});
