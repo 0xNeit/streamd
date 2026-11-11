@@ -2,6 +2,7 @@ import { Aptos } from "@aptos-labs/ts-sdk";
 import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type {
   CloseOptions,
+  DescriptorData,
   EventOf,
   Balances,
   BalancesOptions,
@@ -238,8 +239,18 @@ export class StreamdClient {
    * single scan.
    */
   on<TData = unknown>(
-    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+    descriptor: EventDescriptor<TData>,
     callback: EventCallback<TData>,
+    options?: SubscriptionOptions,
+  ): Subscription;
+  on<const TList extends readonly EventDescriptor<any>[]>(
+    descriptors: TList,
+    callback: EventCallback<DescriptorData<TList[number]>>,
+    options?: SubscriptionOptions,
+  ): Subscription;
+  on(
+    descriptor: EventDescriptor | readonly EventDescriptor[],
+    callback: EventCallback<any>,
     options?: SubscriptionOptions,
   ): Subscription {
     return this.follow(descriptor, callback as EventCallback, options, callback, options?.id);
@@ -250,8 +261,18 @@ export class StreamdClient {
    * `callback(events)` call, at most `batchSize` of them.
    */
   onBatch<TData = unknown>(
-    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+    descriptor: EventDescriptor<TData>,
     callback: BatchCallback<TData>,
+    options?: SubscriptionOptions,
+  ): Subscription;
+  onBatch<const TList extends readonly EventDescriptor<any>[]>(
+    descriptors: TList,
+    callback: BatchCallback<DescriptorData<TList[number]>>,
+    options?: SubscriptionOptions,
+  ): Subscription;
+  onBatch(
+    descriptor: EventDescriptor | readonly EventDescriptor[],
+    callback: BatchCallback<any>,
     options?: SubscriptionOptions,
   ): Subscription {
     const merged = mergeable(descriptor);
@@ -469,8 +490,13 @@ export class StreamdClient {
    * for `on()`. A throwing `onCaughtUp`, an event that fails `decode` or a
    * throwing `withState` builder goes to `onError` and is skipped, as for `on()`.
    */
+  once<TData = unknown>(descriptor: EventDescriptor<TData>, options?: OnceOptions): Promise<EventOf<TData>>;
+  once<const TList extends readonly EventDescriptor<any>[]>(
+    descriptors: TList,
+    options?: OnceOptions,
+  ): Promise<EventOf<DescriptorData<TList[number]>>>;
   once<TData = unknown>(
-    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+    descriptor: EventDescriptor | readonly EventDescriptor[],
     options?: OnceOptions,
   ): Promise<EventOf<TData>> {
     const badTimeout = checkTimeout(options?.timeout);
@@ -535,8 +561,13 @@ export class StreamdClient {
    * aborts. Other errors go to `options.onError`. Save `cursor` to resume
    * later, as for `on()`.
    */
+  stream<TData = unknown>(descriptor: EventDescriptor<TData>, options?: ListenerOptions): EventStream<TData>;
+  stream<const TList extends readonly EventDescriptor<any>[]>(
+    descriptors: TList,
+    options?: ListenerOptions,
+  ): EventStream<DescriptorData<TList[number]>>;
   stream<TData = unknown>(
-    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+    descriptor: EventDescriptor | readonly EventDescriptor[],
     options?: ListenerOptions,
   ): EventStream<TData> {
     // Registered only once the stream subscribes, so an unused stream costs nothing.

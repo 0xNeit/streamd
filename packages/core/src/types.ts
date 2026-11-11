@@ -115,6 +115,17 @@ export interface ResourceDescriptor {
   resourceType: MoveEventType;
 }
 
+/**
+ * The payload type a descriptor carries, `unknown` for one without; over a
+ * union of descriptors, the union of their payloads. What a list of
+ * descriptors given to `on`, `onBatch`, `once` or `stream` delivers.
+ */
+export type DescriptorData<TDescriptor> = TDescriptor extends ModuleEventDescriptor<infer TData>
+  ? TData
+  : TDescriptor extends HandleEventDescriptor<infer TData>
+    ? TData
+    : unknown;
+
 export type EventDescriptor<TData = unknown> =
   | ModuleEventDescriptor<TData>
   | HandleEventDescriptor<TData>

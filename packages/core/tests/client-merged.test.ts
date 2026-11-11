@@ -5,6 +5,7 @@ import { StreamdClient } from "../src/client.js";
 import { eventId } from "../src/cursor.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import type { EventAdapter, EventDescriptor, StreamdEvent } from "../src/types.js";
+import { defineEvent, defineEvents } from "../src/define.js";
 
 const A = "0x1::test::A";
 const B = "0x1::test::B";
@@ -140,3 +141,22 @@ describe("merged live subscriptions", () => {
     client.destroy();
   });
 });
+
+// Compiled by typecheck, never run: a list infers the union of its descriptors' payloads.
+export function typesOfLists(client: StreamdClient) {
+  const X = defineEvent<{ x: string }>("0x1::m::X");
+  const Y = defineEvent<{ y: number }>("0x1::m::Y");
+  const is = <T>(_value: T) => {};
+  client.on([X, Y], (e) => is<{ x: string } | { y: number }>(e.data));
+  // @ts-expect-error the union is not one of its members
+  client.on([X, Y], (e) => is<{ x: string }>(e.data));
+  client.on([X, { kind: "account", accountAddress: "0x1" }], (e) => is<unknown>(e.data));
+  client.on([defineEvents({ "0x1::m::X": X, "0x1::m::Y": Y })], (e) => {
+    if (e.type === "0x1::m::Y") is<number>(e.data.y);
+  });
+  client.onBatch([X, Y], (events) => is<({ x: string } | { y: number })[]>(events.map((e) => e.data)));
+  void client.once([X, Y]).then((e) => is<{ x: string } | { y: number }>(e.data));
+  is<AsyncIterable<{ data: { x: string } | { y: number } }>>(client.stream([X, Y]));
+  const list: EventDescriptor[] = [X];
+  client.on(list, (e) => is<unknown>(e.data));
+}
