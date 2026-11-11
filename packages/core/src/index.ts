@@ -1,6 +1,9 @@
 export { StreamdClient } from "./client.js";
 export { CachingAdapter } from "./adapters/caching.js";
 export { FallbackAdapter } from "./adapters/fallback.js";
+export { ArchiveFallbackAdapter } from "./adapters/archive.js";
+export { PoolAdapter } from "./adapters/pool.js";
+export type { PoolAdapterOptions } from "./adapters/pool.js";
 export { FullnodeScanAdapter } from "./adapters/fullnode.js";
 export { withHooks } from "./adapters/hooks.js";
 export { adapterMetrics } from "./adapters/metrics.js";
@@ -123,6 +126,7 @@ export type {
   EventExpectation,
   EventsOfOptions,
   ExpectEventsOptions,
+  ExpectPreviewOptions,
   EventStream,
   FetchOptions,
   HandleEventDescriptor,

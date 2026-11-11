@@ -173,15 +173,21 @@ export async function committedEvents(
  * Simulates `transaction` through `adapter` and returns the events it would
  * emit, narrowed as `eventsOf` narrows them. Input is refused before the call.
  */
-export async function previewEvents(
+/** Every event the simulation emits, or a `StreamdTransactionError` when it fails. */
+export async function simulatedEvents(
   adapter: EventAdapter,
   limiter: RequestLimiter,
   transaction: unknown,
   descriptor: EventDescriptor | undefined,
-  options: PreviewEventsOptions,
+  keys: Pick<PreviewEventsOptions, "signerPublicKey" | "secondarySignersPublicKeys" | "feePayerPublicKey">,
 ): Promise<StreamdEvent[]> {
-  const simulation = requireSimulation({ transaction, signerPublicKey: options.signerPublicKey });
-  const narrow = narrower(descriptor, options);
+  const { signerPublicKey, secondarySignersPublicKeys, feePayerPublicKey } = keys;
+  const simulation = requireSimulation({
+    transaction,
+    signerPublicKey,
+    ...(secondarySignersPublicKeys !== undefined && { secondarySignersPublicKeys }),
+    ...(feePayerPublicKey !== undefined && { feePayerPublicKey }),
+  });
   if (adapter.simulateTransactionEvents === undefined) {
     throw new StreamdError("previewEvents needs an adapter that implements simulateTransactionEvents");
   }
@@ -194,5 +200,16 @@ export async function previewEvents(
       found.vmStatus,
     );
   }
-  return narrow(found.events);
+  return found.events;
+}
+
+export async function previewEvents(
+  adapter: EventAdapter,
+  limiter: RequestLimiter,
+  transaction: unknown,
+  descriptor: EventDescriptor | undefined,
+  options: PreviewEventsOptions,
+): Promise<StreamdEvent[]> {
+  const narrow = narrower(descriptor, options);
+  return narrow(await simulatedEvents(adapter, limiter, transaction, descriptor, options));
 }

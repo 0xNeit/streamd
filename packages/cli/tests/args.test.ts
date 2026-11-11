@@ -267,6 +267,11 @@ describe("parseCommand codegen", () => {
     });
   });
 
+  it("takes --validators", () => {
+    expect(parseCommand(["codegen", "--validators", "0x1::coin"])).toMatchObject({ options: { validators: true } });
+    expect(parseCommand(["codegen", "0x1::coin"])).not.toMatchObject({ options: { validators: true } });
+  });
+
   it("takes a bare address as every module at it", () => {
     expect(parseCommand(["codegen", "0x1", `${LONG_ADDR}::coin`])).toEqual({
       command: "codegen",
@@ -657,5 +662,48 @@ describe("parseCommand --api-key and APTOS_API_KEY", () => {
 
   it("refuses an empty --api-key without echoing anything", () => {
     expect(() => parseCommand(["tail", TYPE, "--api-key", ""])).toThrow("--api-key must not be empty");
+  });
+});
+
+describe("parseCommand compare", () => {
+  const AGAINST = "https://archive.example/v1";
+  const base = ["compare", "--against", AGAINST, "--from-version", "10", "--to-version", "20"];
+
+  it("reads the flags", () => {
+    expect(parseCommand([...base, "--max-pages", "3", "--limit", "50", "--node-url", "http://127.0.0.1:8080/v1", TYPE])).toEqual({
+      command: "compare",
+      options: {
+        descriptor: { kind: "module", eventType: [TYPE] },
+        network: "mainnet",
+        nodeUrl: "http://127.0.0.1:8080/v1",
+        against: AGAINST,
+        fromVersion: 10n,
+        toVersion: 20n,
+        maxPages: 3,
+        limit: 50,
+      },
+    });
+    expect(parseCommand([...base, "--account", ADDR])).toMatchObject({ options: { descriptor: { kind: "account" } } });
+    expect(parseCommand(["compare", "--help"])).toEqual({ command: "help" });
+  });
+
+  it.each([
+    [["compare", "--from-version", "1", "--to-version", "2", TYPE], /compare needs --against/],
+    [["compare", "--against", "ftp://x", "--from-version", "1", "--to-version", "2", TYPE], /--against must be an http or https URL/],
+    [["compare", "--against", AGAINST, "--to-version", "2", TYPE], /needs --from-version and --to-version/],
+    [["compare", "--against", AGAINST, "--from-version", "5", "--to-version", "2", TYPE], /must not be below/],
+    [["compare", "--against", AGAINST, "--from-version", "0", "--to-version", "100000", TYPE], /at most 100000 versions/],
+    [[...base, "--max-pages", "0", TYPE], /--max-pages/],
+    [[...base, "--max-pages", "1001", TYPE], /--max-pages/],
+    [[...base, "--limit", "0", TYPE], /--limit/],
+    [base, /at least one event type/],
+  ])("rejects %j", (argv, message) => {
+    rejects(argv as string[], message as RegExp);
+  });
+
+  it("takes exactly 100000 versions", () => {
+    expect(parseCommand(["compare", "--against", AGAINST, "--from-version", "1", "--to-version", "100000", TYPE])).toMatchObject({
+      command: "compare",
+    });
   });
 });

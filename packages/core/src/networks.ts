@@ -26,6 +26,17 @@ export const networks = Object.freeze({
     indexer: "https://indexer.mainnet.movementnetwork.xyz/v1/graphql",
     chainId: 126,
   }),
+  /**
+   * Aptos mainnet's archive node, which keeps history from version 0 that the
+   * public fullnode has pruned. Pair it with the fullnode through
+   * `ArchiveFallbackAdapter`: it trails the head, and anonymous use allows
+   * only a few dozen requests per five minutes.
+   */
+  aptosMainnetArchive: preset({
+    network: Network.CUSTOM,
+    fullnode: "https://archive.mainnet.aptoslabs.com/v1",
+    chainId: 1,
+  }),
   movementTestnet: preset({
     network: Network.CUSTOM,
     fullnode: "https://testnet.movementnetwork.xyz/v1",

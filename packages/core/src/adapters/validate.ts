@@ -50,11 +50,29 @@ export function requireSimulation(value: unknown): TransactionSimulation {
   if (!isObject(transaction) || !isObject(transaction.rawTransaction)) {
     throw new StreamdError("Not a built transaction: pass the result of aptos.transaction.build.simple");
   }
-  if (transaction.secondarySignerAddresses !== undefined) {
-    throw new StreamdError("Only single-signer transactions can be simulated, not multi-agent ones");
+  const { signerPublicKey, secondarySignersPublicKeys: secondaryKeys, feePayerPublicKey } = simulation!;
+  for (const [name, key] of [["signerPublicKey", signerPublicKey], ["feePayerPublicKey", feePayerPublicKey]] as const) {
+    if (key !== undefined && !isObject(key)) throw new StreamdError(`${name} must be a PublicKey`);
   }
-  if (simulation!.signerPublicKey !== undefined && !isObject(simulation!.signerPublicKey)) {
-    throw new StreamdError("signerPublicKey must be a PublicKey");
+  const secondary = transaction.secondarySignerAddresses;
+  if (secondary !== undefined && !Array.isArray(secondary)) {
+    throw new StreamdError("Not a built transaction: secondarySignerAddresses must be a list");
+  }
+  if (secondaryKeys !== undefined) {
+    if (secondary === undefined) {
+      throw new StreamdError("secondarySignersPublicKeys needs a multi-agent transaction (aptos.transaction.build.multiAgent)");
+    }
+    if (!Array.isArray(secondaryKeys) || secondaryKeys.some((k) => k !== undefined && !isObject(k))) {
+      throw new StreamdError("secondarySignersPublicKeys must be a list of PublicKey or undefined");
+    }
+    if (secondaryKeys.length !== secondary.length) {
+      throw new StreamdError(
+        `secondarySignersPublicKeys has ${secondaryKeys.length} key(s) for ${secondary.length} secondary signer(s)`,
+      );
+    }
+  }
+  if (feePayerPublicKey !== undefined && transaction.feePayerAddress === undefined) {
+    throw new StreamdError("feePayerPublicKey needs a sponsored transaction (built withFeePayer)");
   }
   return value as TransactionSimulation;
 }

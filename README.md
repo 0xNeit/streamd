@@ -640,7 +640,20 @@ Nothing is signed or submitted, and the simulation commits nothing. The events a
 previews, not history: `version` is the one the node simulated at, and `transactionHash`
 is unset, since an unsigned transaction's hash is not the one it will commit under. Pass
 `signerPublicKey` to have the node check the sender's auth key; without it that check is
-skipped. Only single-signer transactions are accepted, a fee-payer one included.
+skipped.
+
+Multi-agent transactions (from `aptos.transaction.build.multiAgent`) and sponsored ones (built
+`withFeePayer`, with `feePayerAddress` set to the payer) are simulated too. Their keys are
+optional in the same way: `secondarySignersPublicKeys`, one per secondary signer in order (an
+`undefined` entry skips that check), and `feePayerPublicKey`. Keys that do not fit the
+transaction, such as a fee-payer key on a transaction with no fee payer, are refused before
+anything is sent.
+
+```ts
+const sponsored = await aptos.transaction.build.simple({ sender: newUser, data, withFeePayer: true });
+sponsored.feePayerAddress = sponsor.accountAddress;
+await streamd.previewEvents(sponsored, undefined, { feePayerPublicKey: sponsor.publicKey });
+```
 
 A simulation that fails rejects with `StreamdTransactionError`, whose `vmStatus` says why
 and whose `transactionHash` is undefined. On `FullnodeScanAdapter` a failed request
@@ -648,6 +661,19 @@ rejects with a `StreamdNetworkError` that carries neither the transaction nor th
 error holding it. It needs an adapter with `simulateTransactionEvents`, which
 `FullnodeScanAdapter` has. The wrapping adapters pass it through, never cached or recorded,
 since a simulation answers for the chain's state at that moment.
+
+To assert on a simulation in a test, `expectPreview()` gives the same `toEmit` and `notToEmit` as
+`expectEvents()` (below), with nothing submitted:
+
+```ts
+const check = streamd.expectPreview(transaction, { decode: ["amount"] });
+await check.toEmit(FungibleAsset_Deposit, (e) => e.data.amount === 1n);
+await check.notToEmit({ kind: "module", eventType: "0x1::coin::CoinDeposit" });
+```
+
+Each assertion runs its own simulation. A failed one rejects with `StreamdAssertionError`
+listing every event the simulation emitted, with `transactionHash` undefined; a simulation that
+aborts rejects with `StreamdTransactionError` instead.
 
 ### Query history
 
@@ -1679,6 +1705,60 @@ const streamd = new StreamdClient({
 });
 ```
 
+### Spreading load across fullnodes
+
+`PoolAdapter` shares reads among several fullnodes of one chain, such as your own node and a
+provider's, so no single one sets the rate:
+
+```ts
+import { FullnodeScanAdapter, PoolAdapter, StreamdClient } from "@streamd/core";
+
+const streamd = new StreamdClient({
+  adapter: new PoolAdapter([new FullnodeScanAdapter(ownNode), new FullnodeScanAdapter(providerNode)], {
+    cooldown: 30_000, // the default
+  }),
+});
+```
+
+- **Each walk stays on one node.** A read with no cursor takes the next node in turn, and the
+  cursors its pages return lead back to that node, since nodes trail one another by a few
+  versions. The 1024 most recent cursors are remembered; an older one starts a new walk.
+- **A rate-limited node is set aside.** A `429` sets that node aside for its `Retry-After`, or
+  `cooldown` without one, and the same call moves to the next node; the walk carries on there.
+  With every node set aside, the `429` reaches the subscription's backoff. Other failures are
+  rethrown: for failover, wrap the pool in `FallbackAdapter`, or the nodes in it.
+- The other adapter methods rotate the same way, and exist only when every node has them.
+
+### History the fullnode has pruned
+
+The public Aptos mainnet fullnode keeps about two weeks of history and answers older reads with
+`410`. Its archive node keeps everything from version 0. `ArchiveFallbackAdapter` sends only
+those `410`s to it:
+
+```ts
+import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { ArchiveFallbackAdapter, FullnodeScanAdapter, StreamdClient, networks } from "@streamd/core";
+
+const streamd = new StreamdClient({
+  adapter: new ArchiveFallbackAdapter(
+    new FullnodeScanAdapter(new Aptos(new AptosConfig({ network: Network.MAINNET }))),
+    new FullnodeScanAdapter(new Aptos(new AptosConfig(networks.aptosMainnetArchive))),
+  ),
+});
+await streamd.getEvents(NewBlockEvent, { fromVersion: 1000n, limit: 10 }); // served by the archive
+```
+
+- **Only pruned reads move.** Event pages, blocks, transaction lookups and `withState` views
+  go to the archive when the fullnode answers `410`; a rate limit or an outage is rethrown, so
+  backoff and `maxErrors` work as usual. Each call starts at the fullnode, so a walk returns to
+  it once it passes the pruned edge.
+- **Bounds:** the head and simulations come from the fullnode, which the archive trails by a
+  few dozen versions; `fromVersion: "earliest"` and `fromTime` see the archive's full range.
+- **Rate.** Anonymously the archive allowed about 43 requests per five minutes in a 2026-11
+  measurement, and its `429` carries no `Retry-After`. That is enough for a handle's early
+  events or a narrow range, not for days of module scans: pass an API key in the archive's
+  `clientConfig` for more.
+
 For `account` descriptors that see every transaction touching the account, received
 ones included, use `IndexerAccountAdapter`. It pages the Aptos Indexer's
 `account_transactions` table by version, then reads each transaction's events from the
@@ -2340,6 +2420,29 @@ has an end. Failed pages are retried and not recorded, and the file appears only
 query has succeeded. Without `--out` the recording goes to stdout. It exits 0 on success, 1 on
 failure, 130 if interrupted and 2 for bad usage.
 
+### Compare two nodes
+
+`streamd compare` reads one range from two fullnodes through
+[`compareAdapters`](#data-sources-and-their-limits) and prints what they disagree on, to check a
+node against a reference:
+
+```sh
+streamd compare --node-url http://my-node:8080/v1 --against https://api.mainnet.aptoslabs.com/v1 \
+  --from-version 8002810605 --to-version 8002811605 0x1::fungible_asset::Deposit
+```
+
+The command's node (`--network`, or `--node-url`, with its `--api-key`) is compared with
+`--against`, which gets no API key. Each finding is a JSON line, events written as `tail` writes
+them: `{"kind":"missing","event":…}` for one only the first node has, `"extra"` for one only the
+second has, and `{"kind":"different","id","fields","a","b"}`. A last line, `"kind":"summary"`,
+gives `ok`, the window both nodes covered, `matched`, the pages read and any errors. Events are
+identified by version and index, so an event dropped from a transaction also shows the next one
+there as missing and extra.
+
+The range is required and at most 100,000 versions; `--max-pages` (default 10) caps each walk and
+`--limit` sets the page size. It exits 0 when the nodes agree, 1 when they disagree, a node fails
+or no window was compared, and 2 for bad usage.
+
 ### Generate event types
 
 `streamd store` follows the same descriptors as `tail` into a SQLite file, through
@@ -2380,6 +2483,22 @@ client.on(CoinStore_DepositEvents(wallet, "0x1::aptos_coin::AptosCoin"), (e) => 
 ```
 
 Handles nested below a resource's top level have no builder; reach them by `creationNumber`.
+
+`--validators` also writes an `is<Type>(value): value is <Type>` check for every generated type,
+with no dependencies, for payloads from a source you do not control:
+
+```ts
+import { FungibleAsset_Deposit, isFungibleAsset_Deposit } from "./events.js";
+
+client.on(FungibleAsset_Deposit, (e) => {
+  if (!isFungibleAsset_Deposit(e.data)) return report(e); // not the shape the ABI describes
+});
+```
+
+It follows the table below, accepting `bigint` where a decimal string is expected, so a payload
+already through `decode` passes. Extra fields pass, so an upgraded module's new fields do not
+break old checks, and values of a type parameter are not checked. It checks shape, not
+identity: two event types with the same fields pass each other's check.
 
 A bare address covers every module published there, skipping the ones with no `#[event]` struct,
 event handle or `#[view]` function, and mixes with named modules:

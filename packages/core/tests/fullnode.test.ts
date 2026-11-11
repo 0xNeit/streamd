@@ -1054,7 +1054,7 @@ describe("FullnodeScanAdapter simulation", () => {
     }
   });
 
-  it("refuses a non-transaction or multi-agent one before any request", async () => {
+  it("refuses a non-transaction and keys that do not fit it before any request", async () => {
     const { aptos, calls } = fakeNode(() => ({ data: [simulated()] }));
     const transaction = await buildTransfer(aptos);
     const adapter = new FullnodeScanAdapter(aptos);
@@ -1065,8 +1065,10 @@ describe("FullnodeScanAdapter simulation", () => {
       { transaction: null },
       { transaction: "0x1234" },
       { transaction: {} },
-      { transaction: { rawTransaction: {}, secondarySignerAddresses: [] } },
+      { transaction: { rawTransaction: {}, secondarySignerAddresses: "0xb" } },
       { transaction, signerPublicKey: "0xkey" },
+      { transaction, secondarySignersPublicKeys: [] },
+      { transaction, feePayerPublicKey: Account.generate().publicKey },
     ]) {
       const bad = await adapter.simulateTransactionEvents(simulation as never).catch((e: unknown) => e);
       expect(bad).toBeInstanceOf(StreamdError);
@@ -1086,6 +1088,45 @@ describe("FullnodeScanAdapter simulation", () => {
     const keyHex = Buffer.from(key.toUint8Array()).toString("hex");
     expect(hex(calls[0]!.body)).not.toContain(keyHex);
     expect(hex(calls[1]!.body)).toContain(keyHex);
+  });
+
+  it("simulates a multi-agent transaction with each signer's key, and a sponsored one with the fee payer's", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [simulated()] }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    const [sender, second, third, payer] = [0, 1, 2, 3].map(() => Account.generate());
+    const options = { accountSequenceNumber: 0, gasUnitPrice: 100, maxGasAmount: 1000, expireTimestamp: 9_999_999_999 };
+    const data = {
+      function: "0x1::aptos_account::transfer" as const,
+      functionArguments: [sender!.accountAddress, 0],
+      abi: { typeParameters: [], parameters: [parseTypeTag("address"), parseTypeTag("u64")] },
+    };
+    const multi = await aptos.transaction.build.multiAgent({
+      sender: sender!.accountAddress,
+      secondarySignerAddresses: [second!.accountAddress, third!.accountAddress],
+      data,
+      options,
+      withFeePayer: true,
+    });
+    multi.feePayerAddress = payer!.accountAddress;
+    const found = await adapter.simulateTransactionEvents({
+      transaction: multi,
+      signerPublicKey: sender!.publicKey,
+      secondarySignersPublicKeys: [second!.publicKey, undefined],
+      feePayerPublicKey: payer!.publicKey,
+    });
+    expect(found.events).toHaveLength(2);
+    const sponsored = await aptos.transaction.build.simple({ sender: sender!.accountAddress, data, options, withFeePayer: true });
+    sponsored.feePayerAddress = payer!.accountAddress;
+    await adapter.simulateTransactionEvents({ transaction: sponsored, feePayerPublicKey: payer!.publicKey });
+    const hex = (body: unknown) => Buffer.from(body as Uint8Array).toString("hex");
+    const keyHex = (a: Account) => Buffer.from(a.publicKey.toUint8Array()).toString("hex");
+    expect(calls.map((c) => c.path)).toEqual(["transactions/simulate", "transactions/simulate"]);
+    expect(hex(calls[0]!.body)).toContain(keyHex(second!));
+    expect(hex(calls[0]!.body)).not.toContain(keyHex(third!));
+    expect(hex(calls[0]!.body)).toContain(keyHex(payer!));
+    expect(hex(calls[0]!.body)).toContain(Buffer.from(third!.accountAddress.toUint8Array()).toString("hex"));
+    expect(hex(calls[1]!.body)).toContain(keyHex(payer!));
+    expect(hex(calls[1]!.body)).not.toContain(keyHex(sender!));
   });
 
   it("rejects a node error with its status and no cause", async () => {

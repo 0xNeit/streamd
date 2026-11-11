@@ -8,6 +8,7 @@ import { parseCommand, USAGE, UsageError } from "./args.js";
 import type {
   CheckOptions,
   CodegenOptions,
+  CompareOptions,
   ForwardOptions,
   ParsedCommand,
   QueryOptions,
@@ -18,6 +19,7 @@ import type {
   TxOptions,
 } from "./args.js";
 import { runCheck } from "./check.js";
+import { runCompare } from "./compare.js";
 import { generateEventTypes } from "./codegen.js";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
@@ -189,6 +191,17 @@ function check(options: CheckOptions): Promise<number> {
   });
 }
 
+function compare(options: CompareOptions): Promise<number> {
+  const node = (config: AptosConfig) => new FullnodeScanAdapter(new Aptos(config));
+  return runCompare(options, {
+    a: node(aptosConfig(options)),
+    // A custom node, so it gets no API key.
+    b: node(aptosConfig({ network: options.network, nodeUrl: options.against })),
+    write: (line) => process.stdout.write(line),
+    error: (text) => process.stderr.write(`${text}\n`),
+  });
+}
+
 async function codegen(options: CodegenOptions): Promise<number> {
   const config = aptosConfig(options);
   // Both parts were validated as an address and an identifier before reaching the path.
@@ -230,7 +243,7 @@ async function codegen(options: CodegenOptions): Promise<number> {
     } while (start !== undefined);
     return abis;
   };
-  const source = await generateEventTypes(options.modules, load, { list });
+  const source = await generateEventTypes(options.modules, load, { list, validators: options.validators === true });
   if (options.out === undefined) process.stdout.write(source);
   else await writeFile(options.out, source);
   return 0;
@@ -244,6 +257,7 @@ async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if (parsed.command === "codegen") return codegen(parsed.options);
+  if (parsed.command === "compare") return compare(parsed.options);
   if (parsed.command === "store") return store(parsed.options);
   if (parsed.command === "check") return check(parsed.options);
   if (parsed.command === "record") return record(parsed.options);

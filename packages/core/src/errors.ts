@@ -97,7 +97,8 @@ export class StreamdTransactionError extends StreamdError {
 export class StreamdAssertionError extends StreamdError {
   constructor(
     message: string,
-    public readonly transactionHash: string,
+    /** `undefined` for a simulation, whose committed hash is not known. */
+    public readonly transactionHash: string | undefined,
     public readonly events: StreamdEvent[],
   ) {
     super(message);

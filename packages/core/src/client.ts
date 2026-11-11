@@ -15,6 +15,7 @@ import type {
   EventExpectation,
   EventsOfOptions,
   ExpectEventsOptions,
+  ExpectPreviewOptions,
   ListenerDefaults,
   ListenerOptions,
   OnceOptions,
@@ -55,7 +56,7 @@ import { startTransactions, type TransactionHost } from "./grouping.js";
 import { isThenable } from "./filter.js";
 import { startWatch } from "./watch.js";
 import { eventsOf, previewEvents } from "./transaction.js";
-import { expectEvents } from "./expect.js";
+import { expectEvents, expectPreview } from "./expect.js";
 import { requireTransactionHash } from "./adapters/validate.js";
 import { addressOrName, resolveName } from "./names.js";
 import { startBalances } from "./balances.js";
@@ -860,6 +861,18 @@ export class StreamdClient {
   ): Promise<EventOf<TData>[]> {
     const events = await previewEvents(this.adapter, this.limiter, transaction, descriptor, options);
     return events as unknown as EventOf<TData>[];
+  }
+
+  /**
+   * Assert what a built, unsigned `transaction` would emit, with nothing
+   * signed or submitted: `toEmit` and `notToEmit` as on `expectEvents`, each
+   * answered by its own simulation through
+   * `EventAdapter.simulateTransactionEvents`. A failed simulation rejects with
+   * `StreamdTransactionError`; a failed assertion with `StreamdAssertionError`,
+   * whose `transactionHash` is `undefined`.
+   */
+  expectPreview(transaction: SimpleTransaction, options: ExpectPreviewOptions = {}): EventExpectation {
+    return expectPreview(this.adapter, this.limiter, transaction, options);
   }
 
   /**
