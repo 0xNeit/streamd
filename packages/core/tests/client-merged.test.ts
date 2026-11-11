@@ -73,6 +73,16 @@ describe("merged live subscriptions", () => {
     }
   });
 
+  it("onBatch() hands over everything one release frees as one batch", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter(HISTORY) });
+    const batches: string[][] = [];
+    client.onBatch(LIST, (events) => void batches.push(events.map(eventId)), { fromVersion: 0n, batchSize: 100 });
+    await advanceTimersByTimeAsync(50);
+    client.destroy();
+    // Each walk read everything in its first page, so the last of them frees it all at once.
+    expect(batches).toEqual([MERGED]);
+  });
+
   it("once() resolves with the earliest merged event, and rejects when a walk gives up", async () => {
     const client = new StreamdClient({ adapter: new MemoryAdapter(HISTORY) });
     const first = client.once([onB, onA], { fromVersion: 0n });
