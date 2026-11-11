@@ -267,6 +267,11 @@ describe("parseCommand codegen", () => {
     });
   });
 
+  it("takes --validators", () => {
+    expect(parseCommand(["codegen", "--validators", "0x1::coin"])).toMatchObject({ options: { validators: true } });
+    expect(parseCommand(["codegen", "0x1::coin"])).not.toMatchObject({ options: { validators: true } });
+  });
+
   it("takes a bare address as every module at it", () => {
     expect(parseCommand(["codegen", "0x1", `${LONG_ADDR}::coin`])).toEqual({
       command: "codegen",
