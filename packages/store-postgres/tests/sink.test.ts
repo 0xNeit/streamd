@@ -201,6 +201,5 @@ describe("storeEvents", () => {
     expect(error.message).toBe("onCaughtUp threw");
     expect((error.cause as Error).message).toBe("boom");
     client.destroy();
-
   });
 });
