@@ -568,6 +568,39 @@ describe("transfers with requestTimeout", () => {
     expect(views()).toBeGreaterThan(1);
   });
 
+  it("does not let a retry join a read left hung by a slow page", async () => {
+    const inner = withViews([fa(1, 0, "Withdraw", "a1", "100"), fa(1, 1, "Deposit", "b1", "100")]);
+    let views = 0;
+    let fetches = 0;
+    const adapter: EventAdapter = {
+      ...inner.adapter,
+      // The first page arrives late, so its read starts close to the page's own timeout.
+      fetchEvents: async (d, o) => {
+        if (++fetches === 1) await new Promise((r) => setTimeout(r, 40));
+        return inner.adapter.fetchEvents(d, o);
+      },
+      view: (request, version, descriptor) =>
+        ++views === 1 ? new Promise<never>(() => {}) : inner.adapter.view!(request, version, descriptor),
+    };
+    const client = new StreamdClient({ adapter, requestTimeout: 50 });
+    const errors: unknown[] = [];
+    const record = await new Promise<StreamdEvent<Transfer> | undefined>((resolve) => {
+      client.transfers(resolve, {
+        fromVersion: 0n,
+        pollInterval: 1,
+        maxBackoff: 1,
+        maxErrors: 2,
+        onError: (err) => {
+          errors.push(err);
+          if (errors.length === 2) resolve(undefined);
+        },
+      });
+    });
+    client.destroy();
+    expect(record?.data.amount).toBe(100n);
+    expect(errors).toHaveLength(1);
+  });
+
   it("recovers a live subscription from a hung read", async () => {
     const { adapter } = firstViewHangs();
     const client = new StreamdClient({ adapter, requestTimeout: 2 });

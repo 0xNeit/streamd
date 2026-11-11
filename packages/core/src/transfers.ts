@@ -139,8 +139,12 @@ function parse(event: StreamdEvent): Parsed | undefined {
   return undefined;
 }
 
-/** A bounded least-recently-used promise cache that drops rejections and answers `keep` refuses. */
-function memo<T>(keep: (value: T) => boolean) {
+/**
+ * A bounded least-recently-used promise cache that drops rejections and answers
+ * `keep` refuses. `pending` hears of each load, with a way to drop it unless it
+ * has settled by then.
+ */
+function memo<T>(keep: (value: T) => boolean, pending?: (drop: () => void) => void) {
   const entries = new Map<string, Promise<T>>();
   return (key: string, load: () => Promise<T>): Promise<T> => {
     let answer = entries.get(key);
@@ -148,8 +152,10 @@ function memo<T>(keep: (value: T) => boolean) {
       entries.delete(key);
     } else {
       const loaded = load();
+      let settled = false;
       const forget = () => entries.get(key) === loaded && entries.delete(key);
-      loaded.then((value) => keep(value) || forget(), forget);
+      loaded.then((value) => keep(value) || forget(), forget).finally(() => (settled = true));
+      pending?.(() => settled || forget());
       if (entries.size >= CACHE_SIZE) entries.delete(entries.keys().next().value!);
       answer = loaded;
     }
@@ -210,9 +216,14 @@ export function transferSource(
   const wanted = asset === undefined ? undefined : requireAsset(asset);
   // The timeout matters here as a memoized read that never settled would hang every retry.
   const limiter = new RequestLimiter(MAX_LOOKUPS, Infinity, requestTimeout);
-  const metadata = memo<string | undefined>((asset) => asset !== undefined);
-  const infos = memo<AssetInfo | undefined>(() => true);
-  const tokens = memo<boolean>(() => true);
+  // Pages are read one at a time, so a read still pending when the next page
+  // starts belongs to one the caller gave up on, perhaps at its timeout before
+  // this read's own: joining it would fail the retry too.
+  let loads: (() => void)[] = [];
+  const track = (drop: () => void) => void loads.push(drop);
+  const metadata = memo<string | undefined>((asset) => asset !== undefined, track);
+  const infos = memo<AssetInfo | undefined>(() => true, track);
+  const tokens = memo<boolean>(() => true, track);
 
   /** The address `fn` returns for `object`, before the transaction if it was gone after it. */
   const read = async (fn: ViewRequest["function"], object: string, version: bigint): Promise<string | undefined> => {
@@ -323,6 +334,7 @@ export function transferSource(
 
   const source: EventAdapter = {
     fetchEvents: async (descriptor, options) => {
+      for (const drop of loads.splice(0)) drop();
       const who = await account?.();
       const page = await adapter.fetchEvents(descriptor, options);
       let events = await toTransfers(page.events);
