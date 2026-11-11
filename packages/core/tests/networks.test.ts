@@ -7,7 +7,9 @@ describe("networks", () => {
     const config = new AptosConfig({ ...preset, clientConfig: { http2: false } });
     expect(config.network).toBe(Network.CUSTOM);
     expect(config.getRequestUrl(AptosApiType.FULLNODE)).toBe(preset.fullnode);
-    expect(config.getRequestUrl(AptosApiType.INDEXER)).toBe(preset.indexer!);
+    // The archive serves fullnode reads only; its Indexer is mainnet's own.
+    if ("indexer" in preset) expect(config.getRequestUrl(AptosApiType.INDEXER)).toBe(preset.indexer);
+    else expect(() => config.getRequestUrl(AptosApiType.INDEXER)).toThrow();
     expect(new URL(preset.fullnode).protocol).toBe("https:");
     expect(Number.isSafeInteger(preset.chainId)).toBe(true);
   });
