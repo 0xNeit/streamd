@@ -74,6 +74,8 @@ describe("PostgresStoreAdapter", () => {
     expect(rest.hasMore).toBe(false);
     const skipped = await adapter.fetchEvents(swaps, { fromVersion: 3n, offset: 2, limit: 1 });
     expect(ids(skipped.events)).toEqual(["5:0"]);
+    const resumed = await adapter.fetchEvents(swaps, { cursor: first.nextCursor, offset: 2, limit: 1 });
+    expect(ids(resumed.events)).toEqual(["5:0"]);
     const desc = await adapter.fetchEvents(swaps, { toVersion: 3n, orderBy: "desc" });
     expect(ids(desc.events)).toEqual(["3:0", "2:0", "1:0"]);
   });

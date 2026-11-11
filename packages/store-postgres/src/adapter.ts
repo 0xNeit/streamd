@@ -31,7 +31,6 @@ function descriptorWhere(descriptor: EventDescriptor): Where {
     case "account": {
       const sender = requireAddress(descriptor.accountAddress);
       if (descriptor.eventTypes === undefined) return (bind) => `sender = ${bind(sender)}`;
-      if (descriptor.eventTypes.length === 0) return () => "FALSE";
       const typed = types(descriptor.eventTypes);
       return (bind) => `sender = ${bind(sender)} AND ${typed(bind)}`;
     }
