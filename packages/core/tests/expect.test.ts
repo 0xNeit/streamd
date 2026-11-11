@@ -10,6 +10,7 @@ import {
   StreamdTransactionError,
 } from "../src/errors.js";
 import type { EventAdapter, StreamdEvent, TransactionEvents } from "../src/types.js";
+import type { PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
 
 const HASH = `0x${"cd".repeat(32)}`;
 const PING = "0x1::test::Ping";
@@ -164,5 +165,67 @@ describe("expectEvents", () => {
     const routing = new RoutingAdapter({ module: memory });
     const tx = client(routing).expectEvents(HASH);
     expect(await tx.toEmit({ kind: "module", eventType: PONG })).toEqual([EVENTS[1]!]);
+  });
+});
+
+describe("expectPreview", () => {
+  const TRANSACTION = { rawTransaction: {} } as unknown as SimpleTransaction;
+  const KEY = {} as PublicKey;
+  const ran: TransactionEvents = { version: 12n, success: true, vmStatus: "Executed successfully", events: EVENTS };
+  function simulating(result: TransactionEvents = ran) {
+    const calls: { key: unknown; descriptor: unknown }[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async simulateTransactionEvents(simulation, descriptor) {
+        calls.push({ key: simulation.signerPublicKey, descriptor });
+        return result;
+      },
+    };
+    return { client: new StreamdClient({ adapter }), calls };
+  }
+  const pings = { kind: "module", eventType: PING } as const;
+  const missing = { kind: "module", eventType: MISSING } as const;
+
+  it("resolves toEmit with the matches, and rejects listing every simulated event when none match", async () => {
+    const { client, calls } = simulating();
+    const expectation = client.expectPreview(TRANSACTION, { signerPublicKey: KEY });
+    expect(calls).toEqual([]);
+    expect((await expectation.toEmit(pings)).map((e) => e.eventIndex)).toEqual([0, 2]);
+    const err = (await expectation.toEmit(missing).catch((e: unknown) => e)) as StreamdAssertionError;
+    expect(err).toBeInstanceOf(StreamdAssertionError);
+    expect(err.transactionHash).toBeUndefined();
+    expect(err.events).toEqual(EVENTS);
+    expect(err.message).toStartWith(`Expected the simulated transaction to emit ["module",["${MISSING}"]], but`);
+    expect(err.message).toContain("it emitted 3 event(s)");
+    expect(calls).toEqual([
+      { key: KEY, descriptor: pings },
+      { key: KEY, descriptor: missing },
+    ]);
+  });
+
+  it("resolves notToEmit when nothing matches, and rejects naming the matches", async () => {
+    const { client } = simulating();
+    await client.expectPreview(TRANSACTION).notToEmit(missing);
+    const err = (await client.expectPreview(TRANSACTION).notToEmit(pings).catch((e: unknown) => e)) as Error;
+    expect(err).toBeInstanceOf(StreamdAssertionError);
+    expect(err.message).toContain("not to emit");
+    expect(err.message).toContain("2 matched (event index 0, 2)");
+  });
+
+  it("applies decode before where", async () => {
+    const { client } = simulating();
+    const big = await client
+      .expectPreview(TRANSACTION, { decode: ["amount"] })
+      .toEmit(pings, (e) => (e.data as { amount: bigint }).amount > 15n);
+    expect(big.map((e) => e.eventIndex)).toEqual([2]);
+  });
+
+  it("rejects with StreamdTransactionError when the simulation fails, and refuses an adapter that cannot simulate", async () => {
+    const { client } = simulating({ ...ran, success: false, vmStatus: "Move abort 0x1::coin: 0x10006" });
+    const err = (await client.expectPreview(TRANSACTION).toEmit(pings).catch((e: unknown) => e)) as StreamdTransactionError;
+    expect(err).toBeInstanceOf(StreamdTransactionError);
+    expect(err.vmStatus).toBe("Move abort 0x1::coin: 0x10006");
+    const plain = new StreamdClient({ adapter: new MemoryAdapter([]) });
+    await expect(plain.expectPreview(TRANSACTION).toEmit(pings)).rejects.toThrow("simulateTransactionEvents");
   });
 });
