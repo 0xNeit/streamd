@@ -2078,7 +2078,12 @@ function Feed() {
   returns `{ events, error, status }`: the most recent `maxEvents` events (default 100), oldest
   first; the last error, cleared when events next arrive; and `status`, `"idle"` (no
   descriptor, or not mounted yet), `"live"`, or `"stopped"` once `maxErrors` is reached.
-  Options are `on()`'s, without `signal`.
+  Options are `on()`'s, without `signal`. With `history: n` and a `fromVersion` or `fromTime`,
+  it first reads the `n` most recent matches between that start and the head, shows them in one
+  update (`status` is `"loading"` until then), and follows live from exactly where the read
+  ended, so a feed opens full rather than filling page by page:
+  `useEvents(Swap, { fromVersion: -100_000n, history: 20 })`. A failed read stops the hook with
+  its error.
 - **`useLogs(descriptor, options?)`** runs `client.getEvents` and returns
   `{ data, error, loading }`. `data` is the last successful result and stays through refetches
   and errors. Options are `getEvents`'s, without `signal`; it takes a list of descriptors too.

@@ -1,6 +1,12 @@
-import type { EventDescriptor, StreamdClient, SubscriptionOptions } from "@streamd/core";
+import {
+  StreamdError,
+  type EventDescriptor,
+  type EventOf,
+  type StreamdClient,
+  type SubscriptionOptions,
+} from "@streamd/core";
 import { useStreamdClient } from "./context.js";
-import { DEFAULT_MAX_EVENTS, useFollowing, type UseEventsResult } from "./follow.js";
+import { DEFAULT_MAX_EVENTS, useFollowing, type Following, type UseEventsResult } from "./follow.js";
 import { valueKey } from "./key.js";
 
 export type { UseEventsResult, UseEventsStatus } from "./follow.js";
@@ -11,6 +17,71 @@ export interface UseEventsOptions extends Omit<SubscriptionOptions, "signal"> {
   client?: StreamdClient;
   /** How many of the most recent events to keep (default: 100). */
   maxEvents?: number;
+  /**
+   * Show this many of the most recent matches between `fromVersion` or
+   * `fromTime` (one is required) and the head in one update, then follow
+   * live from where that read ended.
+   */
+  history?: number;
+}
+
+type Listener = Omit<UseEventsOptions, "client" | "maxEvents" | "history">;
+
+/** Reads the newest `limit` matches of the window, delivers them oldest first, then follows from the read's end. */
+function withHistory<TData>(
+  client: StreamdClient,
+  descriptor: EventDescriptor<TData>,
+  limit: number,
+  deliver: (events: EventOf<TData>[]) => void,
+  options: Listener,
+): Following {
+  const { fromVersion, fromTime, where, decode, withState, onError } = options;
+  const read = new AbortController();
+  let live: Following | undefined;
+  let failed = false;
+  let ended = false;
+  let cursor: string | undefined;
+  const fail = (err: unknown) => {
+    if (ended) return;
+    failed = true;
+    onError?.(err instanceof Error ? err : new StreamdError("History read failed", err));
+  };
+  client
+    .getEvents<TData>(descriptor, {
+      ...(fromVersion !== undefined && { fromVersion }),
+      ...(fromTime !== undefined && { fromTime }),
+      ...(where !== undefined && { where }),
+      ...(decode !== undefined && { decode }),
+      ...(withState !== undefined && { withState }),
+      orderBy: "desc",
+      limit,
+      signal: read.signal,
+      // A descending read walks the whole window, so its end cursor is exact.
+      onCursor: (c) => (cursor = c),
+    })
+    .then((events) => {
+      // A read can settle in the same tick as an unmount, before its abort lands.
+      if (ended) return;
+      if (cursor === undefined) {
+        return fail(new StreamdError("The history read gave no cursor to follow from"));
+      }
+      deliver(events.reverse());
+      const { fromVersion: _v, fromTime: _t, ...rest } = options;
+      live = client.onBatch<TData>(descriptor, deliver, { ...rest, cursor });
+    }, fail);
+  return {
+    unsubscribe() {
+      ended = true;
+      read.abort(new StreamdError("useEvents history read abandoned"));
+      live?.unsubscribe();
+    },
+    get active() {
+      return !ended && !failed && (live?.active ?? true);
+    },
+    get paused() {
+      return live?.paused ?? false;
+    },
+  };
 }
 
 /**
@@ -23,14 +94,26 @@ export function useEvents<TData = unknown>(
   descriptor: EventDescriptor<TData> | null | undefined,
   options: UseEventsOptions = {},
 ): UseEventsResult<TData> {
-  const { client: explicit, maxEvents = DEFAULT_MAX_EVENTS, ...listener } = options;
+  const { client: explicit, maxEvents = DEFAULT_MAX_EVENTS, history, ...listener } = options;
+  if (history !== undefined) {
+    if (!Number.isSafeInteger(history) || history < 1) {
+      throw new StreamdError(`Invalid history: ${String(history)} (expected a positive integer)`);
+    }
+    if (listener.fromVersion === undefined && listener.fromTime === undefined) {
+      throw new StreamdError("history needs fromVersion or fromTime, where the read starts");
+    }
+  }
   const client = useStreamdClient(explicit);
   return useFollowing<TData, typeof listener>(
     descriptor != null,
-    valueKey([descriptor, listener]),
+    valueKey([descriptor, listener, history ?? null]),
     client,
     listener,
     maxEvents,
-    (deliver, opts) => client.onBatch<TData>(descriptor!, deliver, opts),
+    (deliver, opts) =>
+      history === undefined
+        ? client.onBatch<TData>(descriptor!, deliver, opts)
+        : withHistory(client, descriptor!, history, deliver, opts),
+    history === undefined ? "live" : "loading",
   );
 }
