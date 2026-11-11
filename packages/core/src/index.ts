@@ -124,6 +124,7 @@ export type {
   EventExpectation,
   EventsOfOptions,
   ExpectEventsOptions,
+  ExpectPreviewOptions,
   EventStream,
   FetchOptions,
   HandleEventDescriptor,

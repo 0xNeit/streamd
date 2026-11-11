@@ -393,6 +393,9 @@ export interface EventExpectation {
   notToEmit(descriptor: EventDescriptor, where?: EventPredicate): Promise<void>;
 }
 
+/** Options for `StreamdClient.expectPreview`: the simulation's signer key and the assertions' `decode`. */
+export type ExpectPreviewOptions = Pick<PreviewEventsOptions, "signerPublicKey" | "decode">;
+
 /** Options for `StreamdClient.previewEvents`. */
 export interface PreviewEventsOptions {
   /** The sender's public key, so the simulation checks its auth key; omitted, that check is skipped. */

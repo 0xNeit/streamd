@@ -649,6 +649,19 @@ error holding it. It needs an adapter with `simulateTransactionEvents`, which
 `FullnodeScanAdapter` has. The wrapping adapters pass it through, never cached or recorded,
 since a simulation answers for the chain's state at that moment.
 
+To assert on a simulation in a test, `expectPreview()` gives the same `toEmit` and `notToEmit` as
+`expectEvents()` (below), with nothing submitted:
+
+```ts
+const check = streamd.expectPreview(transaction, { decode: ["amount"] });
+await check.toEmit(FungibleAsset_Deposit, (e) => e.data.amount === 1n);
+await check.notToEmit({ kind: "module", eventType: "0x1::coin::CoinDeposit" });
+```
+
+Each assertion runs its own simulation. A failed one rejects with `StreamdAssertionError`
+listing every event the simulation emitted, with `transactionHash` undefined; a simulation that
+aborts rejects with `StreamdTransactionError` instead.
+
 ### Query history
 
 ```ts
