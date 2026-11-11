@@ -1,8 +1,8 @@
 import { describe, it, expect } from "bun:test";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { checkDescriptor } from "../src/preflight.js";
-import { StreamdError, StreamdNetworkError } from "../src/errors.js";
-import type { ModuleEventDescriptor, ResourceDescriptor } from "../src/types.js";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import type { ModuleEventDescriptor, ResourceDescriptor } from "@streamd/core";
 
 const ADDR = "0x" + "a".repeat(64);
 const ONE = "0x" + "0".repeat(63) + "1";

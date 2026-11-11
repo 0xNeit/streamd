@@ -1,8 +1,8 @@
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { Aptos, AptosConfig, getAptosFullNode, Network } from "@aptos-labs/ts-sdk";
-import { StreamdClient, StreamdError, checkDescriptor } from "@streamd/core";
-import { FullnodeScanAdapter, networks } from "@streamd/aptos";
+import { StreamdClient, StreamdError } from "@streamd/core";
+import { FullnodeScanAdapter, checkDescriptor, networks } from "@streamd/aptos";
 import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";

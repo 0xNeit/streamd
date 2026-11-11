@@ -2,9 +2,9 @@ import { $, Glob } from "bun";
 
 await $`rm -rf dist`;
 
-for (const [format, name] of [["esm", "index.js"], ["cjs", "index.cjs"]] as const) {
+for (const [format, name] of [["esm", "[name].js"], ["cjs", "[name].cjs"]] as const) {
   const result = await Bun.build({
-    entrypoints: ["src/index.ts"],
+    entrypoints: ["src/index.ts", "src/framework.ts"],
     outdir: "dist",
     naming: name,
     format,

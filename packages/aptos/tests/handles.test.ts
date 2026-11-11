@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { listEventHandles } from "@streamd/core";
+import { listEventHandles } from "../src/index.js";
 import { FullnodeScanAdapter } from "../src/index.js";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
 

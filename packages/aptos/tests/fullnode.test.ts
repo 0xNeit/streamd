@@ -4,8 +4,8 @@ import { FullnodeScanAdapter } from "../src/fullnode.js";
 import { StreamdClient } from "@streamd/core";
 import { FallbackAdapter } from "@streamd/core";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
-import { checkDescriptor } from "@streamd/core";
-import { listEventHandles } from "@streamd/core";
+import { checkDescriptor } from "../src/index.js";
+import { listEventHandles } from "../src/index.js";
 import { withHooks } from "@streamd/core";
 import type { EventDescriptor, ModuleEventDescriptor } from "@streamd/core";
 
