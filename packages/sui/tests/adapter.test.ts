@@ -192,6 +192,11 @@ describe("SuiAdapter versions as bounds", () => {
     expect(page.events.map(eventId)).toEqual(["3:0", "3:1", "4:0"]);
     expect(calls.list.at(-1)).toMatchObject({ startCheckpoint: 1n, endCheckpoint: 2n });
     expect(page.throughVersion).toBe(4n);
+    // Version 7 is inside checkpoint 3 (6 to 9), which also holds the swap at 9.
+    const capped = await adapter.fetchEvents({ kind: "module", eventType: [SWAP] }, { fromVersion: 6n, toVersion: 7n, limit: 10 });
+    expect(calls.list.at(-1)).toMatchObject({ endCheckpoint: 3n });
+    expect(capped.events).toEqual([]);
+    expect(capped.throughVersion).toBe(7n);
     // Version 5 is the last of checkpoint 2, so the scan starts there and drops version 4.
     const later = await adapter.fetchEvents(stakes, { fromVersion: 5n, limit: 10 });
     expect(later.events).toEqual([]);
