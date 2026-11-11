@@ -1,5 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { fieldDecoder } from "../src/decode.js";
+import { MemoryAdapter } from "../src/adapters/memory.js";
+import { StreamdClient } from "../src/client.js";
 import { StreamdError } from "../src/errors.js";
 import type { StreamdEvent } from "../src/types.js";
 
@@ -57,5 +59,90 @@ describe("fieldDecoder", () => {
 
     expect(input.data).toEqual({ amount: "9" });
     expect(out).not.toBe(input);
+  });
+});
+
+describe("fieldDecoder paths", () => {
+  const data = {
+    amount: "1",
+    pool: { reserve: "340282366920938463463374607431768211455", name: "p" },
+    legs: [{ amount: "2", to: "0xa" }, { amount: "3", to: "0xb" }],
+    fees: ["4", "5"],
+    limit: { vec: ["6"] },
+    none: { vec: [] },
+    grid: [["7"], ["8", "9"]],
+  };
+
+  it("converts nested fields, array wildcards, nested wildcards and Option values", () => {
+    const decode = fieldDecoder(["amount", "pool.reserve", "legs.*.amount", "fees.*", "limit.vec.*", "none.vec.*", "grid.*.*"])!;
+    expect(decode(ev(data)).data).toEqual({
+      amount: 1n,
+      pool: { reserve: 2n ** 128n - 1n, name: "p" },
+      legs: [{ amount: 2n, to: "0xa" }, { amount: 3n, to: "0xb" }],
+      fees: [4n, 5n],
+      limit: { vec: [6n] },
+      none: { vec: [] },
+      grid: [[7n], [8n, 9n]],
+    });
+  });
+
+  it("skips a key absent at any depth, and returns the event itself when nothing changes", () => {
+    const event = ev({ pool: { name: "p" }, legs: [{ to: "0xa" }] });
+    const decode = fieldDecoder(["pool.reserve", "missing.deep.path", "legs.*.amount"])!;
+    expect(decode(event).data).toEqual({ pool: { name: "p" }, legs: [{ to: "0xa" }] });
+    const untouched = ev({ pool: { name: "p" } });
+    expect(fieldDecoder(["pool.reserve", "x.y"])!(untouched)).toBe(untouched);
+  });
+
+  it("rejects a present value that does not fit its path, naming the path", () => {
+    const cases: [string, unknown][] = [
+      ["pool.reserve", { pool: "flat" }],
+      ["fees.*", { fees: { a: "1" } }],
+      ["legs.*.amount", { legs: [{ amount: "-1" }] }],
+      ["legs.*.amount", { legs: ["2"] }],
+      ["pool.reserve", { pool: { reserve: 5 } }],
+    ];
+    for (const [path, value] of cases) {
+      expect(() => fieldDecoder([path])!(ev(value))).toThrow(
+        `Cannot decode field "${path}" of 7:2 as an unsigned integer`,
+      );
+    }
+  });
+
+  it("refuses malformed paths when the option is read", () => {
+    for (const path of ["a..b", ".a", "a.", "*", "*.a"]) {
+      expect(() => fieldDecoder([path])).toThrow(StreamdError);
+    }
+  });
+
+  it("copies only along converted paths and never mutates the input", () => {
+    const input = structuredClone(data);
+    const event = ev(input);
+    const out = fieldDecoder(["legs.*.amount"])!(event).data as typeof data;
+    expect(input).toEqual(data);
+    expect(out.pool).toBe(input.pool);
+    expect(out.fees).toBe(input.fees);
+    expect(out.legs).not.toBe(input.legs);
+  });
+});
+
+describe("nested decode through the client", () => {
+  const events = [1, 2, 3].map((n) => ({
+    ...ev({ pool: { reserve: String(10n ** 20n * BigInt(n)) } }),
+    version: BigInt(n),
+  }));
+  const big = (e: StreamdEvent) => (e.data as { pool: { reserve: bigint } }).pool.reserve > 10n ** 20n;
+  const d = { kind: "module", eventType: "0x1::test::Event" } as const;
+
+  it("applies a nested path before where, in queries and listeners", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter(events) });
+    const queried = await client.getEvents(d, { decode: ["pool.reserve"], where: big });
+    expect(queried.map((e) => (e.data as { pool: { reserve: bigint } }).pool.reserve)).toEqual([
+      2n * 10n ** 20n,
+      3n * 10n ** 20n,
+    ]);
+    const first = await client.once(d, { fromVersion: 0n, decode: ["pool.reserve"], where: big });
+    expect(first.version).toBe(2n);
+    client.destroy();
   });
 });

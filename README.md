@@ -1161,7 +1161,7 @@ and no events now generates too.
 ### Decode integers
 
 Move `u64`, `u128` and `u256` values arrive as decimal strings. Name the
-top-level `data` fields you want as `bigint`:
+`data` fields you want as `bigint`:
 
 ```ts
 const Deposit = defineEvent<{ store: string; amount: bigint }>(
@@ -1180,6 +1180,12 @@ const big = await client.getEvents(Deposit, { decode: ["amount"], limit: 10 });
 values. An event without the field is left alone. A named field holding
 anything other than an unsigned decimal string is an error: a subscription
 reports it through `onError` and skips the event, and a query rejects.
+
+A name below the top level is a dotted path, and `*` steps into every element of an array:
+`"pool.reserve"`, `"legs.*.amount"`, `"fees.*"`, or `"limit.vec.*"` for an `Option<u64>`. A key
+missing at any depth leaves the event alone, as a missing top-level field does; a value that is
+there but does not fit the path, such as `*` on something that is not an array, is the same
+error. `parseEvent` takes the same paths.
 
 ### State at the event's version
 
@@ -1245,8 +1251,8 @@ back.version; // bigint again
 `version`, `sequenceNumber` and `timestamp` always come back as `bigint`;
 `state` comes back as written.
 Inside `data`, every `bigint` is written as a decimal string, and only the
-top-level fields named in `decode` are turned back into `bigint`, by the same
-rule as the `decode` option; deeper ones stay strings. Malformed input throws
+fields named in `decode`, by path, are turned back into `bigint`, by the same
+rule as the `decode` option; the rest stay strings. Malformed input throws
 a `StreamdError`.
 
 ### Event identity
