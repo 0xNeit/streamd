@@ -18,6 +18,8 @@ export interface GenerateOptions {
   list?: ListModules;
   /** Writes a `handle` descriptor builder per `EventHandle` field of a resource; default true. */
   handles?: boolean;
+  /** Writes an `is<Type>` runtime check per generated type; default false. */
+  validators?: boolean;
 }
 
 interface Entry {
@@ -359,6 +361,82 @@ function renderHandle(h: HandleEntry, name: string, names: Map<string, string>):
   ].join("\n");
 }
 
+const HELPERS = {
+  record:
+    "const streamdIsRecord = (v: unknown): v is Record<string, unknown> =>\n  typeof v === \"object\" && v !== null && !Array.isArray(v);",
+  uint: "const streamdIsUint = (v: unknown) => (typeof v === \"string\" && /^\\d+$/.test(v)) || (typeof v === \"bigint\" && v >= 0n);",
+  int: "const streamdIsInt = (v: unknown) => (typeof v === \"string\" && /^-?\\d+$/.test(v)) || typeof v === \"bigint\";",
+  address: "const streamdIsAddress = (v: unknown) => typeof v === \"string\" && /^0x[0-9a-fA-F]{1,64}$/.test(v);",
+  bytes: "const streamdIsBytes = (v: unknown) => typeof v === \"string\" && /^0x(?:[0-9a-fA-F]{2})*$/.test(v);",
+} as const;
+type Helper = keyof typeof HELPERS;
+
+const SIGNED_WIDE = new Set(["i64", "i128", "i256"]);
+
+/**
+ * A boolean expression checking `value` against `t`, as the fullnode writes it
+ * in JSON; `depth` keeps nested callbacks' parameter names apart.
+ */
+function check(t: MoveType, value: string, guards: Map<string, string>, used: Set<Helper>, depth = 0): string {
+  const use = (helper: Helper, arg = value) => (used.add(helper), `streamd${helper === "record" ? "IsRecord" : `Is${pascal(helper)}`}(${arg})`);
+  switch (t.kind) {
+    case "primitive":
+      if (t.name === "bool") return `typeof ${value} === "boolean"`;
+      if (NARROW.has(t.name)) return `Number.isInteger(${value})`;
+      if (DECODABLE.has(t.name)) return use("uint");
+      if (SIGNED_WIDE.has(t.name)) return use("int");
+      return use("address");
+    case "param":
+      // A type argument is only known at runtime, so its values are not checked.
+      return "true";
+    case "vector": {
+      if (t.of.kind === "primitive" && t.of.name === "u8") return use("bytes");
+      const item = `v${depth}`;
+      return `Array.isArray(${value}) && ${value}.every((${item}: unknown) => ${check(t.of, item, guards, used, depth + 1)})`;
+    }
+    case "struct": {
+      const kind = builtin(t);
+      if (kind === "String") return `typeof ${value} === "string"`;
+      if (kind === "Object") return `${use("record")} && ${use("address", `${value}["inner"]`)}`;
+      if (kind === "Option") {
+        const item = `v${depth}`;
+        const inner = check(t.args[0]!, item, guards, used, depth + 1);
+        const vec = `${value}["vec"]`;
+        return `${use("record")} && Array.isArray(${vec}) && ${vec}.length <= 1 && ${vec}.every((${item}: unknown) => ${inner})`;
+      }
+      return `${guards.get(`${moduleKey(t.address, t.module)}::${t.name}`)!}(${value})`;
+    }
+    case "unsupported":
+      throw new StreamdError(`Unsupported Move type: ${t.text}`);
+  }
+}
+
+function renderGuard(e: Entry, name: string, guard: string, guards: Map<string, string>, used: Set<Helper>): string {
+  const field = (f: FieldAbi) => check(f.type, `value[${JSON.stringify(f.name)}]`, guards, used);
+  const all = (fields: FieldAbi[], first: string) =>
+    [first, ...fields.map(field).filter((c) => c !== "true")].join(" && ");
+  used.add("record");
+  const doc = `/** Whether \`value\` has the shape of \`${qualified(e)}\`; extra fields pass, type arguments are not checked. */`;
+  if (!e.struct.isEnum) {
+    return [doc, `export function ${guard}(value: unknown): value is ${name} {`, `  return ${all(e.struct.fields, "streamdIsRecord(value)")};`, "}"].join("\n");
+  }
+  const cases = e.struct.variants.map((v) => {
+    const checks = all(v.fields, "").replace(/^ && /, "");
+    return `    case ${JSON.stringify(v.name)}:\n      return ${checks || "true"};`;
+  });
+  return [
+    doc,
+    `export function ${guard}(value: unknown): value is ${name} {`,
+    "  if (!streamdIsRecord(value)) return false;",
+    '  switch (value["__variant__"]) {',
+    ...cases,
+    "    default:",
+    "      return false;",
+    "  }",
+    "}",
+  ].join("\n");
+}
+
 /**
  * `<Struct>_<Field>` where unique, `<Module>_<Struct>_<Field>` where two modules
  * share it, and the address appended where even that collides.
@@ -403,6 +481,18 @@ export async function generateEventTypes(
   const handleKey = (h: HandleEntry) => `${moduleKey(h.module.address, h.module.name)}::${h.struct.name}::${h.field}`;
   const handles = collected.handles.sort((a, b) => (handleKey(a) < handleKey(b) ? -1 : handleKey(a) > handleKey(b) ? 1 : 0));
   const handleBuilders = handleNames(handles, new Set([...names.values(), ...builders]));
+  const taken = new Set([...names.values(), ...builders, ...handleBuilders]);
+  const guards = new Map<string, string>();
+  if (options.validators) {
+    for (const e of entries) {
+      let guard = `is${names.get(e.key)!}`;
+      while (taken.has(guard)) guard += "_";
+      taken.add(guard);
+      guards.set(e.key, guard);
+    }
+  }
+  const used = new Set<Helper>();
+  const checks = options.validators ? entries.map((e) => renderGuard(e, names.get(e.key)!, guards.get(e.key)!, guards, used)) : [];
   const header = [
     `// Generated by streamd codegen from the on-chain ABIs of ${targets
       .map((t) => (t.module === undefined ? t.address : `${t.address}::${t.module}`))
@@ -418,6 +508,7 @@ export async function generateEventTypes(
     ...entries.map((e) => render(e, names)),
     ...views.map((v, i) => renderView(v, builders[i]!)),
     ...handles.map((h, i) => renderHandle(h, handleBuilders[i]!, names)),
+    ...(checks.length > 0 ? [(Object.keys(HELPERS) as Helper[]).filter((h) => used.has(h)).map((h) => HELPERS[h]).join("\n"), ...checks] : []),
   ];
   return `${sections.join("\n\n")}\n`;
 }

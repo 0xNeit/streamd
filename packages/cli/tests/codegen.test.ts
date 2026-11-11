@@ -588,3 +588,112 @@ describe("generateEventTypes handle builders", () => {
     }
   }, 60_000);
 });
+
+describe("generateEventTypes validators", () => {
+  const generic = { ...struct("Boxed", [["item", "T0"], ["count", "u64"]], false), generic_type_params: [{ constraints: [] }] };
+  const shapes = abi(DEX, "shapes", [
+    struct("Everything", [
+      ["small", "u8"], ["signed", "i32"], ["big", "u128"], ["neg", "i64"], ["flag", "bool"], ["who", "address"],
+      ["bytes", "vector<u8>"], ["name", "0x1::string::String"], ["maybe", "0x1::option::Option<u64>"],
+      ["obj", "0x1::object::Object<0x1::object::ObjectCore>"], ["list", "vector<vector<u16>>"],
+      ["inner", `${DEX}::shapes::Inner`], ["boxed", `${DEX}::shapes::Boxed<u64>`], ["pick", `${DEX}::shapes::Pick`],
+    ]),
+    struct("Inner", [["x", "u64"]], false),
+    generic,
+    {
+      name: "Pick", is_event: false, is_enum: true, generic_type_params: [], fields: [],
+      variants: [{ name: "None", fields: [] }, { name: "Some", fields: [{ name: "amount", type: "u64" }] }],
+    },
+  ]);
+  const good = {
+    small: 1, signed: -2, big: "340282366920938463463374607431768211455", neg: "-9", flag: true, who: "0x1",
+    bytes: "0xabcd", name: "n", maybe: { vec: ["5"] }, obj: { inner: "0xa" }, list: [[1, 2], []],
+    inner: { x: "3" }, boxed: { item: { anything: true }, count: "4" }, pick: { __variant__: "Some", amount: "6" },
+  };
+
+  async function load(validators = true) {
+    // Inside the package, so the generated import of @streamd/core resolves at runtime.
+    const dir = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".validators-"));
+    const file = join(dir, "shapes.ts");
+    writeFileSync(file, await generateEventTypes([{ address: DEX, module: "shapes" }], loader([shapes]).load, { validators }));
+    return { dir, file, source: readFileSync(file, "utf8"), mod: (await import(file)) as Record<string, (v: unknown) => boolean> };
+  }
+
+  it("accepts the fullnode's JSON for every mapping, decoded bigints and extra fields", async () => {
+    const { dir, mod } = await load();
+    try {
+      expect(mod.isEverything!(good)).toBe(true);
+      expect(mod.isEverything!({ ...good, big: 5n, neg: -5n, added: "later field" })).toBe(true);
+      expect(mod.isEverything!({ ...good, maybe: { vec: [] }, pick: { __variant__: "None" }, bytes: "0x" })).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses each wrong shape", async () => {
+    const { dir, mod } = await load();
+    try {
+      const bad: Record<string, unknown>[] = [
+        { small: 1.5 }, { small: "1" }, { big: 7 }, { big: "-1" }, { big: -1n }, { neg: "x" }, { flag: "true" },
+        { who: "1" }, { who: "0xZZ" }, { bytes: "0xabc" }, { name: 3 }, { maybe: { vec: ["1", "2"] } },
+        { maybe: { vec: [1] } }, { obj: "0xa" }, { obj: { inner: "nope" } }, { list: [[1.5]] }, { list: [1] },
+        { inner: { x: 3 } }, { boxed: { item: 1, count: 4 } }, { pick: { __variant__: "Other" } },
+        { pick: { __variant__: "Some" } },
+      ];
+      for (const change of bad) expect(mod.isEverything!({ ...good, ...change })).toBe(false);
+      const { flag: _flag, ...missing } = good;
+      expect(mod.isEverything!(missing)).toBe(false);
+      for (const v of [null, undefined, [], "x", 1]) expect(mod.isEverything!(v)).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("names around a clash, writes nothing without the option, and typechecks narrowing unknown", async () => {
+    const plain = await load(false);
+    expect(plain.source).not.toContain("streamdIs");
+    rmSync(plain.dir, { recursive: true, force: true });
+    // The guard for an event FooView would be isFooView, which the builder for view is_foo already is.
+    const clash = parseModuleAbi({
+      abi: {
+        address: DEX,
+        name: "clash",
+        structs: [struct("FooView", [["a", "u8"]])],
+        exposed_functions: [
+          { name: "is_foo", visibility: "public", is_entry: false, is_view: true, generic_type_params: [], params: [], return: [] },
+        ],
+      },
+    });
+    const clashed = await generateEventTypes([{ address: DEX, module: "clash" }], loader([clash]).load, { validators: true });
+    expect(clashed).toContain("export const isFooView = ");
+    expect(clashed).toContain("export function isFooView_(value: unknown): value is FooView");
+    const { dir, source } = await load();
+    try {
+      expect(source).not.toContain("&& true");
+      writeFileSync(
+        join(dir, "use.ts"),
+        [
+          'import { isEverything, type Everything } from "./shapes.js";',
+          "declare const payload: unknown;",
+          "if (isEverything(payload)) { const e: Everything = payload; void e; }",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(dir, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            target: "ES2022", module: "ESNext", moduleResolution: "bundler", strict: true, noUnusedLocals: true,
+            noUnusedParameters: true, noPropertyAccessFromIndexSignature: true, noEmit: true, skipLibCheck: true, types: [],
+            paths: { "@streamd/core": [fileURLToPath(new URL("../../core/dist/index.d.ts", import.meta.url))] },
+          },
+          files: ["shapes.ts", "use.ts"],
+        }),
+      );
+      const tsc = fileURLToPath(new URL("../../../node_modules/.bin/tsc", import.meta.url));
+      const result = Bun.spawnSync([tsc, "-p", dir]);
+      expect(result.stdout.toString() + result.stderr.toString()).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
