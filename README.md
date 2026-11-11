@@ -2155,6 +2155,12 @@ has for long-lived handles, it fails at the start, with `--handle` as well.
 `--network` takes `mainnet`, `testnet`, `devnet`, `movement-mainnet` or `movement-testnet`, and
 `--node-url` overrides its fullnode.
 
+Every command takes `--api-key <key>` for a keyed fullnode, sent as `Authorization: Bearer`, the
+SDK's API key. Without the flag, `APTOS_API_KEY` from the environment is used, but only on
+`mainnet`, `testnet` or `devnet` with no `--node-url`, so a key meant for Aptos Labs' endpoints
+never reaches a custom node or Movement; pass `--api-key` to send one there, as `--api-key "$NODE_KEY"` so the key stays out of shell
+history. The key is never printed.
+
 `--format pretty` prints one aligned line per event instead of JSON, for reading in a terminal:
 UTC time, type without its address, shortened sender, and the payload clipped to 80 columns.
 Control characters in on-chain text print as `?`. Handle events have no time or sender, so those

@@ -1,10 +1,15 @@
-import { describe, expect, it } from "bun:test";
+import { beforeAll, describe, expect, it } from "bun:test";
 import { parseCommand, parseTime, UsageError } from "../src/args.js";
 import type { StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
 const LONG_ADDR = `0x${"0".repeat(63)}1`;
 const TYPE = "0x1::coin::DepositEvent";
+
+// Parsed options would carry a key from the developer's own environment.
+beforeAll(() => {
+  delete process.env.APTOS_API_KEY;
+});
 
 function tail(...argv: string[]): TailOptions {
   const parsed = parseCommand(["tail", ...argv]);
@@ -602,4 +607,55 @@ describe("forward secret", () => {
   it("is unset by default", () => withEnv(undefined, () => expect(secretOf()).toBeUndefined()));
   it("allows the header when not signing", () =>
     withEnv(undefined, () => expect(secretOf("--header", "x-streamd-signature: mine")).toBeUndefined()));
+});
+
+describe("parseCommand --api-key and APTOS_API_KEY", () => {
+  const COMMANDS: string[][] = [
+    ["tail", TYPE],
+    ["forward", "--to", "https://h.example", TYPE],
+    ["store", "--db", "e.db", TYPE],
+    ["query", "--from-version", "1", TYPE],
+    ["tx", `0x${"ab".repeat(32)}`],
+    ["check", TYPE],
+    ["record", "--from-version", "1", "--to-version", "2", TYPE],
+    ["codegen", "0x1::coin"],
+  ];
+  const keyOf = (argv: string[]) => (parseCommand(argv) as { options: { apiKey?: string } }).options.apiKey;
+  const withEnv = <T>(value: string | undefined, run: () => T): T => {
+    const saved = process.env.APTOS_API_KEY;
+    if (value === undefined) delete process.env.APTOS_API_KEY;
+    else process.env.APTOS_API_KEY = value;
+    try {
+      return run();
+    } finally {
+      if (saved === undefined) delete process.env.APTOS_API_KEY;
+      else process.env.APTOS_API_KEY = saved;
+    }
+  };
+
+  it.each(COMMANDS)("takes --api-key on %s", (...argv) => {
+    withEnv(undefined, () => {
+      expect(keyOf([...argv, "--api-key", "k1"])).toBe("k1");
+      expect(keyOf([...argv, "--api-key", "k1", "--node-url", "http://127.0.0.1:8080/v1"])).toBe("k1");
+      expect(keyOf([...argv, "--api-key", "k1", "--network", "movement-mainnet"])).toBe("k1");
+      expect(keyOf(argv)).toBeUndefined();
+    });
+  });
+
+  it.each(COMMANDS)("reads APTOS_API_KEY on %s only for an Aptos network without --node-url", (...argv) => {
+    withEnv("envkey", () => {
+      expect(keyOf(argv)).toBe("envkey");
+      expect(keyOf([...argv, "--network", "testnet"])).toBe("envkey");
+      expect(keyOf([...argv, "--network", "devnet"])).toBe("envkey");
+      expect(keyOf([...argv, "--node-url", "http://127.0.0.1:8080/v1"])).toBeUndefined();
+      expect(keyOf([...argv, "--network", "movement-mainnet"])).toBeUndefined();
+      expect(keyOf([...argv, "--network", "movement-testnet"])).toBeUndefined();
+      expect(keyOf([...argv, "--api-key", "flag"])).toBe("flag");
+    });
+    withEnv("", () => expect(keyOf(argv)).toBeUndefined());
+  });
+
+  it("refuses an empty --api-key without echoing anything", () => {
+    expect(() => parseCommand(["tail", TYPE, "--api-key", ""])).toThrow("--api-key must not be empty");
+  });
 });
