@@ -384,8 +384,13 @@ describe("previewEvents", () => {
       [undefined, undefined, {}],
       [null, undefined, {}],
       [{}, undefined, {}],
-      [{ rawTransaction: {}, secondarySignerAddresses: [] }, undefined, {}],
+      [{ rawTransaction: {}, secondarySignerAddresses: "0xb" }, undefined, {}],
       [TRANSACTION, undefined, { signerPublicKey: "0xkey" }],
+      [TRANSACTION, undefined, { secondarySignersPublicKeys: [KEY] }],
+      [{ rawTransaction: {}, secondarySignerAddresses: [{}, {}] }, undefined, { secondarySignersPublicKeys: [KEY] }],
+      [{ rawTransaction: {}, secondarySignerAddresses: [{}] }, undefined, { secondarySignersPublicKeys: ["0xkey"] }],
+      [TRANSACTION, undefined, { feePayerPublicKey: KEY }],
+      [{ rawTransaction: {}, feePayerAddress: {} }, undefined, { feePayerPublicKey: "0xkey" }],
       [TRANSACTION, { kind: "handle", accountAddress: SENDER, eventHandleStruct: "0x1::a::B", fieldName: "f" }, {}],
       [TRANSACTION, { kind: "nope" }, {}],
       [TRANSACTION, undefined, { decode: "amount" }],
@@ -417,6 +422,27 @@ describe("previewEvents", () => {
     const c = client(adapter, { maxConcurrentRequests: 1 });
     await Promise.all([c.previewEvents(TRANSACTION), c.previewEvents(TRANSACTION)]);
     expect(peak).toBe(1);
+  });
+});
+
+describe("previewEvents with several signers", () => {
+  const MULTI = { rawTransaction: {}, secondarySignerAddresses: [{}, {}], feePayerAddress: {} } as unknown as SimpleTransaction;
+  const SPONSORED = { rawTransaction: {}, feePayerAddress: {} } as unknown as SimpleTransaction;
+  const OTHER_KEY = {} as PublicKey;
+
+  it("passes secondary and fee-payer keys to the adapter, from previewEvents and expectPreview", async () => {
+    const { adapter, calls } = simulator();
+    const c = client(adapter);
+    await c.previewEvents(MULTI, undefined, { secondarySignersPublicKeys: [KEY, undefined], feePayerPublicKey: OTHER_KEY });
+    await c.expectPreview(SPONSORED, { feePayerPublicKey: OTHER_KEY }).toEmit({ kind: "module", eventType: PONG });
+    await c.previewEvents(MULTI);
+    expect(calls[0]!.simulation.transaction).toBe(MULTI);
+    expect(calls[0]!.simulation.secondarySignersPublicKeys).toEqual([KEY, undefined]);
+    expect(calls[0]!.simulation.feePayerPublicKey).toBe(OTHER_KEY);
+    expect(calls[1]!.simulation.feePayerPublicKey).toBe(OTHER_KEY);
+    expect(calls[1]!.simulation).not.toHaveProperty("secondarySignersPublicKeys");
+    expect(calls[2]!.simulation).not.toHaveProperty("secondarySignersPublicKeys");
+    expect(calls[2]!.simulation).not.toHaveProperty("feePayerPublicKey");
   });
 });
 

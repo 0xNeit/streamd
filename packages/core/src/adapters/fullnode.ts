@@ -1,4 +1,4 @@
-import { getAptosFullNode, type Aptos, type LedgerInfo } from "@aptos-labs/ts-sdk";
+import { getAptosFullNode, type Aptos, type LedgerInfo, type MultiAgentTransaction } from "@aptos-labs/ts-sdk";
 import type {
   AccountEventDescriptor,
   BlockHeights,
@@ -360,10 +360,19 @@ export class FullnodeScanAdapter implements EventAdapter {
    * API key and transaction bytes. The message still names the node URL.
    */
   async simulateTransactionEvents(simulation: TransactionSimulation): Promise<TransactionEvents> {
-    const { transaction, signerPublicKey } = requireSimulation(simulation);
+    const { transaction, signerPublicKey, secondarySignersPublicKeys, feePayerPublicKey } =
+      requireSimulation(simulation);
     let responses: unknown;
     try {
-      responses = await this.aptos.transaction.simulate.simple({ transaction, signerPublicKey });
+      const keys = { signerPublicKey, ...(feePayerPublicKey !== undefined && { feePayerPublicKey }) };
+      responses =
+        "secondarySignerAddresses" in transaction && transaction.secondarySignerAddresses !== undefined
+          ? await this.aptos.transaction.simulate.multiAgent({
+              transaction: transaction as MultiAgentTransaction,
+              ...keys,
+              ...(secondarySignersPublicKeys !== undefined && { secondarySignersPublicKeys }),
+            })
+          : await this.aptos.transaction.simulate.simple({ transaction, ...keys });
     } catch (err) {
       const status = (err as { status?: unknown } | null)?.status;
       throw new StreamdNetworkError(

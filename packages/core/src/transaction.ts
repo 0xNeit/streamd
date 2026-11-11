@@ -179,9 +179,15 @@ export async function simulatedEvents(
   limiter: RequestLimiter,
   transaction: unknown,
   descriptor: EventDescriptor | undefined,
-  signerPublicKey: PreviewEventsOptions["signerPublicKey"],
+  keys: Pick<PreviewEventsOptions, "signerPublicKey" | "secondarySignersPublicKeys" | "feePayerPublicKey">,
 ): Promise<StreamdEvent[]> {
-  const simulation = requireSimulation({ transaction, signerPublicKey });
+  const { signerPublicKey, secondarySignersPublicKeys, feePayerPublicKey } = keys;
+  const simulation = requireSimulation({
+    transaction,
+    signerPublicKey,
+    ...(secondarySignersPublicKeys !== undefined && { secondarySignersPublicKeys }),
+    ...(feePayerPublicKey !== undefined && { feePayerPublicKey }),
+  });
   if (adapter.simulateTransactionEvents === undefined) {
     throw new StreamdError("previewEvents needs an adapter that implements simulateTransactionEvents");
   }
@@ -205,5 +211,5 @@ export async function previewEvents(
   options: PreviewEventsOptions,
 ): Promise<StreamdEvent[]> {
   const narrow = narrower(descriptor, options);
-  return narrow(await simulatedEvents(adapter, limiter, transaction, descriptor, options.signerPublicKey));
+  return narrow(await simulatedEvents(adapter, limiter, transaction, descriptor, options));
 }
