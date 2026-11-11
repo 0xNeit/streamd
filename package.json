@@ -11,8 +11,8 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
-    "test:integration": "turbo run test:integration --filter=@streamd/core",
-    "demo": "turbo run demo --filter=@streamd/core"
+    "test:integration": "turbo run test:integration --filter=@streamd/aptos",
+    "demo": "turbo run demo --filter=@streamd/aptos"
   },
   "devDependencies": {
     "@types/bun": "^1.4.4",

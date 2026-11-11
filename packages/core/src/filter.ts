@@ -1,4 +1,3 @@
-import { AccountAddress } from "@aptos-labs/ts-sdk";
 import { StreamdError } from "./errors.js";
 import type { EventPredicate, StreamdEvent, SyncEventPredicate } from "./types.js";
 
@@ -15,17 +14,14 @@ export type FieldValue = string | number | bigint | boolean | null;
 /**
  * Canonical long form of an address, or undefined if the value isn't one.
  *
- * Aptos renders the same account as `0x1` or `0x0000…0001` interchangeably, so
- * comparing raw strings silently misses matches. Everything here compares
- * normalized forms.
+ * Move chains render the same account as `0x1` or its zero-padded long form
+ * interchangeably, so comparing raw strings silently misses matches:
+ * `0x` and up to 64 hex digits are padded to 64 and lowercased, and
+ * everything here compares that form.
  */
 export function normalizeAddress(value: string): string | undefined {
-  if (!HEX_ADDRESS.test(value)) return undefined;
-  try {
-    return AccountAddress.from(value).toStringLong();
-  } catch {
-    return undefined;
-  }
+  if (typeof value !== "string" || !HEX_ADDRESS.test(value)) return undefined;
+  return `0x${value.slice(2).toLowerCase().padStart(64, "0")}`;
 }
 
 export interface InvolvesAddressOptions {

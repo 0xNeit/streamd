@@ -105,3 +105,20 @@ export class StreamdAssertionError extends StreamdError {
     this.name = "StreamdAssertionError";
   }
 }
+
+/**
+ * A failed request to a node as a streamd error: kept as is when it already is
+ * one, else a network error carrying its HTTP status. Keeps the SDK error's
+ * message and status but not the error itself, whose `request` carries the
+ * client config: header API key included.
+ */
+export function toStreamdError(err: unknown, what: string): StreamdError {
+  if (err instanceof StreamdError) return err;
+  const status = (err as { status?: unknown } | null)?.status;
+  return new StreamdNetworkError(
+    `Fullnode request for ${what} failed: ${
+      err instanceof Error ? err.message : String(err)
+    }`,
+    typeof status === "number" ? status : undefined,
+  );
+}

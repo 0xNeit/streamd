@@ -1,7 +1,9 @@
 import "./dom.js";
 import { describe, expect, it } from "bun:test";
 import { createElement } from "react";
-import { MemoryAdapter, StreamdClient, type EventAdapter, type StreamdEvent, type Transfer } from "@streamd/core";
+import { AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { MemoryAdapter, type EventAdapter, type StreamdEvent } from "@streamd/core";
+import { AptosClient, type Transfer } from "@streamd/aptos";
 import { StreamdProvider, useTransfers, type UseTransfersOptions } from "../src/index.js";
 import type { UseEventsResult } from "../src/index.js";
 import { render, rerender, unmount, waitFor } from "./render.js";
@@ -25,7 +27,7 @@ function setup() {
     view: async (r) =>
       r.function === "0x1::object::owner" ? [owners[String(r.functionArguments![0])]] : [{ inner: APT }],
   };
-  const client = new StreamdClient({ adapter });
+  const client = new AptosClient({ adapter, aptos: new AptosConfig({ network: Network.DEVNET, clientConfig: { http2: false } }) });
   let subscribes = 0;
   const transfers = client.transfers.bind(client);
   client.transfers = ((...args: Parameters<typeof transfers>) => (subscribes++, transfers(...args))) as typeof client.transfers;

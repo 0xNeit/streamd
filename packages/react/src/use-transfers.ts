@@ -1,12 +1,12 @@
-import type { StreamdClient, Transfer, TransferListenerOptions } from "@streamd/core";
-import { useStreamdClient } from "./context.js";
+import type { AptosClient, Transfer, TransferListenerOptions } from "@streamd/aptos";
+import { useAptosClient } from "./context.js";
 import { DEFAULT_MAX_EVENTS, useFollowing, type UseEventsResult } from "./follow.js";
 import { valueKey } from "./key.js";
 
 /** `transfers` options, minus `signal`: the subscription ends on unmount and on input change. */
 export interface UseTransfersOptions extends Omit<TransferListenerOptions, "signal"> {
   /** Use this client instead of the nearest `StreamdProvider`'s. */
-  client?: StreamdClient;
+  client?: AptosClient;
   /** How many of the most recent transfers to keep (default: 100). */
   maxEvents?: number;
 }
@@ -17,7 +17,7 @@ export interface UseTransfersOptions extends Omit<TransferListenerOptions, "sign
  */
 export function useTransfers(options: UseTransfersOptions | null = {}): UseEventsResult<Transfer> {
   const { client: explicit, maxEvents = DEFAULT_MAX_EVENTS, ...listener } = options ?? {};
-  const client = useStreamdClient(explicit);
+  const client = useAptosClient(explicit);
   return useFollowing<Transfer, typeof listener>(
     options !== null,
     valueKey(listener),

@@ -1,25 +1,16 @@
-import { Aptos } from "@aptos-labs/ts-sdk";
-import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type {
   CloseOptions,
   DescriptorData,
   EventOf,
-  Balances,
-  BalancesOptions,
   BatchCallback,
   EventAdapter,
   EventCallback,
   EventDescriptor,
   EventStream,
   EventFilter,
-  EventExpectation,
-  EventsOfOptions,
-  ExpectEventsOptions,
-  ExpectPreviewOptions,
   ListenerDefaults,
   ListenerOptions,
   OnceOptions,
-  PreviewEventsOptions,
   ReduceOptions,
   Reducer,
   Reduction,
@@ -29,15 +20,11 @@ import type {
   StreamdEvent,
   Subscription,
   SubscriptionOptions,
-  Transfer,
-  TransferFilter,
-  TransferListenerOptions,
   TransactionCallback,
   Watch,
   WatchCallback,
   WatchOptions,
 } from "./types.js";
-import { FullnodeScanAdapter } from "./adapters/fullnode.js";
 import { EventPoller, resolveMaxBackoff, resolveMaxPollInterval, type Delivery } from "./poller.js";
 import { EventQuery } from "./query.js";
 import {
@@ -55,12 +42,6 @@ import { startReplay } from "./replay.js";
 import { startTransactions, type TransactionHost } from "./grouping.js";
 import { isThenable } from "./filter.js";
 import { startWatch } from "./watch.js";
-import { eventsOf, previewEvents } from "./transaction.js";
-import { expectEvents, expectPreview } from "./expect.js";
-import { requireTransactionHash } from "./adapters/validate.js";
-import { addressOrName, resolveName } from "./names.js";
-import { startBalances } from "./balances.js";
-import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -85,7 +66,8 @@ async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolea
   }
 }
 
-function checkTimeout(ms: number | undefined): StreamdError | undefined {
+/** A `timeout` option checked, or the error to throw for it. */
+export function checkTimeout(ms: number | undefined): StreamdError | undefined {
   if (ms === undefined || (typeof ms === "number" && ms >= 0 && ms <= MAX_TIMEOUT)) {
     return undefined;
   }
@@ -165,30 +147,23 @@ interface Listener {
   stop: () => void;
 }
 
-function resolveAptos(config: StreamdConfig): Aptos | undefined {
-  if (config.aptos === undefined) return undefined;
-  return config.aptos instanceof Aptos ? config.aptos : new Aptos(config.aptos);
-}
 
-function resolveAdapter(config: StreamdConfig, aptos: Aptos | undefined): EventAdapter {
-  if (config.adapter !== undefined) return config.adapter;
-  if (aptos === undefined) {
-    throw new StreamdError(
-      "StreamdClient requires either `aptos` or `adapter` in config",
-    );
+function resolveAdapter(config: StreamdConfig): EventAdapter {
+  // Still checked at runtime for JavaScript callers, whom the type does not reach.
+  if (config?.adapter === undefined) {
+    throw new StreamdError("StreamdClient requires an `adapter`, such as FullnodeScanAdapter from @streamd/aptos");
   }
-  return new FullnodeScanAdapter(aptos);
+  return config.adapter;
 }
 
 export class StreamdClient {
-  private readonly defaults: ListenerDefaults;
-  private readonly onError?: (error: Error) => void;
-  private readonly aptos?: Aptos;
-  private readonly adapter: EventAdapter;
+  protected readonly defaults: ListenerDefaults;
+  protected readonly onError?: (error: Error) => void;
+  protected readonly adapter: EventAdapter;
   private readonly query: EventQuery;
   /** Shared by every poller and query, so the cap holds client-wide. */
-  private readonly limiter: RequestLimiter;
-  private readonly requestTimeout?: number;
+  protected readonly limiter: RequestLimiter;
+  protected readonly requestTimeout?: number;
   /** Lets identical subscriptions share each poll's adapter request. */
   private readonly shared: SharedFetches;
   private readonly subscriptions = new Map<string, { poller: EventPoller; stop: () => void }>();
@@ -197,7 +172,7 @@ export class StreamdClient {
   /** Open streams, so destroy() can end their loops rather than strand them. */
   private readonly streams = new Set<() => void>();
   /** What `reduce()` needs, built once. */
-  private readonly reduceHost: ReduceHost;
+  protected readonly reduceHost: ReduceHost;
   /** What `onTransaction()` needs, built once. */
   private readonly transactionHost: TransactionHost;
 
@@ -206,8 +181,7 @@ export class StreamdClient {
     this.onError = config.onError;
     this.limiter = resolveLimiter(config);
     this.requestTimeout = config.requestTimeout;
-    this.aptos = resolveAptos(config);
-    this.adapter = resolveAdapter(config, this.aptos);
+    this.adapter = resolveAdapter(config);
     this.shared = new SharedFetches(this.adapter, this.requestTimeout);
     this.query = new EventQuery(this.adapter, this.limiter);
     this.reduceHost = {
@@ -385,7 +359,7 @@ export class StreamdClient {
     );
   }
 
-  private subscribe(
+  protected subscribe(
     descriptor: EventDescriptor,
     delivery: Delivery,
     options?: ListenerOptions,
@@ -648,103 +622,6 @@ export class StreamdClient {
   }
 
   /**
-   * Follow coin, fungible-asset and token transfers as they land, each
-   * delivered as an event whose `data` is a `Transfer`, from one scan over
-   * `0x1::fungible_asset::Withdraw`/`Deposit`, `0x1::coin::CoinWithdraw`/`CoinDeposit`,
-   * `0x3::token::TokenWithdraw`/`TokenDeposit` and `0x1::object::Transfer`.
-   *
-   * Within a transaction, in event order, a deposit pairs with the most recent
-   * unpaired withdraw of the same asset and amount; a deposit with none has no
-   * `from`, and a withdraw left over has no `to`. A fungible-asset store's
-   * asset and owner are read through `EventAdapter.view` at the event's
-   * version (before it, when the transaction deleted the store), at most 4 at
-   * a time per subscription and outside `maxConcurrentRequests`; a leg whose store existed neither after nor before its
-   * transaction is skipped. A failed read fails the poll, which retries as
-   * for `on()`. The record keeps the deposit's identity, or the withdraw's
-   * when it stands alone. An `object::Transfer` is reported, unpaired and
-   * with `amount` 1, only when the object holds a `0x4::token::Token`,
-   * checked once per object by view. `asset` narrows to one fungible asset,
-   * coin type or token before any owner is read; `account` keeps what one
-   * address sent or received. Like `reduce()`, it is not a listener for
-   * `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
-   */
-  transfers(
-    callback: EventCallback<Transfer>,
-    options: TransferListenerOptions = {},
-  ): Subscription {
-    const { asset, account, withAssetInfo, ...rest } = options;
-    const who = this.accountOf(account);
-    return this.subscribe(
-      TRANSFER_DESCRIPTOR,
-      callback as EventCallback,
-      rest,
-      undefined,
-      rest.id,
-      (source) => transferSource(source, asset, who, withAssetInfo, this.requestTimeout),
-    );
-  }
-
-  /**
-   * Keep one wallet's balances current, by reading each at the head every
-   * `pollInterval`, so it cannot drift or fall behind. `asset` names what to
-   * follow, one or a list, since no view lists a wallet's assets; without
-   * it, APT is followed. `address` may be an Aptos name. Like `reduce()`, it
-   * is not a listener for `off()`
-   * or `listenerCount()`; `destroy()` ends it.
-   */
-  balances(address: string, options?: BalancesOptions): Balances {
-    if (address === undefined) throw new StreamdError("balances needs an address or Aptos name");
-    return startBalances(
-      {
-        adapter: this.adapter,
-        onError: this.onError,
-        subscribe: (callback, listener, wrap) =>
-          this.subscribe(TRANSFER_DESCRIPTOR, callback, listener, undefined, undefined, wrap),
-        track: this.reduceHost.track,
-      },
-      this.accountOf(address)!,
-      options,
-    );
-  }
-
-  /**
-   * `account` as a lazy address: a name resolves once, on first use, and a
-   * failed lookup is tried again by the next page.
-   */
-  private accountOf(account: string | undefined): (() => Promise<string>) | undefined {
-    if (account === undefined) return undefined;
-    const address = addressOrName(account);
-    if (address !== undefined) return () => Promise.resolve(address);
-    const aptos = this.aptos;
-    if (aptos === undefined) {
-      throw new StreamdError(`Resolving the Aptos name ${account} needs \`aptos\` in the client config`);
-    }
-    let resolved: Promise<string> | undefined;
-    return () =>
-      (resolved ??= resolveName(aptos, account).catch((err: unknown) => {
-        resolved = undefined;
-        throw err;
-      }));
-  }
-
-  /**
-   * Past transfers, built as `transfers()` builds them, over the range and
-   * options `getEvents` takes; `where` and `limit` apply to the records.
-   */
-  async getTransfers(filter: TransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
-    const { asset, account, withAssetInfo, ...rest } = filter;
-    const source = transferSource(
-      this.adapter,
-      asset,
-      this.accountOf(account),
-      withAssetInfo,
-      this.requestTimeout,
-    );
-    const query = new EventQuery(source, this.limiter);
-    return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
-  }
-
-  /**
    * Query historical events matching a descriptor and filter. Pass an array of
    * descriptors, of any kinds, to get their events merged into one history in
    * `(version, eventIndex)` order, each event once. Each descriptor is walked
@@ -788,91 +665,6 @@ export class StreamdClient {
       void,
       unknown
     >;
-  }
-
-  /**
-   * Wait for the transaction with this hash to be committed and resolve with
-   * its events in transaction order, narrowed by `descriptor` when given, then
-   * `decode` and `where`. A `handle` descriptor must name its handle by
-   * `creationNumber`. Looks the transaction up every `pollInterval` (the
-   * client-wide default, at least 100ms here) through
-   * `EventAdapter.getTransactionEvents`.
-   *
-   * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
-   * transaction failed, as its events were discarded on chain; with
-   * `StreamdTimeoutError` when it is not committed within `timeout`; with
-   * `signal.reason` on abort; and at once with any lookup error.
-   */
-  async eventsOf<TData = unknown>(
-    transactionHash: string,
-    descriptor?: EventDescriptor<TData>,
-    options: EventsOfOptions = {},
-  ): Promise<EventOf<TData>[]> {
-    const badTimeout = checkTimeout(options.timeout);
-    if (badTimeout !== undefined) throw badTimeout;
-    const events = await eventsOf(
-      this.adapter,
-      this.limiter,
-      this.defaults.pollInterval!,
-      transactionHash,
-      descriptor,
-      options,
-    );
-    return events as unknown as EventOf<TData>[];
-  }
-
-  /**
-   * Assertions on the events of the transaction with this hash, for
-   * integration tests under any runner: `toEmit(descriptor, where?)` resolves
-   * with the matching events and `notToEmit(descriptor, where?)` with nothing,
-   * and either rejects with `StreamdAssertionError`, listing every event the
-   * transaction emitted, when it does not hold. Nothing is looked up until an
-   * assertion runs; each waits as `eventsOf` does and rejects as it does.
-   * Throws at once on a malformed hash or `timeout`.
-   */
-  expectEvents(transactionHash: string, options: ExpectEventsOptions = {}): EventExpectation {
-    requireTransactionHash(transactionHash);
-    const badTimeout = checkTimeout(options.timeout);
-    if (badTimeout !== undefined) throw badTimeout;
-    return expectEvents(
-      this.adapter,
-      this.limiter,
-      this.defaults.pollInterval!,
-      transactionHash,
-      options,
-    );
-  }
-
-  /**
-   * Simulate a built, unsigned `transaction` (from
-   * `aptos.transaction.build.simple`) and resolve with the events it would
-   * emit if it ran now, narrowed like `eventsOf`. Nothing is signed or
-   * submitted. The events carry the simulated `version` and no
-   * `transactionHash`: neither is the one the transaction will commit under.
-   * Goes through `EventAdapter.simulateTransactionEvents`.
-   *
-   * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
-   * simulation fails, and with any simulation error as it is.
-   */
-  async previewEvents<TData = unknown>(
-    transaction: SimpleTransaction,
-    descriptor?: EventDescriptor<TData>,
-    options: PreviewEventsOptions = {},
-  ): Promise<EventOf<TData>[]> {
-    const events = await previewEvents(this.adapter, this.limiter, transaction, descriptor, options);
-    return events as unknown as EventOf<TData>[];
-  }
-
-  /**
-   * Assert what a built, unsigned `transaction` would emit, with nothing
-   * signed or submitted: `toEmit` and `notToEmit` as on `expectEvents`, each
-   * answered by its own simulation through
-   * `EventAdapter.simulateTransactionEvents`. A failed simulation rejects with
-   * `StreamdTransactionError`; a failed assertion with `StreamdAssertionError`,
-   * whose `transactionHash` is `undefined`.
-   */
-  expectPreview(transaction: SimpleTransaction, options: ExpectPreviewOptions = {}): EventExpectation {
-    return expectPreview(this.adapter, this.limiter, transaction, options);
   }
 
   /**

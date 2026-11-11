@@ -5,7 +5,6 @@ import { StreamdClient } from "../src/client.js";
 import { checkAdapter } from "../src/conformance.js";
 import { eventId } from "../src/cursor.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
-import { networks } from "../src/networks.js";
 import type { EventAdapter, EventDescriptor, StreamdEvent } from "../src/types.js";
 
 const T = "0x1::test::E";
@@ -128,12 +127,4 @@ describe("ArchiveFallbackAdapter", () => {
     expect(report.results.filter((r) => r.status === "fail")).toEqual([]);
   });
 
-  it("exports a mainnet archive preset", () => {
-    expect(networks.aptosMainnetArchive).toEqual({
-      network: "custom" as never,
-      fullnode: "https://archive.mainnet.aptoslabs.com/v1",
-      chainId: 1,
-    });
-    expect(Object.isFrozen(networks.aptosMainnetArchive)).toBe(true);
-  });
 });
