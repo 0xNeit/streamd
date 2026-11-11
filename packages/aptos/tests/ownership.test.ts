@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { AccountAddress, type Aptos } from "@aptos-labs/ts-sdk";
-import { StreamdError, StreamdNetworkError } from "../src/errors.js";
+import { MemoryAdapter, StreamdClient, StreamdError, StreamdNetworkError, every, ofType } from "@streamd/core";
 import { ownedBy } from "../src/ownership.js";
-import type { StreamdEvent } from "../src/types.js";
+import type { EventDescriptor, StreamdEvent } from "@streamd/core";
 
 const WALLET = `0x${"a11ce".padStart(63, "0")}`;
 const WALLET_LONG = `0x${"a11ce".padStart(64, "0")}`;
@@ -184,5 +184,56 @@ describe("ownedBy", () => {
     expect(() => ownedBy(aptos, WALLET, { fields: [""] })).toThrow("fields");
     expect(() => ownedBy(aptos, WALLET, { maxConcurrentRequests: 0 })).toThrow("maxConcurrentRequests");
     expect(() => ownedBy(aptos, WALLET, { maxConcurrentRequests: 1.5 })).toThrow("maxConcurrentRequests");
+  });
+});
+
+describe("ownedBy through the client", () => {
+  const DEPOSIT = "0x1::fungible_asset::Deposit";
+  const deposits: EventDescriptor = { kind: "module", eventType: DEPOSIT };
+  const wallet = `0x${"b0b".padStart(64, "0")}`;
+  const store = (n: number) => `0x${String(n).padStart(64, "0")}`;
+  const deposit = (version: number, type = DEPOSIT): StreamdEvent => ({
+    type,
+    data: { store: store(version), amount: "1" },
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 0,
+  });
+  const ownsStores = (owned: number[], fail?: () => boolean) =>
+    ({
+      viewJson: async ({ payload }: { payload: { functionArguments: string[] } }) => {
+        if (fail?.()) throw Object.assign(new Error("unavailable"), { status: 503 });
+        return [owned.map(store).includes(payload.functionArguments[0]!)];
+      },
+    }) as unknown as Aptos;
+
+  it("keeps only events on stores the wallet owns in a query", async () => {
+    const adapter = new MemoryAdapter([deposit(1), deposit(2), deposit(3, "0x1::other::Deposit"), deposit(4)]);
+    const events = await new StreamdClient({ adapter }).getEvents(deposits, {
+      fromVersion: 0n,
+      where: every(ofType(DEPOSIT), ownedBy(ownsStores([2, 3, 4]), wallet)),
+    });
+    expect(events.map((e) => e.version)).toEqual([2n, 4n]);
+  });
+
+  it("retries an event after a failed ownership read and delivers it once", async () => {
+    let reads = 0;
+    const errors: Error[] = [];
+    const seen: bigint[] = [];
+    const sub = new StreamdClient({ adapter: new MemoryAdapter([deposit(1), deposit(2)]) }).on(
+      deposits,
+      (e) => void seen.push(e.version),
+      {
+        fromVersion: 0n,
+        pollInterval: 1,
+        onError: (err) => errors.push(err),
+        where: ownedBy(ownsStores([1, 2], () => ++reads === 2), wallet),
+      },
+    );
+    for (let i = 0; i < 200 && seen.length < 2; i++) await new Promise((r) => setTimeout(r, 2));
+    sub.unsubscribe();
+    expect(seen).toEqual([1n, 2n]);
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as StreamdError).cause).toBeInstanceOf(StreamdNetworkError);
   });
 });

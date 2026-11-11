@@ -17,10 +17,8 @@ export { compareAdapters } from "./compare.js";
 export { defineEvent, defineEvents } from "./define.js";
 export { formatAmount } from "./transfers.js";
 export type { TaggedEvents } from "./define.js";
-export { listEventHandles } from "./handles.js";
-export { checkDescriptor } from "./preflight.js";
-export { ownedBy } from "./ownership.js";
-export { primaryName, resolveName } from "./names.js";
+export { addressOrName, primaryName, requireNameResolver, resolveName } from "./names.js";
+export { RequestLimiter } from "./limiter.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
 export {
   StreamdAssertionError,
@@ -96,13 +94,6 @@ export type {
   RecordingAdapter,
 } from "./adapters/recording.js";
 export type { RoutingAdapterRoutes } from "./adapters/routing.js";
-export type { EventHandleInfo } from "./handles.js";
-export type { OwnedByOptions } from "./ownership.js";
-export type {
-  DescriptorCheck,
-  EventTypeCheck,
-  EventTypeStatus,
-} from "./preflight.js";
 export type { ParseEventOptions } from "./serialize.js";
 export type {
   FieldPath,

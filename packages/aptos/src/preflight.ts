@@ -1,21 +1,23 @@
 import { getAptosFullNode } from "@aptos-labs/ts-sdk";
 import type { Aptos, MoveModuleBytecode } from "@aptos-labs/ts-sdk";
-import { StreamdError } from "./errors.js";
-import { MOVE_IDENTIFIER, normalizeAddress } from "./filter.js";
+import { StreamdError } from "@streamd/core";
+import { normalizeAddress } from "@streamd/core";
+
+const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 import { findHandles, handleParts } from "./handles.js";
 import type {
   CreationNumberEventDescriptor,
   HandleEventDescriptor,
   ModuleEventDescriptor,
   ResourceDescriptor,
-} from "./types.js";
-import { toStreamdError } from "./errors.js";
+} from "@streamd/core";
+import { toStreamdError } from "@streamd/core";
 import {
   handlePath,
   requireAddress,
   requireEventType,
   requireResourceType,
-} from "./adapters/validate.js";
+} from "@streamd/core";
 
 /**
  * - `event`: the struct declares `#[event]`.

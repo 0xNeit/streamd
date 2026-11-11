@@ -1,4 +1,4 @@
-// Writes packages/core/src/framework.ts, the `@streamd/core/framework` catalog,
+// Writes packages/aptos/src/framework.ts, the `@streamd/aptos/framework` catalog,
 // from the ABI snapshots in ./framework-abi: `bun packages/cli/scripts/framework.ts`.
 // To refresh a snapshot, save `/v1/accounts/<address>/module/<name>` from a mainnet
 // fullnode as `<address>-<name>.json`, keeping only `abi.address`, `abi.name` and `abi.structs`.
@@ -27,7 +27,7 @@ const FRAMEWORK_MODULES = {
   "0x4": ["collection", "token"],
 };
 
-export const CATALOG_PATH = fileURLToPath(new URL("../../core/src/framework.ts", import.meta.url));
+export const CATALOG_PATH = fileURLToPath(new URL("../../aptos/src/framework.ts", import.meta.url));
 
 // Exports that were unqualified until another module shared their names.
 const KEPT_NAMES = `
@@ -55,7 +55,7 @@ export async function generateCatalog(): Promise<string> {
   if (!source.includes(FROM)) throw new StreamdError("Generated source lacks the expected import");
   return [
     "// Regenerate with `bun packages/cli/scripts/framework.ts`; ABI snapshots are in packages/cli/scripts/framework-abi.",
-    source.replace(FROM, 'import { defineEvent } from "./define.js";').trimEnd(),
+    source.trimEnd(),
     KEPT_NAMES,
   ].join("\n");
 }

@@ -1,4 +1,5 @@
-import type { DescriptorCheck, ModuleEventDescriptor } from "@streamd/core";
+import type { ModuleEventDescriptor } from "@streamd/core";
+import type { DescriptorCheck } from "@streamd/aptos";
 import type { CheckOptions } from "./args.js";
 import { message } from "./format.js";
 

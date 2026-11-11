@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { StreamdNetworkError } from "@streamd/core";
-import type { DescriptorCheck, EventTypeStatus } from "@streamd/core";
+import type { DescriptorCheck, EventTypeStatus } from "@streamd/aptos";
 import type { CheckOptions } from "../src/args.js";
 import { runCheck } from "../src/check.js";
 
