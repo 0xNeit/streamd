@@ -37,8 +37,12 @@ function fakeLedger(sizes: number[], events: FakeEvent[], fail?: () => unknown, 
       async function* responses() {
         const err = fail?.();
         if (err !== undefined) throw err;
+        if (input.startCheckpoint !== undefined && input.startCheckpoint < prunedBelow) {
+          throw Object.assign(new Error("requested data below earliest available"), { code: "OUT_OF_RANGE" });
+        }
         const start = input.options.after !== undefined ? input.options.after[0]! : 0;
-        const last = input.endCheckpoint ?? BigInt(sizes.length - 1);
+        // The end bound is exclusive, as the proto documents.
+        const last = input.endCheckpoint === undefined ? BigInt(sizes.length - 1) : input.endCheckpoint - 1n;
         let sent = 0;
         let i = start;
         for (; i < events.length; i++) {
@@ -186,6 +190,40 @@ describe("SuiAdapter versions as bounds", () => {
     expect(await adapter.getEarliestVersion()).toBe(0n);
   });
 
+  it("returns events up to toVersion inside its checkpoint, a single-version range, and the head's checkpoint", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS);
+    const adapter = new SuiAdapter(client);
+    const all = { kind: "module" as const, eventType: [STAKE, SWAP] };
+    expect((await adapter.fetchEvents(all, { fromVersion: 3n, toVersion: 3n, limit: 10 })).events.map(eventId)).toEqual(["3:0", "3:1"]);
+    expect((await adapter.fetchEvents(all, { fromVersion: 6n, toVersion: 9n, limit: 10 })).events.map(eventId)).toEqual(["9:4"]);
+    const streamd = new StreamdClient({ adapter });
+    expect((await streamd.getEvents(all, { fromVersion: 4n, toVersion: "head" })).map(eventId)).toEqual(["4:0", "9:4"]);
+    streamd.destroy();
+  });
+
+  it("refuses a start the node cannot place as 410, before any scan", async () => {
+    // The node reports checkpoint 0 as lowest but keeps only 2 and up; 2's versions need 1.
+    const { client, calls } = fakeLedger(SIZES, EVENTS, undefined, 2n);
+    const adapter = new SuiAdapter(client);
+    for (const fromVersion of [0n, 4n]) {
+      const err = (await adapter.fetchEvents(stakes, { fromVersion }).catch((e: unknown) => e)) as StreamdNetworkError;
+      expect(err.statusCode).toBe(410);
+    }
+    expect(calls.list).toEqual([]);
+    const outOfRange = fakeLedger(SIZES, EVENTS, () =>
+      Object.assign(new Error("requested data below earliest available"), { code: "OUT_OF_RANGE" }),
+    );
+    const err = (await new SuiAdapter(outOfRange.client).fetchEvents(stakes, { fromVersion: 0n }).catch((e: unknown) => e)) as StreamdNetworkError;
+    expect(err.statusCode).toBe(410);
+    // Above the indexed tip is a lag to retry, not pruned history.
+    const ahead = fakeLedger(SIZES, EVENTS, () =>
+      Object.assign(new Error("requested data above latest available; end_checkpoint is 9"), { code: "OUT_OF_RANGE" }),
+    );
+    const lag = (await new SuiAdapter(ahead.client).fetchEvents(stakes, { fromVersion: 0n }).catch((e: unknown) => e)) as StreamdNetworkError;
+    expect(lag).toBeInstanceOf(StreamdNetworkError);
+    expect(lag.statusCode).toBeUndefined();
+  });
+
   it("searches past checkpoints the node has pruned below its reported lowest", async () => {
     // Service info says checkpoint 0 is the lowest, but 0 and 1 are gone.
     const { client } = fakeLedger(SIZES, EVENTS, undefined, 2n);
@@ -204,11 +242,11 @@ describe("SuiAdapter versions as bounds", () => {
     const adapter = new SuiAdapter(client);
     const page = await adapter.fetchEvents({ kind: "module", eventType: [STAKE, SWAP] }, { fromVersion: 3n, toVersion: 4n, limit: 10 });
     expect(page.events.map(eventId)).toEqual(["3:0", "3:1", "4:0"]);
-    expect(calls.list.at(-1)).toMatchObject({ startCheckpoint: 1n, endCheckpoint: 2n });
+    expect(calls.list.at(-1)).toMatchObject({ startCheckpoint: 1n, endCheckpoint: 3n });
     expect(page.throughVersion).toBe(4n);
     // Version 7 is inside checkpoint 3 (6 to 9), which also holds the swap at 9.
     const capped = await adapter.fetchEvents({ kind: "module", eventType: [SWAP] }, { fromVersion: 6n, toVersion: 7n, limit: 10 });
-    expect(calls.list.at(-1)).toMatchObject({ endCheckpoint: 3n });
+    expect(calls.list.at(-1)).toMatchObject({ endCheckpoint: 4n });
     expect(capped.events).toEqual([]);
     expect(capped.throughVersion).toBe(7n);
     // Version 5 is the last of checkpoint 2, so the scan starts there and drops version 4.
