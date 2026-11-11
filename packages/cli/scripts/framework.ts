@@ -50,6 +50,7 @@ export async function generateCatalog(): Promise<string> {
       modules.map((module) => ({ address, module })),
     ),
     load,
+    { handles: false },
   );
   if (!source.includes(FROM)) throw new StreamdError("Generated source lacks the expected import");
   return [

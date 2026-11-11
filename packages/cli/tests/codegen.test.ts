@@ -384,7 +384,7 @@ export const balanceView = (t0: string, arg0: string): ViewRequest => ({
     const events = await generate(module("0x1", "m", [], [struct("E", [["a", "u64"]])]));
     expect(events).not.toContain("ViewRequest");
     await expect(generate(module("0x1", "m", [], [struct("S", [["a", "u64"]], false)]))).rejects.toThrow(
-      "declares no event structs or view functions",
+      "declares no event structs, event handles or view functions",
     );
   });
 
@@ -421,7 +421,7 @@ describe("generateEventTypes whole accounts", () => {
   it("expands an account to its modules, skipping those with nothing, without loading them", async () => {
     const { load, calls } = loader([]);
     const { list, calls: listed } = lister([helper, pool]);
-    const source = await generateEventTypes([{ address: DEX }], load, list);
+    const source = await generateEventTypes([{ address: DEX }], load, { list });
     expect(listed).toEqual([DEX]);
     expect(calls).toEqual([]);
     expect(source).toContain("export interface Swapped");
@@ -432,30 +432,30 @@ describe("generateEventTypes whole accounts", () => {
   it("generates a module both named and covered by its account once", async () => {
     const { load, calls } = loader([helper, pool]);
     const { list } = lister([helper, pool]);
-    const once = await generateEventTypes([{ address: DEX }], load, list);
-    const both = await generateEventTypes([{ address: DEX }, { address: DEX, module: "pool" }], load, list);
+    const once = await generateEventTypes([{ address: DEX }], load, { list });
+    const both = await generateEventTypes([{ address: DEX }, { address: DEX, module: "pool" }], load, { list });
     expect(calls).toEqual([]);
     expect(once.match(/export const reservesView /g)).toHaveLength(1);
     expect(body(both)).toBe(body(once));
-    const named = await generateEventTypes([{ address: DEX, module: "pool" }, { address: DEX }], load, list);
+    const named = await generateEventTypes([{ address: DEX, module: "pool" }, { address: DEX }], load, { list });
     expect(body(named)).toBe(body(once));
   });
 
   it("still fails on a named module with nothing, and on an account yielding nothing", async () => {
     const { load } = loader([helper, pool]);
     const { list } = lister([helper, pool]);
-    await expect(generateEventTypes([{ address: DEX }, { address: DEX, module: "helper" }], load, list)).rejects.toThrow(
-      `Module ${DEX}::helper declares no event structs or view functions`,
+    await expect(generateEventTypes([{ address: DEX }, { address: DEX, module: "helper" }], load, { list })).rejects.toThrow(
+      `Module ${DEX}::helper declares no event structs, event handles or view functions`,
     );
-    await expect(generateEventTypes([{ address: DEX }], load, lister([helper]).list)).rejects.toThrow(
-      `Account ${DEX} has no modules with event structs or view functions`,
+    await expect(generateEventTypes([{ address: DEX }], load, { list: lister([helper]).list })).rejects.toThrow(
+      `Account ${DEX} has no modules with event structs, event handles or view functions`,
     );
-    await expect(generateEventTypes([{ address: BEEF }], load, list)).rejects.toThrow(`Account ${BEEF} has no modules`);
+    await expect(generateEventTypes([{ address: BEEF }], load, { list })).rejects.toThrow(`Account ${BEEF} has no modules`);
   });
 
   it("refuses a listing naming another account, and an account target with no lister", async () => {
     const { load } = loader();
-    await expect(generateEventTypes([{ address: BEEF }], load, async () => [pool])).rejects.toThrow(
+    await expect(generateEventTypes([{ address: BEEF }], load, { list: async () => [pool] })).rejects.toThrow(
       `Fullnode listed ${DEX}::pool for account ${BEEF}`,
     );
     await expect(generateEventTypes([{ address: DEX }], load)).rejects.toThrow("No module listing");
@@ -465,8 +465,126 @@ describe("generateEventTypes whole accounts", () => {
     const outer = abi(DEX, "outer", [struct("Wrapped", [["inner", `${BEEF}::lib::Inner`]])]);
     const lib = abi(BEEF, "lib", [struct("Inner", [["x", "u8"]], false)]);
     const { load, calls } = loader([lib]);
-    const source = await generateEventTypes([{ address: DEX }], load, lister([outer]).list);
+    const source = await generateEventTypes([{ address: DEX }], load, { list: lister([outer]).list });
     expect(calls).toEqual([`${BEEF}::lib`]);
     expect(source).toContain("export interface Inner");
   });
+});
+
+describe("generateEventTypes handle builders", () => {
+  const resource = (name: string, fields: [string, string][], generics = 0, abilities = ["key"]) => ({
+    ...struct(name, fields, false),
+    abilities,
+    generic_type_params: Array.from({ length: generics }, () => ({ constraints: [] })),
+  });
+  const store = abi(DEX, "vault", [
+    resource("Vault", [["deposit_events", `0x1::event::EventHandle<${DEX}::vault::Moved>`], ["total", "u64"]]),
+    resource("Shelf", [["moves", `0x1::event::EventHandle<${DEX}::vault::Moved>`]], 0, ["store"]),
+    struct("Moved", [["amount", "u64"]], false),
+  ]);
+  const generate = (...abis: ModuleAbi[]) =>
+    generateEventTypes(abis.map((a) => ({ address: a.address, module: a.name })), loader(abis).load);
+
+  it("writes a typed handle builder per EventHandle field of a resource, and the payload's type", async () => {
+    const source = await generate(store);
+    expect(source).toContain('import type { HandleEventDescriptor } from "@streamd/core";');
+    expect(source).toContain("export interface Moved {\n  amount: string;\n}");
+    expect(source).toContain(
+      [
+        `/** \`deposit_events\` on \`${DEX}::vault::Vault\`, a legacy event handle */`,
+        "export const Vault_DepositEvents = (accountAddress: string): HandleEventDescriptor<Moved> => ({",
+        '  kind: "handle",',
+        "  accountAddress,",
+        `  eventHandleStruct: "${DEX}::vault::Vault",`,
+        '  fieldName: "deposit_events",',
+        "});",
+      ].join("\n"),
+    );
+    expect(source).not.toContain("Shelf");
+    expect(source).not.toContain("defineEvent");
+  });
+
+  it("takes a generic resource's type arguments, and type parameters only when the payload uses them", async () => {
+    const generic = abi("0x1", "coin", [
+      resource("CoinStore", [
+        ["deposit_events", "0x1::coin::DepositEvent"],
+        ["withdraw_events", "0x1::event::EventHandle<0x1::coin::WithdrawEvent>"],
+        ["typed_events", "0x1::event::EventHandle<0x1::coin::Typed<T0>>"],
+      ], 1),
+      struct("WithdrawEvent", [["amount", "u64"]], false),
+      { ...struct("Typed", [["value", "T0"]], false), generic_type_params: [{ constraints: [] }] },
+    ]);
+    const source = await generate(generic);
+    expect(source).toContain(
+      "export const CoinStore_WithdrawEvents = (accountAddress: string, t0: string): HandleEventDescriptor<WithdrawEvent> => ({",
+    );
+    expect(source).toContain("  eventHandleStruct: `0x1::coin::CoinStore<${t0}>`,");
+    expect(source).toContain(
+      "export const CoinStore_TypedEvents = <T0 = unknown>(accountAddress: string, t0: string): HandleEventDescriptor<Typed<T0>> => ({",
+    );
+    expect(source).not.toContain("CoinStore_DepositEvents");
+  });
+
+  it("qualifies a builder name two modules share, and steps around a generated type", async () => {
+    const other = abi(BEEF, "vault", [
+      resource("Vault", [["deposit_events", "0x1::event::EventHandle<u64>"]]),
+    ]);
+    const shared = await generate(store, other);
+    expect(shared).toContain(`export const Vault_Vault_DepositEvents_${BEEF} = `);
+    expect(shared).toContain(`export const Vault_Vault_DepositEvents_${DEX} = `);
+    const clash = abi(DEX, "m", [
+      resource("A", [["b", `0x1::event::EventHandle<${DEX}::m::A_B>`]]),
+      struct("A_B", [["x", "u8"]], false),
+    ]);
+    expect(await generate(clash)).toContain("export const M_A_B = ");
+  });
+
+  it("counts handles as something to generate, and leaves them out on request", async () => {
+    const only = abi(DEX, "only", [resource("R", [["e", "0x1::event::EventHandle<u64>"]])]);
+    expect(await generate(only)).toContain("HandleEventDescriptor<string>");
+    const lookalike = abi(DEX, "look", [
+      resource("R", [["e", "0x1::other::EventHandle<u64>"]]),
+      struct("E", [["x", "u8"]]),
+    ]);
+    expect(await generate(lookalike)).not.toContain("HandleEventDescriptor");
+    await expect(
+      generateEventTypes([{ address: DEX, module: "only" }], loader([only]).load, { handles: false }),
+    ).rejects.toThrow("declares no event structs, event handles or view functions");
+  });
+
+  it("emits handle builders that typecheck and type event.data through the client", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "streamd-handles-"));
+    try {
+      writeFileSync(join(dir, "vault.ts"), await generate(store));
+      writeFileSync(
+        join(dir, "use.ts"),
+        [
+          'import type { StreamdClient } from "@streamd/core";',
+          'import { Vault_DepositEvents } from "./vault.js";',
+          "declare const client: StreamdClient;",
+          "const is = <T>(_value: T) => {};",
+          'client.on(Vault_DepositEvents("0x1"), (e) => is<string>(e.data.amount));',
+          "// @ts-expect-error amount is a decimal string",
+          'client.on(Vault_DepositEvents("0x1"), (e) => is<number>(e.data.amount));',
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(dir, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            target: "ES2022", module: "ESNext", moduleResolution: "bundler", strict: true,
+            noUnusedLocals: true, noUnusedParameters: true, noEmit: true, skipLibCheck: true, types: [],
+            paths: { "@streamd/core": [fileURLToPath(new URL("../../core/dist/index.d.ts", import.meta.url))] },
+          },
+          files: ["vault.ts", "use.ts"],
+        }),
+      );
+      const tsc = fileURLToPath(new URL("../../../node_modules/.bin/tsc", import.meta.url));
+      const result = Bun.spawnSync([tsc, "-p", dir]);
+      expect(result.stdout.toString() + result.stderr.toString()).toBe("");
+      expect(result.exitCode).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
