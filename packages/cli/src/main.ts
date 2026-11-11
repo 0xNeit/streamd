@@ -226,7 +226,7 @@ async function codegen(options: CodegenOptions): Promise<number> {
     } while (start !== undefined);
     return abis;
   };
-  const source = await generateEventTypes(options.modules, load, list);
+  const source = await generateEventTypes(options.modules, load, { list });
   if (options.out === undefined) process.stdout.write(source);
   else await writeFile(options.out, source);
   return 0;

@@ -58,8 +58,10 @@ type TaggedMember<TData> =
     : never;
 
 /** Legacy EventHandle event, identified by account + handle + field */
-export interface HandleEventDescriptor {
+export interface HandleEventDescriptor<TData = unknown> {
   kind: "handle";
+  /** Type-only payload carrier, as on `ModuleEventDescriptor`; codegen's handle builders set it. */
+  [eventData]?(data: TData): void;
   accountAddress: string;
   eventHandleStruct: string;
   fieldName: string;
@@ -115,7 +117,7 @@ export interface ResourceDescriptor {
 
 export type EventDescriptor<TData = unknown> =
   | ModuleEventDescriptor<TData>
-  | HandleEventDescriptor
+  | HandleEventDescriptor<TData>
   | CreationNumberEventDescriptor
   | AccountEventDescriptor
   | ResourceDescriptor;
