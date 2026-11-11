@@ -640,7 +640,20 @@ Nothing is signed or submitted, and the simulation commits nothing. The events a
 previews, not history: `version` is the one the node simulated at, and `transactionHash`
 is unset, since an unsigned transaction's hash is not the one it will commit under. Pass
 `signerPublicKey` to have the node check the sender's auth key; without it that check is
-skipped. Only single-signer transactions are accepted, a fee-payer one included.
+skipped.
+
+Multi-agent transactions (from `aptos.transaction.build.multiAgent`) and sponsored ones (built
+`withFeePayer`, with `feePayerAddress` set to the payer) are simulated too. Their keys are
+optional in the same way: `secondarySignersPublicKeys`, one per secondary signer in order (an
+`undefined` entry skips that check), and `feePayerPublicKey`. Keys that do not fit the
+transaction, such as a fee-payer key on a transaction with no fee payer, are refused before
+anything is sent.
+
+```ts
+const sponsored = await aptos.transaction.build.simple({ sender: newUser, data, withFeePayer: true });
+sponsored.feePayerAddress = sponsor.accountAddress;
+await streamd.previewEvents(sponsored, undefined, { feePayerPublicKey: sponsor.publicKey });
+```
 
 A simulation that fails rejects with `StreamdTransactionError`, whose `vmStatus` says why
 and whose `transactionHash` is undefined. On `FullnodeScanAdapter` a failed request

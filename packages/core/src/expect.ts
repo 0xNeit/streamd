@@ -86,7 +86,7 @@ export function expectPreview(
   return expectation(
     "the simulated transaction",
     undefined,
-    (descriptor) => simulatedEvents(adapter, limiter, transaction, descriptor, options.signerPublicKey),
+    (descriptor) => simulatedEvents(adapter, limiter, transaction, descriptor, options),
     options,
   );
 }

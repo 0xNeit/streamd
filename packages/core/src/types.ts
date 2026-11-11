@@ -1,7 +1,7 @@
 // Kept in the emitted declarations so consumers whose `lib` predates
 // explicit resource management still have `Symbol.dispose` (TypeScript 5.2+).
 /// <reference lib="esnext.disposable" preserve="true" />
-import type { Aptos, AptosConfig, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
+import type { Aptos, AptosConfig, MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
 
 // ---- Event identification ----
 
@@ -393,11 +393,15 @@ export interface EventExpectation {
   notToEmit(descriptor: EventDescriptor, where?: EventPredicate): Promise<void>;
 }
 
-/** Options for `StreamdClient.expectPreview`: the simulation's signer key and the assertions' `decode`. */
-export type ExpectPreviewOptions = Pick<PreviewEventsOptions, "signerPublicKey" | "decode">;
+/** Options for `StreamdClient.expectPreview`: the simulation's signer keys and the assertions' `decode`. */
+export type ExpectPreviewOptions = Pick<
+  PreviewEventsOptions,
+  "signerPublicKey" | "secondarySignersPublicKeys" | "feePayerPublicKey" | "decode"
+>;
 
 /** Options for `StreamdClient.previewEvents`. */
-export interface PreviewEventsOptions {
+export interface PreviewEventsOptions
+  extends Pick<TransactionSimulation, "secondarySignersPublicKeys" | "feePayerPublicKey"> {
   /** The sender's public key, so the simulation checks its auth key; omitted, that check is skipped. */
   signerPublicKey?: PublicKey;
   /** Keep only events satisfying this predicate, after `decode`. */
@@ -1144,10 +1148,17 @@ export interface EventAdapter {
 
 /** A built, unsigned transaction to simulate, as `EventAdapter.simulateTransactionEvents` takes it. */
 export interface TransactionSimulation {
-  /** From `aptos.transaction.build.simple`; multi-agent transactions are not supported. */
-  transaction: SimpleTransaction;
+  /** From `aptos.transaction.build.simple`, or `build.multiAgent` for secondary signers. */
+  transaction: SimpleTransaction | MultiAgentTransaction;
   /** The sender's public key, so the node checks its auth key; omitted, that check is skipped. */
   signerPublicKey?: PublicKey;
+  /**
+   * One per secondary signer address of a multi-agent transaction, in order; an
+   * `undefined` entry, or omitting the list, skips that signer's check.
+   */
+  secondarySignersPublicKeys?: (PublicKey | undefined)[];
+  /** The fee payer's public key, for a sponsored transaction; omitted, its check is skipped. */
+  feePayerPublicKey?: PublicKey;
 }
 
 /** A committed transaction's events, as `EventAdapter.getTransactionEvents` reports them. */
