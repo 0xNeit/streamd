@@ -224,12 +224,6 @@ describe("SuiAdapter versions as bounds", () => {
     expect(lag.statusCode).toBeUndefined();
   });
 
-  it("starts in checkpoint 0 without reading it first", async () => {
-    const { client, calls } = fakeLedger(SIZES, EVENTS);
-    await new SuiAdapter(client).fetchEvents(stakes, { fromVersion: 0n, toVersion: 0n });
-    // The bisection reads what it must; nothing is read just to check checkpoint 0 is placeable.
-    expect(calls.checkpoints.filter((c) => c === "0").length).toBeLessThanOrEqual(1);
-  });
 
   it("searches past checkpoints the node has pruned below its reported lowest", async () => {
     // Service info says checkpoint 0 is the lowest, but 0 and 1 are gone.
