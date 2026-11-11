@@ -56,6 +56,20 @@
         "react": ">=18",
       },
     },
+    "packages/store-postgres": {
+      "name": "@streamd/store-postgres",
+      "version": "0.1.0",
+      "dependencies": {
+        "@streamd/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@aptos-labs/ts-sdk": "^6.3.1",
+        "@electric-sql/pglite": "^0.5.16",
+      },
+      "peerDependencies": {
+        "@aptos-labs/ts-sdk": ">=1.0.0",
+      },
+    },
     "packages/store-sqlite": {
       "name": "@streamd/store-sqlite",
       "version": "0.1.0",
@@ -77,6 +91,8 @@
 
     "@aptos-labs/ts-sdk": ["@aptos-labs/ts-sdk@6.3.1", "", { "dependencies": { "@aptos-labs/aptos-cli": "^1.1.1", "@aptos-labs/aptos-client": "^2.1.0", "@noble/curves": "^1.9.0", "@noble/hashes": "^1.5.0", "@scure/bip32": "^1.4.0", "@scure/bip39": "^1.3.0", "eventemitter3": "^5.0.4", "js-base64": "^3.7.7", "jwt-decode": "^4.0.0", "poseidon-lite": "^0.2.0" } }, "sha512-1C13IaHgNIo6MHMTQEcDzeuqTNv++evdY+Ph3IAGLnHlG7Yevdxw50W0nyAJRf4bLzQDI20wfJ66wD2qMg7Rew=="],
 
+    "@electric-sql/pglite": ["@electric-sql/pglite@0.5.16", "", {}, "sha512-Nj8KcIsJL748W408U2N8q4+9IlONdpRIU8MJypIAAINMJ5nqKyqpX7Mgg/5XKkXiAib3AoZGR6hnJFlrlLBrcg=="],
+
     "@happy-dom/global-registrator": ["@happy-dom/global-registrator@21.0.4", "", { "dependencies": { "@types/node": ">=20.0.0", "happy-dom": "^21.0.4" } }, "sha512-Bbr0hW9hhDhBf3Jp0EyDlkCbFgbr0z2jd3BMKYOYW+fOkPM4Nx195GMXyCtRCGEgoNn6i09FabXrSkNFm2ONzg=="],
 
     "@noble/curves": ["@noble/curves@1.9.7", "", { "dependencies": { "@noble/hashes": "1.8.0" } }, "sha512-gbKGcRUYIjA3/zCCNaWDciTMFI0dCkvou3TL8Zmy5Nc7sJ47a0jtOeZoTaMxkuqRo9cRhjOdZJXegxYE5FN/xw=="],
@@ -96,6 +112,8 @@
     "@streamd/core": ["@streamd/core@workspace:packages/core"],
 
     "@streamd/react": ["@streamd/react@workspace:packages/react"],
+
+    "@streamd/store-postgres": ["@streamd/store-postgres@workspace:packages/store-postgres"],
 
     "@streamd/store-sqlite": ["@streamd/store-sqlite@workspace:packages/store-sqlite"],
 
