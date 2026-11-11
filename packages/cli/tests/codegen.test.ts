@@ -667,6 +667,9 @@ describe("generateEventTypes validators", () => {
     const clashed = await generateEventTypes([{ address: DEX, module: "clash" }], loader([clash]).load, { validators: true });
     expect(clashed).toContain("export const isFooView = ");
     expect(clashed).toContain("export function isFooView_(value: unknown): value is FooView");
+    // Only the helpers a guard calls are written, so a strict noUnusedLocals build stays clean.
+    expect(clashed).toContain("const streamdIsRecord");
+    expect(clashed).not.toContain("streamdIsUint");
     const { dir, source } = await load();
     try {
       expect(source).not.toContain("&& true");
