@@ -346,6 +346,8 @@ export function transferSource(
       overtaken();
       let events = await toTransfers(page.events);
       if (who !== undefined) events = events.filter(({ data }) => data.from === who || data.to === who);
+      // The store reads above can outlast the page, and these reads are memoized too.
+      overtaken();
       if (withAssetInfo) events = await Promise.all(events.map(withInfo));
       if (options.orderBy === "desc") events.reverse();
       return { ...page, events };

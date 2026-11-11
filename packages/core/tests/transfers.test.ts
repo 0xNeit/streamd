@@ -639,6 +639,47 @@ describe("transfers with requestTimeout", () => {
     expect(errors).toHaveLength(1);
   });
 
+  it("starts no asset-info read from a page overtaken during its store reads", async () => {
+    // Timeout at 100: the first page's store reads end at about 110, after the retry
+    // started at about 101. Asset-info reads hang until 180, and the retry's begin after it.
+    const inner = withViews([fa(1, 0, "Withdraw", "a1", "100"), fa(1, 1, "Deposit", "b1", "100")]);
+    let fetches = 0;
+    const started = performance.now();
+    const adapter: EventAdapter = {
+      ...inner.adapter,
+      fetchEvents: async (d, o) => {
+        await new Promise((r) => setTimeout(r, ++fetches === 1 ? 60 : 80));
+        return inner.adapter.fetchEvents(d, o);
+      },
+      view: async (request, version, descriptor) => {
+        if (/::(symbol|decimals)$/.test(request.function)) {
+          if (performance.now() - started < 180) return new Promise<never>(() => {});
+          return request.function.endsWith("symbol") ? ["APT"] : [8];
+        }
+        if (fetches === 1) await new Promise((r) => setTimeout(r, 50));
+        return inner.adapter.view!(request, version, descriptor);
+      },
+    };
+    const client = new StreamdClient({ adapter, requestTimeout: 100 });
+    const errors: unknown[] = [];
+    const record = await new Promise<StreamdEvent<Transfer> | undefined>((resolve) => {
+      client.transfers(resolve, {
+        fromVersion: 0n,
+        withAssetInfo: true,
+        pollInterval: 10,
+        maxBackoff: 20,
+        maxErrors: 2,
+        onError: (err) => {
+          errors.push(err);
+          if (errors.length === 2) resolve(undefined);
+        },
+      });
+    });
+    client.destroy();
+    expect(record?.data.symbol).toBe("APT");
+    expect(errors).toHaveLength(1);
+  });
+
   it("recovers a live subscription from a hung read", async () => {
     const { adapter } = firstViewHangs();
     const client = new StreamdClient({ adapter, requestTimeout: 2 });
