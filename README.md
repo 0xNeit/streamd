@@ -2117,6 +2117,8 @@ streamd forward --to https://hooks.example.com/aptos \
 | `--timeout <ms>` | per-request timeout (default `10000`) |
 | `--header 'Name: value'` | extra request header, repeatable |
 | `--secret <key>` | sign each body (or set `STREAMD_WEBHOOK_SECRET`, which keeps it out of `ps` and shell history) |
+| `--batch-size <n>` | most events per POST (default `25`); a page larger than it, since sources return whole transactions, goes in several |
+| `--to-version <n>` | deliver the range up to this version, then exit `0` |
 
 `--network`, `--node-url`, `--from-version` and `--poll-interval` work as for `tail`.
 
@@ -2148,9 +2150,22 @@ Any other status, redirects included, fails at once. The webhook receives only t
 the content type, your `--header` values and any signature, and neither the URL, header
 values nor the secret are printed.
 
+`--to-version` turns `forward` into a backfill job. It needs `--from-version` or `--from-time`
+(a saved cursor still wins), and the bound must already be history: the head is read once, and a
+bound above it fails. Nothing above the bound is sent. The run ends with exit `0` when the walk
+catches up, saving the cursor, or at the first page that crosses the bound, once that page's
+events up to the bound are acknowledged. The cursor then stays before that page, so a later run
+past the bound resends those events rather than skipping the rest.
+
+```sh
+streamd forward --to https://hooks.example.com/backfill --from-version 3000000000 \
+  --to-version 3001000000 --batch-size 100 0x1::coin::CoinDeposit
+```
+
 Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST without moving the
-cursor; `1` when a batch fails past its retries, the subscription stops on an error, or the
-cursor file cannot be read or written; `2` for invalid arguments. Run it under a supervisor
+cursor; `1` when a batch fails past its retries, the subscription stops on an error, the
+cursor file cannot be read or written, or `--to-version` is above the head; `2` for invalid
+arguments. Run it under a supervisor
 that restarts on `1`.
 
 ### Start from a time
