@@ -6,10 +6,10 @@ import type {
   EventPage,
   FetchOptions,
   StreamdEvent,
-} from "../types.js";
-import { StreamdError, StreamdNetworkError, parseRetryAfter } from "../errors.js";
-import { readLedgerInfo, toStreamdError, toStreamdEvents, type TransactionWithEvents } from "./fullnode.js";
-import { DEFAULT_LIMIT, isObject, parseCursor, requireAddress } from "./validate.js";
+} from "@streamd/core";
+import { StreamdError, StreamdNetworkError, parseRetryAfter, toStreamdError } from "@streamd/core";
+import { readLedgerInfo, toStreamdEvents, type TransactionWithEvents } from "./fullnode.js";
+import { DEFAULT_LIMIT, isObject, parseCursor, requireAddress } from "@streamd/core";
 
 const PROCESSOR = "account_transactions_processor";
 const DEFAULT_MAX_SCAN = 100;

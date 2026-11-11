@@ -17,9 +17,9 @@ import type {
   TransactionEvents,
   TransactionSimulation,
   ViewRequest,
-} from "../types.js";
-import { StreamdError, StreamdNetworkError } from "../errors.js";
-import { normalizeAddress } from "../filter.js";
+} from "@streamd/core";
+import { StreamdError, StreamdNetworkError, toStreamdError } from "@streamd/core";
+import { normalizeAddress } from "@streamd/core";
 import {
   DEFAULT_LIMIT,
   handlePath,
@@ -32,7 +32,7 @@ import {
   requireTransactionHash,
   requireViewRequest,
   validateOffset,
-} from "./validate.js";
+} from "@streamd/core";
 
 interface RawEvent {
   guid?: { creation_number: string; account_address: string };
@@ -177,21 +177,6 @@ export function toResourceChanges(
     out.push(withTransaction(item, txn));
   });
   return out;
-}
-
-/**
- * Keeps the SDK error's message and status but not the error itself, whose
- * `request` carries the client config: header API key included.
- */
-export function toStreamdError(err: unknown, what: string): StreamdError {
-  if (err instanceof StreamdError) return err;
-  const status = (err as { status?: unknown } | null)?.status;
-  return new StreamdNetworkError(
-    `Fullnode request for ${what} failed: ${
-      err instanceof Error ? err.message : String(err)
-    }`,
-    typeof status === "number" ? status : undefined,
-  );
 }
 
 /**

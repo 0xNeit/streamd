@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import { advanceTimersByTimeAsync, captureMicrotaskThrows } from "./timers.js";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { StreamdClient } from "../src/client.js";
+import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdError, StreamdPollingError } from "../src/errors.js";
 import type { EventAdapter, EventPage, StreamdEvent } from "../src/types.js";
 
@@ -18,9 +19,8 @@ function adapterOf(pages: EventPage[]): EventAdapter {
   };
 }
 
-function client(adapter?: EventAdapter, onError?: (error: Error) => void) {
-  const aptos = new Aptos(new AptosConfig({ network: Network.DEVNET, clientConfig: { http2: false } }));
-  return new StreamdClient({ aptos, adapter, defaultPollInterval: 100, onError });
+function client(adapter: EventAdapter = new MemoryAdapter([]), onError?: (error: Error) => void) {
+  return new StreamdClient({ adapter, defaultPollInterval: 100, onError });
 }
 
 function subscriptionCount(c: StreamdClient): number {

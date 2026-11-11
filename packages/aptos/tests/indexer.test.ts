@@ -1,8 +1,8 @@
 import { describe, it, expect } from "bun:test";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { IndexerAccountAdapter } from "../src/adapters/indexer.js";
-import { StreamdError, StreamdNetworkError } from "../src/errors.js";
-import { checkAdapter } from "../src/conformance.js";
+import { IndexerAccountAdapter } from "../src/indexer.js";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import { checkAdapter } from "@streamd/core";
 
 const URL_ = "http://indexer.test/v1/graphql";
 

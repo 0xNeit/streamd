@@ -1,13 +1,13 @@
 import { describe, it, expect } from "bun:test";
 import { Account, Aptos, AptosConfig, Network, parseTypeTag } from "@aptos-labs/ts-sdk";
-import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
-import { StreamdClient } from "../src/client.js";
-import { FallbackAdapter } from "../src/adapters/fallback.js";
-import { StreamdError, StreamdNetworkError } from "../src/errors.js";
-import { checkDescriptor } from "../src/preflight.js";
-import { listEventHandles } from "../src/handles.js";
-import { withHooks } from "../src/adapters/hooks.js";
-import type { EventDescriptor, ModuleEventDescriptor } from "../src/types.js";
+import { FullnodeScanAdapter } from "../src/fullnode.js";
+import { StreamdClient } from "@streamd/core";
+import { FallbackAdapter } from "@streamd/core";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import { checkDescriptor } from "@streamd/core";
+import { listEventHandles } from "@streamd/core";
+import { withHooks } from "@streamd/core";
+import type { EventDescriptor, ModuleEventDescriptor } from "@streamd/core";
 
 const TYPE = "0x1::test::Ping";
 const OTHER = "0x1::test::Pong";
@@ -1379,7 +1379,7 @@ describe("FullnodeScanAdapter resource changes", () => {
 
   it("serves getEvents through the client from a transaction with no events", async () => {
     const { aptos } = fakeNode(chain(100, [changed(4, [write(OWNER)])] as never));
-    const client = new StreamdClient({ aptos });
+    const client = new StreamdClient({ adapter: new FullnodeScanAdapter(aptos) });
     const events = await client.getEvents(resourceDesc, { fromVersion: 4n, toVersion: 4n });
     expect(events.map((e) => [e.version, e.eventIndex])).toEqual([[4n, 0]]);
   });

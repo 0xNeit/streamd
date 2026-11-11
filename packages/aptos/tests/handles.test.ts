@@ -1,8 +1,8 @@
 import { describe, it, expect } from "bun:test";
 import { AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { listEventHandles } from "../src/handles.js";
-import { FullnodeScanAdapter } from "../src/adapters/fullnode.js";
-import { StreamdError, StreamdNetworkError } from "../src/errors.js";
+import { listEventHandles } from "@streamd/core";
+import { FullnodeScanAdapter } from "../src/index.js";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
 
 const ADDR = "0x" + "a".repeat(64);
 const FORUM = "0x1::voting::VotingForum<0x1::governance_proposal::GovernanceProposal>";

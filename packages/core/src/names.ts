@@ -1,7 +1,7 @@
 import { Network, type Aptos } from "@aptos-labs/ts-sdk";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
 import { normalizeAddress } from "./filter.js";
-import { toStreamdError } from "./adapters/fullnode.js";
+import { toStreamdError } from "./errors.js";
 import { requireAddress } from "./adapters/validate.js";
 
 const LABEL = "[a-z\\d][a-z\\d-]{1,61}[a-z\\d]";

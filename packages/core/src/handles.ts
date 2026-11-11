@@ -1,6 +1,6 @@
 import type { Aptos } from "@aptos-labs/ts-sdk";
 import type { CreationNumberEventDescriptor, EventGuid, HandleEventDescriptor } from "./types.js";
-import { toStreamdError } from "./adapters/fullnode.js";
+import { toStreamdError } from "./errors.js";
 import { normalizeAddress } from "./filter.js";
 import { resolveName } from "./names.js";
 
