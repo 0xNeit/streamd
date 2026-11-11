@@ -715,6 +715,34 @@ describe("transfers with requestTimeout", () => {
     expect(late).toEqual([]);
   });
 
+  it("starts no read for a page after the next page began", async () => {
+    // The first page's metadata reads end slowly, after its page failed and a second began.
+    const events = Array.from({ length: 4 }, (_, i) => fa(i + 1, 0, "Deposit", (i + 1).toString(16), "100"));
+    const memory = new MemoryAdapter(events);
+    let fetches = 0;
+    const late: string[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => (++fetches, memory.fetchEvents(d, o)),
+      getHeadVersion: () => memory.getHeadVersion(),
+      view: async (request, version) => {
+        if (fetches === 1 && request.function === METADATA) {
+          if (version === 1n) throw new StreamdNetworkError("down", 503);
+          await new Promise((r) => setTimeout(r, 30));
+          return [{ inner: "0xa" }];
+        }
+        if (fetches > 1 && request.function === OWNER && version > 1n && version < 5n) late.push(`${version}`);
+        return request.function === OWNER ? [ALICE] : [{ inner: "0xa" }];
+      },
+    };
+    const source = transferSource(adapter);
+    await expect(source.fetchEvents(TRANSFER_DESCRIPTOR, all)).rejects.toBeInstanceOf(StreamdNetworkError);
+    const second = await source.fetchEvents(TRANSFER_DESCRIPTOR, all);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(second.events).toHaveLength(4);
+    // Owner reads for versions 2 to 4 come from the second page alone: one each.
+    expect(late.sort()).toEqual(["2", "3", "4"]);
+  });
+
   it("recovers a live subscription from a hung read", async () => {
     const { adapter } = firstViewHangs();
     const client = new StreamdClient({ adapter, requestTimeout: 2 });

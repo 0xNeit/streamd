@@ -48,8 +48,9 @@ export class RequestLimiter {
             this.next();
           });
       };
-      if (this.queue.length === 0 && this.active < this.max && this.delay() <= 0) return start();
+      // Checked first: a call made after its caller gave up must not start either.
       if (drop?.aborted) return reject(drop.reason);
+      if (this.queue.length === 0 && this.active < this.max && this.delay() <= 0) return start();
       const waiter: Waiter = {
         start: () => (detach(), start()),
         reject: (reason) => (detach(), reject(reason)),
