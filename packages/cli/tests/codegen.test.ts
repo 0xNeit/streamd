@@ -542,6 +542,11 @@ describe("generateEventTypes handle builders", () => {
   it("counts handles as something to generate, and leaves them out on request", async () => {
     const only = abi(DEX, "only", [resource("R", [["e", "0x1::event::EventHandle<u64>"]])]);
     expect(await generate(only)).toContain("HandleEventDescriptor<string>");
+    const lookalike = abi(DEX, "look", [
+      resource("R", [["e", "0x1::other::EventHandle<u64>"]]),
+      struct("E", [["x", "u8"]]),
+    ]);
+    expect(await generate(lookalike)).not.toContain("HandleEventDescriptor");
     await expect(
       generateEventTypes([{ address: DEX, module: "only" }], loader([only]).load, { handles: false }),
     ).rejects.toThrow("declares no event structs, event handles or view functions");
