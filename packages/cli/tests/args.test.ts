@@ -176,6 +176,16 @@ describe("parseCommand forward", () => {
     });
   });
 
+  it("reads a bounded range and a batch size", () => {
+    expect(forward("--to", URL_WITH_TOKEN, TYPE, "--from-version", "7", "--to-version", "7", "--batch-size", "1")).toMatchObject({
+      fromVersion: 7n,
+      toVersion: 7n,
+      batchSize: 1,
+    });
+    expect(forward("--to", URL_WITH_TOKEN, TYPE, "--from-time", "1h", "--to-version", "9")).toMatchObject({ toVersion: 9n });
+    expect(forward("--to", URL_WITH_TOKEN, TYPE, "--batch-size", "500")).toMatchObject({ batchSize: 500 });
+  });
+
   it("returns help", () => {
     expect(parseCommand(["forward", "--help"])).toEqual({ command: "help" });
   });
@@ -191,6 +201,11 @@ describe("parseCommand forward", () => {
     [["forward", "--to", URL_WITH_TOKEN, TYPE, "--secret", ""], /--secret/],
     [["forward", "--to", URL_WITH_TOKEN, TYPE, "--secret", "k", "--header", "X-Streamd-Signature: x"], /x-streamd-signature/],
     [["tail", TYPE, "--secret", "k"], /secret/],
+    [["forward", "--to", URL_WITH_TOKEN, TYPE, "--to-version", "9"], /--to-version needs --from-version or --from-time/],
+    [["forward", "--to", URL_WITH_TOKEN, TYPE, "--from-version", "10", "--to-version", "9"], /--to-version must not be below --from-version/],
+    [["forward", "--to", URL_WITH_TOKEN, TYPE, "--from-version", "1", "--to-version", "9x"], /--to-version must be a non-negative integer/],
+    [["forward", "--to", URL_WITH_TOKEN, TYPE, "--batch-size", "0"], /--batch-size must be an integer from 1/],
+    [["tail", TYPE, "--batch-size", "5"], /Unknown option '--batch-size'/],
   ])("rejects %j", (argv, message) => {
     rejects(argv as string[], message as RegExp);
   });

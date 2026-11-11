@@ -14,6 +14,8 @@ export interface ForwardIO {
   signal: AbortSignal;
   /** First retry wait in ms, doubling per attempt (default 1000). */
   retryDelay?: number;
+  /** The source's head version; read once, and only for a `toVersion` run. */
+  headVersion(): Promise<bigint>;
 }
 
 const MAX_RETRY_DELAY = 60_000;
@@ -89,9 +91,10 @@ async function deliver(body: string, options: ForwardOptions, io: ForwardIO): Pr
 
 /**
  * Follows `options.descriptor`, POSTing each batch to the webhook, and
- * resolves to the process exit code: 0 when the signal aborts, 1 when a
- * delivery fails past its retries, polling gives up, or the cursor file
- * cannot be read or written.
+ * resolves to the process exit code: 0 when the signal aborts or a
+ * `toVersion` range is done, 1 when a delivery fails past its retries,
+ * polling gives up, the cursor file cannot be read or written, or the bound
+ * is above the head.
  *
  * Delivery is at least once: the cursor file only ever holds a position
  * whose events the webhook has acknowledged.
@@ -105,6 +108,21 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     return 1;
   }
   if (io.signal.aborted) return 0;
+  const { toVersion } = options;
+  if (toVersion !== undefined) {
+    let head: bigint;
+    try {
+      head = await io.headVersion();
+    } catch (err) {
+      io.error(`streamd: cannot read the head version: ${message(err)}`);
+      return 1;
+    }
+    // Catching up is how a bounded run knows it is done, so the bound must be history.
+    if (toVersion > head) {
+      io.error(`streamd: --to-version ${toVersion} is above the head version ${head}`);
+      return 1;
+    }
+  }
 
   return new Promise<number>((resolve) => {
     let sub: Subscription | undefined;
@@ -135,14 +153,21 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     const onAbort = () => finish(0);
     io.signal.addEventListener("abort", onAbort, { once: true });
 
-    const { fromVersion, fromTime, pollInterval } = options;
+    const { fromVersion, fromTime, pollInterval, batchSize } = options;
     sub = io.client.onBatch(
       options.descriptor,
-      async (events) => {
-        let delivered = false;
+      async (all) => {
+        const events = toVersion === undefined ? all : all.filter((e) => e.version <= toVersion);
+        // Sources return whole transactions, so a page can exceed batchSize.
+        const size = batchSize ?? events.length;
+        let delivered = true;
         try {
-          delivered = await deliver(`[${events.map(serializeEvent).join(",")}]`, options, io);
+          for (let i = 0; delivered && i < events.length; i += size) {
+            const chunk = events.slice(i, i + size);
+            delivered = await deliver(`[${chunk.map(serializeEvent).join(",")}]`, options, io);
+          }
         } catch (err) {
+          delivered = false;
           io.error(`streamd: ${message(err)}`);
         } finally {
           // Stopping before returning, even on a throw, keeps the poller's cursor
@@ -150,6 +175,9 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
           if (!delivered) finish(io.signal.aborted ? 0 : 1);
         }
         if (!delivered) return;
+        // Past the bound: stop with the cursor before this page, so a later run
+        // beyond the bound redelivers it rather than skipping what follows.
+        if (events.length < all.length) return finish(0);
         // The poller moves its cursor past the page once this callback's promise
         // settles, on a microtask; a timer runs after that.
         setTimeout(() => {
@@ -161,6 +189,8 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
         ...(fromVersion !== undefined && { fromVersion }),
         ...(fromTime !== undefined && { fromTime }),
         ...(pollInterval !== undefined && { pollInterval }),
+        ...(batchSize !== undefined && { batchSize }),
+        ...(toVersion !== undefined && { onCaughtUp: () => finish(0) }),
         onError: (err) => {
           io.error(`streamd: ${message(err)}`);
           if (!sub?.active) finish(1);

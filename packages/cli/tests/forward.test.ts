@@ -70,7 +70,7 @@ const options = (extra: Partial<ForwardOptions> = {}): ForwardOptions => ({
   ...extra,
 });
 
-function harness(adapter: EventAdapter) {
+function harness(adapter: EventAdapter, headVersion = () => adapter.getHeadVersion!({ kind: "module", eventType: TYPE })) {
   const controller = new AbortController();
   const errors: string[] = [];
   const io: ForwardIO = {
@@ -78,6 +78,7 @@ function harness(adapter: EventAdapter) {
     error: (m) => void errors.push(m),
     signal: controller.signal,
     retryDelay: 1,
+    headVersion,
   };
   return { io, errors, controller };
 }
@@ -381,7 +382,7 @@ describe("runForward --from-time", () => {
           timeout: 1000,
           headers: {},
         },
-        { client: client as never, error: () => {}, signal: controller.signal },
+        { client: client as never, error: () => {}, signal: controller.signal, headVersion: async () => 0n },
       );
       controller.abort();
       await running;
@@ -393,5 +394,92 @@ describe("runForward --from-time", () => {
     writeFileSync(saved, "abc");
     await run(saved);
     expect(seen[1]).toMatchObject({ cursor: "abc" });
+  });
+});
+
+describe("runForward --to-version and --batch-size", () => {
+  const range = (...vs: number[]) => new MemoryAdapter(vs.map(ev));
+  const bounded = (toVersion: bigint, batchSize: number) => options({ fromVersion: 0n, toVersion, batchSize });
+
+  it("POSTs at most batch-size events, then exits 0 on catching up with the cursor saved", async () => {
+    const { io, errors } = harness(range(1, 2, 3, 4, 5));
+    expect(await runForward(bounded(5n, 2), io)).toBe(0);
+    expect(received.map(versions)).toEqual([["1", "2"], ["3", "4"], ["5"]]);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("5\n");
+    expect(errors).toEqual([]);
+  });
+
+  it("never sends past the bound, and leaves the cursor before the page that crossed it", async () => {
+    const { io } = harness(range(1, 2, 3, 4, 5));
+    expect(await runForward(bounded(3n, 2), io)).toBe(0);
+    expect(received.map(versions)).toEqual([["1", "2"], ["3"]]);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("2\n");
+  });
+
+  it("ends without a POST on a page wholly past the bound", async () => {
+    const { io } = harness(range(1, 2, 10, 11));
+    expect(await runForward(bounded(5n, 2), io)).toBe(0);
+    expect(received.map(versions)).toEqual([["1", "2"]]);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("2\n");
+  });
+
+  // A scan returns whole transactions, so a page can hold more than the limit asked for.
+  const overflowing = (...vs: number[]): EventAdapter => {
+    const memory = range(...vs);
+    return {
+      fetchEvents: async (_d, o) =>
+        o.cursor === undefined
+          ? { events: vs.map(ev), nextCursor: String(vs.at(-1)), hasMore: false }
+          : { events: [], nextCursor: o.cursor, hasMore: false },
+      getHeadVersion: () => memory.getHeadVersion(),
+    };
+  };
+
+  it("splits a page larger than batch-size into several POSTs", async () => {
+    const { io } = harness(overflowing(1, 2, 3, 4, 5));
+    expect(await runForward(bounded(5n, 2), io)).toBe(0);
+    expect(received.map(versions)).toEqual([["1", "2"], ["3", "4"], ["5"]]);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("5\n");
+  });
+
+  it("keeps the cursor before a split page when a later POST of it fails", async () => {
+    handler = (_r, n) => new Response("", { status: n === 2 ? 400 : 200 });
+    const { io } = harness(overflowing(1, 2, 3, 4, 5));
+    expect(await runForward(bounded(5n, 2), io)).toBe(1);
+    expect(received.map(versions)).toEqual([["1", "2"], ["3", "4"]]);
+    expect(existsSync(cursorFile())).toBe(false);
+  });
+
+  it("resumes a bounded run from the cursor file", async () => {
+    writeFileSync(cursorFile(), "2\n");
+    const { io } = harness(range(1, 2, 3, 4));
+    expect(await runForward(bounded(3n, 10), io)).toBe(0);
+    expect(received.map(versions)).toEqual([["3"]]);
+  });
+
+  it("refuses a bound above the head, and a failed head read, before subscribing", async () => {
+    const adapter = range(1, 2);
+    const calls: string[] = [];
+    const watched: EventAdapter = { ...adapter, fetchEvents: (d, o) => (calls.push("fetch"), adapter.fetchEvents(d, o)) };
+    const above = harness(watched, async () => 2n);
+    expect(await runForward(bounded(3n, 10), above.io)).toBe(1);
+    expect(above.errors).toEqual(["streamd: --to-version 3 is above the head version 2"]);
+    const failing = harness(watched, async () => {
+      throw new StreamdError("node down");
+    });
+    expect(await runForward(bounded(1n, 10), failing.io)).toBe(1);
+    expect(failing.errors).toEqual(["streamd: cannot read the head version: node down"]);
+    expect(calls).toEqual([]);
+    expect(received).toEqual([]);
+  });
+
+  it("does not read the head without a bound", async () => {
+    let reads = 0;
+    const { io, controller } = harness(range(1), async () => (reads++, 0n));
+    const run = runForward(options({ fromVersion: 0n }), io);
+    await until(() => existsSync(cursorFile()));
+    controller.abort();
+    expect(await run).toBe(0);
+    expect(reads).toBe(0);
   });
 });

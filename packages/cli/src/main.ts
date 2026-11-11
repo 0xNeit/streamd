@@ -74,6 +74,7 @@ async function forward(options: ForwardOptions): Promise<number> {
       client,
       error: (message) => process.stderr.write(`${message}\n`),
       signal: controller.signal,
+      headVersion: () => new FullnodeScanAdapter(new Aptos(aptosConfig(options))).getHeadVersion(),
     });
   } finally {
     client.destroy();
