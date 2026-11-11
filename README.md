@@ -1679,6 +1679,36 @@ const streamd = new StreamdClient({
 });
 ```
 
+### History the fullnode has pruned
+
+The public Aptos mainnet fullnode keeps about two weeks of history and answers older reads with
+`410`. Its archive node keeps everything from version 0. `ArchiveFallbackAdapter` sends only
+those `410`s to it:
+
+```ts
+import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { ArchiveFallbackAdapter, FullnodeScanAdapter, StreamdClient, networks } from "@streamd/core";
+
+const streamd = new StreamdClient({
+  adapter: new ArchiveFallbackAdapter(
+    new FullnodeScanAdapter(new Aptos(new AptosConfig({ network: Network.MAINNET }))),
+    new FullnodeScanAdapter(new Aptos(new AptosConfig(networks.aptosMainnetArchive))),
+  ),
+});
+await streamd.getEvents(NewBlockEvent, { fromVersion: 1000n, limit: 10 }); // served by the archive
+```
+
+- **Only pruned reads move.** Event pages, blocks, transaction lookups and `withState` views
+  go to the archive when the fullnode answers `410`; a rate limit or an outage is rethrown, so
+  backoff and `maxErrors` work as usual. Each call starts at the fullnode, so a walk returns to
+  it once it passes the pruned edge.
+- **Bounds:** the head and simulations come from the fullnode, which the archive trails by a
+  few dozen versions; `fromVersion: "earliest"` and `fromTime` see the archive's full range.
+- **Rate.** Anonymously the archive allowed about 43 requests per five minutes in a 2026-11
+  measurement, and its `429` carries no `Retry-After`. That is enough for a handle's early
+  events or a narrow range, not for days of module scans: pass an API key in the archive's
+  `clientConfig` for more.
+
 For `account` descriptors that see every transaction touching the account, received
 ones included, use `IndexerAccountAdapter`. It pages the Aptos Indexer's
 `account_transactions` table by version, then reads each transaction's events from the

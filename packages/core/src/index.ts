@@ -1,6 +1,7 @@
 export { StreamdClient } from "./client.js";
 export { CachingAdapter } from "./adapters/caching.js";
 export { FallbackAdapter } from "./adapters/fallback.js";
+export { ArchiveFallbackAdapter } from "./adapters/archive.js";
 export { FullnodeScanAdapter } from "./adapters/fullnode.js";
 export { withHooks } from "./adapters/hooks.js";
 export { adapterMetrics } from "./adapters/metrics.js";
