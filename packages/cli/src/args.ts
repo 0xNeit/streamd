@@ -26,6 +26,7 @@ export interface TailOptions extends SourceOptions {
 
 export const SIGNATURE_HEADER = "x-streamd-signature";
 export const SECRET_ENV = "STREAMD_WEBHOOK_SECRET";
+export const API_KEY_ENV = "APTOS_API_KEY";
 
 export interface ForwardOptions extends SourceOptions {
   /** Webhook URL; may carry a token, so it is never printed. */
@@ -274,6 +275,8 @@ Options:
   --network <name>       mainnet, testnet, devnet, movement-mainnet, or movement-testnet
                          (default: mainnet)
   --node-url <url>       fullnode URL, overriding the network's default
+  --api-key <key>        fullnode API key, sent as a bearer token (or set ${API_KEY_ENV}, used
+                         only on mainnet, testnet and devnet without --node-url)
   --from-version <n>     start at this version instead of the chain head
   --from-time <t>        tail, forward, query: start here, as 2h, 7d or an ISO date (UTC)
   --poll-interval <ms>   delay between polls (default: 1000)
@@ -306,7 +309,6 @@ function wrap<T>(fn: () => T): T {
   }
 }
 
-export const API_KEY_ENV = "APTOS_API_KEY";
 const APTOS_NETWORKS: readonly Network[] = ["mainnet", "testnet", "devnet"];
 
 /**
