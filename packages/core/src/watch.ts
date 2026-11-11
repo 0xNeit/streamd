@@ -13,7 +13,7 @@ import { StreamdError } from "./errors.js";
 import { requireAddress } from "./adapters/validate.js";
 import { combinedStatus } from "./grouping.js";
 import { normalizeAddress } from "./filter.js";
-import { generateId, onAbort } from "./utils.js";
+import { ASYNC_DISPOSE, generateId, latch, onAbort } from "./utils.js";
 
 /** What `watch()` needs from its client. */
 export type WatchHost = Pick<ReduceHost, "onError" | "subscribe" | "track">;
@@ -70,8 +70,13 @@ export function startWatch(
   // A start position chosen at watch() is in the past by the time of a later add().
   const { fromVersion, fromTime, signal, onCaughtUp, positions, ...live } = options;
 
+  const reached = latch();
+  const arrived = () => {
+    reached.resolve();
+    onCaughtUp?.();
+  };
   const caughtUp = (key: string) => {
-    if (pending.delete(key) && pending.size === 0) onCaughtUp?.();
+    if (pending.delete(key) && pending.size === 0) arrived();
   };
 
   const retain = (key: string, sub: Subscription) => {
@@ -112,6 +117,9 @@ export function startWatch(
     if (ended) return;
     ended = true;
     paused = false;
+    reached.reject(
+      signal?.aborted ? signal.reason : new StreamdError("Watch ended before catching up"),
+    );
     for (const [key, { sub }] of walks) {
       retain(key, sub);
       sub.unsubscribe();
@@ -129,7 +137,7 @@ export function startWatch(
     pending.add(key);
     start(key, address, true);
   }
-  if (initial.length === 0) queueMicrotask(() => onCaughtUp?.());
+  if (initial.length === 0) queueMicrotask(arrived);
   if (signal?.aborted) end();
 
   const subs = () => [...walks.values()].map((w) => w.sub);
@@ -171,6 +179,7 @@ export function startWatch(
     get status() {
       return statusOf(subs(), !ended && !paused);
     },
+    caughtUp: reached.promise,
     pause() {
       if (ended || paused) return;
       paused = true;
@@ -183,5 +192,10 @@ export function startWatch(
     },
     unsubscribe: end,
     [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: end,
+    [ASYNC_DISPOSE]: async () => {
+      const running = subs();
+      end();
+      await Promise.all(running.map((s) => s[ASYNC_DISPOSE]()));
+    },
   };
 }

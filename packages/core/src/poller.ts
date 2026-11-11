@@ -90,6 +90,8 @@ export class EventPoller {
    * waits for it, so a new run never fetches or delivers alongside the old one.
    */
   private delivering: Promise<void> = Promise.resolve();
+  /** Settles when the page being delivered has finished; a fetch does not count. */
+  private handlers: Promise<void> = Promise.resolve();
   /** Aborted when this run ends, so a hung view never holds the next run or its request slot. */
   private runAbort = new AbortController();
   private readonly position: CursorManager;
@@ -159,6 +161,11 @@ export class EventPoller {
     // Below its start a walk's position would resume delivering older events.
     if (this.floor !== undefined && !this.reachedStart) return undefined;
     return this.position.token;
+  }
+
+  /** Settles, never rejecting, once the handler now running has finished. */
+  get handling(): Promise<void> {
+    return this.handlers;
   }
 
   /** Snapshot of the poller's current state; see `SubscriptionStatus`. */
@@ -311,6 +318,7 @@ export class EventPoller {
       const delivery = this.processPage(bounded, gen, viewer, run);
       // A failed page is this poll's error alone; later polls must not inherit it.
       this.delivering = delivery.catch(() => {});
+      this.handlers = this.delivering;
       await delivery;
       // The callback may have stopped or restarted the poller.
       if (!this.isCurrent(gen)) return;

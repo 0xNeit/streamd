@@ -1,4 +1,5 @@
 import type {
+  EventOf,
   EventCallback,
   EventDescriptor,
   EventFilter,
@@ -117,7 +118,7 @@ export function startReplay<TData>(
 
   const deliver = async (event: StreamdEvent) => {
     try {
-      const result: unknown = callback(event as StreamdEvent<TData>);
+      const result: unknown = callback(event as unknown as EventOf<TData>);
       if (isThenable(result)) await result;
     } catch (err) {
       if (!stopped) report(new StreamdError(`Event callback threw for ${eventId(event)}`, err));

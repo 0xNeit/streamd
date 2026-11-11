@@ -1,10 +1,16 @@
 import type { Aptos } from "@aptos-labs/ts-sdk";
-import type { EventGuid, HandleEventDescriptor } from "./types.js";
+import type { CreationNumberEventDescriptor, EventGuid, HandleEventDescriptor } from "./types.js";
 import { toStreamdError } from "./adapters/fullnode.js";
+import { normalizeAddress } from "./filter.js";
 import { resolveName } from "./names.js";
 
 export interface EventHandleInfo {
-  descriptor: HandleEventDescriptor;
+  /** By struct and field for a top-level handle, by creation number for a nested one. */
+  descriptor: HandleEventDescriptor | CreationNumberEventDescriptor;
+  /** The resource holding the handle. */
+  resourceType: string;
+  /** Field names from the resource's top level to the handle; array positions as strings. */
+  path: string[];
   /** Events emitted on the handle so far, from its `counter`. */
   count: bigint;
   /**
@@ -14,7 +20,13 @@ export interface EventHandleInfo {
   guid: EventGuid;
 }
 
-function handleParts(value: unknown): { counter: string; guid: EventGuid } | undefined {
+interface HandleParts {
+  counter: string;
+  guid: EventGuid;
+}
+
+/** The `EventHandle` this value is, if it is one. */
+export function handleParts(value: unknown): HandleParts | undefined {
   const v = value as {
     counter?: unknown;
     guid?: { id?: { addr?: unknown; creation_num?: unknown } };
@@ -32,13 +44,23 @@ function handleParts(value: unknown): { counter: string; guid: EventGuid } | und
     : undefined;
 }
 
+/** Every `EventHandle` anywhere inside a resource's data, with where it sits. */
+export function* findHandles(
+  value: unknown,
+  path: string[] = [],
+): Generator<HandleParts & { path: string[] }> {
+  const parts = handleParts(value);
+  if (parts !== undefined) {
+    yield { ...parts, path };
+  } else if (typeof value === "object" && value !== null) {
+    for (const [key, child] of Object.entries(value)) yield* findHandles(child, [...path, key]);
+  }
+}
+
 /**
- * Every `EventHandle` stored directly on a field of one of the account's
- * resources, as a `handle` descriptor ready for `on()` or `getEvents()`.
- *
- * Handles nested inside a struct field are skipped: the struct and field
- * form only addresses top-level fields. A nested handle is still readable by
- * creation number, from its guid in the resource data.
+ * Every `EventHandle` on the account's resources, at any depth, as a descriptor
+ * ready for `on()` or `getEvents()`. The struct and field form addresses only
+ * top-level fields, so a nested handle comes back by creation number.
  *
  * `address` may be an Aptos name, resolved first through `resolveName`.
  */
@@ -55,18 +77,20 @@ export async function listEventHandles(
   }
   const out: EventHandleInfo[] = [];
   for (const resource of resources) {
-    for (const [fieldName, value] of Object.entries(resource.data ?? {})) {
-      const parts = handleParts(value);
-      if (parts === undefined) continue;
+    for (const { counter, guid, path } of findHandles(resource.data ?? {})) {
       out.push({
-        descriptor: {
-          kind: "handle",
-          accountAddress,
-          eventHandleStruct: resource.type,
-          fieldName,
-        },
-        count: BigInt(parts.counter),
-        guid: parts.guid,
+        descriptor:
+          path.length === 1
+            ? { kind: "handle", accountAddress, eventHandleStruct: resource.type, fieldName: path[0]! }
+            : {
+                kind: "handle",
+                accountAddress: normalizeAddress(guid.accountAddress) ?? guid.accountAddress,
+                creationNumber: guid.creationNumber,
+              },
+        resourceType: resource.type,
+        path,
+        count: BigInt(counter),
+        guid,
       });
     }
   }

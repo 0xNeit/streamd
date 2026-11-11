@@ -21,6 +21,13 @@ const OBJECT_TRANSFER = "0x1::object::Transfer";
 // Aborts unless a 0x4::token::Token is stored at the object; object_exists is not a view.
 const TOKEN_CREATOR = "0x4::token::creator";
 
+const TOKEN_EVENTS = new Set([OBJECT_TRANSFER, TOKEN_WITHDRAW, TOKEN_DEPOSIT]);
+
+interface AssetInfo {
+  symbol: string;
+  decimals: number;
+}
+
 /** Every event a transfer is built from, served by one scan. */
 export const TRANSFER_DESCRIPTOR: ModuleEventDescriptor = {
   kind: "module",
@@ -72,6 +79,21 @@ function legacyTokenId(id: unknown): string | undefined {
   return `${owner}::${collection}::${name}::${BigInt(version)}`;
 }
 
+/**
+ * `amount` in whole units as a decimal string, every digit kept and trailing
+ * zeros dropped. It never passes through a float, so a `u128` stays exact.
+ */
+export function formatAmount(amount: bigint, decimals: number): string {
+  if (typeof amount !== "bigint") throw new StreamdError(`Not a valid amount: ${String(amount)}`);
+  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
+    throw new StreamdError(`Not a valid decimals: ${String(decimals)} (expected 0..255)`);
+  }
+  const digits = (amount < 0n ? -amount : amount).toString().padStart(decimals + 1, "0");
+  const split = digits.length - decimals;
+  const fraction = digits.slice(split).replace(/0+$/, "");
+  return `${amount < 0n ? "-" : ""}${digits.slice(0, split)}${fraction === "" ? "" : `.${fraction}`}`;
+}
+
 /** Addresses inside a coin type or an asset address, in long form, for comparing. */
 export function assetKey(asset: string): string {
   return asset.replace(HEX, (a) => normalizeAddress(a) ?? a);
@@ -117,8 +139,12 @@ function parse(event: StreamdEvent): Parsed | undefined {
   return undefined;
 }
 
-/** A bounded least-recently-used promise cache that drops rejections and answers `keep` refuses. */
-function memo<T>(keep: (value: T) => boolean) {
+/**
+ * A bounded least-recently-used promise cache that drops rejections and answers
+ * `keep` refuses. `pending` hears of each load, with a way to drop it unless it
+ * has settled by then.
+ */
+function memo<T>(keep: (value: T) => boolean, pending?: (drop: () => void) => void) {
   const entries = new Map<string, Promise<T>>();
   return (key: string, load: () => Promise<T>): Promise<T> => {
     let answer = entries.get(key);
@@ -126,8 +152,10 @@ function memo<T>(keep: (value: T) => boolean) {
       entries.delete(key);
     } else {
       const loaded = load();
+      let settled = false;
       const forget = () => entries.get(key) === loaded && entries.delete(key);
-      loaded.then((value) => keep(value) || forget(), forget);
+      loaded.then((value) => keep(value) || forget(), forget).finally(() => (settled = true));
+      pending?.(() => settled || forget());
       if (entries.size >= CACHE_SIZE) entries.delete(entries.keys().next().value!);
       answer = loaded;
     }
@@ -179,14 +207,24 @@ export function transferSource(
   adapter: EventAdapter,
   asset?: string,
   account?: () => Promise<string>,
+  withAssetInfo?: boolean,
+  requestTimeout?: number,
 ): EventAdapter {
   if (typeof adapter.view !== "function") {
     throw new StreamdError("transfers needs an adapter that implements view");
   }
   const wanted = asset === undefined ? undefined : requireAsset(asset);
-  const limiter = new RequestLimiter(MAX_LOOKUPS);
-  const metadata = memo<string | undefined>((asset) => asset !== undefined);
-  const tokens = memo<boolean>(() => true);
+  // The timeout matters here as a memoized read that never settled would hang every retry.
+  const limiter = new RequestLimiter(MAX_LOOKUPS, Infinity, requestTimeout);
+  // Pages are read one at a time, so a read still pending when the next page
+  // starts belongs to one the caller gave up on, perhaps at its timeout before
+  // this read's own: joining it would fail the retry too.
+  let loads: (() => void)[] = [];
+  let generation = 0;
+  const track = (drop: () => void) => void loads.push(drop);
+  const metadata = memo<string | undefined>((asset) => asset !== undefined, track);
+  const infos = memo<AssetInfo | undefined>(() => true, track);
+  const tokens = memo<boolean>(() => true, track);
 
   /** The address `fn` returns for `object`, before the transaction if it was gone after it. */
   const read = async (fn: ViewRequest["function"], object: string, version: bigint): Promise<string | undefined> => {
@@ -219,6 +257,40 @@ export function transferSource(
 
   const isToken = (object: string, version: bigint) =>
     tokens(object, async () => (await read(TOKEN_CREATOR, object, version)) !== undefined);
+
+  const readInfo = async (asset: string, version: bigint): Promise<AssetInfo | undefined> => {
+    const coin = asset.includes("::");
+    const module = coin ? "0x1::coin" : "0x1::fungible_asset";
+    const view = (name: string): Promise<unknown[]> => {
+      const request: ViewRequest = {
+        function: `${module}::${name}` as ViewRequest["function"],
+        typeArguments: [coin ? asset : "0x1::object::ObjectCore"],
+        functionArguments: coin ? [] : [asset],
+      };
+      return limiter.run(() => adapter.view!(request, version, TRANSFER_DESCRIPTOR));
+    };
+    let symbol: unknown[];
+    let decimals: unknown[];
+    try {
+      [symbol, decimals] = await Promise.all([view("symbol"), view("decimals")]);
+    } catch (err) {
+      if (err instanceof StreamdError && !(err instanceof StreamdNetworkError)) return undefined;
+      throw err;
+    }
+    const raw = decimals?.[0];
+    const parsed = typeof raw === "string" && UNSIGNED_INTEGER.test(raw) ? Number(raw) : raw;
+    if (typeof symbol?.[0] !== "string" || !Number.isInteger(parsed)) {
+      throw new StreamdError(`The metadata of ${asset} at version ${version} is malformed`);
+    }
+    return { symbol: symbol[0], decimals: parsed as number };
+  };
+
+  const withInfo = async (event: StreamdEvent<Transfer>): Promise<StreamdEvent<Transfer>> => {
+    if (TOKEN_EVENTS.has(event.type)) return event;
+    const { asset } = event.data;
+    const info = await infos(assetKey(asset), () => readInfo(asset, event.version));
+    return info === undefined ? event : { ...event, data: { ...event.data, ...info } };
+  };
 
   /** A leg to pair, or a finished record for an object transfer, which names both sides. */
   const legOf = async (event: StreamdEvent): Promise<Leg | StreamdEvent<Transfer> | undefined> => {
@@ -263,10 +335,18 @@ export function transferSource(
 
   const source: EventAdapter = {
     fetchEvents: async (descriptor, options) => {
+      const mine = ++generation;
+      // A page overtaken while it waited was abandoned; its reads would only be joined.
+      const overtaken = () => {
+        if (generation !== mine) throw new StreamdNetworkError("Transfer page abandoned for a newer one");
+      };
+      for (const drop of loads.splice(0)) drop();
       const who = await account?.();
       const page = await adapter.fetchEvents(descriptor, options);
+      overtaken();
       let events = await toTransfers(page.events);
       if (who !== undefined) events = events.filter(({ data }) => data.from === who || data.to === who);
+      if (withAssetInfo) events = await Promise.all(events.map(withInfo));
       if (options.orderBy === "desc") events.reverse();
       return { ...page, events };
     },

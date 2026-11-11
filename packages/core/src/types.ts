@@ -32,6 +32,31 @@ export interface ModuleEventDescriptor<TData = unknown> {
   eventType: MoveEventType | readonly MoveEventType[];
 }
 
+declare const taggedEvent: unique symbol;
+
+/** One member of a `defineEvents` payload: a Move type and its payload type. Type-level only. */
+export interface TaggedEvent<TType extends string, TData> {
+  readonly [taggedEvent]: [TType, TData];
+}
+
+/**
+ * The event a caller receives for a descriptor's `TData`: `StreamdEvent<TData>`,
+ * unless `TData` is a `defineEvents` payload, when it is a union that narrows on
+ * `event.type`.
+ */
+export type EventOf<TData> = 0 extends 1 & TData
+  ? StreamdEvent<TData>
+  : [TData] extends [TaggedEvent<string, unknown>]
+    ? TaggedMember<TData>
+    : StreamdEvent<TData>;
+
+// Its own alias so that it distributes over the union; `type` is replaced, not
+// intersected, because an intersection with `string` does not discriminate.
+type TaggedMember<TData> =
+  TData extends TaggedEvent<infer TType, infer TPayload>
+    ? Omit<StreamdEvent<TPayload>, "type"> & { type: TType }
+    : never;
+
 /** Legacy EventHandle event, identified by account + handle + field */
 export interface HandleEventDescriptor {
   kind: "handle";
@@ -349,7 +374,7 @@ export interface EventExpectation {
   toEmit<TData = unknown>(
     descriptor: EventDescriptor<TData>,
     where?: EventPredicate,
-  ): Promise<StreamdEvent<TData>[]>;
+  ): Promise<EventOf<TData>[]>;
   /** Resolves when no event matches; rejects naming the ones that do. */
   notToEmit(descriptor: EventDescriptor, where?: EventPredicate): Promise<void>;
 }
@@ -384,6 +409,10 @@ export interface Transfer {
   from?: string;
   /** Owner of the receiving store, the coin or token account, or the object's new owner, in long form. */
   to?: string;
+  /** The asset's symbol, with `withAssetInfo`; absent for tokens and when the asset has none to read. */
+  symbol?: string;
+  /** The asset's decimals, with `withAssetInfo`; use `formatAmount` to apply them. */
+  decimals?: number;
 }
 
 export interface TransferOptions {
@@ -402,6 +431,11 @@ export interface TransferOptions {
    * deposit needs its withdraw to report `from`; `asset` is what saves reads.
    */
   account?: string;
+  /**
+   * Adds `symbol` and `decimals` to fungible-asset and coin records, read by
+   * two views per asset, cached. A view that aborts leaves them off.
+   */
+  withAssetInfo?: boolean;
 }
 
 /** One asset's balance at a version; `balances()` delivers these to `onChange`. */
@@ -634,7 +668,7 @@ export interface OnceOptions extends ListenerOptions {
 }
 
 /** Folds one event into the state; synchronous, and should not mutate `state`. */
-export type Reducer<S, TData = unknown> = (state: S, event: StreamdEvent<TData>) => S;
+export type Reducer<S, TData = unknown> = (state: S, event: EventOf<TData>) => S;
 
 /**
  * Options for `reduce()`. History options shape the backfill, live options
@@ -673,7 +707,7 @@ export interface ReduceOptions<S = unknown, TData = unknown>
    * during the backfill, whose result `ready` resolves with. A throw goes to
    * `onError` and does not stop the reduction.
    */
-  onChange?: (state: S, event: StreamdEvent<TData>) => void;
+  onChange?: (state: S, event: EventOf<TData>) => void;
 }
 
 /** A running `reduce()`: the reduced value, kept current as events arrive. */
@@ -812,6 +846,15 @@ export interface StreamdConfig {
    */
   maxRequestsPerSecond?: number;
   /**
+   * Fails any of those adapter calls still unfinished after this many ms, from
+   * when it started rather than when it joined the queue, as a
+   * `StreamdNetworkError`, so a listener backs off and counts it toward
+   * `maxErrors` and a query's `retries` retry it. Its slot frees, though the
+   * request itself runs on uncounted, since adapters take no signal. Omit for
+   * no timeout.
+   */
+  requestTimeout?: number;
+  /**
    * Listener options for every subscription this client creates. A call's own
    * value for a field wins; one it leaves `undefined` takes this one. A call's
    * `decode` replaces this list rather than adding to it. `pollInterval` here
@@ -849,6 +892,11 @@ export interface SubscriptionStatus {
   readonly lastSuccessAt: number | undefined;
 }
 
+export interface CloseOptions {
+  /** How long to wait for running handlers, in ms. Default 5000. */
+  timeout?: number;
+}
+
 export interface Subscription {
   /** Unique ID for this subscription */
   id: string;
@@ -856,6 +904,11 @@ export interface Subscription {
   unsubscribe(): void;
   /** `unsubscribe()`, so `using sub = client.on(...)` stops it at scope exit. */
   [Symbol.dispose](): void;
+  /**
+   * `unsubscribe()`, then waits for a handler already running, at most five
+   * seconds, so `await using` does not cut it off at scope exit.
+   */
+  [Symbol.asyncDispose](): Promise<void>;
   /**
    * Stop polling without ending the subscription; `resume()` carries on from
    * the same cursor and dedup window. No-op unless active.
@@ -878,10 +931,17 @@ export interface Subscription {
    * unsubscribing or stopping.
    */
   readonly status: SubscriptionStatus;
+  /**
+   * Resolves the first time the subscription reaches the head, just as
+   * `onCaughtUp` fires. Rejects if it ends first: with the polling error when
+   * it gives up, the signal's reason on abort, else a `StreamdError`. A
+   * rejection nobody is waiting for is not reported as unhandled.
+   */
+  readonly caughtUp: Promise<void>;
 }
 
 /** What `stream()` returns: its live events, and where to resume them. */
-export interface EventStream<TData = unknown> extends AsyncIterableIterator<StreamdEvent<TData>> {
+export interface EventStream<TData = unknown> extends AsyncIterableIterator<EventOf<TData>> {
   /**
    * As `Subscription.cursor`, moving past a page only once the loop has asked
    * past its last event; the `cursor` option until the loop first asks.
@@ -904,7 +964,7 @@ export interface EventStream<TData = unknown> extends AsyncIterableIterator<Stre
  * which the union would reject.
  */
 export type EventCallback<TData = unknown> = (
-  event: StreamdEvent<TData>,
+  event: EventOf<TData>,
 ) => void;
 
 /**
@@ -914,7 +974,7 @@ export type EventCallback<TData = unknown> = (
  * rejection goes to `onError` without counting toward `maxErrors`.
  */
 export type BatchCallback<TData = unknown> = (
-  events: StreamdEvent<TData>[],
+  events: EventOf<TData>[],
 ) => void;
 
 /**
@@ -929,7 +989,7 @@ export interface TransactionGroup<TData = unknown> {
   sender?: string;
   timestamp?: bigint;
   entryFunction?: EntryFunctionCall;
-  events: StreamdEvent<TData>[];
+  events: EventOf<TData>[];
 }
 
 /**
@@ -947,7 +1007,7 @@ export type TransactionCallback<TData = unknown> = (
  * as the caller passed it. Otherwise as `EventCallback`.
  */
 export type WatchCallback<TData = unknown> = (
-  event: StreamdEvent<TData>,
+  event: EventOf<TData>,
   address: string,
 ) => void;
 

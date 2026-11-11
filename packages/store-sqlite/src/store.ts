@@ -1,6 +1,6 @@
 import { StreamdError, normalizeAddress, parseEvent, serializeEvent } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
-import { ensureSchema, transaction, versionKey } from "./schema.js";
+import { PRUNED_BEFORE, ensureSchema, raisePrunedBefore, transaction, versionKey } from "./schema.js";
 import type { SqliteDatabase, SqliteStatement } from "./schema.js";
 
 /** A source cursor to save under `name` alongside a write. */
@@ -34,6 +34,7 @@ function requireName(name: unknown): string {
   if (typeof name !== "string" || name === "") {
     throw new StreamdError("A checkpoint name must be a non-empty string");
   }
+  if (name === PRUNED_BEFORE) throw new StreamdError(`"${name}" is reserved for the store`);
   return name;
 }
 
@@ -80,6 +81,19 @@ export class SqliteEventStore {
     transaction(this.db, () => {
       for (const row of rows) this.upsert.run(...row);
       if (name !== undefined && cursor !== undefined) this.saveCursor.run(name, cursor);
+    });
+  }
+
+  /**
+   * Deletes every event below `beforeVersion` and records that edge, so a
+   * `StoreAdapter` read below it fails instead of returning a short history.
+   * Saved cursors stay. A lower edge than one already set deletes nothing new.
+   */
+  prune(options: { beforeVersion: bigint }): void {
+    const key = versionKey(options?.beforeVersion);
+    transaction(this.db, () => {
+      this.db.prepare("DELETE FROM streamd_events WHERE version < ?").run(key);
+      raisePrunedBefore(this.db, key);
     });
   }
 

@@ -1,6 +1,8 @@
 import { Aptos } from "@aptos-labs/ts-sdk";
 import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type {
+  CloseOptions,
+  EventOf,
   Balances,
   BalancesOptions,
   BatchCallback,
@@ -40,7 +42,7 @@ import {
   StreamdError,
   StreamdTimeoutError,
 } from "./errors.js";
-import { descriptorKey, generateId, onAbort } from "./utils.js";
+import { ASYNC_DISPOSE, descriptorKey, generateId, latch, onAbort } from "./utils.js";
 import { eventStream } from "./stream.js";
 import { RequestLimiter } from "./limiter.js";
 import { CursorManager } from "./cursor.js";
@@ -65,6 +67,21 @@ const MAX_TIMEOUT = 2_147_483_647;
 const DISPOSE: typeof Symbol.dispose =
   Symbol.dispose ?? (Symbol.for("Symbol.dispose") as typeof Symbol.dispose);
 
+const DEFAULT_CLOSE_TIMEOUT = 5000;
+
+/** Whether `work` settled within `ms`. */
+async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(false), ms);
+  });
+  try {
+    return await Promise.race([work.then(() => true), expired]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function checkTimeout(ms: number | undefined): StreamdError | undefined {
   if (ms === undefined || (typeof ms === "number" && ms >= 0 && ms <= MAX_TIMEOUT)) {
     return undefined;
@@ -72,7 +89,8 @@ function checkTimeout(ms: number | undefined): StreamdError | undefined {
   return new StreamdError(`Invalid timeout: ${String(ms)} (expected 0..${MAX_TIMEOUT}ms)`);
 }
 
-function resolveLimiter(max: number | undefined, perSecond: number | undefined): RequestLimiter {
+function resolveLimiter(config: StreamdConfig): RequestLimiter {
+  const { maxConcurrentRequests: max, maxRequestsPerSecond: perSecond, requestTimeout } = config;
   if (max !== undefined && (!Number.isInteger(max) || max < 1)) {
     throw new StreamdError(
       `Invalid maxConcurrentRequests: ${String(max)} (expected a positive integer)`,
@@ -83,7 +101,15 @@ function resolveLimiter(max: number | undefined, perSecond: number | undefined):
       `Invalid maxRequestsPerSecond: ${String(perSecond)} (expected a positive number)`,
     );
   }
-  return new RequestLimiter(max, perSecond);
+  if (
+    requestTimeout !== undefined &&
+    (!Number.isFinite(requestTimeout) || requestTimeout <= 0 || requestTimeout > MAX_TIMEOUT)
+  ) {
+    throw new StreamdError(
+      `Invalid requestTimeout: ${String(requestTimeout)} (expected 1..${MAX_TIMEOUT}ms)`,
+    );
+  }
+  return new RequestLimiter(max, perSecond, requestTimeout);
 }
 
 const DEFAULT_KEYS = [
@@ -159,6 +185,7 @@ export class StreamdClient {
   private readonly query: EventQuery;
   /** Shared by every poller and query, so the cap holds client-wide. */
   private readonly limiter: RequestLimiter;
+  private readonly requestTimeout?: number;
   /** Lets identical subscriptions share each poll's adapter request. */
   private readonly shared: SharedFetches;
   private readonly subscriptions = new Map<string, { poller: EventPoller; stop: () => void }>();
@@ -174,10 +201,11 @@ export class StreamdClient {
   constructor(config: StreamdConfig) {
     this.defaults = resolveDefaults(config);
     this.onError = config.onError;
-    this.limiter = resolveLimiter(config.maxConcurrentRequests, config.maxRequestsPerSecond);
+    this.limiter = resolveLimiter(config);
+    this.requestTimeout = config.requestTimeout;
     this.aptos = resolveAptos(config);
     this.adapter = resolveAdapter(config, this.aptos);
-    this.shared = new SharedFetches(this.adapter);
+    this.shared = new SharedFetches(this.adapter, this.requestTimeout);
     this.query = new EventQuery(this.adapter, this.limiter);
     this.reduceHost = {
       query: this.query,
@@ -289,7 +317,9 @@ export class StreamdClient {
   ): Subscription {
     const id = callerId === undefined ? generateId() : this.claimId(callerId);
     let detach = () => {};
+    const reached = latch();
     const forget = () => {
+      reached.reject(new StreamdError("Subscription ended before catching up"));
       // A later subscription may hold this id by now; leave its entries alone.
       if (this.subscriptions.get(id)?.poller === poller) {
         this.subscriptions.delete(id);
@@ -305,10 +335,17 @@ export class StreamdClient {
       delivery,
       {
         ...resolved,
+        onCaughtUp: () => {
+          reached.resolve();
+          resolved.onCaughtUp?.();
+        },
         onError: (err) => {
           // Drop the subscription once the poller has given up and stopped
           // itself; a paused one reporting a late handler error stays.
-          if (!poller.active && !poller.paused) forget();
+          if (!poller.active && !poller.paused) {
+            reached.reject(err);
+            forget();
+          }
           (options?.onError ?? this.onError)?.(err);
         },
       },
@@ -323,7 +360,12 @@ export class StreamdClient {
       if (listener !== undefined) {
         this.listeners.set(id, { key: descriptorKey(descriptor), callback: listener, stop });
       }
-      detach = onAbort(options?.signal, forget);
+      detach = onAbort(options?.signal, () => {
+        reached.reject(options!.signal!.reason);
+        forget();
+      });
+    } else {
+      reached.reject(options?.signal?.reason);
     }
 
     const unsubscribe = () => {
@@ -344,10 +386,15 @@ export class StreamdClient {
       get status() {
         return poller.status;
       },
+      caughtUp: reached.promise,
       pause: () => poller.pause(),
       resume: () => poller.resume(),
       unsubscribe,
       [DISPOSE]: unsubscribe,
+      [ASYNC_DISPOSE]: async () => {
+        unsubscribe();
+        await settlesWithin(poller.handling, DEFAULT_CLOSE_TIMEOUT);
+      },
     };
   }
 
@@ -376,12 +423,12 @@ export class StreamdClient {
   once<TData = unknown>(
     descriptor: EventDescriptor<TData>,
     options?: OnceOptions,
-  ): Promise<StreamdEvent<TData>> {
+  ): Promise<EventOf<TData>> {
     const badTimeout = checkTimeout(options?.timeout);
     if (badTimeout !== undefined) return Promise.reject(badTimeout);
     if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
 
-    return new Promise<StreamdEvent<TData>>((resolve, reject) => {
+    return new Promise<EventOf<TData>>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let detach = () => {};
       const close = () => {
@@ -397,7 +444,7 @@ export class StreamdClient {
       const where = options?.where;
       const sub = this.subscribe(
         descriptor,
-        ((event: StreamdEvent<TData>) => (close(), resolve(event))) as EventCallback,
+        ((event: EventOf<TData>) => (close(), resolve(event))) as unknown as EventCallback,
         {
           ...options,
           where:
@@ -525,7 +572,7 @@ export class StreamdClient {
     callback: EventCallback<Transfer>,
     options: TransferListenerOptions = {},
   ): Subscription {
-    const { asset, account, ...rest } = options;
+    const { asset, account, withAssetInfo, ...rest } = options;
     const who = this.accountOf(account);
     return this.subscribe(
       TRANSFER_DESCRIPTOR,
@@ -533,7 +580,7 @@ export class StreamdClient {
       rest,
       undefined,
       rest.id,
-      (source) => transferSource(source, asset, who),
+      (source) => transferSource(source, asset, who, withAssetInfo, this.requestTimeout),
     );
   }
 
@@ -585,8 +632,15 @@ export class StreamdClient {
    * options `getEvents` takes; `where` and `limit` apply to the records.
    */
   async getTransfers(filter: TransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
-    const { asset, account, ...rest } = filter;
-    const query = new EventQuery(transferSource(this.adapter, asset, this.accountOf(account)), this.limiter);
+    const { asset, account, withAssetInfo, ...rest } = filter;
+    const source = transferSource(
+      this.adapter,
+      asset,
+      this.accountOf(account),
+      withAssetInfo,
+      this.requestTimeout,
+    );
+    const query = new EventQuery(source, this.limiter);
     return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
@@ -601,8 +655,8 @@ export class StreamdClient {
   async getEvents<TData = unknown>(
     descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
-  ): Promise<StreamdEvent<TData>[]> {
-    return this.query.getEvents<TData>(descriptor, filter);
+  ): Promise<EventOf<TData>[]> {
+    return this.query.getEvents<TData>(descriptor, filter) as unknown as Promise<EventOf<TData>[]>;
   }
 
   /**
@@ -612,8 +666,12 @@ export class StreamdClient {
     descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
     pageSize?: number,
-  ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    return this.query.getEventPages<TData>(descriptor, filter, pageSize);
+  ): AsyncGenerator<EventOf<TData>[], void, unknown> {
+    return this.query.getEventPages<TData>(descriptor, filter, pageSize) as unknown as AsyncGenerator<
+      EventOf<TData>[],
+      void,
+      unknown
+    >;
   }
 
   /**
@@ -624,8 +682,12 @@ export class StreamdClient {
     descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
     filter?: EventFilter,
     pageSize?: number,
-  ): AsyncGenerator<StreamdEvent<TData>, void, unknown> {
-    return this.query.iterateEvents<TData>(descriptor, filter, pageSize);
+  ): AsyncGenerator<EventOf<TData>, void, unknown> {
+    return this.query.iterateEvents<TData>(descriptor, filter, pageSize) as unknown as AsyncGenerator<
+      EventOf<TData>,
+      void,
+      unknown
+    >;
   }
 
   /**
@@ -645,7 +707,7 @@ export class StreamdClient {
     transactionHash: string,
     descriptor?: EventDescriptor<TData>,
     options: EventsOfOptions = {},
-  ): Promise<StreamdEvent<TData>[]> {
+  ): Promise<EventOf<TData>[]> {
     const badTimeout = checkTimeout(options.timeout);
     if (badTimeout !== undefined) throw badTimeout;
     const events = await eventsOf(
@@ -656,7 +718,7 @@ export class StreamdClient {
       descriptor,
       options,
     );
-    return events as StreamdEvent<TData>[];
+    return events as unknown as EventOf<TData>[];
   }
 
   /**
@@ -696,9 +758,9 @@ export class StreamdClient {
     transaction: SimpleTransaction,
     descriptor?: EventDescriptor<TData>,
     options: PreviewEventsOptions = {},
-  ): Promise<StreamdEvent<TData>[]> {
+  ): Promise<EventOf<TData>[]> {
     const events = await previewEvents(this.adapter, this.limiter, transaction, descriptor, options);
-    return events as StreamdEvent<TData>[];
+    return events as unknown as EventOf<TData>[];
   }
 
   /**
@@ -755,5 +817,23 @@ export class StreamdClient {
   /** `destroy()`, so `using client = new StreamdClient(...)` cleans up at scope exit. */
   [DISPOSE](): void {
     this.destroy();
+  }
+
+  /**
+   * `destroy()`, then waits for the handlers those subscriptions have running.
+   * Resolves `true` once they have finished, or `false` at `timeout`.
+   */
+  async close(options: CloseOptions = {}): Promise<boolean> {
+    const timeout = options.timeout ?? DEFAULT_CLOSE_TIMEOUT;
+    const invalid = checkTimeout(timeout);
+    if (invalid !== undefined) throw invalid;
+    const running = [...this.subscriptions.values()].map(({ poller }) => poller.handling);
+    this.destroy();
+    return settlesWithin(Promise.all(running), timeout);
+  }
+
+  /** `close()`, so `await using client = new StreamdClient(...)` drains at scope exit. */
+  async [ASYNC_DISPOSE](): Promise<void> {
+    await this.close();
   }
 }

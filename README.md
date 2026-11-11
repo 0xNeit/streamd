@@ -157,6 +157,22 @@ the head, after the first successful poll. It is not called again, even after a 
 resume. A throw from it goes to `onError` without counting toward `maxErrors`. `once()` and
 `stream()` accept it too.
 
+Every subscription also has `caughtUp`, a promise for the same moment:
+
+```ts
+const sub = streamd.on(descriptor, handle, { fromVersion: 3_000_000_000n });
+await sub.caughtUp;
+console.log("backfill done, now live");
+```
+
+It resolves after that page's handlers have finished, and it settles once. It rejects if the
+subscription ends first: with the `StreamdPollingError` when polling gives up, the signal's
+reason on abort, and a `StreamdError` on `unsubscribe()` or `destroy()`. If nobody awaits it, a
+rejection is not reported as unhandled. It stays pending through a pause. On `onTransaction()`
+with several descriptors it waits for every walk, and on `watch()` for every address given
+to it, where an address that gave up no longer counts and only the end of the whole watch
+rejects.
+
 ### Batch delivery
 
 ```ts
@@ -550,7 +566,7 @@ why: the chain discards a failed transaction's events, so there is nothing to re
 not committed within `timeout` (default 20 seconds) rejects with `StreamdTimeoutError`, an
 abort with `signal.reason`, and a failed lookup at once with its error. The adapter is not
 told about a timeout or abort, so a lookup already in flight runs to completion and holds
-its `maxConcurrentRequests` slot until then. The hash must be
+its `maxConcurrentRequests` slot until then, or until the client's `requestTimeout`. The hash must be
 `0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which
 `FullnodeScanAdapter` and `MemoryAdapter` have and the wrapping adapters pass through.
 
@@ -771,8 +787,24 @@ the lookups behind `eventsOf()` and the simulations behind `previewEvents()` all
 a module-event scan on `FullnodeScanAdapter` may make several requests per call. A call
 still waiting when its subscription stops or pauses, or its query's `signal` aborts, leaves
 the queue at once without reaching the adapter, and `destroy()` rejects every call still
-waiting. A call the adapter never settles holds its slot, so give a custom adapter its own
-timeouts. Omit the option for no limit.
+waiting. A call the adapter never settles holds its slot unless `requestTimeout` is set.
+Omit the option for no limit.
+
+### Time out a hung adapter call
+
+```ts
+const streamd = new StreamdClient({ aptos, requestTimeout: 15_000 });
+```
+
+An adapter call still unfinished after that many milliseconds fails with a
+`StreamdNetworkError`. A listener backs off and counts it toward `maxErrors`, and a query's
+`retries` retry it, as for any network failure. The clock starts when the call starts, so
+time spent waiting for `maxConcurrentRequests` or `maxRequestsPerSecond` does not count. It
+covers the calls those two options count, and the view reads behind `transfers()` and
+`getTransfers()`. The slot frees at once, but adapters take no
+signal, so the request itself runs on, uncounted, until it ends. A module scan is one
+adapter call that may make several HTTP requests, so allow for that. Omit the option for no
+timeout.
 
 ### Shared polling
 
@@ -820,6 +852,32 @@ Subscriptions and the client are `Disposable`, so `using` cleans up at scope exi
 Disposing is `unsubscribe()` (or `destroy()` for the client) and is safe to repeat. `using`
 needs a runtime with `Symbol.dispose` (Node 18.18+, 20.4+, Bun) or a polyfill, and
 TypeScript 5.2+; the type declarations pull in the `esnext.disposable` lib themselves.
+
+### Shut down cleanly
+
+`destroy()` stops everything at once and returns, so a handler part way through a write keeps
+going with nothing waiting for it. `await streamd.close()` also waits for the handlers already
+running:
+
+```ts
+process.on("SIGTERM", async () => {
+  const finished = await streamd.close({ timeout: 10_000 });
+  process.exit(finished ? 0 : 1);
+});
+```
+
+Polling stops at once and no further event is delivered; only handlers already running are
+waited for, across everything subscribed when it is called: `on()`, `onBatch()`, `once()`,
+`watch()`, `onTransaction()`, `transfers()` and a reduction's live tail. It does not wait for
+adapter requests, so a hung source cannot hold it up. It resolves `true` once they have
+finished and `false` at `timeout` (default five seconds) without rejecting, and a handler
+still running then carries on. A subscription already unsubscribed and `replay()` are not
+waited for. A handler that awaits `close()` on its own client is waiting for itself, so it
+waits out the timeout.
+
+A predicate still deciding is abandoned, as on any stop. `await using sub = streamd.on(...)`
+(or on `onBatch()`, `onTransaction()` or `watch()`) does the same for one subscription, and
+`await using streamd = new StreamdClient(...)` for a client, each with the default timeout.
 
 ## Choosing events
 
@@ -887,27 +945,38 @@ Module events have no handle, so `guid` is `undefined` on them.
 ### Discover event handles
 
 `listEventHandles(aptos, address)` (an address or an Aptos name) reads an account's resources and returns
-each `EventHandle` it finds as a ready-to-use `handle` descriptor, with the
-number of events emitted on it so far and its guid:
+each `EventHandle` it finds as a ready-to-use `handle` descriptor, with
+where it sits, the number of events emitted on it so far and its guid:
 
 ```ts
 import { Aptos } from "@aptos-labs/ts-sdk";
 import { listEventHandles } from "@streamd/core";
 
 const handles = await listEventHandles(new Aptos(), "0x1");
-// [{ descriptor: { kind: "handle", accountAddress, eventHandleStruct: "0x1::block::BlockResource", fieldName: "new_block_events" }, count: 1165098930n, guid: { creationNumber: 3n, accountAddress: "0x1" } }, ...]
+// [{ descriptor: { kind: "handle", accountAddress, eventHandleStruct: "0x1::block::BlockResource", fieldName: "new_block_events" }, resourceType: "0x1::block::BlockResource", path: ["new_block_events"], count: 1165098930n, guid: { creationNumber: 3n, accountAddress: "0x1" } }, ...]
 
-const blocks = handles.find((h) => h.descriptor.fieldName === "new_block_events");
+const blocks = handles.find((h) => h.path[0] === "new_block_events");
 if (blocks) client.on(blocks.descriptor, (event) => console.log(event.data));
 ```
 
 It takes an `Aptos` instance rather than living on the client, because a
-client may run on any adapter. Only handles stored directly on a resource field
-are listed, since the struct and field form cannot address one nested inside a
-struct field. A nested handle is still readable by creation number, taken from
-the `guid` in the resource data.
+client may run on any adapter.
 
-### Check a module descriptor
+Handles nested inside a struct field are listed too. The struct and field form
+cannot address one, so its descriptor is by creation number, at the address in
+its guid. Each entry says where the handle sits, as `resourceType` and `path`:
+
+```ts
+const votes = handles.find((h) => h.path.join(".") === "events.vote_events");
+// { descriptor: { kind: "handle", accountAddress, creationNumber: 4n },
+//   resourceType: "0x1::voting::VotingForum<...>", path: ["events", "vote_events"], ... }
+```
+
+Because `descriptor` can be either form, check for `fieldName` before reading it,
+or match on `path`. Handles held in a table do not appear in resource data, so they
+are not listed.
+
+### Check a descriptor
 
 A misspelled event type is not an error to the module scan: it just never
 matches. `checkDescriptor(aptos, descriptor)` reads the module ABI for each
@@ -939,9 +1008,24 @@ Each type gets one status:
 
 `ok` is true when every type is `event` or `legacy`. A generic type is checked
 by its outer struct only; its type arguments are not looked up. It makes one
-request per distinct module, accepts `module` descriptors only, and throws
-`StreamdError` for malformed input before any request, or
-`StreamdNetworkError` when the node fails.
+request per distinct module.
+
+`handle` and `resource` descriptors get one entry in `types`, whose `eventType`
+is the resource type, or for a handle by creation number that number as a string:
+
+| Status | Meaning | `ok` |
+| --- | --- | --- |
+| `handle` | The `EventHandle` exists on the account. | yes |
+| `missing-resource` | The account holds no resource of the handle's struct. | no |
+| `not-handle` | That resource has no such field, or the field is not an `EventHandle`. | no |
+| `missing-handle` | Nothing on the account holds that creation number, nested handles included. | no |
+| `resource` | The account holds the resource. | yes |
+| `not-held` | A valid resource type the account does not hold now; it may be created later. | yes |
+| `not-resource` | The struct lacks `key`, so no account can hold it. | no |
+
+A `resource` type can also report `missing-module` or `missing-struct`.
+`account` descriptors are refused. Malformed input throws `StreamdError` before
+any request, and a node failure is a `StreamdNetworkError`.
 
 ### Typed events
 
@@ -961,6 +1045,34 @@ The type is your claim about the decoded JSON, not a runtime check: `u64`
 values still arrive as strings unless you name them in `decode` (below), in
 which case describe them as `bigint`. At runtime the descriptor is the same
 plain object you would write by hand.
+
+`defineEvents` combines several into one descriptor whose events narrow on `event.type`:
+
+```ts
+import { defineEvent, defineEvents } from "@streamd/core";
+
+const Transfers = defineEvents({
+  "0x1::fungible_asset::Deposit": defineEvent<{ store: string; amount: string }>(
+    "0x1::fungible_asset::Deposit",
+  ),
+  "0x1::fungible_asset::Withdraw": defineEvent<{ store: string; amount: string }>(
+    "0x1::fungible_asset::Withdraw",
+  ),
+});
+
+client.on(Transfers, (event) => {
+  if (event.type === "0x1::fungible_asset::Deposit") console.log("in", event.data.amount);
+  else console.log("out", event.data.amount);
+});
+```
+
+Each key must be the Move type of the descriptor it maps to, or it throws a `StreamdError`:
+one that did not match would make the types lie. It works with the catalog's descriptors in
+`@streamd/core/framework` too. Every method that hands you an event infers the narrowing type,
+which you can name as `EventOf<T>`. At runtime it is a `module` descriptor with a list of types.
+
+A function of your own that is generic over the payload should take and return `EventOf<T>`
+rather than `StreamdEvent<T>`, since TypeScript cannot resolve which one applies until `T` is known.
 
 ### Framework events
 
@@ -1262,6 +1374,20 @@ streamd.on({ kind: "account", accountAddress: alice }, onEvent);
 streamd.on(DEPOSITS, onEvent, { where: involvesAddress(alice) });
 ```
 
+`primaryName(aptos, address)` goes the other way, returning the name an address has set as
+its primary one, such as `alice.apt`, or `undefined` when it has none:
+
+```ts
+import { primaryName } from "@streamd/core";
+
+const name = await primaryName(aptos, event.sender);
+console.log(name ?? event.sender);
+```
+
+The name is resolved forward as a check, so one that no longer points back to the address
+counts as none. That is two reads when a name exists, and one when it does not, at the node's
+head; nothing is cached. A failed read rejects rather than returning `undefined`.
+
 `ownedBy(aptos, "alice.apt")` and `listEventHandles(aptos, "alice.apt")` take a
 name directly, since they already hold `aptos`: `ownedBy` resolves it on its
 first evaluation, once, and retries a failed resolution on the next.
@@ -1316,6 +1442,12 @@ const mine = await streamd.getTransfers({ fromVersion: -10_000n, account: "alice
   form, the rest as stored, so a name containing `::` reads ambiguously) and
   the token amount. `asset` takes a token object address or a legacy id too;
   other objects are then dropped before any read.
+- **Asset details.** `withAssetInfo: true` adds `symbol` and `decimals` to fungible-asset and
+  coin records, from `fungible_asset::symbol` and `decimals` or the `coin` module's, read
+  through `view` at the record's version and cached per asset, so each new asset costs two
+  reads. Records the `account` filter drops cost none, tokens have neither field, and an
+  asset whose view aborts is left without them. `formatAmount(amount, decimals)` turns base
+  units into a decimal string, every digit kept: `formatAmount(1_500_000n, 8)` is `"0.015"`.
 - **One account.** `account` keeps the records whose `from` or `to` is that
   address. It filters finished records, because a deposit needs its withdraw to
   report `from`, so it costs the same reads as no filter; add `asset` to save
@@ -1678,6 +1810,27 @@ Each event is kept once, since a resumed `tail` can repeat lines. Blank lines
 are ignored, and any other unreadable line throws a `StreamdError` naming its
 line number, a truncated last line included.
 
+`adapter.push(...events)` appends to a running `MemoryAdapter`, so a test can
+drive a live subscription step by step:
+
+```ts
+const adapter = new MemoryAdapter();
+const streamd = new StreamdClient({ adapter });
+const next = streamd.once({ kind: "module", eventType: "0x1::test::Ping" });
+adapter.push({
+  type: "0x1::test::Ping",
+  data: {},
+  version: 1n,
+  sequenceNumber: 0n,
+  eventIndex: 0,
+});
+await next;
+```
+
+Each pushed event must be above the highest version the adapter holds, since
+a transaction never appears below one already read. Events in one call may
+share a version. Anything else throws a `StreamdError` and adds nothing.
+
 ## Networks
 
 streamd runs against any network that serves the Aptos fullnode REST API. For
@@ -1802,8 +1955,19 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   rows arrive in version order, since its cursor is a position in the table; it sets no
   `throughVersion` for the same reason.
 - **Head and earliest** are the highest and lowest stored versions across the whole store,
-  `0n` when empty, so relative `fromVersion` and `toVersion: "head"` count from what is
-  stored. With no `cursor` or `fromVersion` a fetch starts at the earliest stored event.
+  `0n` for a store that was never pruned and holds nothing, so relative `fromVersion` and
+  `toVersion: "head"` count from what is stored. After a prune neither reports below the
+  edge. With no `cursor` or `fromVersion` a fetch starts at the earliest stored event.
+- **Retention.** `store.prune({ beforeVersion })` deletes every event below that version in
+  one transaction and leaves saved cursors alone. A `StoreAdapter` read whose `fromVersion`,
+  `cursor` or `toVersion` is below that edge then fails with a `StreamdNetworkError` (status
+  410), as a pruned fullnode does, rather than returning a short history. That includes a
+  relative `fromVersion` reaching below it, and a follower on a rare event: its cursor stays
+  at its last match, so it fails once the edge passes that match even if nothing it wanted
+  was deleted. Start such a follower again from `fromVersion: "earliest"`. With no start a
+  fetch begins at the oldest version kept. The edge only rises, and is kept under the
+  reserved cursor name `streamd:pruned-before`. SQLite reuses the freed pages; run `VACUUM`
+  yourself to shrink the file.
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
   first use.
 

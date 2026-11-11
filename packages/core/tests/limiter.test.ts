@@ -1,6 +1,6 @@
 import { describe, it, expect, spyOn } from "bun:test";
 import { RequestLimiter } from "../src/limiter.js";
-import { StreamdError } from "../src/errors.js";
+import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import type { EventAdapter, EventPage, TransactionSimulation } from "../src/types.js";
 
 const flush = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -440,5 +440,71 @@ describe("RequestLimiter.wrap views", () => {
     await fetching;
     expect(await viewing).toEqual(["0x1::coin::balance", "2"]);
     expect(new RequestLimiter().wrap({ fetchEvents: adapter.fetchEvents }).view).toBeUndefined();
+  });
+});
+
+describe("RequestLimiter timeout", () => {
+  const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  const hang = () => new Promise<never>(() => {});
+
+  it("rejects a hung call as a network failure naming the time", async () => {
+    const err = await new RequestLimiter(Infinity, Infinity, 5).run(hang).catch((e) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect(err.message).toBe("Adapter call timed out after 5ms");
+    expect(err.statusCode).toBeUndefined();
+  });
+
+  it("passes the slot of a timed-out call to the next", async () => {
+    const limiter = new RequestLimiter(1, Infinity, 5);
+    const first = limiter.run(hang).catch((e) => e);
+    const second = limiter.run(async () => "ran");
+    expect(await first).toBeInstanceOf(StreamdNetworkError);
+    expect(await second).toBe("ran");
+  });
+
+  it("leaves a call that settles in time alone and clears its timer", async () => {
+    const cleared = spyOn(globalThis, "clearTimeout");
+    try {
+      expect(await new RequestLimiter(Infinity, Infinity, 1000).run(async () => 7)).toBe(7);
+      await flush();
+      expect(cleared).toHaveBeenCalled();
+    } finally {
+      cleared.mockRestore();
+    }
+  });
+
+  it("passes on a task's own failure, a synchronous throw included", async () => {
+    const limiter = new RequestLimiter(Infinity, Infinity, 1000);
+    const boom = new Error("boom");
+    expect(await limiter.run(() => Promise.reject(boom)).catch((e) => e)).toBe(boom);
+    expect(
+      await limiter
+        .run(() => {
+          throw boom;
+        })
+        .catch((e) => e),
+    ).toBe(boom);
+  });
+
+  it("ignores a settle after the timeout", async () => {
+    let fail!: (reason: unknown) => void;
+    const limiter = new RequestLimiter(Infinity, Infinity, 5);
+    const err = await limiter
+      .run(() => new Promise((_, reject) => (fail = reject)))
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    fail(new Error("late"));
+    await flush();
+  });
+
+  it("does not count time spent waiting in the queue", async () => {
+    const limiter = new RequestLimiter(1, Infinity, 40);
+    const first = limiter.run(() => sleep(25).then(() => "first"));
+    const second = limiter.run(() => sleep(25).then(() => "second"));
+    expect(await Promise.all([first, second])).toEqual(["first", "second"]);
+  });
+
+  it("applies no timeout when none is set", async () => {
+    expect(await new RequestLimiter().run(() => sleep(15).then(() => "ok"))).toBe("ok");
   });
 });

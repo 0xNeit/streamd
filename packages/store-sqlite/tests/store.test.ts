@@ -114,3 +114,50 @@ describe("SqliteEventStore", () => {
     expect(rows(db)).toHaveLength(1);
   });
 });
+
+describe("SqliteEventStore.prune", () => {
+  const versions = (db: Database) => rows(db).map((e) => e.version);
+
+  it("deletes below the version and keeps the rest", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.write([ev(1n), ev(2n), ev(2n, 1), ev(3n)]);
+    store.prune({ beforeVersion: 2n });
+    expect(versions(db)).toEqual([2n, 2n, 3n]);
+  });
+
+  it("leaves saved cursors", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.write([ev(1n)], { name: "swaps", cursor: "c" });
+    store.prune({ beforeVersion: 5n });
+    expect(versions(db)).toEqual([]);
+    expect(store.readCursor("swaps")).toBe("c");
+  });
+
+  it("throws on an invalid version and changes nothing", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.write([ev(1n)]);
+    expect(() => store.prune({ beforeVersion: -1n })).toThrow(StreamdError);
+    expect(() => store.prune({ beforeVersion: 2 as unknown as bigint })).toThrow(StreamdError);
+    expect(() => store.prune(undefined as unknown as { beforeVersion: bigint })).toThrow(StreamdError);
+    expect(versions(db)).toEqual([1n]);
+  });
+
+  it("rolls the delete back when recording the edge fails", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.write([ev(1n)]);
+    db.run("DROP TABLE streamd_cursors");
+    expect(() => store.prune({ beforeVersion: 5n })).toThrow();
+    expect(versions(db)).toEqual([1n]);
+  });
+
+  it("keeps the name holding the edge away from callers", () => {
+    const store = new SqliteEventStore(new Database(":memory:"));
+    const name = "streamd:pruned-before";
+    expect(() => store.write([], { name, cursor: "x" })).toThrow("reserved");
+    expect(() => store.readCursor(name)).toThrow("reserved");
+  });
+});

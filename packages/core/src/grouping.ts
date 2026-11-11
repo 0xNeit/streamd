@@ -15,6 +15,7 @@ import type { Delivery } from "./poller.js";
 import { StreamdError } from "./errors.js";
 import { CursorManager } from "./cursor.js";
 import { isThenable } from "./filter.js";
+import { ASYNC_DISPOSE } from "./utils.js";
 
 /** What `onTransaction()` needs from its client. */
 export interface TransactionHost {
@@ -220,6 +221,9 @@ export function startTransactions(
     walks.push(sub);
   });
 
+  const allCaughtUp = Promise.all(walks.map((w) => w.caughtUp)).then(() => {});
+  allCaughtUp.catch(() => {});
+
   return {
     id: walks[0]!.id,
     get active() {
@@ -234,9 +238,14 @@ export function startTransactions(
     get status() {
       return single ? { ...walks[0]!.status, cursor: checkpoint } : combinedStatus(walks, live());
     },
+    caughtUp: allCaughtUp,
     pause: () => walks.forEach((w) => w.pause()),
     resume: () => walks.forEach((w) => w.resume()),
     unsubscribe: end,
     [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: end,
+    [ASYNC_DISPOSE]: async () => {
+      end();
+      await Promise.all(walks.map((w) => w[ASYNC_DISPOSE]()));
+    },
   };
 }

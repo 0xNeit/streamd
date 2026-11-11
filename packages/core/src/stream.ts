@@ -1,4 +1,4 @@
-import type { EventCallback, EventStream, StreamdEvent, Subscription } from "./types.js";
+import type { EventCallback, EventOf, EventStream, Subscription } from "./types.js";
 import { onAbort } from "./utils.js";
 
 type Subscribe<TData> = (
@@ -7,7 +7,7 @@ type Subscribe<TData> = (
 ) => Subscription;
 
 interface Waiter<TData> {
-  resolve(result: IteratorResult<StreamdEvent<TData>>): void;
+  resolve(result: IteratorResult<EventOf<TData>>): void;
   reject(error: unknown): void;
 }
 

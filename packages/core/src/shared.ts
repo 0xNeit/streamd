@@ -29,7 +29,10 @@ const PASS_THROUGH = [
 export class SharedFetches {
   private readonly entries = new Map<string, Entry>();
 
-  constructor(private readonly adapter: EventAdapter) {}
+  constructor(
+    private readonly adapter: EventAdapter,
+    private readonly requestTimeout?: number,
+  ) {}
 
   /** The adapter as one subscription polling every `pollInterval` ms sees it. */
   view(pollInterval: number): EventAdapter {
@@ -56,7 +59,8 @@ export class SharedFetches {
     // Monotonic, so a wall clock stepped backwards cannot keep a page alive.
     const now = performance.now();
     for (const [k, e] of this.entries) {
-      if (e.settled && now - e.at >= e.ttl) this.entries.delete(k);
+      // A request past the timeout may never settle, and joining it would hang every retry.
+      if (now - e.at >= (e.settled ? e.ttl : (this.requestTimeout ?? Infinity))) this.entries.delete(k);
     }
     const hit = this.entries.get(key);
     if (hit !== undefined) return hit.page;
