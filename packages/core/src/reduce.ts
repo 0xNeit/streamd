@@ -220,10 +220,10 @@ export function startReduction<S, TData>(
           if (!fold(event)) break;
         }
       }
-      if (head !== undefined && !stopped) {
-        // Everything at or below the head is folded; the marker sorts after any event there.
-        const end = { version: empty ? fromVersion - 1n : head, eventIndex: Number.MAX_SAFE_INTEGER };
-        if (last === undefined || isAfter(end as StreamdEvent, last)) last = end;
+      // With nothing folded, the live tail still needs a version to start from:
+      // a marker after everything the backfill covered.
+      if (head !== undefined && !stopped && last === undefined) {
+        last = { version: empty ? fromVersion - 1n : head, eventIndex: Number.MAX_SAFE_INTEGER };
       }
     } catch (err) {
       if (!stopped) {
