@@ -107,7 +107,6 @@ export class PoolAdapter implements EventAdapter {
   }
 
   private remember(cursor: string, node: number): void {
-    this.owners.delete(cursor);
     this.owners.set(cursor, node);
     if (this.owners.size > REMEMBERED_CURSORS) this.owners.delete(this.owners.keys().next().value!);
   }

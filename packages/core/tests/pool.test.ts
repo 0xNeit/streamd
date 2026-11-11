@@ -36,10 +36,16 @@ describe("PoolAdapter", () => {
     await pool.fetchEvents(d, { cursor: first.nextCursor, limit: 2 });
     await pool.fetchEvents(d, { cursor: second.nextCursor, limit: 2 });
     expect(log).toEqual(["a start", "b start", `a ${first.nextCursor}`, `b ${second.nextCursor}`]);
-    // The same cursor on another descriptor is another walk.
-    const other = await pool.fetchEvents({ kind: "module", eventType: [T] }, { cursor: first.nextCursor, limit: 1 });
-    expect(other.events).toHaveLength(1);
-    expect(log.at(-1)).toBe(`a ${first.nextCursor}`);
+  });
+
+  it("tells apart walks on different descriptors that reach the same cursor", async () => {
+    const log: string[] = [];
+    const pool = new PoolAdapter([node("a", log), node("b", log)]);
+    const onA = await pool.fetchEvents(d, { limit: 2 });
+    const onB = await pool.fetchEvents({ kind: "module", eventType: [T] }, { limit: 2 });
+    expect(onB.nextCursor).toBe(onA.nextCursor!);
+    await pool.fetchEvents(d, { cursor: onA.nextCursor, limit: 1 });
+    expect(log).toEqual(["a start", "b start", `a ${onA.nextCursor}`]);
   });
 
   it("moves a rate-limited call to the next node, cools the first, and the walk stays where it moved", async () => {
@@ -102,10 +108,9 @@ describe("PoolAdapter", () => {
     const first = await pool.fetchEvents(d, { limit: 1 });
     for (let i = 0; i < 1100; i++) await pool.fetchEvents(d, { fromVersion: BigInt((i % 9) + 1), limit: 1 + (i % 50) });
     log.length = 0;
+    // The first walk started on a; 1101 calls later rotation is on b, which a forgotten cursor gets.
     await pool.fetchEvents(d, { cursor: first.nextCursor, limit: 1 });
-    await pool.fetchEvents(d, { cursor: first.nextCursor, limit: 1 });
-    // Forgotten, so rotation picks the node; the page it returns is remembered again.
-    expect(log[1]!.split(" ")[0]).toBe(log[0]!.split(" ")[0]);
+    expect(log).toEqual([`b ${first.nextCursor}`]);
   });
 
   it("refuses an empty pool and a bad cooldown", () => {
