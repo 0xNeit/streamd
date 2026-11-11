@@ -680,6 +680,41 @@ describe("transfers with requestTimeout", () => {
     expect(errors).toHaveLength(1);
   });
 
+  it("lets no queued read from a given-up page delay the page after an outage", async () => {
+    // Twenty deposits to different stores, so every page needs twenty uncached reads.
+    const events = Array.from({ length: 20 }, (_, i) => fa(i + 1, 0, "Deposit", (i + 1).toString(16), "100"));
+    const memory = new MemoryAdapter(events);
+    const started = performance.now();
+    const healed = 600;
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => memory.fetchEvents(d, o),
+      getHeadVersion: () => memory.getHeadVersion(),
+      view: async (request) => {
+        if (performance.now() - started < healed) return new Promise<never>(() => {});
+        await new Promise((r) => setTimeout(r, 5));
+        return request.function === OWNER ? [ALICE] : [{ inner: "0xa" }];
+      },
+    };
+    const client = new StreamdClient({ adapter, requestTimeout: 100 });
+    const late: number[] = [];
+    await new Promise<void>((resolve) => {
+      client.transfers(() => resolve(), {
+        fromVersion: 0n,
+        pollInterval: 10,
+        maxBackoff: 20,
+        maxErrors: 100,
+        batchSize: 20,
+        onError: () => {
+          const at = performance.now() - started;
+          // A page started before the source healed may still fail one timeout later.
+          if (at > healed + 100) late.push(Math.round(at));
+        },
+      });
+    });
+    client.destroy();
+    expect(late).toEqual([]);
+  });
+
   it("recovers a live subscription from a hung read", async () => {
     const { adapter } = firstViewHangs();
     const client = new StreamdClient({ adapter, requestTimeout: 2 });

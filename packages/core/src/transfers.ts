@@ -221,13 +221,20 @@ export function transferSource(
   // this read's own: joining it would fail the retry too.
   let loads: (() => void)[] = [];
   let generation = 0;
+  // Aborted when the next page starts, so reads a given-up page queued leave the queue.
+  let page = new AbortController();
   const track = (drop: () => void) => void loads.push(drop);
   const metadata = memo<string | undefined>((asset) => asset !== undefined, track);
   const infos = memo<AssetInfo | undefined>(() => true, track);
   const tokens = memo<boolean>(() => true, track);
 
   /** The address `fn` returns for `object`, before the transaction if it was gone after it. */
-  const read = async (fn: ViewRequest["function"], object: string, version: bigint): Promise<string | undefined> => {
+  const read = async (
+    fn: ViewRequest["function"],
+    object: string,
+    version: bigint,
+    signal: AbortSignal,
+  ): Promise<string | undefined> => {
     const request: ViewRequest = {
       function: fn,
       typeArguments: ["0x1::object::ObjectCore"],
@@ -236,7 +243,7 @@ export function transferSource(
     for (const at of version > 0n ? [version, version - 1n] : [version]) {
       let result: unknown[];
       try {
-        result = await limiter.run(() => adapter.view!(request, at, TRANSFER_DESCRIPTOR));
+        result = await limiter.run(() => adapter.view!(request, at, TRANSFER_DESCRIPTOR), signal);
       } catch (err) {
         if (err instanceof StreamdError && !(err instanceof StreamdNetworkError)) continue;
         throw err;
@@ -252,13 +259,13 @@ export function transferSource(
     return undefined;
   };
 
-  const assetOf = (store: string, version: bigint) =>
-    metadata(store, () => read("0x1::fungible_asset::store_metadata", store, version));
+  const assetOf = (store: string, version: bigint, signal: AbortSignal) =>
+    metadata(store, () => read("0x1::fungible_asset::store_metadata", store, version, signal));
 
-  const isToken = (object: string, version: bigint) =>
-    tokens(object, async () => (await read(TOKEN_CREATOR, object, version)) !== undefined);
+  const isToken = (object: string, version: bigint, signal: AbortSignal) =>
+    tokens(object, async () => (await read(TOKEN_CREATOR, object, version, signal)) !== undefined);
 
-  const readInfo = async (asset: string, version: bigint): Promise<AssetInfo | undefined> => {
+  const readInfo = async (asset: string, version: bigint, signal: AbortSignal): Promise<AssetInfo | undefined> => {
     const coin = asset.includes("::");
     const module = coin ? "0x1::coin" : "0x1::fungible_asset";
     const view = (name: string): Promise<unknown[]> => {
@@ -267,7 +274,7 @@ export function transferSource(
         typeArguments: [coin ? asset : "0x1::object::ObjectCore"],
         functionArguments: coin ? [] : [asset],
       };
-      return limiter.run(() => adapter.view!(request, version, TRANSFER_DESCRIPTOR));
+      return limiter.run(() => adapter.view!(request, version, TRANSFER_DESCRIPTOR), signal);
     };
     let symbol: unknown[];
     let decimals: unknown[];
@@ -285,21 +292,24 @@ export function transferSource(
     return { symbol: symbol[0], decimals: parsed as number };
   };
 
-  const withInfo = async (event: StreamdEvent<Transfer>): Promise<StreamdEvent<Transfer>> => {
+  const withInfo = async (event: StreamdEvent<Transfer>, signal: AbortSignal): Promise<StreamdEvent<Transfer>> => {
     if (TOKEN_EVENTS.has(event.type)) return event;
     const { asset } = event.data;
-    const info = await infos(assetKey(asset), () => readInfo(asset, event.version));
+    const info = await infos(assetKey(asset), () => readInfo(asset, event.version, signal));
     return info === undefined ? event : { ...event, data: { ...event.data, ...info } };
   };
 
   /** A leg to pair, or a finished record for an object transfer, which names both sides. */
-  const legOf = async (event: StreamdEvent): Promise<Leg | StreamdEvent<Transfer> | undefined> => {
+  const legOf = async (
+    event: StreamdEvent,
+    signal: AbortSignal,
+  ): Promise<Leg | StreamdEvent<Transfer> | undefined> => {
     const parsed = parse(event);
     if (parsed === undefined) return undefined;
     if ("object" in parsed) {
       const { object, from, to } = parsed;
       if (wanted !== undefined && object !== wanted) return undefined;
-      if (!(await isToken(object, event.version))) return undefined;
+      if (!(await isToken(object, event.version, signal))) return undefined;
       return { ...event, data: { asset: object, amount: 1n, from, to } };
     }
     const { deposit, amount } = parsed;
@@ -309,13 +319,13 @@ export function transferSource(
     }
     // A coin type or legacy id never names a fungible asset, so its filter needs no store read.
     if (wanted?.includes("::")) return undefined;
-    const asset = await assetOf(parsed.store, event.version);
+    const asset = await assetOf(parsed.store, event.version, signal);
     if (asset === undefined || (wanted !== undefined && asset !== wanted)) return undefined;
-    const owner = await read("0x1::object::owner", parsed.store, event.version);
+    const owner = await read("0x1::object::owner", parsed.store, event.version, signal);
     return owner === undefined ? undefined : { event, deposit, amount, asset, owner };
   };
 
-  const toTransfers = async (events: StreamdEvent[]): Promise<StreamdEvent<Transfer>[]> => {
+  const toTransfers = async (events: StreamdEvent[], signal: AbortSignal): Promise<StreamdEvent<Transfer>[]> => {
     const transactions = new Map<bigint, StreamdEvent[]>();
     for (const event of [...events].sort(byIdentity)) {
       const txn = transactions.get(event.version);
@@ -323,7 +333,7 @@ export function transferSource(
       else txn.push(event);
     }
     const legs = await Promise.all(
-      [...transactions.values()].map((txn) => Promise.all(txn.map(legOf))),
+      [...transactions.values()].map((txn) => Promise.all(txn.map((event) => legOf(event, signal)))),
     );
     return legs
       .flatMap((txn) => {
@@ -341,16 +351,19 @@ export function transferSource(
         if (generation !== mine) throw new StreamdNetworkError("Transfer page abandoned for a newer one");
       };
       for (const drop of loads.splice(0)) drop();
+      page.abort(new StreamdNetworkError("Transfer page abandoned for a newer one"));
+      page = new AbortController();
+      const { signal } = page;
       const who = await account?.();
-      const page = await adapter.fetchEvents(descriptor, options);
+      const fetched = await adapter.fetchEvents(descriptor, options);
       overtaken();
-      let events = await toTransfers(page.events);
+      let events = await toTransfers(fetched.events, signal);
       if (who !== undefined) events = events.filter(({ data }) => data.from === who || data.to === who);
       // The store reads above can outlast the page, and these reads are memoized too.
       overtaken();
-      if (withAssetInfo) events = await Promise.all(events.map(withInfo));
+      if (withAssetInfo) events = await Promise.all(events.map((event) => withInfo(event, signal)));
       if (options.orderBy === "desc") events.reverse();
-      return { ...page, events };
+      return { ...fetched, events };
     },
   };
   for (const name of ["getHeadVersion", "getEarliestVersion", "getBlock", "getBlockHeights", "view"] as const) {
