@@ -29,6 +29,14 @@ describe("normalizeAddress", () => {
     expect(normalizeAddress(LONG_ONE)).toBe(LONG_ONE);
   });
 
+  it("pads any short form, lowercases, and needs no chain SDK", () => {
+    expect(normalizeAddress("0xA550C18")).toBe(`0x${"a550c18".padStart(64, "0")}`);
+    expect(normalizeAddress("0x0")).toBe(`0x${"0".repeat(64)}`);
+    expect(normalizeAddress(`0x${"Ab".repeat(32)}`)).toBe(`0x${"ab".repeat(32)}`);
+    expect(normalizeAddress(undefined as never)).toBeUndefined();
+    expect(normalizeAddress("0x")).toBeUndefined();
+  });
+
   it("rejects non-addresses", () => {
     expect(normalizeAddress("hello")).toBeUndefined();
     expect(normalizeAddress("1")).toBeUndefined();
