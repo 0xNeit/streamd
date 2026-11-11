@@ -16,7 +16,8 @@ type Where = (bind: (value: unknown) => string) => string;
 
 function types(list: readonly string[]): Where {
   const checked = list.map(requireEventType);
-  return (bind) => `type = ANY(${bind(checked)}::text[])`;
+  // One JSON parameter, since drivers disagree on how to send arrays.
+  return (bind) => `type IN (SELECT jsonb_array_elements_text(${bind(JSON.stringify(checked))}::text::jsonb))`;
 }
 
 function descriptorWhere(descriptor: EventDescriptor): Where {

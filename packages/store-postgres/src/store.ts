@@ -40,11 +40,14 @@ function requireName(name: unknown): string {
 }
 
 // Both writes are data-modifying CTEs of one statement, so they land together
-// without a transaction, which a pool could not hold on one connection.
+// without a transaction, which a pool could not hold on one connection. Rows
+// arrive as one JSON parameter: drivers disagree on how to send arrays, and
+// the parameter count stays fixed whatever the batch size. It is typed text,
+// since a driver told the parameter is jsonb may encode the string as a JSON string.
 const WRITE = `
 WITH incoming AS (
-  SELECT * FROM unnest($1::numeric[], $2::integer[], $3::text[], $4::text[], $5::text[], $6::numeric[], $7::jsonb[])
-    AS t (version, event_index, type, sender, guid_address, guid_creation, event)
+  SELECT (r->>0)::numeric, (r->>1)::integer, r->>2, r->>3, r->>4, (r->>5)::numeric, (r->>6)::jsonb
+  FROM jsonb_array_elements($1::text::jsonb) AS r
 ), written AS (
   INSERT INTO streamd_events (version, event_index, type, sender, guid_address, guid_creation, event)
   SELECT * FROM incoming
@@ -53,7 +56,7 @@ WITH incoming AS (
     guid_creation = excluded.guid_creation, event = excluded.event
 )
 INSERT INTO streamd_cursors (name, cursor)
-SELECT $8::text, $9::text WHERE $8::text IS NOT NULL AND $9::text IS NOT NULL
+SELECT $2::text, $3::text WHERE $2::text IS NOT NULL AND $3::text IS NOT NULL
 ON CONFLICT (name) DO UPDATE SET cursor = excluded.cursor`;
 
 /**
@@ -84,8 +87,7 @@ export class PostgresEventStore {
       throw new StreamdError("A checkpoint cursor must be a string or undefined");
     }
     await ensureSchema(this.client);
-    const columns = Array.from({ length: 7 }, (_, i) => rows.map((row) => row[i]));
-    await this.client.query(WRITE, [...columns, name, cursor ?? null]);
+    await this.client.query(WRITE, [JSON.stringify(rows), name, cursor ?? null]);
   }
 
   /** The cursor last saved under `name`, or `undefined` when none was. */

@@ -37,6 +37,8 @@ The repository is a Turborepo monorepo on Bun workspaces with four packages:
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core`.
 - `@streamd/store-sqlite` (`packages/store-sqlite`) - opt-in persistence: events written to a
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
+- `@streamd/store-postgres` (`packages/store-postgres`) - the same over a Postgres client you
+  supply. See [Store events in Postgres](#store-events-in-postgres).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies. See [React hooks](#react-hooks).
 
@@ -1970,6 +1972,44 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   yourself to shrink the file.
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
   first use.
+
+## Store events in Postgres
+
+`@streamd/store-postgres` does what `@streamd/store-sqlite` does, over a Postgres client you
+supply: anything with `query(text, params)` resolving to `{ rows }`, which `pg`'s `Client` and
+`Pool` and PGlite already are. It has no driver dependency, and the tables are created on first
+use.
+
+```ts
+import pg from "pg";
+import { StreamdClient } from "@streamd/core";
+import { PostgresEventStore, PostgresStoreAdapter, storeEvents } from "@streamd/store-postgres";
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+const store = new PostgresEventStore(pool);
+
+// Resolves once it has read the cursor saved under "swaps"; a restart resumes from there.
+const sub = await storeEvents(streamd, store, descriptor, { name: "swaps", fromVersion: -100_000n });
+
+const local = new StreamdClient({ adapter: new PostgresStoreAdapter(pool) });
+```
+
+With `Bun.sql`, wrap it: `{ query: async (text, params = []) => ({ rows: await sql.unsafe(text, params) }) }`.
+
+- **One statement per write.** A batch and its cursor are written by a single `INSERT` whose
+  parts are data-modifying CTEs, so they land together without a transaction, and a `Pool`
+  that runs each query on any connection is safe. Rows go in as one JSON parameter, so no
+  driver's array encoding matters and the parameter count is the same for any batch.
+- **No gaps, no duplicates,** as with SQLite: rows are keyed on `(version, eventIndex)`, a
+  repeated write replaces its row, and the cursor moves only after its batch is stored.
+- **Queryable.** `streamd_events` holds `version` (`numeric`, exact for every u64), `event_index`,
+  `type`, `sender`, `guid_address`, `guid_creation` and the event as `jsonb`, so
+  `SELECT event->'data'->>'amount' FROM streamd_events WHERE type = '...'` works; integers in
+  `data` are decimal strings, as `serializeEvent` writes them. Saved cursors are in
+  `streamd_cursors`.
+- `PostgresStoreAdapter` serves `module`, `account` (by stored `sender`) and `handle` (by
+  `creationNumber`) descriptors, with the SQLite adapter's cursors, paging and options.
+- No `prune` or `PageStore` yet.
 
 ## React hooks
 
