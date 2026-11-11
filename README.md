@@ -2461,6 +2461,22 @@ client.on(CoinStore_DepositEvents(wallet, "0x1::aptos_coin::AptosCoin"), (e) => 
 
 Handles nested below a resource's top level have no builder; reach them by `creationNumber`.
 
+`--validators` also writes an `is<Type>(value): value is <Type>` check for every generated type,
+with no dependencies, for payloads from a source you do not control:
+
+```ts
+import { FungibleAsset_Deposit, isFungibleAsset_Deposit } from "./events.js";
+
+client.on(FungibleAsset_Deposit, (e) => {
+  if (!isFungibleAsset_Deposit(e.data)) return report(e); // not the shape the ABI describes
+});
+```
+
+It follows the table below, accepting `bigint` where a decimal string is expected, so a payload
+already through `decode` passes. Extra fields pass, so an upgraded module's new fields do not
+break old checks, and values of a type parameter are not checked. It checks shape, not
+identity: two event types with the same fields pass each other's check.
+
 A bare address covers every module published there, skipping the ones with no `#[event]` struct,
 event handle or `#[view]` function, and mixes with named modules:
 
