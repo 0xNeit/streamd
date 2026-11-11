@@ -190,6 +190,27 @@ handler is awaited before the cursor moves past the page, so a crash or a stop m
 redelivers the whole page on resume. A throw or rejection goes to `onError` without counting
 toward `maxErrors`, and polling moves on to the next page.
 
+### Several descriptors at once
+
+```ts
+streamd.on([Swap, Deposit, { kind: "account", accountAddress: treasury }], (event) => {
+  // every match from all three, in (version, eventIndex) order, each event once
+});
+```
+
+`on`, `onBatch`, `once` and `stream` take a list of descriptors of any kinds. Each gets its own
+walk, and events are held by version until every walk has passed it, then delivered in order;
+an event two descriptors match arrives once. With typed descriptors, `event.data` is the union
+of their payloads. `onBatch` gets everything one release frees, so a batch always holds whole
+transactions. A throw from an `on` handler goes to `onError` and the rest of the transaction
+still arrives.
+
+A list cannot resume: the `cursor` option is refused and `sub.cursor` is `undefined`, so
+restart from a version instead. It is not a listener for `off()`, `removeAllListeners()` or
+`listenerCount()`; `unsubscribe()` or `destroy()` ends it, and a walk that gives up ends the
+rest. `where`, `decode` and `withState` run on each walk. A one-element list is that
+descriptor, with everything a single descriptor does.
+
 ### Group by transaction
 
 ```ts
