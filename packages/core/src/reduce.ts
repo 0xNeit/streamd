@@ -22,7 +22,13 @@ export interface ReduceHost {
   query: EventQuery;
   defaults: ListenerDefaults;
   onError: ((error: Error) => void) | undefined;
-  subscribe(descriptor: EventDescriptor, callback: EventCallback, options: ListenerOptions): Subscription;
+  subscribe(
+    descriptor: EventDescriptor | readonly EventDescriptor[],
+    callback: EventCallback,
+    options: ListenerOptions,
+  ): Subscription;
+  /** The source's head version, for a merged reduction's backfill to end at. */
+  head(descriptor: EventDescriptor): Promise<bigint>;
   /** Registers `stop` for `destroy()`; the returned function unregisters it. */
   track(stop: () => void): () => void;
 }
@@ -108,7 +114,7 @@ function parseFields(text: string): [string | null, string | null, number | null
 /** `client.reduce()`: fold the history, then follow live from where it ended. */
 export function startReduction<S, TData>(
   host: ReduceHost,
-  descriptor: EventDescriptor<TData>,
+  descriptors: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
   reducer: Reducer<S, TData>,
   initial: S,
   options: ReduceOptions<S, TData> = {},
@@ -117,8 +123,18 @@ export function startReduction<S, TData>(
   if (refused !== undefined) {
     throw new StreamdError(`Unsupported reduce option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
   }
+  if (Array.isArray(descriptors) && descriptors.length === 0) {
+    throw new StreamdError("At least one descriptor is needed");
+  }
+  // A list of one is that descriptor; a longer list merges, and has no adapter cursor.
+  const descriptor: EventDescriptor | readonly EventDescriptor[] =
+    Array.isArray(descriptors) && descriptors.length === 1 ? descriptors[0]! : descriptors;
+  const merged = Array.isArray(descriptor) ? (descriptor as readonly EventDescriptor[]) : undefined;
 
   const resumed = options.cursor === undefined ? undefined : parsePosition(options.cursor);
+  if (merged !== undefined && resumed?.cursor !== undefined) {
+    throw new StreamdError("An adapter cursor cannot resume several descriptors; pass a merged reduction's own cursor");
+  }
   let state = initial;
   let last: Folded | undefined = resumed?.last;
   let live: Subscription | undefined;
@@ -190,11 +206,24 @@ export function startReduction<S, TData>(
       where: options.where,
       decode,
       signal: backfill.signal,
-      onCursor: (c) => (cursor = c),
+      ...(merged === undefined && { onCursor: (c: string | undefined) => (cursor = c) }),
     };
     try {
-      for await (const event of host.query.iterateEvents(descriptor, filter, pageSize)) {
-        if (!fold(event)) break;
+      // A merge has no cursor to follow from, so its backfill ends at a head
+      // read first, and the live tail starts after it.
+      const head = merged === undefined ? undefined : await host.head(merged[0]!);
+      const { fromVersion } = options;
+      const empty = head !== undefined && typeof fromVersion === "bigint" && fromVersion > head;
+      if (head !== undefined) filter.toVersion = head;
+      if (!empty) {
+        for await (const event of host.query.iterateEvents(descriptor, filter, pageSize)) {
+          if (!fold(event)) break;
+        }
+      }
+      // With nothing folded, the live tail still needs a version to start from:
+      // a marker after everything the backfill covered.
+      if (head !== undefined && !stopped && last === undefined) {
+        last = { version: empty ? fromVersion - 1n : head, eventIndex: Number.MAX_SAFE_INTEGER };
       }
     } catch (err) {
       if (!stopped) {

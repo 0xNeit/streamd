@@ -425,6 +425,18 @@ exactly once. With a cursor no history is read: `ready` resolves with the value 
 works with the descriptor and node that produced it. Keep `value` JSON-safe if you store it as
 JSON.
 
+Pass a list of descriptors to fold several streams into one value, each event once, in
+`(version, eventIndex)` order across them:
+
+```ts
+const net = streamd.reduce([Deposit, Withdraw], (n, e) => e.type === Deposit.eventType ? n + 1 : n - 1, 0);
+```
+
+A merged backfill has no adapter cursor to follow from, so the reduction reads the head once,
+folds the merged history up to it, and follows the merged live tail from there; the adapter
+needs `getHeadVersion`. Its `cursor` resumes it the same way as above. An adapter cursor from
+`onCursor` cannot resume a list, and is refused.
+
 A throwing reducer stops the reduction, since folding past a lost event would leave the
 value wrong: the error goes to `onError` (or the client's), `ready` rejects if the backfill
 was still running, and `value` keeps the last good state. A failed backfill does the same.

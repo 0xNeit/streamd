@@ -213,7 +213,14 @@ export class StreamdClient {
       query: this.query,
       defaults: this.defaults,
       onError: this.onError,
-      subscribe: (d, callback, options) => this.subscribe(d, callback, options),
+      subscribe: (d, callback, options) => this.follow(d, callback, options),
+      head: async (d) => {
+        const adapter = this.limiter.wrap(this.adapter);
+        if (adapter.getHeadVersion === undefined) {
+          throw new StreamdError("A merged reduction needs an adapter that implements getHeadVersion");
+        }
+        return adapter.getHeadVersion(d);
+      },
       track: (stop) => (this.streams.add(stop), () => void this.streams.delete(stop)),
     };
     this.transactionHost = {
@@ -606,6 +613,18 @@ export class StreamdClient {
     reducer: Reducer<S, TData>,
     initial: S,
     options?: ReduceOptions<S, TData>,
+  ): Reduction<S>;
+  reduce<S, const TList extends readonly EventDescriptor<any>[]>(
+    descriptors: TList,
+    reducer: Reducer<S, DescriptorData<TList[number]>>,
+    initial: S,
+    options?: ReduceOptions<S, DescriptorData<TList[number]>>,
+  ): Reduction<S>;
+  reduce<S>(
+    descriptor: EventDescriptor | readonly EventDescriptor[],
+    reducer: Reducer<S, any>,
+    initial: S,
+    options?: ReduceOptions<S, any>,
   ): Reduction<S> {
     return startReduction(this.reduceHost, descriptor, reducer, initial, options);
   }
