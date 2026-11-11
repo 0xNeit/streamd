@@ -158,10 +158,16 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
       options.descriptor,
       async (all) => {
         const events = toVersion === undefined ? all : all.filter((e) => e.version <= toVersion);
-        let delivered = events.length === 0;
+        // Sources return whole transactions, so a page can exceed batchSize.
+        const size = batchSize ?? events.length;
+        let delivered = true;
         try {
-          if (!delivered) delivered = await deliver(`[${events.map(serializeEvent).join(",")}]`, options, io);
+          for (let i = 0; delivered && i < events.length; i += size) {
+            const chunk = events.slice(i, i + size);
+            delivered = await deliver(`[${chunk.map(serializeEvent).join(",")}]`, options, io);
+          }
         } catch (err) {
+          delivered = false;
           io.error(`streamd: ${message(err)}`);
         } finally {
           // Stopping before returning, even on a throw, keeps the poller's cursor

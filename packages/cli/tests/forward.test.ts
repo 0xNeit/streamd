@@ -423,6 +423,33 @@ describe("runForward --to-version and --batch-size", () => {
     expect(readFileSync(cursorFile(), "utf8")).toBe("2\n");
   });
 
+  // A scan returns whole transactions, so a page can hold more than the limit asked for.
+  const overflowing = (...vs: number[]): EventAdapter => {
+    const memory = range(...vs);
+    return {
+      fetchEvents: async (_d, o) =>
+        o.cursor === undefined
+          ? { events: vs.map(ev), nextCursor: String(vs.at(-1)), hasMore: false }
+          : { events: [], nextCursor: o.cursor, hasMore: false },
+      getHeadVersion: () => memory.getHeadVersion(),
+    };
+  };
+
+  it("splits a page larger than batch-size into several POSTs", async () => {
+    const { io } = harness(overflowing(1, 2, 3, 4, 5));
+    expect(await runForward(bounded(5n, 2), io)).toBe(0);
+    expect(received.map(versions)).toEqual([["1", "2"], ["3", "4"], ["5"]]);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("5\n");
+  });
+
+  it("keeps the cursor before a split page when a later POST of it fails", async () => {
+    handler = (_r, n) => new Response("", { status: n === 2 ? 400 : 200 });
+    const { io } = harness(overflowing(1, 2, 3, 4, 5));
+    expect(await runForward(bounded(5n, 2), io)).toBe(1);
+    expect(received.map(versions)).toEqual([["1", "2"], ["3", "4"]]);
+    expect(existsSync(cursorFile())).toBe(false);
+  });
+
   it("resumes a bounded run from the cursor file", async () => {
     writeFileSync(cursorFile(), "2\n");
     const { io } = harness(range(1, 2, 3, 4));

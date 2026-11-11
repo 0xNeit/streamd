@@ -272,7 +272,9 @@ Options:
                          (or set ${SECRET_ENV}, which keeps it out of ps)
   --db <file>            store: SQLite file to write (required)
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
-  --to-version <n>       record: end of the range (required); query: default the head
+  --to-version <n>       record: end of the range (required); query: default the head;
+                         forward: deliver up to here, then exit 0
+  --batch-size <n>       forward: most events per POST (default: 25)
   --order <asc|desc>     query: oldest or newest first (default: asc)
   --out <file>           codegen, record: write to this file instead of stdout
   -h, --help             show this help
