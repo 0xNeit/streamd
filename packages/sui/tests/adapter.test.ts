@@ -210,9 +210,25 @@ describe("SuiAdapter versions as bounds", () => {
       expect(err.statusCode).toBe(410);
     }
     expect(calls.list).toEqual([]);
-    const outOfRange = fakeLedger(SIZES, EVENTS, () => Object.assign(new Error("below earliest"), { code: "OUT_OF_RANGE" }));
+    const outOfRange = fakeLedger(SIZES, EVENTS, () =>
+      Object.assign(new Error("requested data below earliest available"), { code: "OUT_OF_RANGE" }),
+    );
     const err = (await new SuiAdapter(outOfRange.client).fetchEvents(stakes, { fromVersion: 0n }).catch((e: unknown) => e)) as StreamdNetworkError;
     expect(err.statusCode).toBe(410);
+    // Above the indexed tip is a lag to retry, not pruned history.
+    const ahead = fakeLedger(SIZES, EVENTS, () =>
+      Object.assign(new Error("requested data above latest available; end_checkpoint is 9"), { code: "OUT_OF_RANGE" }),
+    );
+    const lag = (await new SuiAdapter(ahead.client).fetchEvents(stakes, { fromVersion: 0n }).catch((e: unknown) => e)) as StreamdNetworkError;
+    expect(lag).toBeInstanceOf(StreamdNetworkError);
+    expect(lag.statusCode).toBeUndefined();
+  });
+
+  it("starts in checkpoint 0 without reading it first", async () => {
+    const { client, calls } = fakeLedger(SIZES, EVENTS);
+    await new SuiAdapter(client).fetchEvents(stakes, { fromVersion: 0n, toVersion: 0n });
+    // The bisection reads what it must; nothing is read just to check checkpoint 0 is placeable.
+    expect(calls.checkpoints.filter((c) => c === "0").length).toBeLessThanOrEqual(1);
   });
 
   it("searches past checkpoints the node has pruned below its reported lowest", async () => {

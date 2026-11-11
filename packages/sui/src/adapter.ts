@@ -76,8 +76,11 @@ function networkError(err: unknown): never {
   if (err instanceof StreamdError) throw err;
   const code = (err as { code?: unknown } | null)?.code;
   // A checkpoint the node no longer has is pruned history, as a 410 is on the Aptos fullnode.
-  const status = code === "RESOURCE_EXHAUSTED" ? 429 : code === "NOT_FOUND" || code === "OUT_OF_RANGE" ? 410 : undefined;
-  throw new StreamdNetworkError(`Sui gRPC request failed: ${err instanceof Error ? err.message : String(err)}`, status);
+  const text = err instanceof Error ? err.message : String(err);
+  // OUT_OF_RANGE also covers a range above the indexed tip, which a lagging replica can give; only "below" is pruned.
+  const below = code === "OUT_OF_RANGE" && /below earliest/i.test(text);
+  const status = code === "RESOURCE_EXHAUSTED" ? 429 : code === "NOT_FOUND" || below ? 410 : undefined;
+  throw new StreamdNetworkError(`Sui gRPC request failed: ${text}`, status);
 }
 
 function eventType(type: unknown): string {
@@ -264,8 +267,7 @@ export class SuiAdapter implements EventAdapter {
    */
   private async startOf(version: bigint): Promise<bigint> {
     const checkpoint = await this.checkpointOf(version);
-    const placeable = await this.readable(checkpoint === 0n ? 0n : checkpoint - 1n);
-    if (checkpoint > 0n && placeable === undefined) {
+    if (checkpoint > 0n && (await this.readable(checkpoint - 1n)) === undefined) {
       throw new StreamdNetworkError(`Version ${version} is older than this Sui node keeps`, 410);
     }
     return checkpoint;
