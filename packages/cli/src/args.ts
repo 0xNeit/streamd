@@ -37,6 +37,10 @@ export interface ForwardOptions extends SourceOptions {
   headers: Record<string, string>;
   /** Signs each body with HMAC-SHA256; never printed. */
   secret?: string;
+  /** Last version to deliver; the run exits 0 once past it. */
+  toVersion?: bigint;
+  /** Most events per POST. */
+  batchSize?: number;
 }
 
 export interface StoreOptions extends SourceOptions {
@@ -150,6 +154,8 @@ const FORWARD_OPTIONS = {
   timeout: { type: "string" },
   header: { type: "string", multiple: true },
   secret: { type: "string" },
+  "to-version": { type: "string" },
+  "batch-size": { type: "string" },
 } as const;
 
 const STORE_OPTIONS = {
@@ -490,6 +496,18 @@ function parseForward(args: string[]): ParsedCommand {
     headers: headers(values.header),
   };
   if (options.cursorFile === "") throw new UsageError("--cursor-file must not be empty");
+  const toVersion = version(values["to-version"], "to-version");
+  if (toVersion !== undefined) {
+    if (options.fromVersion === undefined && options.fromTime === undefined) {
+      throw new UsageError("--to-version needs --from-version or --from-time, where the range starts");
+    }
+    if (options.fromVersion !== undefined && toVersion < options.fromVersion) {
+      throw new UsageError("--to-version must not be below --from-version");
+    }
+    options.toVersion = toVersion;
+  }
+  const batchSize = integer("batch-size", values["batch-size"], 1, Number.MAX_SAFE_INTEGER);
+  if (batchSize !== undefined) options.batchSize = batchSize;
   if (values.secret === "") throw new UsageError("--secret must not be empty");
   const secret = values.secret ?? (process.env[SECRET_ENV] || undefined);
   if (secret !== undefined) {
