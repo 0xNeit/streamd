@@ -26,7 +26,7 @@ const str = (s: string) => ({ kind: { oneofKind: "stringValue" as const, stringV
  * cursor is the next event's position as one byte; each event frame's
  * watermark is the checkpoint before it, and the last frame's the scan's end.
  */
-function fakeLedger(sizes: number[], events: FakeEvent[], fail?: () => unknown) {
+function fakeLedger(sizes: number[], events: FakeEvent[], fail?: () => unknown, prunedBelow = 0n) {
   const totals = sizes.map((_, i) => BigInt(sizes.slice(0, i + 1).reduce((a, b) => a + b, 0)));
   const calls = { checkpoints: [] as string[], list: [] as Record<string, unknown>[] };
   const literalMatch = (e: FakeEvent, l: { predicate: { oneofKind: string; eventType?: { eventType: string }; sender?: { address: string } } }) =>
@@ -71,6 +71,7 @@ function fakeLedger(sizes: number[], events: FakeEvent[], fail?: () => unknown) 
     async getCheckpoint({ checkpointId }) {
       const seq = checkpointId.oneofKind === "sequenceNumber" ? checkpointId.sequenceNumber : BigInt(sizes.length - 1);
       calls.checkpoints.push(String(checkpointId.oneofKind === undefined ? "latest" : seq));
+      if (seq < prunedBelow) throw Object.assign(new Error(`Checkpoint ${seq} not found`), { code: "NOT_FOUND" });
       return {
         response: {
           checkpoint: {
@@ -183,6 +184,19 @@ describe("SuiAdapter versions as bounds", () => {
     const adapter = new SuiAdapter(client);
     expect(await adapter.getHeadVersion()).toBe(9n);
     expect(await adapter.getEarliestVersion()).toBe(0n);
+  });
+
+  it("searches past checkpoints the node has pruned below its reported lowest", async () => {
+    // Service info says checkpoint 0 is the lowest, but 0 and 1 are gone.
+    const { client } = fakeLedger(SIZES, EVENTS, undefined, 2n);
+    const adapter = new SuiAdapter(client);
+    // Checkpoint 2's own versions need checkpoint 1's total, so the earliest placeable is checkpoint 3's start.
+    expect(await adapter.getEarliestVersion()).toBe(6n);
+    const err = (await adapter.fetchEvents(stakes, { fromVersion: 0n, limit: 10 }).catch((e: unknown) => e)) as StreamdNetworkError;
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect(err.statusCode).toBe(410);
+    const page = await adapter.fetchEvents({ kind: "module", eventType: [SWAP] }, { fromVersion: 6n, limit: 10 });
+    expect(page.events.map(eventId)).toEqual(["9:4"]);
   });
 
   it("turns fromVersion and toVersion into checkpoints and drops events outside them", async () => {

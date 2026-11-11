@@ -71,14 +71,13 @@ interface Summary {
   timestamp: bigint | undefined;
 }
 
-/** A gRPC failure as the poller and queries expect one: a network error, 429 when rate-limited. */
+/** A gRPC failure as the poller and queries expect one: a network error, 429 when rate-limited, 410 when pruned. */
 function networkError(err: unknown): never {
   if (err instanceof StreamdError) throw err;
   const code = (err as { code?: unknown } | null)?.code;
-  throw new StreamdNetworkError(
-    `Sui gRPC request failed: ${err instanceof Error ? err.message : String(err)}`,
-    code === "RESOURCE_EXHAUSTED" ? 429 : undefined,
-  );
+  // A checkpoint the node no longer has is pruned history, as a 410 is on the Aptos fullnode.
+  const status = code === "RESOURCE_EXHAUSTED" ? 429 : code === "NOT_FOUND" ? 410 : undefined;
+  throw new StreamdNetworkError(`Sui gRPC request failed: ${err instanceof Error ? err.message : String(err)}`, status);
 }
 
 function eventType(type: unknown): string {
@@ -117,6 +116,8 @@ function filterOf(descriptor: EventDescriptor): EventFilter {
   }
 }
 
+const pruned = (err: unknown) => err instanceof StreamdNetworkError && err.statusCode === 410;
+
 const toBase64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
 const fromBase64 = (text: string) => {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text)) throw new StreamdError(`Not a cursor this adapter issued: ${text}`);
@@ -146,9 +147,36 @@ export class SuiAdapter implements EventAdapter {
     return (await this.latest()).total - 1n;
   }
 
-  /** The first transaction of the oldest checkpoint the node still serves. */
+  /**
+   * The first transaction the node can still place. The node's reported
+   * lowest checkpoint can trail what it has kept, so the oldest readable one
+   * is searched for; its own transactions need the one before it, which may
+   * be gone, so the answer is then the start of the next.
+   */
   async getEarliestVersion(): Promise<bigint> {
-    return this.base(await this.lowest());
+    let low = await this.lowest();
+    let high = (await this.latest()).sequence;
+    while (low < high) {
+      const mid = (low + high) / 2n;
+      if ((await this.readable(mid)) !== undefined) high = mid;
+      else low = mid + 1n;
+    }
+    try {
+      return await this.base(low);
+    } catch (err) {
+      if (!pruned(err)) throw err;
+      return (await this.summary(low)).total;
+    }
+  }
+
+  /** The checkpoint's summary, or `undefined` when the node has pruned it. */
+  private async readable(checkpoint: bigint): Promise<Summary | undefined> {
+    try {
+      return await this.summary(checkpoint);
+    } catch (err) {
+      if (pruned(err)) return undefined;
+      throw err;
+    }
   }
 
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
@@ -236,7 +264,9 @@ export class SuiAdapter implements EventAdapter {
     if ((await this.summary(high)).total <= version) return high;
     while (low < high) {
       const mid = (low + high) / 2n;
-      if ((await this.summary(mid)).total > version) high = mid;
+      // A pruned checkpoint lies below every one the node still has.
+      const summary = await this.readable(mid);
+      if (summary !== undefined && summary.total > version) high = mid;
       else low = mid + 1n;
     }
     return low;
