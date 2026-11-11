@@ -2264,8 +2264,20 @@ events reference, fetched from whichever modules and accounts declare them.
 streamd codegen --out src/events.ts 0x1::fungible_asset 0x1::coin
 ```
 
-A bare address covers every module published there, skipping the ones with no `#[event]` struct
-and no `#[view]` function, and mixes with named modules:
+It also writes a typed `handle` descriptor builder for each legacy `0x1::event::EventHandle<T>`
+field of a resource (a struct with `key`) in the modules it reads, named `<Struct>_<Field>` and
+taking the account address, then a generic resource's type arguments:
+
+```ts
+import { CoinStore_DepositEvents } from "./events.js";
+
+client.on(CoinStore_DepositEvents(wallet, "0x1::aptos_coin::AptosCoin"), (e) => console.log(e.data.amount));
+```
+
+Handles nested below a resource's top level have no builder; reach them by `creationNumber`.
+
+A bare address covers every module published there, skipping the ones with no `#[event]` struct,
+event handle or `#[view]` function, and mixes with named modules:
 
 ```sh
 streamd codegen --out src/protocol.ts 0x<protocol address>
