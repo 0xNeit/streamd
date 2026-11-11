@@ -1,7 +1,8 @@
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
 import { Aptos, AptosConfig, getAptosFullNode, Network } from "@aptos-labs/ts-sdk";
-import { FullnodeScanAdapter, StreamdClient, StreamdError, checkDescriptor, networks } from "@streamd/core";
+import { StreamdClient, StreamdError, checkDescriptor } from "@streamd/core";
+import { FullnodeScanAdapter, networks } from "@streamd/aptos";
 import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
@@ -68,7 +69,7 @@ function setup(options: Pick<SourceOptions, "network" | "nodeUrl" | "apiKey">): 
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
   process.once("SIGTERM", () => controller.abort());
-  const client = new StreamdClient({ aptos: aptosConfig(options) });
+  const client = new StreamdClient({ adapter: new FullnodeScanAdapter(new Aptos(aptosConfig(options))) });
   return { client, controller };
 }
 

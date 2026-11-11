@@ -1,12 +1,12 @@
 import { describe, it, expect } from "bun:test";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { FullnodeScanAdapter } from "../../src/adapters/fullnode.js";
-import { StreamdClient } from "../../src/client.js";
-import { involvesAddress } from "../../src/filter.js";
-import { ownedBy } from "../../src/ownership.js";
-import { resolveName } from "../../src/names.js";
-import { StreamdError } from "../../src/errors.js";
-import type { EventDescriptor, StreamdEvent } from "../../src/types.js";
+import { FullnodeScanAdapter } from "../../src/fullnode.js";
+import { StreamdClient } from "@streamd/core";
+import { involvesAddress } from "@streamd/core";
+import { ownedBy } from "@streamd/core";
+import { resolveName } from "@streamd/core";
+import { StreamdError } from "@streamd/core";
+import type { EventDescriptor, StreamdEvent } from "@streamd/core";
 
 /**
  * Hits mainnet. Run with `bun run test:integration`; skipped otherwise so the
@@ -75,7 +75,7 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
   }, 60_000);
 
   it("fetches module events in ascending version order", async () => {
-    const client = new StreamdClient({ aptos: mainnet() });
+    const client = new StreamdClient({ adapter: new FullnodeScanAdapter(mainnet()) });
     const head = BigInt((await mainnet().getLedgerInfo()).ledger_version);
 
     const events = await client.getEvents(FEE_STATEMENT, {
@@ -96,7 +96,7 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
   }, 60_000);
 
   it("fetches legacy handle events", async () => {
-    const client = new StreamdClient({ aptos: mainnet() });
+    const client = new StreamdClient({ adapter: new FullnodeScanAdapter(mainnet()) });
 
     const events = await client.getEvents(NEW_BLOCK, { limit: 3 });
 
@@ -109,7 +109,7 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
   }, 60_000);
 
   it("walks an account's history and filters by event type", async () => {
-    const client = new StreamdClient({ aptos: mainnet() });
+    const client = new StreamdClient({ adapter: new FullnodeScanAdapter(mainnet()) });
 
     // A busy mainnet account; offset 0 starts at its first transaction.
     const account = "0xd503b95164384a5ebbccbb5c4bdc8b4a5893d9651e9953abda8e1c22fcc1181d";
@@ -140,7 +140,7 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
   }, 60_000);
 
   it("finds the account in its own events via involvesAddress", async () => {
-    const client = new StreamdClient({ aptos: mainnet() });
+    const client = new StreamdClient({ adapter: new FullnodeScanAdapter(mainnet()) });
     const account = "0xd503b95164384a5ebbccbb5c4bdc8b4a5893d9651e9953abda8e1c22fcc1181d";
 
     // maxPages caps the walk. Without it a predicate this narrow keeps paging
@@ -166,7 +166,7 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
   }, 60_000);
 
   it("maxPages bounds a filtered walk", async () => {
-    const client = new StreamdClient({ aptos: mainnet() });
+    const client = new StreamdClient({ adapter: new FullnodeScanAdapter(mainnet()) });
     const account = "0xd503b95164384a5ebbccbb5c4bdc8b4a5893d9651e9953abda8e1c22fcc1181d";
 
     const started = Date.now();
@@ -189,7 +189,7 @@ describe.skipIf(!enabled)("FullnodeScanAdapter (mainnet)", () => {
   }, 60_000);
 
   it("streams distinct, ascending events without stalling", async () => {
-    const client = new StreamdClient({ aptos: mainnet() });
+    const client = new StreamdClient({ adapter: new FullnodeScanAdapter(mainnet()) });
     const received: StreamdEvent[] = [];
 
     await new Promise<void>((resolve, reject) => {

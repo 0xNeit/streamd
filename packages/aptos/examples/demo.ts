@@ -1,5 +1,6 @@
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { StreamdClient, involvesAddress } from "../src/index.js";
+import { StreamdClient, involvesAddress } from "@streamd/core";
+import { FullnodeScanAdapter } from "../src/index.js";
 
 const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig: { http2: false } }));
 
@@ -8,7 +9,7 @@ const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig
 // not suit deep historical queries: fullnodes prune, and a rare event type
 // costs a scan of every transaction in between. Pass `adapter` to read from
 // your own index instead.
-const streamd = new StreamdClient({ aptos });
+const streamd = new StreamdClient({ adapter: new FullnodeScanAdapter(aptos) });
 
 // --- Historical query (getEvents) ---
 console.log("Fetching recent FeeStatement events...\n");

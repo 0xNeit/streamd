@@ -9,7 +9,7 @@ import type {
   ModuleEventDescriptor,
   ResourceDescriptor,
 } from "./types.js";
-import { toStreamdError } from "./adapters/fullnode.js";
+import { toStreamdError } from "./errors.js";
 import {
   handlePath,
   requireAddress,

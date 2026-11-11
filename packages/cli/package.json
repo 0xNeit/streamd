@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@streamd/aptos": "workspace:*",
     "@streamd/core": "workspace:*",
     "@streamd/store-sqlite": "workspace:*"
   },

@@ -37,7 +37,6 @@ import type {
   WatchCallback,
   WatchOptions,
 } from "./types.js";
-import { FullnodeScanAdapter } from "./adapters/fullnode.js";
 import { EventPoller, resolveMaxBackoff, resolveMaxPollInterval, type Delivery } from "./poller.js";
 import { EventQuery } from "./query.js";
 import {
@@ -170,14 +169,12 @@ function resolveAptos(config: StreamdConfig): Aptos | undefined {
   return config.aptos instanceof Aptos ? config.aptos : new Aptos(config.aptos);
 }
 
-function resolveAdapter(config: StreamdConfig, aptos: Aptos | undefined): EventAdapter {
-  if (config.adapter !== undefined) return config.adapter;
-  if (aptos === undefined) {
-    throw new StreamdError(
-      "StreamdClient requires either `aptos` or `adapter` in config",
-    );
+function resolveAdapter(config: StreamdConfig): EventAdapter {
+  // Still checked at runtime for JavaScript callers, whom the type does not reach.
+  if (config?.adapter === undefined) {
+    throw new StreamdError("StreamdClient requires an `adapter`, such as FullnodeScanAdapter from @streamd/aptos");
   }
-  return new FullnodeScanAdapter(aptos);
+  return config.adapter;
 }
 
 export class StreamdClient {
@@ -207,7 +204,7 @@ export class StreamdClient {
     this.limiter = resolveLimiter(config);
     this.requestTimeout = config.requestTimeout;
     this.aptos = resolveAptos(config);
-    this.adapter = resolveAdapter(config, this.aptos);
+    this.adapter = resolveAdapter(config);
     this.shared = new SharedFetches(this.adapter, this.requestTimeout);
     this.query = new EventQuery(this.adapter, this.limiter);
     this.reduceHost = {

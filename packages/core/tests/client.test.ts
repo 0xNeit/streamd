@@ -554,8 +554,8 @@ describe("StreamdClient", () => {
   });
 
   it("once() rejects on the first poll when the descriptor is invalid", async () => {
-    // The default adapter refuses the address before building any request.
-    const client = new StreamdClient({ aptos: makeAptos() });
+    // The adapter refuses the address before building any request.
+    const client = new StreamdClient({ adapter: new MemoryAdapter([]) });
     const promise = client.once({ kind: "account", accountAddress: "nope" });
     let outcome: unknown = "pending";
     promise.then(
@@ -1126,11 +1126,9 @@ describe("StreamdClient", () => {
   describe("MemoryAdapter offline usage", () => {
     const descriptor = { kind: "module", eventType: "0x1::test::Event" } as const;
 
-    it("throws StreamdError when constructed with neither aptos nor adapter", () => {
-      expect(() => new StreamdClient({})).toThrow(StreamdError);
-      expect(() => new StreamdClient({})).toThrow(
-        /StreamdClient requires either `aptos` or `adapter` in config/,
-      );
+    it("throws StreamdError when constructed without an adapter", () => {
+      expect(() => new StreamdClient({} as never)).toThrow(StreamdError);
+      expect(() => new StreamdClient({ aptos: makeAptos() } as never)).toThrow(/requires an `adapter`/);
     });
 
     it("drives getEvents, getEventPages, on, once, stream, and cursor resume offline without an Aptos instance", async () => {

@@ -4,10 +4,8 @@ export { FallbackAdapter } from "./adapters/fallback.js";
 export { ArchiveFallbackAdapter } from "./adapters/archive.js";
 export { PoolAdapter } from "./adapters/pool.js";
 export type { PoolAdapterOptions } from "./adapters/pool.js";
-export { FullnodeScanAdapter } from "./adapters/fullnode.js";
 export { withHooks } from "./adapters/hooks.js";
 export { adapterMetrics } from "./adapters/metrics.js";
-export { IndexerAccountAdapter } from "./adapters/indexer.js";
 export { MemoryAdapter } from "./adapters/memory.js";
 export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
 export { RoutingAdapter } from "./adapters/routing.js";
@@ -20,7 +18,6 @@ export { defineEvent, defineEvents } from "./define.js";
 export { formatAmount } from "./transfers.js";
 export type { TaggedEvents } from "./define.js";
 export { listEventHandles } from "./handles.js";
-export { networks } from "./networks.js";
 export { checkDescriptor } from "./preflight.js";
 export { ownedBy } from "./ownership.js";
 export { primaryName, resolveName } from "./names.js";
@@ -33,6 +30,7 @@ export {
   StreamdTimeoutError,
   StreamdTransactionError,
   parseRetryAfter,
+  toStreamdError,
 } from "./errors.js";
 
 export {
@@ -50,7 +48,22 @@ export {
 } from "./filter.js";
 export type { CompareOp } from "./filter.js";
 
-export { requireAddress, requireEventType, requireResourceType } from "./adapters/validate.js";
+// Input checks for adapter authors; the chain packages build their adapters on them.
+export {
+  DEFAULT_LIMIT,
+  handlePath,
+  isObject,
+  moduleTypeFilter,
+  parseCursor,
+  requireAddress,
+  requireEventType,
+  requireLedgerVersion,
+  requireResourceType,
+  requireSimulation,
+  requireTransactionHash,
+  requireViewRequest,
+  validateOffset,
+} from "./adapters/validate.js";
 
 export type {
   AdapterCheckName,
@@ -71,8 +84,6 @@ export type {
   LatencyPercentiles,
   MethodMetrics,
 } from "./adapters/metrics.js";
-export type { FullnodeScanAdapterOptions } from "./adapters/fullnode.js";
-export type { IndexerAccountAdapterOptions } from "./adapters/indexer.js";
 export type {
   AdapterHooks,
   AdapterRequest,
@@ -87,7 +98,6 @@ export type {
 export type { RoutingAdapterRoutes } from "./adapters/routing.js";
 export type { EventHandleInfo } from "./handles.js";
 export type { OwnedByOptions } from "./ownership.js";
-export type { NetworkPreset } from "./networks.js";
 export type {
   DescriptorCheck,
   EventTypeCheck,

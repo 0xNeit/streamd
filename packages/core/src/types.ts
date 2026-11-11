@@ -831,9 +831,8 @@ export type ListenerDefaults = Pick<
 
 export interface StreamdConfig {
   /**
-   * An existing Aptos SDK instance, or AptosConfig to create one. Required
-   * when `adapter` is omitted; optional when a custom `adapter` (such as
-   * `MemoryAdapter`) is supplied.
+   * An Aptos SDK instance, or AptosConfig to create one, for resolving Aptos
+   * names given to `transfers` and `balances`. Optional otherwise.
    */
   aptos?: Aptos | AptosConfig;
   /** Default polling interval in ms (default: 1000) */
@@ -846,14 +845,12 @@ export interface StreamdConfig {
    */
   onError?: (error: Error) => void;
   /**
-   * Event source. Defaults to `FullnodeScanAdapter`, which reads from a
-   * fullnode and therefore only sees unpruned recent history. Supply
-   * `MemoryAdapter` to test handlers offline, compose sources with
-   * `RoutingAdapter` and `FallbackAdapter`, or implement `EventAdapter` to
-   * query a self-hosted processor or third-party indexer (see `EventAdapter`
-   * docs for the contract).
+   * Event source: a chain's adapter (`FullnodeScanAdapter` from
+   * `@streamd/aptos`, `SuiAdapter` from `@streamd/sui`), `MemoryAdapter` to
+   * test handlers offline, sources composed with `RoutingAdapter` and
+   * `FallbackAdapter`, or any `EventAdapter` (see its docs for the contract).
    */
-  adapter?: EventAdapter;
+  adapter: EventAdapter;
   /**
    * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, the `simulateTransactionEvents` calls behind `previewEvents`, and the `view` calls behind `withState`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.

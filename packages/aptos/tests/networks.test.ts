@@ -27,4 +27,13 @@ describe("networks", () => {
     expect(Object.isFrozen(networks)).toBe(true);
     for (const preset of Object.values(networks)) expect(Object.isFrozen(preset)).toBe(true);
   });
+
+  it("exports a mainnet archive preset", () => {
+    expect(networks.aptosMainnetArchive).toEqual({
+      network: "custom" as never,
+      fullnode: "https://archive.mainnet.aptoslabs.com/v1",
+      chainId: 1,
+    });
+    expect(Object.isFrozen(networks.aptosMainnetArchive)).toBe(true);
+  });
 });

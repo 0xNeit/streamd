@@ -1,0 +1,41 @@
+{
+  "name": "@streamd/aptos",
+  "version": "0.1.0",
+  "description": "Aptos for streamd: the fullnode and Indexer adapters and the network presets",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit",
+    "test:integration": "STREAMD_INTEGRATION=1 bun test tests/integration",
+    "demo": "bun examples/demo.ts"
+  },
+  "dependencies": {
+    "@streamd/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@aptos-labs/ts-sdk": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@aptos-labs/ts-sdk": "^6.3.1"
+  },
+  "license": "MIT"
+}

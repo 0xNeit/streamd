@@ -33,10 +33,8 @@
   ],
   "scripts": {
     "build": "bun build.ts",
-    "demo": "bun examples/demo.ts",
     "test": "bun test",
     "test:watch": "bun test --watch",
-    "test:integration": "STREAMD_INTEGRATION=1 bun test tests/integration",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
