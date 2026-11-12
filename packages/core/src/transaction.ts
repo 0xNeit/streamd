@@ -63,6 +63,10 @@ function eventMatcher(descriptor: EventDescriptor): (event: StreamdEvent) => boo
       throw new StreamdError(
         "Transaction lookups carry events, not write sets, so a resource descriptor cannot narrow them",
       );
+    case "object":
+      throw new StreamdError(
+        "Transaction lookups carry events, not object changes, so an object descriptor cannot narrow them",
+      );
     default:
       throw new StreamdError(
         `Unknown descriptor kind: ${String((descriptor as { kind?: unknown } | null)?.kind)}`,

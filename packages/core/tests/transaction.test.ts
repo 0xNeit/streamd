@@ -134,3 +134,15 @@ describe("previewEvents in core", () => {
     expect(asked).toHaveLength(2);
   });
 });
+
+describe("transaction lookups with an object descriptor", () => {
+  it("reject before any lookup or simulation", async () => {
+    const { adapter, seen } = lookups(0, { version: 5n, success: true, vmStatus: "success", events: [] });
+    const object = { kind: "object" as const, objectId: "0x6" };
+    await expect(eventsOf(adapter, limiter, 0, ID, object, {})).rejects.toThrow("not object changes");
+    const simulation = simulator({ version: 9n, success: true, vmStatus: "success", events: [] });
+    await expect(previewEvents(simulation.adapter, limiter, SIMULATION, object, {})).rejects.toBeInstanceOf(StreamdError);
+    expect(seen).toEqual([]);
+    expect(simulation.asked).toEqual([]);
+  });
+});

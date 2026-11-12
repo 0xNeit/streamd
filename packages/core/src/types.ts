@@ -115,6 +115,23 @@ export interface ResourceDescriptor {
 }
 
 /**
+ * Every change to one object, read from each transaction's effects: created,
+ * mutated, transferred, wrapped, unwrapped or deleted. Served by `SuiAdapter`;
+ * on Aptos an object's state is its resources, which `resource` follows.
+ *
+ * Each change arrives as a `StreamdEvent`, as a `resource` change does: `type`
+ * is the object's Move type, `data` its contents once the transaction ran, or
+ * `null` when the transaction deleted or wrapped it. `eventIndex` is the
+ * transaction's event count plus the change's position among the
+ * transaction's object changes, so a change never shares an id with an event.
+ */
+export interface ObjectDescriptor {
+  kind: "object";
+  /** The object's id, a 32-byte hex address. */
+  objectId: string;
+}
+
+/**
  * The payload type a descriptor carries, `unknown` for one without; over a
  * union of descriptors, the union of their payloads. What a list of
  * descriptors given to `on`, `onBatch`, `once` or `stream` delivers.
@@ -130,7 +147,8 @@ export type EventDescriptor<TData = unknown> =
   | HandleEventDescriptor<TData>
   | CreationNumberEventDescriptor
   | AccountEventDescriptor
-  | ResourceDescriptor;
+  | ResourceDescriptor
+  | ObjectDescriptor;
 
 // ---- Parsed event ----
 

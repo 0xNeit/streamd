@@ -155,6 +155,7 @@ export type {
   Replay,
   ReplayOptions,
   ResourceDescriptor,
+  ObjectDescriptor,
   CloseOptions,
   EventOf,
   DescriptorData,

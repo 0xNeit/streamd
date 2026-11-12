@@ -114,6 +114,7 @@ function isRefused(d: EventDescriptor): boolean {
       requireAddress(d.accountAddress);
       requireResourceType(d.resourceType);
     }
+    if (d.kind === "object") requireAddress(d.objectId);
     return false;
   } catch {
     return true;
@@ -122,7 +123,7 @@ function isRefused(d: EventDescriptor): boolean {
 
 /**
  * Value key for a descriptor: equal for descriptors that select the same
- * events, undefined for anything that is not one of the four kinds.
+ * events, undefined for anything that is not one of the five kinds.
  */
 export function descriptorKey(d: EventDescriptor | undefined): string | undefined {
   switch (d?.kind) {
@@ -146,6 +147,8 @@ export function descriptorKey(d: EventDescriptor | undefined): string | undefine
         normalizeAddress(d.accountAddress) ?? d.accountAddress,
         d.resourceType,
       ]);
+    case "object":
+      return JSON.stringify(["object", normalizeAddress(d.objectId) ?? d.objectId]);
     default:
       return undefined;
   }
@@ -154,7 +157,7 @@ export function descriptorKey(d: EventDescriptor | undefined): string | undefine
 /**
  * Value key for one `fetchEvents` request: equal for the same descriptor and
  * the same defined options in any order, undefined when `d` is not a descriptor.
- * A handle or resource descriptor the adapters refuse has no key, so it never shares,
+ * A handle, resource or object descriptor the adapters refuse has no key, so it never shares,
  * caches or replays the answer of a valid one it would otherwise collide with.
  */
 export function fetchKey(d: EventDescriptor, options: FetchOptions): string | undefined {
