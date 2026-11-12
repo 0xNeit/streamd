@@ -1281,6 +1281,13 @@ subscription, as an invalid fetch does. Return `undefined` for events whose
 view would abort. The adapter needs `view`, which `FullnodeScanAdapter` implements as
 one JSON `/view` request at the event's version.
 
+`withState` may also return an object read, `{ objects: [id, ...] }`, through the adapter's
+`readObjects`: `event.state` then holds each object as the event's transaction left it, one entry
+per id in order. `SuiAdapter` implements it ([object state on Sui](#sui)); an adapter without it
+rejects the read, and a request that is empty, holds an empty id, or names both `function` and
+`objects` is an invalid request. Every adapter wrapper passes `readObjects` through as it passes
+`view`, and `recordingAdapter` records it by ids, version and transaction hash.
+
 ### Serialise events
 
 JSON has no `bigint`, so `JSON.stringify` throws on a `StreamdEvent`. Use
@@ -1743,11 +1750,11 @@ is such options, so `new SuiGrpcClient(networks.testnet)` works too. Pass `adapt
 through something else, such as a `CachingAdapter` over a `SuiAdapter`, and every other
 `StreamdClient` option as usual. Construction without `sui` throws.
 
-| Preset | Network | gRPC endpoint |
-| --- | --- | --- |
-| `networks.mainnet` | `mainnet` | `https://fullnode.mainnet.sui.io:443` |
-| `networks.testnet` | `testnet` | `https://fullnode.testnet.sui.io:443` |
-| `networks.devnet` | `devnet` | `https://fullnode.devnet.sui.io:443` |
+| Preset | Network | gRPC endpoint | `graphqlUrl` |
+| --- | --- | --- | --- |
+| `networks.mainnet` | `mainnet` | `https://fullnode.mainnet.sui.io:443` | `https://graphql.mainnet.sui.io/graphql` |
+| `networks.testnet` | `testnet` | `https://fullnode.testnet.sui.io:443` | `https://graphql.testnet.sui.io/graphql` |
+| `networks.devnet` | `devnet` | `https://fullnode.devnet.sui.io:443` | `https://graphql.devnet.sui.io/graphql` |
 
 - **Versions are Sui's global transaction numbers:** the running total before the event's
   checkpoint plus the transaction's index in it, so `fromVersion: -1000n` means 1000 transactions
@@ -1805,6 +1812,28 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
 
   ```ts
   sui.on({ kind: "object", objectId: pool }, (change) => console.log(change.version, change.data ?? "deleted"));
+  ```
+- **Object state at the event:** no public Sui endpoint runs Move at a past state, so `SuiAdapter`
+  has no `view` and a view request from `withState` rejects. Return an object read instead,
+  `{ objects: [id, ...] }`, and `event.state` holds one entry per id, in order, as the event's own
+  transaction left the object: its contents (JSON, as an `object` change's `data`) after the
+  transaction for an object it created or mutated, as read for a consensus object it read without
+  writing (the Clock, in most DeFi transactions), and `null` for one it deleted or wrapped. The
+  versions come from the transaction's effects, so the state is exact, not the end of its
+  checkpoint. Only objects in the effects have such a state: any other id, an immutable object or
+  a package rejects, and so does an event without a `transactionHash`. Read the field behind a
+  versioned wrapper (a DeepBook pool's `inner`) by its own id when the transaction changed it.
+  Each event costs one `GetTransaction`, counted by `maxConcurrentRequests`; once the fullnode has
+  pruned the transaction (about two weeks) it costs one POST to Sui GraphQL instead, which reaches
+  back to genesis. The GraphQL endpoint is the preset's for the client's `network`
+  (`https://graphql.<network>.sui.io/graphql`), or `new SuiAdapter(grpc, { graphqlUrl })`; without
+  either, a pruned read rejects. Failures follow the `withState` rules: a GraphQL HTTP failure or
+  error is a `StreamdNetworkError` (429 with `retryAfter`), a refused id a `StreamdError`.
+
+  ```ts
+  sui.on(SwapEvent, (e) => console.log(e.state), {
+    withState: (e) => ({ objects: [(e.data as { pool: string }).pool] }),
+  });
   ```
 - **Blocks are checkpoints:** `getBlock(descriptor, height)` takes a checkpoint sequence number
   and returns its versions (the previous checkpoint's total up to its own, minus one) and its
@@ -1946,7 +1975,7 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   sui.on(ItemListed("0x<package id>::nft::Nft"), (e) => console.log(e.data.kiosk), { decode: ItemListedDecode });
   ```
 - **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
-  a version before that fails with `410`. Views are not served yet.
+  a version before that fails with `410`. Object state at the event reads past it, through GraphQL.
 - **Command line and React:** every `streamd` command takes [`--chain sui`](#sui-from-the-command-line),
   and `useTransfers` and `useTransactionEvents` take a `SuiClient` (see [React hooks](#react-hooks)).
 
