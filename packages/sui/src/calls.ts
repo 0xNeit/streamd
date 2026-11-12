@@ -1,5 +1,6 @@
 import { normalizeSuiAddress, toBase64 } from "@mysten/sui/utils";
-import type { EntryFunctionCall } from "@streamd/core";
+import { StreamdNetworkError } from "@streamd/core";
+import type { EntryFunctionCall, StreamdEvent } from "@streamd/core";
 
 /** The read-mask paths, under a transaction's own path, that `callsOf` reads. */
 export const CALL_FIELDS = [
@@ -91,4 +92,49 @@ export function callsOf(transaction: CallTransaction | undefined): (packageId: s
   }
   return (packageId, module) =>
     typeof packageId !== "string" || typeof module !== "string" ? undefined : byModule.get(`${normalizeSuiAddress(packageId)}::${module}`);
+}
+
+/** What a raw event says about the command that emitted it. */
+export interface EventOrigin {
+  transactionDigest?: string;
+  packageId?: string;
+  module?: string;
+}
+
+/** The `BatchGetTransactions` call of `SuiGrpcClient`'s `ledgerService`. */
+export type BatchGetTransactions = (input: { digests: string[]; readMask: { paths: string[] } }) => PromiseLike<{
+  response: { transactions?: { result?: { oneofKind?: string; transaction?: { digest?: string; transaction?: CallTransaction } } }[] };
+}>;
+
+/** The node refuses a batch of more than 200 digests. */
+const BATCH_LIMIT = 200;
+const BATCH_FIELDS = ["digest", ...CALL_FIELDS.map((f) => `transaction.${f}`)];
+
+/** `event` with the call `calls` finds for its origin, when there is one. */
+export function withCall(event: StreamdEvent, calls: ReturnType<typeof callsOf>, origin: EventOrigin): StreamdEvent {
+  const call = calls(origin.packageId, origin.module);
+  if (call !== undefined) event.entryFunction = call;
+  return event;
+}
+
+/**
+ * Sets each event's call from its transaction, read in batches. A transaction
+ * the node does not return fails the read, so a retry can find it rather than
+ * the events silently carrying no call.
+ */
+export async function attachCalls(batch: BatchGetTransactions, events: [StreamdEvent, EventOrigin][]): Promise<void> {
+  const digests = [...new Set(events.flatMap(([, o]) => (o.transactionDigest === undefined ? [] : [o.transactionDigest])))];
+  const found = new Map<string, ReturnType<typeof callsOf>>();
+  for (let i = 0; i < digests.length; i += BATCH_LIMIT) {
+    const { response } = await batch({ digests: digests.slice(i, i + BATCH_LIMIT), readMask: { paths: BATCH_FIELDS } });
+    for (const { result } of response.transactions ?? []) {
+      const read = result?.oneofKind === "transaction" ? result.transaction : undefined;
+      if (typeof read?.digest === "string") found.set(read.digest, callsOf(read.transaction));
+    }
+  }
+  const missing = digests.find((d) => !found.has(d));
+  if (missing !== undefined) throw new StreamdNetworkError(`Sui node did not return transaction ${missing}`);
+  for (const [event, origin] of events) {
+    if (origin.transactionDigest !== undefined) withCall(event, found.get(origin.transactionDigest)!, origin);
+  }
 }

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { MemoryAdapter, StreamdAssertionError, StreamdError, StreamdTimeoutError, StreamdTransactionError } from "@streamd/core";
+import { MemoryAdapter, fromFunction, parseEvent, serializeEvent, StreamdAssertionError, StreamdError, StreamdTimeoutError, StreamdTransactionError } from "@streamd/core";
 import type { MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiClient, networks } from "../src/index.js";
 import type { SuiClientConfig } from "../src/index.js";
-import { LONG, digest, fakeLedger, fakeNames, transactionBytes, withSimulator, withTransfers, type FakeListed, type FakeSimulation, type FakeTransaction } from "./helpers.js";
+import { LONG, digest, fakeLedger, fakeNames, ptb, withCalls, transactionBytes, withSimulator, withTransfers, type FakeListed, type FakeSimulation, type FakeTransaction } from "./helpers.js";
 
 const STAKE = `${LONG("3")}::validator::StakingRequestEvent` as MoveEventType;
 const stakes = { kind: "module", eventType: STAKE } as const;
@@ -271,5 +271,24 @@ describe("SuiClient transfers and balances", () => {
     const { sui, calls } = client(LISTED, undefined, { adapter: new MemoryAdapter([]) });
     expect(await sui.getTransfers({ fromVersion: 0n })).toHaveLength(3);
     expect(calls.list.length).toBeGreaterThan(0);
+  });
+});
+
+describe("SuiClient entry functions", () => {
+  it("filters events by the call that emitted them, and keeps the call through serialisation", async () => {
+    const [A, B] = [LONG("a"), LONG("b")];
+    const events = [
+      { cp: 1n, ti: 0n, ei: 0, type: STAKE, pkg: A, module: "pool" },
+      { cp: 1n, ti: 1n, ei: 0, type: STAKE, pkg: B, module: "vault" },
+    ];
+    const ptbs = {
+      D1t0: ptb([{ package: A, module: "pool", function: "swap", arguments: [{ kind: 1 }] }]),
+      D1t1: ptb([{ package: B, module: "vault", function: "deposit" }]),
+    };
+    const { client } = withCalls(fakeLedger([1, 2], events).client, ptbs);
+    using sui = new SuiClient({ sui: client as unknown as SuiGrpcClient });
+    const found = await sui.getEvents(stakes, { fromVersion: 0n, where: fromFunction("0xa::pool::swap") });
+    expect(found.map((e) => e.entryFunction)).toEqual([{ function: `${A}::pool::swap`, typeArguments: [], arguments: ["GasCoin"] }]);
+    expect(parseEvent(serializeEvent(found[0]!))).toEqual(found[0]!);
   });
 });

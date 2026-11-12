@@ -3,7 +3,7 @@ import { StreamdClient, StreamdError, StreamdNetworkError, checkAdapter, eventId
 import type { EventDescriptor, MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiAdapter } from "../src/index.js";
-import { LONG, digest, fakeLedger, transactionBytes, withSimulator, withTransfers, type FakeEvent, type FakeListed, type FakeTransaction } from "./helpers.js";
+import { LONG, digest, fakeLedger, ptb, transactionBytes, withCalls, withSimulator, withTransfers, type FakeEvent, type FakeListed, type FakeTransaction } from "./helpers.js";
 
 const STAKE = `${LONG("3")}::validator::StakingRequestEvent` as MoveEventType;
 const SWAP = `${LONG("abc")}::pool::Swap` as MoveEventType;
@@ -469,5 +469,61 @@ describe("SuiAdapter transfers and balances", () => {
     });
     await expect(failing.getBalance(ALICE, SUI)).rejects.toMatchObject({ statusCode: 429 });
     await expect(failing.coinInfo(SUI)).rejects.toThrow(StreamdNetworkError);
+  });
+});
+
+describe("SuiAdapter entry functions", () => {
+  const POOL = LONG("abc");
+  const swap = { package: "0xabc", module: "pool", function: "swap", typeArguments: [], arguments: [{ kind: 2, input: 0 }] };
+  const call = { function: `${POOL}::pool::swap`, typeArguments: [], arguments: [{ Pure: "Bw==" }] };
+  const inputs = [{ kind: 1, pure: new Uint8Array([7]) }];
+  const from = { pkg: POOL, module: "pool" };
+  const EVENTS_WITH: FakeEvent[] = [
+    { cp: 1n, ti: 2n, ei: 0, type: SWAP, sender: ALICE, ...from },
+    { cp: 1n, ti: 2n, ei: 1, type: STAKE, sender: ALICE, ...from },
+    { cp: 2n, ti: 0n, ei: 0, type: SWAP, sender: LONG("b0b"), ...from },
+    { cp: 3n, ti: 0n, ei: 0, type: SWAP, sender: ALICE, pkg: LONG("3"), module: "validator" },
+  ];
+  const PTBS = {
+    D1t2: ptb([swap], inputs),
+    D2t0: ptb([swap, { ...swap, function: "flash" }], inputs),
+    D3t0: ptb([swap], inputs),
+  };
+  const swaps: EventDescriptor = { kind: "module", eventType: [SWAP, STAKE] };
+
+  it("attaches the matching command to module and account events, one batch read per page", async () => {
+    const { client, batches } = withCalls(fakeLedger(SIZES, EVENTS_WITH).client, PTBS);
+    const sui = new SuiAdapter(client);
+    const page = await sui.fetchEvents(swaps, { fromVersion: 0n, limit: 10 });
+    expect(page.events.map((e) => e.entryFunction)).toEqual([call, call, undefined, undefined]);
+    expect(page.events[0]!.entryFunction).toBe(page.events[1]!.entryFunction!);
+    expect(batches).toEqual([["D1t2", "D2t0", "D3t0"]]);
+    const mine = await sui.fetchEvents({ kind: "account", accountAddress: ALICE }, { fromVersion: 0n, limit: 10 });
+    expect(mine.events.map((e) => e.entryFunction)).toEqual([call, call, undefined]);
+  });
+
+  it("reads nothing more for an empty page, and nothing without the batch call", async () => {
+    const { client, batches } = withCalls(fakeLedger(SIZES, EVENTS_WITH).client, PTBS);
+    expect((await new SuiAdapter(client).fetchEvents({ kind: "module", eventType: `${LONG("9")}::m::E` }, { fromVersion: 0n })).events).toEqual([]);
+    expect(batches).toEqual([]);
+    const plain = await new SuiAdapter(fakeLedger(SIZES, EVENTS_WITH).client).fetchEvents(swaps, { fromVersion: 0n });
+    expect(plain.events.every((e) => e.entryFunction === undefined)).toBe(true);
+  });
+
+  it("fails the page as a network error when the node leaves a transaction out", async () => {
+    const { client } = withCalls(fakeLedger(SIZES, EVENTS_WITH).client, { D1t2: PTBS.D1t2 });
+    const err = await new SuiAdapter(client).fetchEvents(swaps, { fromVersion: 0n }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("D2t0");
+  });
+
+  it("attaches calls to transaction lookups and simulations from the same response", async () => {
+    const tx: FakeTransaction = { digest: digest(1), cp: 1n, ti: 2n, ptb: ptb([swap], inputs), events: [{ type: SWAP, ...from }, { type: STAKE }] };
+    const found = await new SuiAdapter(fakeLedger(SIZES, [], undefined, 0n, [tx]).client).getTransactionEvents(digest(1));
+    expect(found!.events.map((e) => e.entryFunction)).toEqual([call, undefined]);
+    const { client, requests } = withSimulator(fakeLedger(SIZES, []).client, { ptb: ptb([swap], inputs), events: [{ type: SWAP, ...from }] });
+    const preview = await new SuiAdapter(client).simulateTransactionEvents({ transaction: await transactionBytes() });
+    expect(preview.events[0]!.entryFunction).toEqual(call);
+    expect((requests[0] as { readMask: { paths: string[] } }).readMask.paths).toContain("transaction.transaction.kind.programmable_transaction.commands");
   });
 });

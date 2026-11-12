@@ -15,7 +15,14 @@ export interface FakeEvent {
   type: string;
   sender?: string;
   amount?: string;
+  /** The package and module of the command that emitted it. */
+  pkg?: string;
+  module?: string;
 }
+
+/** An event inside a fake transaction or simulation. */
+export type FakeInner = Pick<FakeEvent, "type" | "sender" | "amount" | "pkg" | "module">;
+const origin = (e: FakeInner) => ({ ...(e.pkg !== undefined && { packageId: e.pkg }), ...(e.module !== undefined && { module: e.module }) });
 
 /** A transaction `getTransaction` knows; `cp` undefined means executed but not yet checkpointed. */
 export interface FakeTransaction {
@@ -23,7 +30,8 @@ export interface FakeTransaction {
   cp?: bigint;
   ti: bigint;
   error?: string;
-  events: { type: string; sender?: string; amount?: string }[];
+  events: FakeInner[];
+  ptb?: CallTransaction;
 }
 
 export const str = (s: string) => ({ kind: { oneofKind: "stringValue" as const, stringValue: s } });
@@ -74,6 +82,7 @@ export function fakeLedger(
           yield {
             event: {
               eventType: e.type,
+              ...origin(e),
               ...(e.sender !== undefined && { sender: e.sender }),
               json: { kind: { oneofKind: "structValue" as const, structValue: { fields: { amount: str(e.amount ?? "1") } } } },
               checkpoint: e.cp,
@@ -102,7 +111,8 @@ export function fakeLedger(
             digest,
             ...(t.cp !== undefined && { checkpoint: t.cp }),
             effects: { status },
-            events: { events: t.events.map((e) => ({ eventType: e.type, ...(e.sender !== undefined && { sender: e.sender }), json: json(e.amount) })) },
+            events: { events: t.events.map((e) => ({ eventType: e.type, ...origin(e), ...(e.sender !== undefined && { sender: e.sender }), json: json(e.amount) })) },
+            ...(t.ptb !== undefined && { transaction: t.ptb }),
           },
         },
       };
@@ -146,7 +156,8 @@ export async function transactionBytes(amount = 1_000_000_000n): Promise<Uint8Ar
 
 export interface FakeSimulation {
   error?: string;
-  events: { type: string; sender?: string; amount?: string }[];
+  events: FakeInner[];
+  ptb?: CallTransaction;
 }
 
 /** `client` with a `transactionExecutionService` answering every simulation with `result`, or throwing `fail()`. */
@@ -165,7 +176,8 @@ export function withSimulator(client: SuiLedgerClient, result: FakeSimulation, f
           response: {
             transaction: {
               effects: { status },
-              events: { events: result.events.map((e) => ({ eventType: e.type, ...(e.sender !== undefined && { sender: e.sender }), json: json(e.amount) })) },
+              events: { events: result.events.map((e) => ({ eventType: e.type, ...origin(e), ...(e.sender !== undefined && { sender: e.sender }), json: json(e.amount) })) },
+              ...(result.ptb !== undefined && { transaction: result.ptb }),
             },
           },
         };
@@ -297,4 +309,29 @@ export function ptb(commands: (Command | "split")[], inputs: object[] = []): Cal
       },
     },
   };
+}
+
+/**
+ * `client` with a `batchGetTransactions` answering from `ptbs` by digest
+ * (`D<cp>t<ti>` for `fakeLedger`'s events), leaving out unlisted digests, as
+ * a node returns an error result for them.
+ */
+export function withCalls(client: SuiLedgerClient, ptbs: Record<string, CallTransaction>) {
+  const batches: string[][] = [];
+  const ledgerService: SuiLedgerClient["ledgerService"] = {
+    ...client.ledgerService,
+    async batchGetTransactions({ digests }) {
+      batches.push(digests);
+      return {
+        response: {
+          transactions: digests.map((digest) =>
+            ptbs[digest] === undefined
+              ? { result: { oneofKind: "error" } }
+              : { result: { oneofKind: "transaction", transaction: { digest, transaction: ptbs[digest] } } },
+          ),
+        },
+      };
+    },
+  };
+  return { client: { ...client, ledgerService } as SuiLedgerClient, batches };
 }
