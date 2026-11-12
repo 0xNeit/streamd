@@ -245,3 +245,40 @@ describe("SuiAdapter checkpoints as blocks", () => {
     expect(report.results.filter((r) => r.status === "fail")).toEqual([]);
   });
 });
+
+describe("SuiAdapter time and block bounds through the client", () => {
+  const all = { kind: "module", eventType: [STAKE, SWAP] } as const;
+
+  it("starts fromTime at the first checkpoint stamped at or after it, clamped at both ends", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS);
+    using streamd = new StreamdClient({ adapter: new SuiAdapter(client) });
+    const from = async (fromTime: bigint) => (await streamd.getEvents(all, { fromTime })).map(eventId);
+    expect(await from(stamp(1n))).toEqual(["3:0", "3:1", "4:0", "9:4"]);
+    expect(await from(stamp(1n) + 1n)).toEqual(["4:0", "9:4"]);
+    expect(await from(0n)).toEqual(["0:0", "3:0", "3:1", "4:0", "9:4"]);
+    expect(await from(stamp(3n) + 1n)).toEqual([]);
+  });
+
+  it("bounds a query by checkpoint with fromBlock and toBlock", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS);
+    using streamd = new StreamdClient({ adapter: new SuiAdapter(client) });
+    expect((await streamd.getEvents(all, { fromBlock: 1n, toBlock: 2n })).map(eventId)).toEqual(["3:0", "3:1", "4:0"]);
+    expect((await streamd.getEvents(all, { fromBlock: 3n })).map(eventId)).toEqual(["9:4"]);
+  });
+
+  it("starts a listener fromTime", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS);
+    using streamd = new StreamdClient({ adapter: new SuiAdapter(client) });
+    const seen: string[] = [];
+    const sub = streamd.on(all, (e) => void seen.push(eventId(e)), { fromTime: stamp(2n), pollInterval: 5 });
+    await sub.caughtUp;
+    sub.unsubscribe();
+    expect(seen).toEqual(["4:0", "9:4"]);
+  });
+
+  it("finds the first placeable checkpoint when the node has pruned below its reported lowest", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS, undefined, 2n);
+    using streamd = new StreamdClient({ adapter: new SuiAdapter(client) });
+    expect((await streamd.getEvents(all, { fromTime: 0n })).map(eventId)).toEqual(["9:4"]);
+  });
+});
