@@ -11,7 +11,7 @@
     "build": "turbo run build",
     "test": "turbo run test",
     "typecheck": "turbo run typecheck",
-    "test:integration": "turbo run test:integration --filter=@streamd/aptos",
+    "test:integration": "turbo run test:integration --filter=@streamd/aptos --filter=@streamd/sui",
     "demo": "turbo run demo --filter=@streamd/aptos"
   },
   "devDependencies": {

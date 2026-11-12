@@ -51,8 +51,9 @@ TypeScript types:
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
 - `@streamd/store-postgres` (`packages/store-postgres`) - the same over a Postgres client you
   supply. See [Store events in Postgres](#store-events-in-postgres).
-- `@streamd/sui` (`packages/sui`) - `SuiAdapter`, the same client over Sui events. `@mysten/sui`
-  is a peer dependency. See [Sui](#sui).
+- `@streamd/sui` (`packages/sui`) - `SuiClient` and `SuiAdapter`, the same client over Sui events,
+  Sui network presets, and `resolveName`, `primaryName` and `ownedBy` over SuiNS and object owners, with
+  a `./framework` catalog of `0x2` and `0x3` events. `@mysten/sui` is a peer dependency. See [Sui](#sui).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents` and `useTransfers` take an
   `AptosClient`. See [React hooks](#react-hooks).
@@ -238,7 +239,9 @@ const sub = streamd.onTransaction([swaps, deposits], async (tx) => {
 `onTransaction` calls your handler once per transaction with every matching event it
 emitted, in `eventIndex` order, and transactions in version order. `decode`, `where` and
 `withState` apply per event first, so a transaction with no match is not delivered. The
-optional fields come from the first event carrying them; `handle` events carry none.
+optional fields come from the first event carrying them, and `entryFunction` only when every
+event carrying one agrees (on Sui, events of one transaction can come from different
+commands); `handle` events carry none.
 
 Adapter pages can end partway through a transaction (handle events and `MemoryAdapter`
 page by event), so events are held by version until the page's `throughVersion` passes
@@ -1012,7 +1015,8 @@ carry `entryFunction`: `{ function, typeArguments, arguments }`, with `function`
 decimal strings). Every event of the transaction shares the same arrays. It is `undefined`
 on `handle` events, on system transactions, and on script, multisig and encrypted payloads,
 whose inner call is not read. The same holds for `eventsOf`, `previewEvents` and
-`IndexerAccountAdapter`, which map transactions the same way.
+`IndexerAccountAdapter`, which map transactions the same way. On Sui it is the transaction
+block command that emitted the event; see the Sui section.
 
 Events emitted through a legacy `EventHandle` also carry `guid`
 (`{ creationNumber: bigint, accountAddress: string }`), on every descriptor kind.
@@ -1725,29 +1729,203 @@ const streamd = new StreamdClient({
 longer answer JSON-RPC):
 
 ```ts
-import { SuiGrpcClient } from "@mysten/sui/grpc";
-import { StreamdClient } from "@streamd/core";
-import { SuiAdapter } from "@streamd/sui";
+import { SuiClient, networks } from "@streamd/sui";
 
-const sui = new StreamdClient({
-  adapter: new SuiAdapter(new SuiGrpcClient({ network: "mainnet", baseUrl: "https://fullnode.mainnet.sui.io:443" })),
-});
+const sui = new SuiClient({ sui: networks.mainnet });
 sui.on({ kind: "module", eventType: "0x3::validator::StakingRequestEvent" }, (e) => console.log(e.version, e.data));
 ```
+
+`SuiClient` is a `StreamdClient` whose `adapter` defaults to a `SuiAdapter`. `sui` is a
+`SuiGrpcClient` from `@mysten/sui/grpc`, or the options to build one; a preset from `networks`
+is such options, so `new SuiGrpcClient(networks.testnet)` works too. Pass `adapter` to read
+through something else, such as a `CachingAdapter` over a `SuiAdapter`, and every other
+`StreamdClient` option as usual. Construction without `sui` throws.
+
+| Preset | Network | gRPC endpoint |
+| --- | --- | --- |
+| `networks.mainnet` | `mainnet` | `https://fullnode.mainnet.sui.io:443` |
+| `networks.testnet` | `testnet` | `https://fullnode.testnet.sui.io:443` |
+| `networks.devnet` | `devnet` | `https://fullnode.devnet.sui.io:443` |
 
 - **Versions are Sui's global transaction numbers:** the running total before the event's
   checkpoint plus the transaction's index in it, so `fromVersion: -1000n` means 1000 transactions
   back, as on Aptos. Each checkpoint's summary is read once and kept.
 - **Events:** `type` with long addresses, `data` the event's JSON (u64 and wider as decimal
   strings, so `decode` works), `eventIndex` Sui's, `sequenceNumber` `0n`, `transactionHash` the
-  base58 digest, `sender`, and `timestamp` from the checkpoint. There is no `guid` or
-  `entryFunction`.
+  base58 digest, `sender`, `timestamp` from the checkpoint, and `entryFunction` (below). There is
+  no `guid`.
+- **Entry functions:** a Sui transaction is a programmable transaction block of several
+  commands, and an event names the package and module of the `MoveCall` command whose top-level
+  call emitted it, but not the command. So `entryFunction` is the one `MoveCall` on that package
+  and module, `function` written `<package>::<module>::<function>` with the package the command
+  called in long form; when several commands call that module, or none does (an event from a
+  `Publish`'s `init`, a system transaction), the event has no `entryFunction` rather than a guess.
+  `fromFunction("0x...::pool::swap")` filters on it, and `onTransaction` groups name a call only
+  when all their events agree. `arguments` are the command's references into the block, resolved
+  against its inputs, since a pure input is BCS bytes whose type only the function knows:
+
+  | Argument | JSON |
+  | --- | --- |
+  | the gas coin | `"GasCoin"` |
+  | a pure input | `{ "Pure": "<base64 BCS bytes>" }` |
+  | an object input (owned, shared, immutable or receiving) | `{ "Object": "0x<64 hex>" }` |
+  | another input (a funds withdrawal) | `{ "Input": <index> }` |
+  | a command's result | `{ "Result": <command> }` |
+  | one of a command's results | `{ "NestedResult": [<command>, <index>] }` |
+
+  `ListEvents` cannot return the transaction, so `fetchEvents` reads each page's transactions
+  with one `BatchGetTransactions` (200 digests per request), masked to commands and inputs: on
+  mainnet, a 50-event page took about 960 ms against 690 ms without it. A transaction the node
+  leaves out fails the page as a `StreamdNetworkError`, so a poll retries. `eventsOf` and
+  `previewEvents` read the commands in the request they already make. Transfer records carry
+  no `entryFunction`, as on Aptos. A structural client without `batchGetTransactions` gets
+  events without it.
 - **Descriptors:** `module` (a type or a list, in one request) and `account` (events from
   transactions the address sent, optionally narrowed by `eventTypes`). Sui has no event handles
   or account resources, so `handle` and `resource` are refused.
+- **Blocks are checkpoints:** `getBlock(descriptor, height)` takes a checkpoint sequence number
+  and returns its versions (the previous checkpoint's total up to its own, minus one) and its
+  timestamp, and `getBlockHeights()` the node's lowest and latest checkpoints. So `fromTime`
+  starts at the first checkpoint stamped at or after it, and `fromBlock`/`toBlock` bound a query
+  by checkpoint. A checkpoint the node has pruned fails with `410`, one not yet produced with
+  `404`.
+- **Transaction lookups:** `sui.eventsOf(digest, descriptor?, options?)` waits for the
+  transaction with that base58 digest to be checkpointed and returns its events, and
+  `sui.expectEvents(digest).toEmit(descriptor)` / `notToEmit` assert on them, with the same
+  options, timeout and errors as on Aptos (the wait loop is core's, shared by both chains). A
+  descriptor's types and address may be short (`0x3::validator::...`). A failed transaction
+  rejects with `StreamdTransactionError` whose `vmStatus` is the execution error (`MoveAbort(...)
+  in command 1`); one never checkpointed within `timeout` with `StreamdTimeoutError`; a `0x` hex
+  hash is refused. An event's `version` and `eventIndex` match what `on()` and `getEvents`
+  deliver for it. `SuiAdapter.getTransactionEvents` reads the checkpoint's digest list to place
+  the transaction, since the node does not report its index.
+- **Simulations:** `sui.previewEvents(bytes, descriptor?, { decode?, where? })` simulates built,
+  unsigned transaction bytes and returns the events they would emit, and
+  `sui.expectPreview(bytes).toEmit(descriptor)` / `notToEmit` assert on them, each assertion
+  simulating afresh. `bytes` is what `await tx.build({ client })` returns; nothing is signed or
+  submitted, so any sender can be simulated with its own coins as gas. Building a `Transaction`
+  with a client already simulates it once to pick gas, and one that aborts fails there with the
+  SDK's error, so pass bytes rather than a `Transaction`. A simulated transaction has no
+  checkpoint: its events carry the next version the chain would give a transaction (one past the
+  head at the time) and no `transactionHash` or `timestamp`. A failed simulation rejects with
+  `StreamdTransactionError` whose `vmStatus` is the execution error and whose `transactionHash` is
+  undefined; a request the node refuses (such as a gas coin the sender does not own) with
+  `StreamdNetworkError`. `SuiAdapter.simulateTransactionEvents` goes through the client's
+  `transactionExecutionService`.
+
+  ```ts
+  const tx = new Transaction();
+  tx.setSender(staker);
+  const [stake] = tx.splitCoins(tx.gas, [1_000_000_000n]);
+  tx.moveCall({ target: "0x3::sui_system::request_add_stake", arguments: [tx.object("0x5"), stake, tx.pure.address(validator)] });
+  const events = await sui.previewEvents(await tx.build({ client: grpc }));
+  ```
+- **Transfers:** `sui.transfers(callback, { asset?, account?, withAssetInfo? })` and
+  `sui.getTransfers(filter)` deliver `Transfer { from, to, asset, amount }` records, as on Aptos.
+  Sui has no transfer events, so they are built from each transaction's balance changes (each
+  address's net change per coin type), walked with `ListTransactions`. The gas fee is taken out of
+  the payer's SUI change first, so a fee is never a transfer and a failed transaction yields
+  none. Then, per coin type, each receiver takes from the earliest sender with outflow left, as
+  much as both have: inflow no sender covers (a mint, or coins out of a pool) has no `from`,
+  outflow no receiver took has no `to`, and each address's records sum to its change. A record
+  keeps the transaction's `version`, digest, `timestamp` and `sender`; its `type` is the coin
+  type, and its `eventIndex` the transaction's event count plus its position among the records,
+  so it never shares an id with an event. `asset` is a coin type in any form; `account` an
+  address, narrowed on the node to transactions affecting it, which is what makes a live
+  subscription cheap: unnarrowed, a walk reads every transaction on the chain, and following
+  mainnet needs a `batchSize` near the node's 500-transaction page. `withAssetInfo` adds `symbol`
+  and `decimals` from the coin's metadata, and `formatAmount` applies them. Object (NFT)
+  transfers are not balance changes and are not reported.
+
+  ```ts
+  sui.transfers((t) => console.log(t.data.from, "->", t.data.to, formatAmount(t.data.amount, 9)), { account: me, asset: "0x2::sui::SUI" });
+  ```
+- **Balances:** `sui.balances(address, { asset?, onChange? })` keeps an address's coin balances
+  current, reading each coin type (SUI when none is named) through the state service every
+  `pollInterval`, keyed by coin type in long form, with `value`, `get`, `ready` and `onChange`
+  as on Aptos. Sui reads a balance only at its latest state, so a change's `version` is the head
+  read just before it. A coin type held nowhere reads `0`.
+- **Names:** `resolveName(grpc, nameOrAddress)` turns a SuiNS name into the long-form address it
+  points to, through the node's name service at its head, and `primaryName(grpc, address)` returns
+  an address's default name (`alice.sui`) or `undefined`, resolved forward as a check so a name
+  that no longer points back counts as none, as on Aptos. `grpc` is a `SuiGrpcClient`. Both forms
+  work, `alice.sui` and `@alice`, subnames included (`pay.alice.sui`, `pay@alice`); a string
+  starting `0x` is always an address. An unregistered or expired name, a registered one with no
+  target address (many have none), a malformed one, and any name on a network without SuiNS
+  (devnet) reject with a `StreamdError`; a node or transport failure with a `StreamdNetworkError`.
+  `sui.transfers` and `sui.getTransfers` take a name as `account`, and `sui.balances` as its
+  address, each resolved once on first use, a failed lookup retried. Descriptors take addresses
+  only.
+
+  ```ts
+  import { primaryName, resolveName } from "@streamd/sui";
+
+  const alice = await resolveName(grpc, "alice.sui");
+  console.log((await primaryName(grpc, event.sender!)) ?? event.sender);
+  ```
+- **Owned objects:** `ownedBy(grpc, wallet, { fields?, maxConcurrentRequests? })` is an async
+  `where` predicate matching events whose `data` names an object `wallet` owns, directly or
+  through objects it owns. It reads the top-level `id`, `object_id` and `nft_id` fields in order
+  (kiosk `ItemListed`/`ItemPurchased`/`ItemDelisted` name the item by `id`), each counting when it
+  is an address string; `fields` replaces the list, and an event naming none costs no read. Each
+  hop up the owner chain is one object read, at most 8; `wallet` may be an address, an object id
+  (objects own objects on Sui) or a name, resolved once. Shared, immutable, deleted and wrapped
+  objects are not owned, nor is a dynamic field of a table or bag, whose parent id is not an
+  object of its own. Answers are cached per object and event version (1000 entries), and
+  `maxConcurrentRequests` (default 4) caps reads in flight, outside the client's limiter.
+  **Ownership is read at the head, not at the event's version:** Sui reads an object at one of
+  its own versions, not a ledger version, and nothing maps an event's version to the version an
+  object had then, so a live listener sees current owners and a history query today's owners. A
+  transport failure rejects with `StreamdNetworkError`, so a listener retries the event.
+
+  ```ts
+  sui.on({ kind: "module", eventType: "0x2::kiosk::ItemListed" }, onListed, { where: ownedBy(grpc, "alice.sui") });
+  ```
+- **Descriptor check:** `checkDescriptor(grpc, descriptor)` reads each type's package through the
+  node's package service (one read per package) and returns `{ ok, types }` with a status per
+  type, as on Aptos. Sui has no `#[event]` attribute: `sui::event::emit` takes any struct or enum
+  with `copy` and `drop`, so those abilities are what makes a type an `event`, and there is no
+  `legacy`. Types are reported in long form, deduped on it, and a generic type is checked by its
+  outer datatype only. An `account` descriptor's address is validated (Sui has no account object
+  to look up) and its `eventTypes` checked like a `module` descriptor's; no `eventTypes` is `ok`
+  with no entries, an empty list is not. `handle` and `resource` are refused. `streamd check`
+  reads Aptos only for now.
+
+  | Status | Meaning |
+  | --- | --- |
+  | `event` | The struct or enum has `copy` and `drop`. |
+  | `not-event` | It lacks `copy` or `drop`, so no event can carry it. |
+  | `missing-package` | No package at that address, or the object there is not a package. |
+  | `missing-module` | The package has no such module. |
+  | `missing-struct` | The module declares no such struct or enum. |
+  | `defined-elsewhere` | The address is an upgraded package version, but an earlier version introduced the type, and events name it by that version's id, given as `definingId`. |
+
+  `ok` is true when every type is `event`.
+
+  ```ts
+  import { checkDescriptor } from "@streamd/sui";
+
+  const check = await checkDescriptor(grpc, { kind: "module", eventType: "0x3::validator::StakingRequestEvent" });
+  // { ok: true, types: [{ eventType: "0x00...03::validator::StakingRequestEvent", status: "event" }] }
+  ```
+- **Framework events:** `@streamd/sui/framework` ships a typed descriptor for every `copy` and
+  `drop` type in `0x2`'s `coin`, `deny_list`, `display`, `kiosk`, `token` and `transfer_policy`
+  and `0x3`'s `sui_system_state_inner`, `validator` and `validator_set`, generated by
+  [`streamd codegen --chain sui`](#sui-packages) from committed snapshots of the `0x1`, `0x2` and
+  `0x3` packages, so it follows that command's rules: long-form type strings, generic events as
+  functions of their type arguments, and descriptors for the dynamic-field keys those modules
+  declare too (`Item`, `Listing`, `Lock`, `ConfigKey` and the like), which never match an event.
+
+  ```ts
+  import { ItemListed, ItemListedDecode, StakingRequestEvent } from "@streamd/sui/framework";
+
+  sui.on(StakingRequestEvent, (e) => console.log(e.data.validator_address, e.data.amount));
+  sui.on(ItemListed("0x<package id>::nft::Nft"), (e) => console.log(e.data.kiosk), { decode: ItemListedDecode });
+  ```
 - **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
-  a version before that fails with `410`. `fromTime`, views, simulations and transaction lookups
-  are not served yet.
+  a version before that fails with `410`. Views are not served yet.
+- **Command line and React:** every `streamd` command takes [`--chain sui`](#sui-from-the-command-line),
+  and `useTransfers` and `useTransactionEvents` take a `SuiClient` (see [React hooks](#react-hooks)).
 
 ### Spreading load across fullnodes
 
@@ -2223,10 +2401,13 @@ function Feed() {
   `client.eventsOf` and returns `{ data, error, loading, vmStatus }`. A transaction that failed
   on chain sets `error` and `vmStatus`, the chain's status; one not found in time sets `error`
   alone. It takes `eventsOf`'s options plus `descriptor`. Nothing from the previous hash is kept,
-  and a `null` hash waits for nothing. It needs an `AptosClient`.
+  and a `null` hash waits for nothing. It needs a client with `eventsOf`
+  (`TransactionEventsClient`): an `AptosClient`, or a `SuiClient`, which takes a base58 digest.
 - **`useTransfers(options?)`** follows `client.transfers` and returns the same
   `{ events, error, status }` as `useEvents`, with each event's `data` a `Transfer`. It takes
-  `asset`, `account` and `maxEvents`; pass `null` to wait. It needs an `AptosClient`.
+  `asset`, `account` and `maxEvents`; pass `null` to wait. It needs a client with `transfers`
+  (`TransfersClient`): an `AptosClient`, or a `SuiClient`, whose `asset` is a coin type.
+  Either hook given another client throws a `StreamdError` naming the method.
 - **`useReduction(descriptor, reducer, initial, options?)`** runs `client.reduce` and returns
   `{ value, error, status }`. `value` is `initial` until the backfill finishes; `status` is
   `"idle"`, `"loading"`, `"live"`, or `"stopped"` once the backfill fails, the reducer throws or
@@ -2283,7 +2464,7 @@ the source has them, `transactionHash`, `timestamp`, `sender` and, last, `entryF
 {"type":"0x1::transaction_fee::FeeStatement","data":{"total_charge_gas_units":"7"},"version":"2817350001","sequenceNumber":"0","eventIndex":3,"transactionHash":"0x5c...","timestamp":"1730000000000000","sender":"0x9f..."}
 ```
 
-Every command that takes a descriptor takes all four kinds. With `--account`, add
+On Aptos, every command that takes a descriptor takes all four kinds. With `--account`, add
 `--handle` and `--field`, or `--creation-number <n>` for a handle by its number, or
 `--resource <type>` for every change to one resource:
 
@@ -2318,6 +2499,33 @@ Polling errors are reported on stderr and tailing continues until the subscripti
 up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes
 (as when piped into `head`); `1` when the subscription stopped on an error, or output or the
 cursor file could not be written; `2` for invalid arguments; `130` on a second Ctrl-C.
+
+### Sui from the command line
+
+Every command takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
+with the same output and exit codes:
+
+```sh
+streamd tail --chain sui 0x3::validator::StakingRequestEvent
+streamd query --chain sui --from-time 1h --limit 10 0x<package id>::pool::SwapEvent
+streamd tx --chain sui <digest>
+streamd check --chain sui 0x3::validator::StakingRequestEvent
+```
+
+- `--network` is `mainnet`, `testnet` or `devnet` (default `mainnet`), and `--node-url` and
+  `compare --against` are Sui gRPC URLs, such as `https://fullnode.testnet.sui.io:443`.
+- Descriptors are event types and `--account` (with or without types); `--handle`, `--field` and
+  `--creation-number` are refused, since Sui has no event handles, and so is `--resource`, which
+  no Sui source serves yet.
+- `--api-key` is refused and `APTOS_API_KEY` is never read: public Sui nodes take no key.
+- `tx` takes a base58 transaction digest. `--from-time` finds its start by checkpoint time.
+- `check` prints `@streamd/sui`'s statuses (`event`, `not-event`, `missing-package`,
+  `missing-module`, `missing-struct`, `defined-elsewhere`), widening the status column to fit;
+  a `defined-elsewhere` line adds the package id events name the type by.
+- `store`'s default cursor name starts `sui:`, as `sui:mainnet:<descriptor>`, so one database
+  can hold both chains without either resuming from the other's cursor.
+- `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`; without `@mysten/sui`
+  installed, it exits 1 with `--chain sui needs @mysten/sui installed`.
 
 ### Forward events to a webhook
 
@@ -2606,11 +2814,57 @@ output reflects the ABI at generation time, so regenerate after a module upgrade
 | Option | Meaning |
 | --- | --- |
 | `--out <file>` | write to this file instead of stdout |
+| `--chain <aptos\|sui>` | the chain to read (default `aptos`); see below |
 
 `--network` and `--node-url` work as for `tail`. Exit codes: `0` once the file is written;
 `1` when a module or a struct it references is missing, a module declares no events, an ABI
 is malformed, or a field type is unsupported (such as a function type); `2` for invalid
 arguments.
+
+#### Sui packages
+
+`--chain sui` reads Sui packages through the node's gRPC package service instead, and writes
+the same kind of file for [`SuiClient`](#sui):
+
+```sh
+streamd codegen --chain sui --out src/events.ts 0x<package id>::<module>
+streamd codegen --chain sui --out src/protocol.ts 0x<package id>
+```
+
+- **Every struct or enum with `copy` and `drop` in a named module gets a descriptor.** Sui has no
+  `#[event]` attribute, `sui::event::emit` accepts any such type, and the node serves no bytecode
+  to tell which ones a module emits, so dynamic-field keys and plain values with those abilities
+  (`0x2::kiosk::Item`) get descriptors that never match anything. Types the events reference
+  from other modules get an interface and no descriptor. A bare package id names all its
+  modules.
+- **Types are named by the package version that introduced them**, in long form, because that is
+  how events carry them. Give the latest package id: an upgraded module is split by defining id,
+  so its first version's events and a later version's appear side by side, each under its own
+  id. References inside a package use its original id, and are resolved to the defining id,
+  reading later versions where needed.
+- No view or handle builders: Sui has neither. `--validators` works, against the JSON below.
+- `--network` takes `mainnet`, `testnet` or `devnet`, and `--node-url` a Sui gRPC URL.
+  `--api-key` is refused and `APTOS_API_KEY` is never read: public Sui nodes take no key.
+- `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`. `@mysten/sui` is an optional peer of `@streamd/cli`, but `@streamd/sui`, a dependency, still declares it as a peer, so package managers may install or ask for it.
+
+Each type describes the JSON a Sui node returns, as `SuiAdapter` delivers it:
+
+| Move | TypeScript |
+| --- | --- |
+| `u8`, `u16`, `u32` | `number` |
+| `u64`, `u128`, `u256` | `string` (decimal), with `<Event>Decode` lists as on Aptos |
+| `bool` | `boolean` |
+| `address`, `0x2::object::ID`, `0x2::object::UID` | `string` (`0x` and 64 hex digits) |
+| `vector<u8>` | `string` (base64) |
+| `0x1::string::String`, `0x1::ascii::String`, `0x2::url::Url`, `0x1::type_name::TypeName` | `string` (a `TypeName` has no `0x`) |
+| `0x1::option::Option<T>` | `T \| null` |
+| `0x2::balance::Balance<T>` | `string` (decimal) |
+| other structs | a generated interface |
+| enums | a union discriminated on `"@variant"` |
+| `vector<T>`, type parameters | as on Aptos |
+
+A generic event's descriptor passes its type arguments through as given; the node matches either
+form, but `event.type` carries long-form addresses, so pass long form to compare against it.
 
 ## Development
 
@@ -2620,8 +2874,9 @@ bun run test               # unit tests in every package, through turbo
 bun run typecheck
 bun run build              # each package into its own dist/
 bun run demo               # live demo against mainnet
-bun run test:integration   # @streamd/core integration tests, hits mainnet
+bun run test:integration   # @streamd/aptos and @streamd/sui integration tests, hit mainnet
 bun packages/cli/scripts/framework.ts  # regenerate @streamd/aptos/framework from its ABI snapshots
+bun packages/cli/scripts/sui-framework.ts  # regenerate @streamd/sui/framework (--refresh rereads mainnet)
 ```
 
 ## License

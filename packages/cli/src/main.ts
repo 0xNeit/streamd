@@ -1,8 +1,7 @@
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
-import { Aptos, AptosConfig, getAptosFullNode, Network } from "@aptos-labs/ts-sdk";
+import { getAptosFullNode } from "@aptos-labs/ts-sdk";
 import { StreamdError } from "@streamd/core";
-import { AptosClient, FullnodeScanAdapter, checkDescriptor, networks } from "@streamd/aptos";
 import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
@@ -10,18 +9,21 @@ import type {
   CheckOptions,
   CodegenOptions,
   CompareOptions,
+  Endpoint,
   ForwardOptions,
   ParsedCommand,
   QueryOptions,
   RecordOptions,
-  SourceOptions,
   StoreOptions,
   TailOptions,
   TxOptions,
 } from "./args.js";
+import { aptosConfig, chainFor } from "./chain.js";
 import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
 import { generateEventTypes } from "./codegen.js";
+import { SUI_DIALECT, suiCodegen } from "./sui-abi.js";
+import { loadSui } from "./sui.js";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
 import { runQuery } from "./query.js";
@@ -33,14 +35,6 @@ import { runTx } from "./tx.js";
 // The SDK logs notes for custom networks with console.info, which would corrupt JSON lines on stdout.
 console.info = console.error;
 
-const NETWORKS = {
-  mainnet: { network: Network.MAINNET },
-  testnet: { network: Network.TESTNET },
-  devnet: { network: Network.DEVNET },
-  "movement-mainnet": networks.movementMainnet,
-  "movement-testnet": networks.movementTestnet,
-} as const;
-
 function parse(argv: string[]): ParsedCommand | undefined {
   try {
     return parseCommand(argv);
@@ -51,36 +45,24 @@ function parse(argv: string[]): ParsedCommand | undefined {
   }
 }
 
-function aptosConfig(options: Pick<SourceOptions, "network" | "nodeUrl" | "apiKey">): AptosConfig {
-  return new AptosConfig({
-    ...NETWORKS[options.network],
-    ...(options.nodeUrl !== undefined && { fullnode: options.nodeUrl }),
-    clientConfig: {
-      // The SDK's default HTTP/2 hangs under Bun, with no error.
-      ...("Bun" in globalThis && { http2: false }),
-      ...(options.apiKey !== undefined && { API_KEY: options.apiKey }),
-    },
-  });
-}
-
-/** A client for `options` and a signal that the first SIGINT or a SIGTERM aborts. */
-function setup(options: Pick<SourceOptions, "network" | "nodeUrl" | "apiKey">): { client: AptosClient; controller: AbortController } {
+/** The endpoint's chain, a client over it, and a signal that the first SIGINT or a SIGTERM aborts. */
+async function setup(endpoint: Endpoint) {
   const controller = new AbortController();
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
   process.once("SIGTERM", () => controller.abort());
-  const client = new AptosClient({ aptos: new Aptos(aptosConfig(options)) });
-  return { client, controller };
+  const chain = await chainFor(endpoint);
+  return { chain, client: chain.client(), controller };
 }
 
 async function forward(options: ForwardOptions): Promise<number> {
-  const { client, controller } = setup(options);
+  const { chain, client, controller } = await setup(options);
   try {
     return await runForward(options, {
       client,
       error: (message) => process.stderr.write(`${message}\n`),
       signal: controller.signal,
-      headVersion: () => new FullnodeScanAdapter(new Aptos(aptosConfig(options))).getHeadVersion(),
+      headVersion: () => chain.adapter().getHeadVersion(),
     });
   } finally {
     client.destroy();
@@ -88,7 +70,7 @@ async function forward(options: ForwardOptions): Promise<number> {
 }
 
 async function store(options: StoreOptions): Promise<number> {
-  const { client, controller } = setup(options);
+  const { client, controller } = await setup(options);
   try {
     return await runStore(options, {
       client,
@@ -123,7 +105,7 @@ function stdout(controller: AbortController) {
 }
 
 async function tail(options: TailOptions): Promise<number> {
-  const { client, controller } = setup(options);
+  const { client, controller } = await setup(options);
   const out = stdout(controller);
   try {
     const code = await runTail(options, {
@@ -139,7 +121,7 @@ async function tail(options: TailOptions): Promise<number> {
 }
 
 async function query(options: QueryOptions): Promise<number> {
-  const { client, controller } = setup(options);
+  const { client, controller } = await setup(options);
   const out = stdout(controller);
   try {
     const code = await runQuery(options, {
@@ -155,7 +137,7 @@ async function query(options: QueryOptions): Promise<number> {
 }
 
 async function tx(options: TxOptions): Promise<number> {
-  const { client, controller } = setup(options);
+  const { client, controller } = await setup(options);
   const out = stdout(controller);
   try {
     const code = await runTx(options, {
@@ -170,12 +152,12 @@ async function tx(options: TxOptions): Promise<number> {
   }
 }
 
-function record(options: RecordOptions): Promise<number> {
+async function record(options: RecordOptions): Promise<number> {
   const controller = new AbortController();
   process.once("SIGINT", () => controller.abort());
   process.once("SIGTERM", () => controller.abort());
   return runRecord(options, {
-    adapter: new FullnodeScanAdapter(new Aptos(aptosConfig(options))),
+    adapter: (await chainFor(options)).adapter(),
     write: (text) =>
       options.out === undefined ? void process.stdout.write(text) : writeAtomically(options.out, text),
     error: (text) => process.stderr.write(`${text}\n`),
@@ -183,27 +165,42 @@ function record(options: RecordOptions): Promise<number> {
   });
 }
 
-function check(options: CheckOptions): Promise<number> {
-  const aptos = new Aptos(aptosConfig(options));
+async function check(options: CheckOptions): Promise<number> {
+  const chain = await chainFor(options);
   return runCheck(options, {
-    check: (descriptor) => checkDescriptor(aptos, descriptor),
+    check: (descriptor) => chain.check(descriptor),
     write: (line) => process.stdout.write(line),
     error: (text) => process.stderr.write(`${text}\n`),
   });
 }
 
-function compare(options: CompareOptions): Promise<number> {
-  const node = (config: AptosConfig) => new FullnodeScanAdapter(new Aptos(config));
+async function compare(options: CompareOptions): Promise<number> {
+  const chain = await chainFor(options);
   return runCompare(options, {
-    a: node(aptosConfig(options)),
+    a: chain.adapter(),
     // A custom node, so it gets no API key.
-    b: node(aptosConfig({ network: options.network, nodeUrl: options.against })),
+    b: chain.adapter(options.against),
     write: (line) => process.stdout.write(line),
     error: (text) => process.stderr.write(`${text}\n`),
   });
+}
+
+async function suiSource(options: CodegenOptions): Promise<string> {
+  const [{ SuiGrpcClient }, { networks: suiNetworks }] = await loadSui();
+  const preset = suiNetworks[options.network as keyof typeof suiNetworks];
+  const grpc = new SuiGrpcClient({ ...preset, ...(options.nodeUrl !== undefined && { baseUrl: options.nodeUrl }) });
+  const { targets, load } = suiCodegen(grpc.movePackageService);
+  return generateEventTypes(await targets(options.modules), load, { dialect: SUI_DIALECT, validators: options.validators === true });
+}
+
+async function write(options: CodegenOptions, source: string): Promise<number> {
+  if (options.out === undefined) process.stdout.write(source);
+  else await writeFile(options.out, source);
+  return 0;
 }
 
 async function codegen(options: CodegenOptions): Promise<number> {
+  if (options.chain === "sui") return write(options, await suiSource(options));
   const config = aptosConfig(options);
   // Both parts were validated as an address and an identifier before reaching the path.
   const load = async (address: string, module: string): Promise<ModuleAbi> => {
@@ -244,10 +241,7 @@ async function codegen(options: CodegenOptions): Promise<number> {
     } while (start !== undefined);
     return abis;
   };
-  const source = await generateEventTypes(options.modules, load, { list, validators: options.validators === true });
-  if (options.out === undefined) process.stdout.write(source);
-  else await writeFile(options.out, source);
-  return 0;
+  return write(options, await generateEventTypes(options.modules, load, { list, validators: options.validators === true }));
 }
 
 async function main(argv: string[]): Promise<number> {

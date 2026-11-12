@@ -61,7 +61,9 @@ export async function runStore(options: StoreOptions, io: StoreIO): Promise<numb
     const descriptorName = JSON.stringify(options.descriptor, (_key, v: unknown) =>
       typeof v === "bigint" ? v.toString() : v,
     );
-    const name = options.name ?? `${options.network}:${descriptorName}`;
+    // Prefixed for Sui, so a database shared by both chains never resumes from the other's cursor.
+    const network = options.chain === "sui" ? `sui:${options.network}` : options.network;
+    const name = options.name ?? `${network}:${descriptorName}`;
     const { fromVersion, pollInterval } = options;
     sub = storeEvents(io.client, store, options.descriptor, {
       name,

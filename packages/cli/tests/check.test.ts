@@ -2,14 +2,14 @@ import { describe, expect, it } from "bun:test";
 import { StreamdNetworkError } from "@streamd/core";
 import type { DescriptorCheck, EventTypeStatus } from "@streamd/aptos";
 import type { CheckOptions } from "../src/args.js";
-import { runCheck } from "../src/check.js";
+import { runCheck, type TypeChecks } from "../src/check.js";
 
 const options: CheckOptions = {
   descriptor: { kind: "module", eventType: ["0x1::m::E"] },
   network: "mainnet",
 };
 
-async function run(check: () => Promise<DescriptorCheck>) {
+async function run(check: () => Promise<TypeChecks>) {
   const lines: string[] = [];
   const errors: string[] = [];
   const code = await runCheck(options, { check, write: (l) => lines.push(l), error: (m) => errors.push(m) });
@@ -43,6 +43,19 @@ describe("runCheck", () => {
     expect(code).toBe(1);
     expect(lines).toEqual([]);
     expect(errors).toEqual(["streamd: fullnode down"]);
+  });
+
+  it("widens the status column for Sui's statuses and prints a defining id", async () => {
+    const { code, lines } = await run(async () => ({
+      ok: false,
+      types: [
+        { eventType: "0x2::m::A", status: "event" },
+        { eventType: "0x2::m::B", status: "defined-elsewhere", definingId: "0xd22b" },
+        { eventType: "0x2::m::C", status: "missing-package" },
+      ],
+    }));
+    expect(code).toBe(1);
+    expect(lines).toEqual(["event             0x2::m::A\n", "defined-elsewhere 0x2::m::B 0xd22b\n", "missing-package   0x2::m::C\n"]);
   });
 
   it("passes the parsed descriptor through", async () => {

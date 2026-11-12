@@ -193,7 +193,9 @@ export interface StreamdEvent<TData = unknown> {
    * The entry function call that produced this event, when the source had the
    * transaction in hand and its payload is an `entry_function_payload`.
    * Omitted on `handle` events, on script, multisig and encrypted payloads, and
-   * on system transactions.
+   * on system transactions. On Sui it is the one `MoveCall` command of the
+   * transaction block on the package and module the event names, and omitted
+   * when several commands or none are.
    */
   entryFunction?: EntryFunctionCall;
 }
@@ -201,7 +203,9 @@ export interface StreamdEvent<TData = unknown> {
 /**
  * An entry function call as the fullnode reports it. `arguments` are JSON Move
  * values (u64 and wider as decimal strings), and the events of one transaction
- * share these arrays.
+ * share these arrays. On Sui `arguments` are the command's references into its
+ * transaction block: `"GasCoin"`, `{ Pure: base64 BCS }`, `{ Object: id }`,
+ * `{ Input: n }`, `{ Result: n }` or `{ NestedResult: [n, m] }`.
  */
 export interface EntryFunctionCall {
   /** `address::module::name`, the address as the fullnode writes it. */
@@ -855,7 +859,8 @@ export type BatchCallback<TData = unknown> = (
 /**
  * One transaction's matching events, as `onTransaction()` delivers them.
  * `events` are in `eventIndex` order and never empty; each optional field is
- * taken from the first event carrying it.
+ * taken from the first event carrying it, and `entryFunction` only when every
+ * event carrying one carries the same.
  */
 export interface TransactionGroup<TData = unknown> {
   /** The transaction's version, shared by every event in `events`. */
@@ -1018,6 +1023,40 @@ export interface TransactionEvents {
   events: StreamdEvent[];
 }
 
+/** Options for a chain client's `eventsOf`. */
+export interface EventsOfOptions {
+  /** Keep only events satisfying this predicate, after `decode`; a rejection rejects the call. */
+  where?: EventPredicate;
+  /** `data` fields, by path, turned from decimal strings into `bigint`, as `EventFilter.decode`. */
+  decode?: readonly string[];
+  /**
+   * How long to wait for the transaction to be committed, in ms (default
+   * 20000), before rejecting with `StreamdTimeoutError`.
+   */
+  timeout?: number;
+  /** Aborting rejects with the signal's `reason` and stops looking. */
+  signal?: AbortSignal;
+}
+
+/** Options for a chain client's `expectEvents`. */
+export type ExpectEventsOptions = Pick<EventsOfOptions, "decode" | "timeout" | "signal">;
+
+/**
+ * Assertions on one transaction's events, from a chain client's `expectEvents`.
+ * Each waits for the transaction as `eventsOf` does, then narrows its events
+ * by the descriptor, the expectation's `decode`, then `where`. A failed
+ * assertion rejects with `StreamdAssertionError`.
+ */
+export interface EventExpectation {
+  /** Resolves with the matching events, in transaction order; rejects when there are none. */
+  toEmit<TData = unknown>(
+    descriptor: EventDescriptor<TData>,
+    where?: EventPredicate,
+  ): Promise<EventOf<TData>[]>;
+  /** Resolves when no event matches; rejects naming the ones that do. */
+  notToEmit(descriptor: EventDescriptor, where?: EventPredicate): Promise<void>;
+}
+
 /** Block heights an adapter can serve, both inclusive, as `EventAdapter.getBlockHeights` reports them. */
 export interface BlockHeights {
   oldest: bigint;
@@ -1033,4 +1072,59 @@ export interface BlockInfo {
   lastVersion: bigint;
   /** Block time in microseconds since the Unix epoch. */
   timestamp: bigint;
+}
+
+/**
+ * One asset movement, the `data` of the records a chain client's
+ * `transfers` and `getTransfers` deliver. A movement paired with the one that
+ * funded it carries both sides; one nothing funded (a mint) has no `from`,
+ * and one nothing received (a burn) no `to`.
+ */
+export interface Transfer {
+  /** The asset, as the chain client documents it: an address, a coin type, or a token id, in long form. */
+  asset: string;
+  /** Base units; `1n` for a token object. */
+  amount: bigint;
+  /** The sending owner, in long form. */
+  from?: string;
+  /** The receiving owner, in long form. */
+  to?: string;
+  /** The asset's symbol, with `withAssetInfo`; absent for tokens and when the asset has none to read. */
+  symbol?: string;
+  /** The asset's decimals, with `withAssetInfo`; use `formatAmount` to apply them. */
+  decimals?: number;
+}
+
+/** One asset's balance at a version; `balances()` delivers these to `onChange`. */
+export interface BalanceChange {
+  /** The asset in long form, as the chain client keys it. */
+  asset: string;
+  /** Base units, read at or after the change's `version`. */
+  balance: bigint;
+}
+
+/** Options for a chain client's `balances`. Balances are read at the head, so nothing moves the start. */
+export interface BalancesOptions
+  extends Pick<
+    ListenerOptions,
+    "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "dedupWindow" | "onError" | "onCaughtUp" | "signal"
+  > {
+  /** The assets to follow, one or a list (default: the chain's native coin). */
+  asset?: string | readonly string[];
+  /** Called after a balance changes, with every balance known so far. A throw goes to `onError`. */
+  onChange?: (balances: ReadonlyMap<string, bigint>, change: StreamdEvent<BalanceChange>) => void;
+}
+
+/** A running `balances()`: one wallet's balances, kept current. */
+export interface Balances {
+  /** A copy of every balance known so far, by asset in long form. */
+  readonly value: ReadonlyMap<string, bigint>;
+  /** One asset's balance, given in any form; `undefined` until it is known. */
+  get(asset: string): bigint | undefined;
+  /** Resolves once following has started; rejects if the first read fails or it is stopped first. */
+  readonly ready: Promise<ReadonlyMap<string, bigint>>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
 }

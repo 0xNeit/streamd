@@ -13,6 +13,16 @@
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
+    },
+    "./framework": {
+      "import": {
+        "types": "./dist/framework.d.ts",
+        "default": "./dist/framework.js"
+      },
+      "require": {
+        "types": "./dist/framework.d.cts",
+        "default": "./dist/framework.cjs"
+      }
     }
   },
   "main": "./dist/index.cjs",
@@ -24,7 +34,8 @@
   "scripts": {
     "build": "bun build.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:integration": "STREAMD_INTEGRATION=1 bun test tests/integration"
   },
   "dependencies": {
     "@streamd/core": "workspace:*"

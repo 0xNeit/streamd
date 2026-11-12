@@ -1,5 +1,5 @@
 import { Aptos, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, requireTransactionHash } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, expectEvents, requireTransactionHash, startBalances } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -9,8 +9,8 @@ import type {
   StreamdEvent,
   Subscription,
 } from "@streamd/core";
-import { startBalances } from "./balances.js";
-import { expectEvents, expectPreview } from "./expect.js";
+import { APTOS_BALANCES } from "./balances.js";
+import { expectPreview } from "./expect.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
 import { addressOrName, resolveName } from "./names.js";
 import { eventsOf, previewEvents } from "./transaction.js";
@@ -89,12 +89,14 @@ export class AptosClient extends StreamdClient {
     return startBalances(
       {
         adapter: this.adapter,
+        descriptor: TRANSFER_DESCRIPTOR,
         onError: this.onError,
         subscribe: (callback, listener, wrap) =>
           this.subscribe(TRANSFER_DESCRIPTOR, callback, listener, undefined, undefined, wrap),
         track: this.reduceHost.track,
       },
       this.accountOf(address)!,
+      APTOS_BALANCES,
       options,
     );
   }
