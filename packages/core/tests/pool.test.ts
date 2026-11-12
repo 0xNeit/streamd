@@ -136,3 +136,22 @@ describe("PoolAdapter", () => {
     client.destroy();
   });
 });
+
+describe("PoolAdapter readObjects", () => {
+  it("rotates readObjects past a rate-limited node, only when every node has it", async () => {
+    let first = true;
+    const reader = (name: string): EventAdapter => ({
+      ...node(name, []),
+      readObjects: async () => {
+        if (name === "a" && first) {
+          first = false;
+          throw limit(1000);
+        }
+        return [name];
+      },
+    });
+    const pool = new PoolAdapter([reader("a"), reader("b")]);
+    expect(await pool.readObjects!({ objects: ["0x1"] }, { version: 1n }, d)).toEqual(["b"]);
+    expect(new PoolAdapter([reader("a"), node("b", [])]).readObjects).toBeUndefined();
+  });
+});

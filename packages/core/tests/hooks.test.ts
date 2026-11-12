@@ -252,3 +252,16 @@ describe("withHooks view", () => {
     expect(withHooks(new MemoryAdapter(), {}).view).toBeUndefined();
   });
 });
+
+describe("withHooks readObjects", () => {
+  it("passes readObjects through unhooked, only when the source has it", async () => {
+    const calls: unknown[] = [];
+    const source = Object.assign(new MemoryAdapter(), {
+      readObjects: async (...args: unknown[]) => (calls.push(args), [null]),
+    });
+    const at = { version: 4n, transactionHash: "tx" };
+    expect(await withHooks(source, {}).readObjects!({ objects: ["0x1"] }, at)).toEqual([null]);
+    expect(calls).toEqual([[{ objects: ["0x1"] }, at, undefined]]);
+    expect(withHooks(new MemoryAdapter(), {}).readObjects).toBeUndefined();
+  });
+});

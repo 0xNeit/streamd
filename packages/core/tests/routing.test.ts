@@ -454,3 +454,35 @@ describe("RoutingAdapter object descriptors", () => {
     await expect(adapter.fetchEvents(objectDesc, {})).rejects.toThrow('descriptor kind "object"');
   });
 });
+
+describe("RoutingAdapter readObjects", () => {
+  const reading = (label: string): EventAdapter => ({
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    readObjects: vi.fn(async () => [label]),
+  });
+  const request = { objects: ["0x1"] };
+  const at = { version: 7n, transactionHash: "tx" };
+  const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::m::E" };
+
+  it("reads from the adapter for the descriptor's kind, or the default", async () => {
+    const module = reading("module");
+    const router = new RoutingAdapter({ module, default: reading("default") });
+    expect(await router.readObjects!(request, at, descriptor)).toEqual(["module"]);
+    expect(module.readObjects).toHaveBeenCalledWith(request, at, descriptor);
+    expect(await router.readObjects!(request, at)).toEqual(["default"]);
+  });
+
+  it("refuses when no adapter reads objects or none is routable", async () => {
+    const plain = new MemoryAdapter();
+    expect(new RoutingAdapter({ module: plain, default: plain }).readObjects).toBeUndefined();
+    await expect(new RoutingAdapter({ module: plain, default: reading("d") }).readObjects!(request, at, descriptor)).rejects.toThrow(
+      'descriptor kind "module" does not read objects',
+    );
+    await expect(new RoutingAdapter({ module: reading("m") }).readObjects!(request, at)).rejects.toThrow(
+      "needs a descriptor or a default adapter to read objects",
+    );
+    await expect(new RoutingAdapter({ module: reading("m"), default: plain }).readObjects!(request, at)).rejects.toThrow(
+      "The default adapter does not read objects",
+    );
+  });
+});

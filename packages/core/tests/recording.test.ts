@@ -489,3 +489,29 @@ describe("recordingAdapter view", () => {
     expect((await offline.getEvents(descriptor, options))[0]!.state).toEqual(["9"]);
   });
 });
+
+describe("recordingAdapter readObjects", () => {
+  it("records object reads by ids, version and hash, and replays them offline", async () => {
+    let calls = 0;
+    const source = Object.assign(new MemoryAdapter(), {
+      readObjects: async (_r: unknown, at: { version: bigint }) => (calls++, [{ v: String(at.version) }, null]),
+    });
+    const recorder = recordingAdapter(source);
+    const request = { objects: ["0xa", "0xb"] };
+    expect(await recorder.readObjects!(request, { version: 3n, transactionHash: "t3" })).toEqual([{ v: "3" }, null]);
+    const replay = replayAdapter(JSON.stringify(recorder));
+    expect(calls).toBe(1);
+    const replayed = await replay.readObjects!(request, { version: 3n, transactionHash: "t3" });
+    expect(replayed).toEqual([{ v: "3" }, null]);
+    (replayed[0] as { v: string }).v = "changed";
+    expect(await replay.readObjects!(request, { version: 3n, transactionHash: "t3" })).toEqual([{ v: "3" }, null]);
+    for (const [ids, at] of [
+      [["0xa"], { version: 3n, transactionHash: "t3" }],
+      [["0xa", "0xb"], { version: 4n, transactionHash: "t3" }],
+      [["0xa", "0xb"], { version: 3n, transactionHash: "t4" }],
+    ] as const) {
+      await expect(replay.readObjects!({ objects: ids }, at)).rejects.toThrow("No recorded readObjects call");
+    }
+    expect(replayAdapter(recordingAdapter(new MemoryAdapter()).toJSON()).readObjects).toBeUndefined();
+  });
+});

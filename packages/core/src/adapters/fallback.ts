@@ -49,6 +49,7 @@ export class FallbackAdapter implements EventAdapter {
   declare getTransactionEvents?: EventAdapter["getTransactionEvents"];
   declare simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
   declare view?: EventAdapter["view"];
+  declare readObjects?: EventAdapter["readObjects"];
 
   constructor(adapters: readonly EventAdapter[]) {
     if (!Array.isArray(adapters) || adapters.length === 0) {
@@ -94,6 +95,11 @@ export class FallbackAdapter implements EventAdapter {
     if (views.length > 0) {
       this.view = (request, ledgerVersion, descriptor) =>
         tryInOrder(views, (adapter) => adapter.view!(request, ledgerVersion, descriptor));
+    }
+    const readers = this.sources("readObjects");
+    if (readers.length > 0) {
+      this.readObjects = (request, at, descriptor) =>
+        tryInOrder(readers, (adapter) => adapter.readObjects!(request, at, descriptor));
     }
   }
 

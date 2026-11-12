@@ -3,6 +3,8 @@ import type {
   BlockInfo,
   EventAdapter,
   EventPage,
+  ObjectRequest,
+  StreamdEvent,
   TransactionEvents,
   ViewRequest,
 } from "../types.js";
@@ -21,7 +23,8 @@ export type RecordedMethod =
   | "getBlock"
   | "getBlockHeights"
   | "getTransactionEvents"
-  | "view";
+  | "view"
+  | "readObjects";
 
 /**
  * One successful adapter call. `result` is JSON-safe: every `bigint` is a
@@ -77,7 +80,8 @@ function transactionJson(found: TransactionEvents | undefined): unknown {
  * call whose descriptor is not one of the three kinds. `getHeadVersion`,
  * `getEarliestVersion`, `getBlock`, `getBlockHeights` and `getTransactionEvents`
  * (keyed by hash) are recorded only when the wrapped adapter has them.
- * `view` is recorded keyed by request and ledger version, whose answer never
+ * `view` is recorded keyed by request and ledger version, and `readObjects`
+ * by its ids, version and transaction hash, since neither answer ever
  * changes. `simulateTransactionEvents` passes through unrecorded: a
  * simulation answers for state at that moment, so replaying it would be stale.
  */
@@ -142,6 +146,10 @@ export function recordingAdapter(adapter: EventAdapter): RecordingAdapter {
     recorder.view = (request, ledgerVersion, descriptor) =>
       tap("view", viewKey(request, ledgerVersion), source.view!(request, ledgerVersion, descriptor));
   }
+  if (source.readObjects !== undefined) {
+    recorder.readObjects = (request, at, descriptor) =>
+      tap("readObjects", objectsKey(request, at), source.readObjects!(request, at, descriptor));
+  }
   return recorder;
 }
 
@@ -155,6 +163,14 @@ function viewKey(request: ViewRequest, ledgerVersion: bigint): string | undefine
     return JSON.stringify(
       toJson([request.function, request.typeArguments ?? [], request.functionArguments ?? [], ledgerVersion]),
     );
+  } catch {
+    return undefined;
+  }
+}
+
+function objectsKey(request: ObjectRequest, at: Pick<StreamdEvent, "version" | "transactionHash">): string | undefined {
+  try {
+    return JSON.stringify(toJson([request.objects, at.version, at.transactionHash ?? null]));
   } catch {
     return undefined;
   }
@@ -217,6 +233,11 @@ function parseTransaction(value: unknown): TransactionEvents | undefined {
   };
 }
 
+function array(result: unknown): unknown[] {
+  if (!Array.isArray(result)) throw new StreamdError("expected an array");
+  return result;
+}
+
 const PARSERS: Record<RecordedMethod, (result: unknown) => unknown> = {
   fetchEvents: parsePage,
   getHeadVersion: (result) => decimal(result, "result"),
@@ -224,10 +245,8 @@ const PARSERS: Record<RecordedMethod, (result: unknown) => unknown> = {
   getBlock: (result) => decimals(result, ["height", "firstVersion", "lastVersion", "timestamp"]),
   getBlockHeights: (result) => decimals(result, ["oldest", "newest"]),
   getTransactionEvents: parseTransaction,
-  view: (result) => {
-    if (!Array.isArray(result)) throw new StreamdError("expected an array");
-    return result;
-  },
+  view: array,
+  readObjects: array,
 };
 
 /** A value for an error message that never throws itself, whatever the input holds. */
@@ -333,6 +352,10 @@ export function replayAdapter(recording: Recording | string): EventAdapter {
   if (has("view")) {
     adapter.view = async (request, ledgerVersion) =>
       structuredClone(answer<unknown[]>("view", viewKey(request, ledgerVersion)));
+  }
+  if (has("readObjects")) {
+    adapter.readObjects = async (request, at) =>
+      structuredClone(answer<unknown[]>("readObjects", objectsKey(request, at)));
   }
   return adapter;
 }

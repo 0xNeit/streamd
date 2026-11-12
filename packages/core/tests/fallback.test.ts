@@ -463,3 +463,18 @@ describe("FallbackAdapter optional method fields", () => {
     expect("getBlock" in adapter).toBe(false);
   });
 });
+
+describe("FallbackAdapter readObjects", () => {
+  it("falls back on a network error to the next source that reads objects", async () => {
+    const down: EventAdapter = Object.assign(new MemoryAdapter(), {
+      readObjects: async () => {
+        throw new StreamdNetworkError("down", 503);
+      },
+    });
+    const up: EventAdapter = Object.assign(new MemoryAdapter(), { readObjects: vi.fn(async () => ["ok"]) });
+    const adapter = new FallbackAdapter([down, new MemoryAdapter(), up]);
+    expect(await adapter.readObjects!({ objects: ["0x1"] }, { version: 3n })).toEqual(["ok"]);
+    expect(up.readObjects).toHaveBeenCalledWith({ objects: ["0x1"] }, { version: 3n }, undefined);
+    expect(new FallbackAdapter([new MemoryAdapter()]).readObjects).toBeUndefined();
+  });
+});
