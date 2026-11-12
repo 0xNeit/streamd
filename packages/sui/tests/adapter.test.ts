@@ -197,3 +197,88 @@ describe("SuiAdapter versions as bounds", () => {
     expect(report.results.filter((r) => r.status === "fail")).toEqual([]);
   });
 });
+
+// fakeLedger stamps checkpoint n at 1_700_000_000 + n seconds plus 5000 ns.
+const stamp = (n: bigint) => 1_700_000_000_000_005n + n * 1_000_000n;
+
+describe("SuiAdapter checkpoints as blocks", () => {
+  it("reports checkpoint heights and maps a checkpoint to its versions and time", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS);
+    const adapter = new SuiAdapter(client);
+    expect(await adapter.getBlockHeights()).toEqual({ oldest: 0n, newest: 3n });
+    expect(await adapter.getBlock(stakes, 0n)).toEqual({ height: 0n, firstVersion: 0n, lastVersion: 0n, timestamp: stamp(0n) });
+    expect(await adapter.getBlock(stakes, 1n)).toEqual({ height: 1n, firstVersion: 1n, lastVersion: 3n, timestamp: stamp(1n) });
+    expect(await adapter.getBlock(stakes, 3n)).toEqual({ height: 3n, firstVersion: 6n, lastVersion: 9n, timestamp: stamp(3n) });
+  });
+
+  it("rejects pruned checkpoints with 410, future ones with 404, and bad heights", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS, undefined, 2n);
+    const adapter = new SuiAdapter(client);
+    const status = async (height: bigint) => ((await adapter.getBlock(stakes, height).catch((e: unknown) => e)) as StreamdNetworkError).statusCode;
+    // Checkpoint 1 is gone, and 2 is kept but its first version needs 1.
+    expect(await status(1n)).toBe(410);
+    expect(await status(2n)).toBe(410);
+    expect(await status(4n)).toBe(404);
+    expect((await adapter.getBlock(stakes, 3n)).firstVersion).toBe(6n);
+    for (const height of [-1n, 1 as unknown as bigint]) {
+      const err = await adapter.getBlock(stakes, height).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+  });
+
+  it("refuses a checkpoint without a timestamp", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS);
+    const read = client.ledgerService.getCheckpoint.bind(client.ledgerService);
+    client.ledgerService.getCheckpoint = async (input) => {
+      const { response } = await read(input);
+      delete response.checkpoint!.summary!.timestamp;
+      return { response };
+    };
+    await expect(new SuiAdapter(client).getBlock(stakes, 1n)).rejects.toThrow("without its timestamp");
+  });
+
+  it("passes checkAdapter's block rule", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS);
+    const report = await checkAdapter(new SuiAdapter(client), stakes, { limit: 2, fromVersion: 0n, blockHeight: 2n });
+    expect(report.results.find((r) => r.name === "block")?.status).toBe("pass");
+    expect(report.results.filter((r) => r.status === "fail")).toEqual([]);
+  });
+});
+
+describe("SuiAdapter time and block bounds through the client", () => {
+  const all = { kind: "module", eventType: [STAKE, SWAP] } as const;
+
+  it("starts fromTime at the first checkpoint stamped at or after it, clamped at both ends", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS);
+    using streamd = new StreamdClient({ adapter: new SuiAdapter(client) });
+    const from = async (fromTime: bigint) => (await streamd.getEvents(all, { fromTime })).map(eventId);
+    expect(await from(stamp(1n))).toEqual(["3:0", "3:1", "4:0", "9:4"]);
+    expect(await from(stamp(1n) + 1n)).toEqual(["4:0", "9:4"]);
+    expect(await from(0n)).toEqual(["0:0", "3:0", "3:1", "4:0", "9:4"]);
+    expect(await from(stamp(3n) + 1n)).toEqual([]);
+  });
+
+  it("bounds a query by checkpoint with fromBlock and toBlock", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS);
+    using streamd = new StreamdClient({ adapter: new SuiAdapter(client) });
+    expect((await streamd.getEvents(all, { fromBlock: 1n, toBlock: 2n })).map(eventId)).toEqual(["3:0", "3:1", "4:0"]);
+    expect((await streamd.getEvents(all, { fromBlock: 3n })).map(eventId)).toEqual(["9:4"]);
+  });
+
+  it("starts a listener fromTime", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS);
+    using streamd = new StreamdClient({ adapter: new SuiAdapter(client) });
+    const seen: string[] = [];
+    const sub = streamd.on(all, (e) => void seen.push(eventId(e)), { fromTime: stamp(2n), pollInterval: 5 });
+    await sub.caughtUp;
+    sub.unsubscribe();
+    expect(seen).toEqual(["4:0", "9:4"]);
+  });
+
+  it("finds the first placeable checkpoint when the node has pruned below its reported lowest", async () => {
+    const { client } = fakeLedger(SIZES, EVENTS, undefined, 2n);
+    using streamd = new StreamdClient({ adapter: new SuiAdapter(client) });
+    expect((await streamd.getEvents(all, { fromTime: 0n })).map(eventId)).toEqual(["9:4"]);
+  });
+});

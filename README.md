@@ -1753,9 +1753,15 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
 - **Descriptors:** `module` (a type or a list, in one request) and `account` (events from
   transactions the address sent, optionally narrowed by `eventTypes`). Sui has no event handles
   or account resources, so `handle` and `resource` are refused.
+- **Blocks are checkpoints:** `getBlock(descriptor, height)` takes a checkpoint sequence number
+  and returns its versions (the previous checkpoint's total up to its own, minus one) and its
+  timestamp, and `getBlockHeights()` the node's lowest and latest checkpoints. So `fromTime`
+  starts at the first checkpoint stamped at or after it, and `fromBlock`/`toBlock` bound a query
+  by checkpoint. A checkpoint the node has pruned fails with `410`, one not yet produced with
+  `404`.
 - **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
-  a version before that fails with `410`. `fromTime`, views, simulations and transaction lookups
-  are not served yet.
+  a version before that fails with `410`. Views, simulations and transaction lookups are not
+  served yet.
 
 ### Spreading load across fullnodes
 

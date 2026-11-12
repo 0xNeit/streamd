@@ -70,7 +70,7 @@ export function fakeLedger(sizes: number[], events: FakeEvent[], fail?: () => un
     async getCheckpoint({ checkpointId }) {
       const seq = checkpointId.oneofKind === "sequenceNumber" ? checkpointId.sequenceNumber : BigInt(sizes.length - 1);
       calls.checkpoints.push(String(checkpointId.oneofKind === undefined ? "latest" : seq));
-      if (seq < prunedBelow) throw Object.assign(new Error(`Checkpoint ${seq} not found`), { code: "NOT_FOUND" });
+      if (seq < prunedBelow || seq >= BigInt(sizes.length)) throw Object.assign(new Error(`Checkpoint ${seq} not found`), { code: "NOT_FOUND" });
       return {
         response: {
           checkpoint: {

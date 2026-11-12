@@ -1,6 +1,6 @@
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
-import type { EventAdapter, EventDescriptor, EventPage, FetchOptions, StreamdEvent } from "@streamd/core";
+import type { BlockHeights, BlockInfo, EventAdapter, EventDescriptor, EventPage, FetchOptions, StreamdEvent } from "@streamd/core";
 import { toJson, type ProtoValue } from "./json.js";
 
 /** The `ListEvents` filter: terms are ORed, the literals inside one are ANDed. */
@@ -170,6 +170,33 @@ export class SuiAdapter implements EventAdapter {
       if (!pruned(err)) throw err;
       return (await this.summary(low)).total;
     }
+  }
+
+  /** Checkpoints stand in for blocks: the node's reported lowest and its latest. */
+  async getBlockHeights(): Promise<BlockHeights> {
+    const [oldest, { sequence }] = await Promise.all([this.lowest(), this.latest()]);
+    return { oldest, newest: sequence };
+  }
+
+  /**
+   * The checkpoint at `height` as a block. One the node has pruned, or whose
+   * start needs a pruned predecessor, fails with 410; one not yet produced
+   * with 404, since Sui answers both with the same NOT_FOUND.
+   */
+  async getBlock(_descriptor: EventDescriptor, height: bigint): Promise<BlockInfo> {
+    if (typeof height !== "bigint" || height < 0n) throw new StreamdError(`Not a valid checkpoint: ${String(height)}`);
+    let own: Summary;
+    let firstVersion: bigint;
+    try {
+      [own, firstVersion] = await Promise.all([this.summary(height), this.base(height)]);
+    } catch (err) {
+      if (pruned(err) && height > (await this.latest()).sequence) {
+        throw new StreamdNetworkError(`Checkpoint ${height} is not yet produced`, 404);
+      }
+      throw err;
+    }
+    if (own.timestamp === undefined) throw new StreamdError(`Sui node returned checkpoint ${height} without its timestamp`);
+    return { height, firstVersion, lastVersion: own.total - 1n, timestamp: own.timestamp };
   }
 
   /** The checkpoint's summary, or `undefined` when the node has pruned it. */
