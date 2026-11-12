@@ -1,6 +1,6 @@
-import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
+import { isValidTransactionDigest, normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
-import type { BlockHeights, BlockInfo, EventAdapter, EventDescriptor, EventPage, FetchOptions, StreamdEvent } from "@streamd/core";
+import type { BlockHeights, BlockInfo, EventAdapter, EventDescriptor, EventPage, FetchOptions, StreamdEvent, TransactionEvents } from "@streamd/core";
 import { toJson, type ProtoValue } from "./json.js";
 
 /** The `ListEvents` filter: terms are ORed, the literals inside one are ANDed. */
@@ -28,9 +28,16 @@ interface ListEventsFrame {
   watermark?: { cursor?: Uint8Array; checkpoint?: bigint };
   end?: { reason?: number };
 }
+interface ExecutedTransaction {
+  digest?: string;
+  checkpoint?: bigint;
+  effects?: { status?: { success?: boolean; error?: { description?: string } } };
+  events?: { events: SuiEvent[] };
+}
 interface CheckpointResponse {
   checkpoint?: {
     sequenceNumber?: bigint;
+    transactions?: { digest?: string }[];
     summary?: { totalNetworkTransactions?: bigint; timestamp?: { seconds: bigint; nanos: number } };
   };
 }
@@ -52,6 +59,7 @@ export interface SuiLedgerClient {
       checkpointId: { oneofKind: "sequenceNumber"; sequenceNumber: bigint } | { oneofKind: undefined };
       readMask: { paths: string[] };
     }): PromiseLike<{ response: CheckpointResponse }>;
+    getTransaction(input: { digest: string; readMask: { paths: string[] } }): PromiseLike<{ response: { transaction?: ExecutedTransaction } }>;
     getServiceInfo(input: object): PromiseLike<{ response: { checkpointHeight?: bigint; lowestAvailableCheckpoint?: bigint } }>;
   };
 }
@@ -62,6 +70,7 @@ const SCAN_LIMIT = 2;
 const DEFAULT_LIMIT = 25;
 const KEPT_SUMMARIES = 4096;
 const EVENT_FIELDS = ["event_type", "sender", "json", "checkpoint", "transaction_digest", "transaction_index", "event_index"];
+const TRANSACTION_FIELDS = ["digest", "checkpoint", "effects.status", "events.events.event_type", "events.events.sender", "events.events.json"];
 const SUMMARY_FIELDS = ["sequence_number", "summary.total_network_transactions", "summary.timestamp"];
 
 interface Summary {
@@ -117,6 +126,15 @@ function filterOf(descriptor: EventDescriptor): EventFilter {
     default:
       throw new StreamdError(`Unknown descriptor kind: ${String((descriptor as { kind?: unknown })?.kind)}`);
   }
+}
+
+/** A Sui transaction digest: base58 of 32 bytes. */
+export function requireDigest(value: unknown): string {
+  if (typeof value !== "string" || !isValidTransactionDigest(value)) {
+    const shown = typeof value === "string" ? JSON.stringify(value.slice(0, 80)) : typeof value;
+    throw new StreamdError(`Not a valid Sui transaction digest (base58, 32 bytes): ${shown}`);
+  }
+  return value;
 }
 
 const pruned = (err: unknown) => err instanceof StreamdNetworkError && err.statusCode === 410;
@@ -261,6 +279,56 @@ export class SuiAdapter implements EventAdapter {
       page.throughVersion = toVersion !== undefined && through > toVersion ? toVersion : through;
     }
     return page;
+  }
+
+  /**
+   * The transaction's events once it is in a checkpoint, or `undefined` while
+   * the node does not know it or has executed it without checkpointing it,
+   * since only a checkpoint places its version. `vmStatus` is `"success"`, or
+   * the execution error's description on failure. Sui leaves
+   * `transaction_index` unset on this lookup, so the transaction's position
+   * comes from its checkpoint's digest list.
+   */
+  async getTransactionEvents(digest: string, _descriptor?: EventDescriptor): Promise<TransactionEvents | undefined> {
+    requireDigest(digest);
+    let found: ExecutedTransaction | undefined;
+    try {
+      ({ response: { transaction: found } } = await this.ledger.getTransaction({ digest, readMask: { paths: TRANSACTION_FIELDS } }));
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code === "NOT_FOUND") return undefined;
+      networkError(err);
+    }
+    const checkpoint = found?.checkpoint;
+    if (checkpoint === undefined) return undefined;
+    const status = found!.effects?.status;
+    if (status?.success === undefined) throw new StreamdError(`Sui node returned transaction ${digest} without its status`);
+    const transactionIndex = await this.positionIn(checkpoint, digest);
+    const events = await Promise.all(
+      (found!.events?.events ?? []).map((raw, eventIndex) =>
+        this.toEvent({ ...raw, checkpoint, transactionIndex, eventIndex, transactionDigest: digest }),
+      ),
+    );
+    return {
+      version: (await this.base(checkpoint)) + transactionIndex,
+      success: status.success,
+      vmStatus: status.success ? "success" : status.error?.description ?? "failure",
+      events,
+    };
+  }
+
+  private async positionIn(checkpoint: bigint, digest: string): Promise<bigint> {
+    let response: CheckpointResponse;
+    try {
+      ({ response } = await this.ledger.getCheckpoint({
+        checkpointId: { oneofKind: "sequenceNumber", sequenceNumber: checkpoint },
+        readMask: { paths: ["transactions.digest"] },
+      }));
+    } catch (err) {
+      networkError(err);
+    }
+    const index = (response.checkpoint?.transactions ?? []).findIndex((t) => t.digest === digest);
+    if (index < 0) throw new StreamdError(`Sui node placed transaction ${digest} in checkpoint ${checkpoint}, which does not list it`);
+    return BigInt(index);
   }
 
   private async toEvent(raw: SuiEvent): Promise<StreamdEvent> {
