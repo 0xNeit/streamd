@@ -11,7 +11,9 @@ const KEY = 4;
 const PKG = LONG("a");
 const V2 = LONG("a2");
 
-const dt = (name: string, abilities: number[], definingId = PKG) => ({ name, abilities, definingId });
+const STRUCT = 1;
+const ENUM = 2;
+const dt = (name: string, abilities: number[], definingId = PKG, kind = STRUCT) => ({ name, abilities, definingId, kind });
 
 /** A package service answering `getPackage` from `packages` (modules by name, or an error to throw); anything unlisted is `NOT_FOUND`. */
 function client(packages: Record<string, Record<string, unknown[]> | Error | { response: unknown }>) {
@@ -31,7 +33,7 @@ function client(packages: Record<string, Record<string, unknown[]> | Error | { r
 
 const ONE = {
   [PKG]: {
-    pool: [dt("Swapped", [COPY, DROP]), dt("Flag", [COPY, DROP, STORE]), dt("Pool", [KEY, STORE]), dt("Ticket", [DROP])],
+    pool: [dt("Swapped", [COPY, DROP]), dt("Flag", [COPY, DROP, STORE]), dt("Pool", [KEY, STORE]), dt("Ticket", [DROP]), dt("Side", [COPY, DROP], PKG, ENUM)],
   },
   [V2]: { pool: [dt("Swapped", [COPY, DROP], PKG), dt("Added", [COPY, DROP], V2)] },
   [LONG("5")]: grpcError("INVALID_ARGUMENT", "object is not a package"),
@@ -49,7 +51,7 @@ async function rejects(promise: Promise<unknown>, type: new (...a: never[]) => E
 describe("checkDescriptor", () => {
   it("calls copy + drop datatypes events and the rest not", async () => {
     const { sui, reads } = client(ONE);
-    const check = await checkDescriptor(sui, mod(["0xa::pool::Swapped", "0xa::pool::Flag", "0xa::pool::Pool", "0xa::pool::Ticket"]));
+    const check = await checkDescriptor(sui, mod(["0xa::pool::Swapped", "0xa::pool::Flag", "0xa::pool::Pool", "0xa::pool::Ticket", "0xa::pool::Side"]));
     expect(check).toEqual({
       ok: false,
       types: [
@@ -57,6 +59,7 @@ describe("checkDescriptor", () => {
         { eventType: `${PKG}::pool::Flag`, status: "event" },
         { eventType: `${PKG}::pool::Pool`, status: "not-event" },
         { eventType: `${PKG}::pool::Ticket`, status: "not-event" },
+        { eventType: `${PKG}::pool::Side`, status: "event" },
       ],
     });
     expect(reads).toEqual([PKG]);
