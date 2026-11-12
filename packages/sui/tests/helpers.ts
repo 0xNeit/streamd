@@ -1,6 +1,7 @@
 import { Transaction } from "@mysten/sui/transactions";
 import { toBase58 } from "@mysten/sui/utils";
 import type { SuiLedgerClient } from "../src/index.js";
+import type { CallTransaction } from "../src/calls.js";
 
 /** A valid Sui digest: base58 of 32 bytes, all `n`. */
 export const digest = (n: number) => toBase58(new Uint8Array(32).fill(n));
@@ -276,4 +277,24 @@ export function fakeNames(names: Record<string, string | null | Error>, reverse:
     },
   };
   return { nameService, calls };
+}
+
+/** A `MoveCall` command as the node returns it. */
+export type Command = { package?: string; module?: string; function?: string; typeArguments?: string[]; arguments?: object[] };
+
+/** A programmable transaction of `commands`, `"split"` standing for a command that is not a call. */
+export function ptb(commands: (Command | "split")[], inputs: object[] = []): CallTransaction {
+  return {
+    kind: {
+      data: {
+        oneofKind: "programmableTransaction",
+        programmableTransaction: {
+          inputs,
+          commands: commands.map((c) =>
+            c === "split" ? { command: { oneofKind: "splitCoins" } } : { command: { oneofKind: "moveCall", moveCall: c } },
+          ),
+        },
+      },
+    },
+  };
 }
