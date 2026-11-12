@@ -1826,8 +1826,8 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   Each event costs one `GetTransaction`, counted by `maxConcurrentRequests`; once the fullnode has
   pruned the transaction (about two weeks) it costs one POST to Sui GraphQL instead, which reaches
   back to genesis. The GraphQL endpoint is the preset's for the client's `network`
-  (`https://graphql.<network>.sui.io/graphql`), or `new SuiAdapter(grpc, { graphqlUrl })`; without
-  either, a pruned read rejects. Failures follow the `withState` rules: a GraphQL HTTP failure or
+  (`https://graphql.<network>.sui.io/graphql`, Mysten Labs' service even when `grpc` reads a private
+  node), or `new SuiAdapter(grpc, { graphqlUrl })`; without either, a pruned read rejects. Failures follow the `withState` rules: a GraphQL HTTP failure or
   error is a `StreamdNetworkError` (429 with `retryAfter`), a refused id a `StreamdError`.
 
   ```ts
