@@ -1,6 +1,7 @@
 import { StreamdError } from "@streamd/core";
 import type { Endpoint } from "./args.js";
 import type { Chain } from "./chain.js";
+import type { SuiNetworkPreset } from "@streamd/sui";
 
 /**
  * `@streamd/sui` and the Sui SDK, imported only when a command runs with
@@ -22,7 +23,7 @@ export function isMissingModule(err: unknown): boolean {
 
 export async function suiChain(endpoint: Endpoint): Promise<Chain> {
   const [{ SuiGrpcClient }, sui] = await loadSui();
-  const preset = sui.networks[endpoint.network as keyof typeof sui.networks];
+  const preset = sui.networks[endpoint.network as SuiNetworkPreset["network"]];
   const grpc = (baseUrl = endpoint.nodeUrl) => new SuiGrpcClient({ ...preset, ...(baseUrl !== undefined && { baseUrl }) });
   const node = grpc();
   return {

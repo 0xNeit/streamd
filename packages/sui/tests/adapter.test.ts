@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { StreamdClient, StreamdError, StreamdNetworkError, checkAdapter, eventId } from "@streamd/core";
+import { ArchiveFallbackAdapter, StreamdClient, StreamdError, StreamdNetworkError, checkAdapter, eventId } from "@streamd/core";
 import type { EventDescriptor, MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiAdapter } from "../src/index.js";
@@ -605,6 +605,29 @@ describe("SuiAdapter received account descriptors", () => {
   });
 });
 
+describe("SuiAdapter behind ArchiveFallbackAdapter", () => {
+  // The fullnode keeps checkpoints 2 and up, so versions below 6 are pruned there; the archive keeps all.
+  const nodes = () => {
+    const fullnode = fakeLedger(SIZES, EVENTS, undefined, 2n);
+    const archive = fakeLedger(SIZES, EVENTS);
+    return { fullnode, archive, both: new ArchiveFallbackAdapter(new SuiAdapter(fullnode.client), new SuiAdapter(archive.client)) };
+  };
+
+  it("serves a start below the fullnode's edge from the archive, and one above it from the fullnode", async () => {
+    const { fullnode, archive, both } = nodes();
+    expect((await both.fetchEvents(stakes, { fromVersion: 0n, limit: 10 })).events.map(eventId)).toEqual(["0:0", "3:1", "4:0"]);
+    expect([fullnode.calls.list.length, archive.calls.list.length]).toEqual([0, 1]);
+    expect((await both.fetchEvents({ kind: "module", eventType: [SWAP] }, { fromVersion: 6n, limit: 10 })).events.map(eventId)).toEqual(["9:4"]);
+    expect([fullnode.calls.list.length, archive.calls.list.length]).toEqual([1, 1]);
+  });
+
+  it("takes the earliest version from the archive in one checkpoint read", async () => {
+    const { archive, both } = nodes();
+    expect(await both.getEarliestVersion!(stakes)).toBe(0n);
+    expect(archive.calls.checkpoints).toEqual(["0"]);
+  });
+});
+
 describe("SuiAdapter object descriptors", () => {
   const POOL = LONG("9001");
   // Versions: checkpoint 1 starts at 1, 2 at 4, 3 at 6.
@@ -732,6 +755,11 @@ describe("SuiAdapter object state", () => {
     });
   });
 
+  it("sends a pruned read to the archive behind ArchiveFallbackAdapter when the fullnode has no GraphQL endpoint", async () => {
+    const both = new ArchiveFallbackAdapter(new SuiAdapter(stateLedger(pruned(), "localnet").client), new SuiAdapter(stateLedger(touched).client));
+    expect(await both.readObjects!({ objects: [POOL] }, at)).toEqual([{ value: "new" }]);
+  });
+
   it("maps GraphQL failures", async () => {
     const answers = [
       () => new Response("slow down", { status: 429, headers: { "retry-after": "2" } }),
@@ -767,9 +795,9 @@ describe("SuiAdapter object state", () => {
       globalThis.fetch = real;
     }
     expect(asked).toBe("https://graphql.testnet.sui.io/graphql");
-    await expect(new SuiAdapter(stateLedger(pruned(), "localnet").client).readObjects({ objects: [POOL] }, at)).rejects.toThrow(
-      `This Sui node no longer has transaction ${TX}; pass graphqlUrl`,
-    );
+    const err = await new SuiAdapter(stateLedger(pruned(), "localnet").client).readObjects({ objects: [POOL] }, at).catch((e: unknown) => e);
+    expect((err as Error).message).toContain(`This Sui node no longer has transaction ${TX}; pass graphqlUrl`);
+    expect((err as StreamdNetworkError).statusCode).toBe(410);
     expect(() => new SuiAdapter(stateLedger(touched).client, { graphqlUrl: "ftp://x" })).toThrow("Not a valid graphqlUrl");
   });
 

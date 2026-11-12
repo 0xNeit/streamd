@@ -18,7 +18,7 @@ import type {
 import { attachCalls, callsOf, CALL_FIELDS, withCall, type BatchGetTransactions, type CallTransaction } from "./calls.js";
 import { toJson, type ProtoValue } from "./json.js";
 import { graphqlEffects, graphqlStatesOf, objectChangesOf, objectStatesOf, type ObjectChangeTransaction, type StateTransaction } from "./objects.js";
-import { networks, type SuiNetworkPreset } from "./networks.js";
+import { networks } from "./networks.js";
 import { coinType, micros, transfersOf, type BalanceChangeTransaction } from "./transfers.js";
 import type { Transfer } from "@streamd/core";
 
@@ -371,9 +371,7 @@ export class SuiAdapter implements EventAdapter {
     if (typeof client?.ledgerService?.listEvents !== "function") {
       throw new StreamdError("SuiAdapter needs a SuiGrpcClient from @mysten/sui/grpc");
     }
-    const preset = typeof client.network === "string" && Object.hasOwn(networks, client.network)
-      ? (networks as Record<string, SuiNetworkPreset>)[client.network]
-      : undefined;
+    const preset = client.network === "mainnet" || client.network === "testnet" || client.network === "devnet" ? networks[client.network] : undefined;
     this.graphqlUrl = httpUrl(options?.graphqlUrl ?? preset?.graphqlUrl);
     this.ledger = client.ledgerService;
     this.executor = client.transactionExecutionService;
@@ -393,7 +391,8 @@ export class SuiAdapter implements EventAdapter {
    */
   async getEarliestVersion(): Promise<bigint> {
     let low = await this.lowest();
-    let high = (await this.latest()).sequence;
+    // An archive keeps its reported lowest, so one read spares a bisection over the whole chain.
+    let high = (await this.readable(low)) !== undefined ? low : (await this.latest()).sequence;
     while (low < high) {
       const mid = (low + high) / 2n;
       if ((await this.readable(mid)) !== undefined) high = mid;
@@ -568,7 +567,8 @@ export class SuiAdapter implements EventAdapter {
    * read without writing, `null` for one it deleted or wrapped. Only objects
    * in the effects have a state at that transaction, so any other id
    * rejects. Read over gRPC while the fullnode keeps the transaction, then
-   * over Sui GraphQL, which reaches back to genesis.
+   * over Sui GraphQL, which reaches back to genesis; with no GraphQL
+   * endpoint, a pruned transaction fails with 410.
    */
   async readObjects(request: ObjectRequest, at: Pick<StreamdEvent, "version" | "transactionHash">, _descriptor?: EventDescriptor): Promise<unknown[]> {
     const ids = requireObjectRequest(request).objects.map(suiAddress);
@@ -579,8 +579,9 @@ export class SuiAdapter implements EventAdapter {
       ({ response: { transaction: found } } = await this.ledger.getTransaction({ digest, readMask: { paths: STATE_FIELDS } }));
     } catch (err) {
       if ((err as { code?: unknown } | null)?.code !== "NOT_FOUND") networkError(err);
+      // A 410, so ArchiveFallbackAdapter can send the read to an archive node.
       if (this.graphqlUrl === undefined) {
-        throw new StreamdError(`This Sui node no longer has transaction ${digest}; pass graphqlUrl to SuiAdapter to read it through Sui GraphQL`);
+        throw new StreamdNetworkError(`This Sui node no longer has transaction ${digest}; pass graphqlUrl to SuiAdapter to read it through Sui GraphQL`, 410);
       }
       return graphqlStatesOf(await graphqlEffects(this.graphqlUrl, digest), ids, digest);
     }
