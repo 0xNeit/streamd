@@ -100,6 +100,37 @@ function eventType(type: unknown): string {
   }
 }
 
+function suiAddress(value: unknown): string {
+  try {
+    return normalizeSuiAddress(value as string);
+  } catch {
+    throw new StreamdError(`Not a valid Sui address: ${String(value)}`);
+  }
+}
+
+/**
+ * `descriptor` with its types and address in the long form Sui events carry,
+ * so exact matching against delivered events holds; refuses the kinds Sui has
+ * no source for, as `fetchEvents` does.
+ */
+export function suiDescriptor(descriptor: EventDescriptor): EventDescriptor {
+  switch (descriptor?.kind) {
+    case "module": {
+      const types = descriptor.eventType;
+      return { ...descriptor, eventType: (Array.isArray(types) ? types.map(eventType) : eventType(types)) as typeof types };
+    }
+    case "account":
+      return {
+        ...descriptor,
+        accountAddress: suiAddress(descriptor.accountAddress),
+        ...(descriptor.eventTypes !== undefined && { eventTypes: descriptor.eventTypes.map(eventType) }),
+      };
+    default:
+      filterOf(descriptor);
+      return descriptor;
+  }
+}
+
 function filterOf(descriptor: EventDescriptor): EventFilter {
   const byType = (t: string): Literal => ({ negated: false, predicate: { oneofKind: "eventType", eventType: { eventType: eventType(t) } } });
   switch (descriptor?.kind) {
@@ -109,12 +140,7 @@ function filterOf(descriptor: EventDescriptor): EventFilter {
       return { terms: types.map((t) => ({ literals: [byType(t as string)] })) };
     }
     case "account": {
-      let address: string;
-      try {
-        address = normalizeSuiAddress(descriptor.accountAddress);
-      } catch {
-        throw new StreamdError(`Not a valid Sui address: ${String(descriptor.accountAddress)}`);
-      }
+      const address = suiAddress(descriptor.accountAddress);
       const sender: Literal = { negated: false, predicate: { oneofKind: "sender", sender: { address } } };
       if (descriptor.eventTypes === undefined) return { terms: [{ literals: [sender] }] };
       // An empty list matches nothing, which no filter term can say.
