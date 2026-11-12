@@ -10,3 +10,5 @@ export { ownedBy } from "./ownership.js";
 export type { OwnedByOptions } from "./ownership.js";
 export { SuiClient } from "./client.js";
 export type { SuiClientConfig } from "./client.js";
+export { checkDescriptor } from "./preflight.js";
+export type { SuiDescriptorCheck, SuiEventTypeCheck, SuiEventTypeStatus } from "./preflight.js";
