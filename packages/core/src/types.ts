@@ -193,7 +193,9 @@ export interface StreamdEvent<TData = unknown> {
    * The entry function call that produced this event, when the source had the
    * transaction in hand and its payload is an `entry_function_payload`.
    * Omitted on `handle` events, on script, multisig and encrypted payloads, and
-   * on system transactions.
+   * on system transactions. On Sui it is the one `MoveCall` command of the
+   * transaction block on the package and module the event names, and omitted
+   * when several commands or none are.
    */
   entryFunction?: EntryFunctionCall;
 }
@@ -201,7 +203,9 @@ export interface StreamdEvent<TData = unknown> {
 /**
  * An entry function call as the fullnode reports it. `arguments` are JSON Move
  * values (u64 and wider as decimal strings), and the events of one transaction
- * share these arrays.
+ * share these arrays. On Sui `arguments` are the command's references into its
+ * transaction block: `"GasCoin"`, `{ Pure: base64 BCS }`, `{ Object: id }`,
+ * `{ Input: n }`, `{ Result: n }` or `{ NestedResult: [n, m] }`.
  */
 export interface EntryFunctionCall {
   /** `address::module::name`, the address as the fullnode writes it. */
@@ -855,7 +859,8 @@ export type BatchCallback<TData = unknown> = (
 /**
  * One transaction's matching events, as `onTransaction()` delivers them.
  * `events` are in `eventIndex` order and never empty; each optional field is
- * taken from the first event carrying it.
+ * taken from the first event carrying it, and `entryFunction` only when every
+ * event carrying one carries the same.
  */
 export interface TransactionGroup<TData = unknown> {
   /** The transaction's version, shared by every event in `events`. */

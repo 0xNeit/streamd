@@ -239,7 +239,9 @@ const sub = streamd.onTransaction([swaps, deposits], async (tx) => {
 `onTransaction` calls your handler once per transaction with every matching event it
 emitted, in `eventIndex` order, and transactions in version order. `decode`, `where` and
 `withState` apply per event first, so a transaction with no match is not delivered. The
-optional fields come from the first event carrying them; `handle` events carry none.
+optional fields come from the first event carrying them, and `entryFunction` only when every
+event carrying one agrees (on Sui, events of one transaction can come from different
+commands); `handle` events carry none.
 
 Adapter pages can end partway through a transaction (handle events and `MemoryAdapter`
 page by event), so events are held by version until the page's `throughVersion` passes
@@ -1013,7 +1015,8 @@ carry `entryFunction`: `{ function, typeArguments, arguments }`, with `function`
 decimal strings). Every event of the transaction shares the same arrays. It is `undefined`
 on `handle` events, on system transactions, and on script, multisig and encrypted payloads,
 whose inner call is not read. The same holds for `eventsOf`, `previewEvents` and
-`IndexerAccountAdapter`, which map transactions the same way.
+`IndexerAccountAdapter`, which map transactions the same way. On Sui it is the transaction
+block command that emitted the event; see the Sui section.
 
 Events emitted through a legacy `EventHandle` also carry `guid`
 (`{ creationNumber: bigint, accountAddress: string }`), on every descriptor kind.
@@ -1749,8 +1752,34 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   back, as on Aptos. Each checkpoint's summary is read once and kept.
 - **Events:** `type` with long addresses, `data` the event's JSON (u64 and wider as decimal
   strings, so `decode` works), `eventIndex` Sui's, `sequenceNumber` `0n`, `transactionHash` the
-  base58 digest, `sender`, and `timestamp` from the checkpoint. There is no `guid` or
-  `entryFunction`.
+  base58 digest, `sender`, `timestamp` from the checkpoint, and `entryFunction` (below). There is
+  no `guid`.
+- **Entry functions:** a Sui transaction is a programmable transaction block of several
+  commands, and an event names the package and module of the `MoveCall` command whose top-level
+  call emitted it, but not the command. So `entryFunction` is the one `MoveCall` on that package
+  and module, `function` written `<package>::<module>::<function>` with the package the command
+  called in long form; when several commands call that module, or none does (an event from a
+  `Publish`'s `init`, a system transaction), the event has no `entryFunction` rather than a guess.
+  `fromFunction("0x...::pool::swap")` filters on it, and `onTransaction` groups name a call only
+  when all their events agree. `arguments` are the command's references into the block, resolved
+  against its inputs, since a pure input is BCS bytes whose type only the function knows:
+
+  | Argument | JSON |
+  | --- | --- |
+  | the gas coin | `"GasCoin"` |
+  | a pure input | `{ "Pure": "<base64 BCS bytes>" }` |
+  | an object input (owned, shared, immutable or receiving) | `{ "Object": "0x<64 hex>" }` |
+  | another input (a funds withdrawal) | `{ "Input": <index> }` |
+  | a command's result | `{ "Result": <command> }` |
+  | one of a command's results | `{ "NestedResult": [<command>, <index>] }` |
+
+  `ListEvents` cannot return the transaction, so `fetchEvents` reads each page's transactions
+  with one `BatchGetTransactions` (200 digests per request), masked to commands and inputs: on
+  mainnet, a 50-event page took about 960 ms against 690 ms without it. A transaction the node
+  leaves out fails the page as a `StreamdNetworkError`, so a poll retries. `eventsOf` and
+  `previewEvents` read the commands in the request they already make. Transfer records carry
+  no `entryFunction`, as on Aptos. A structural client without `batchGetTransactions` gets
+  events without it.
 - **Descriptors:** `module` (a type or a list, in one request) and `account` (events from
   transactions the address sent, optionally narrowed by `eventTypes`). Sui has no event handles
   or account resources, so `handle` and `resource` are refused.

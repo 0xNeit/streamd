@@ -12,6 +12,7 @@ import type {
   TransactionEvents,
   TransactionSimulation,
 } from "@streamd/core";
+import { attachCalls, callsOf, CALL_FIELDS, withCall, type BatchGetTransactions, type CallTransaction } from "./calls.js";
 import { toJson, type ProtoValue } from "./json.js";
 import { coinType, transfersOf, type BalanceChangeTransaction } from "./transfers.js";
 import type { Transfer } from "@streamd/core";
@@ -29,6 +30,8 @@ interface EventFilter {
 
 interface SuiEvent {
   eventType?: string;
+  packageId?: string;
+  module?: string;
   sender?: string;
   json?: ProtoValue;
   checkpoint?: bigint;
@@ -64,6 +67,7 @@ interface ExecutedTransaction {
   checkpoint?: bigint;
   effects?: { status?: { success?: boolean; error?: { description?: string } } };
   events?: { events: SuiEvent[] };
+  transaction?: CallTransaction;
 }
 interface CheckpointResponse {
   checkpoint?: {
@@ -92,6 +96,8 @@ export interface SuiLedgerClient {
     }): PromiseLike<{ response: CheckpointResponse }>;
     getTransaction(input: { digest: string; readMask: { paths: string[] } }): PromiseLike<{ response: { transaction?: ExecutedTransaction } }>;
     getServiceInfo(input: object): PromiseLike<{ response: { checkpointHeight?: bigint; lowestAvailableCheckpoint?: bigint } }>;
+    /** Needed only for `entryFunction` on `fetchEvents`' events, which go without it when this is absent. */
+    batchGetTransactions?: BatchGetTransactions;
     /** Needed only for `fetchTransfers`. */
     listTransactions?(
       input: QueryBounds & { readMask: { paths: string[] }; filter?: { terms: { literals: TransactionLiteral[] }[] } },
@@ -123,9 +129,15 @@ const ITEM_LIMIT = 1;
 const SCAN_LIMIT = 2;
 const DEFAULT_LIMIT = 25;
 const KEPT_SUMMARIES = 4096;
-const EVENT_FIELDS = ["event_type", "sender", "json", "checkpoint", "transaction_digest", "transaction_index", "event_index"];
-const TRANSACTION_FIELDS = ["digest", "checkpoint", "effects.status", "events.events.event_type", "events.events.sender", "events.events.json"];
-const SIMULATION_FIELDS = ["transaction.effects.status", "transaction.events.events.event_type", "transaction.events.events.sender", "transaction.events.events.json"];
+const EVENT_FIELDS = ["event_type", "package_id", "module", "sender", "json", "checkpoint", "transaction_digest", "transaction_index", "event_index"];
+const TRANSACTION_FIELDS = [
+  "digest",
+  "checkpoint",
+  "effects.status",
+  ...["event_type", "package_id", "module", "sender", "json"].map((f) => `events.events.${f}`),
+  ...CALL_FIELDS.map((f) => `transaction.${f}`),
+];
+const SIMULATION_FIELDS = TRANSACTION_FIELDS.filter((f) => f !== "digest" && f !== "checkpoint").map((f) => `transaction.${f}`);
 const TRANSFER_FIELDS = [
   "digest",
   "checkpoint",
@@ -353,11 +365,26 @@ export class SuiAdapter implements EventAdapter {
     if (descriptor.kind === "account" && descriptor.eventTypes?.length === 0) {
       return { events: [], nextCursor: options.cursor, hasMore: false };
     }
-    return this.walk<ListEventsFrame>(
+    const origins = new Map<StreamdEvent, SuiEvent>();
+    const page = await this.walk<ListEventsFrame>(
       options,
       (bounds) => this.ledger.listEvents({ readMask: { paths: EVENT_FIELDS }, filter, ...bounds }),
-      async (frame) => (frame.event === undefined ? [] : [await this.toEvent(frame.event)]),
+      async ({ event: raw }) => {
+        if (raw === undefined) return [];
+        const event = await this.toEvent(raw);
+        origins.set(event, raw);
+        return [event];
+      },
     );
+    const batch = this.ledger.batchGetTransactions;
+    if (batch !== undefined && page.events.length > 0) {
+      try {
+        await attachCalls(batch.bind(this.ledger), page.events.map((e) => [e, origins.get(e)!]));
+      } catch (err) {
+        networkError(err);
+      }
+    }
+    return page;
   }
 
   /**
@@ -515,9 +542,10 @@ export class SuiAdapter implements EventAdapter {
     if (checkpoint === undefined) return undefined;
     const status = statusOf(found, `transaction ${digest}`);
     const transactionIndex = await this.positionIn(checkpoint, digest);
+    const calls = callsOf(found!.transaction);
     const events = await Promise.all(
-      (found!.events?.events ?? []).map((raw, eventIndex) =>
-        this.toEvent({ ...raw, checkpoint, transactionIndex, eventIndex, transactionDigest: digest }),
+      (found!.events?.events ?? []).map(async (raw, eventIndex) =>
+        withCall(await this.toEvent({ ...raw, checkpoint, transactionIndex, eventIndex, transactionDigest: digest }), calls, raw),
       ),
     );
     return { version: (await this.base(checkpoint)) + transactionIndex, ...status, events };
@@ -548,7 +576,8 @@ export class SuiAdapter implements EventAdapter {
     } catch (err) {
       networkError(err);
     }
-    const events = (found?.events?.events ?? []).map((raw, eventIndex) => this.shaped(raw, next, eventIndex));
+    const calls = callsOf(found?.transaction);
+    const events = (found?.events?.events ?? []).map((raw, eventIndex) => withCall(this.shaped(raw, next, eventIndex), calls, raw));
     return { version: next, ...statusOf(found, "a simulation"), events };
   }
 
