@@ -591,3 +591,134 @@ describe("SuiAdapter object descriptors", () => {
     await expect(new SuiAdapter(fakeLedger(SIZES, []).client).fetchEvents(pool, {})).rejects.toThrow("listTransactions");
   });
 });
+
+describe("SuiAdapter object state", () => {
+  const POOL = LONG("9001");
+  const CLOCK = LONG("6");
+  const TX = digest(7);
+  const at = { version: 5n, transactionHash: TX };
+  const json = (value: string) => ({ kind: { oneofKind: "structValue" as const, structValue: { fields: { value: { kind: { oneofKind: "stringValue" as const, stringValue: value } } } } } });
+  const touched = {
+    effects: {
+      changedObjects: [{ objectId: POOL, inputVersion: 3n, outputState: 2, outputVersion: 4n }],
+      unchangedConsensusObjects: [{ kind: 1, objectId: CLOCK, version: 9n }],
+    },
+    objects: { objects: [{ objectId: POOL, version: 3n, json: json("old") }, { objectId: POOL, version: 4n, json: json("new") }, { objectId: CLOCK, version: 9n, json: json("tick") }] },
+  };
+  const graphqlAnswer = {
+    data: {
+      transaction: {
+        effects: {
+          objectChanges: { pageInfo: { hasNextPage: false }, nodes: [{ address: POOL, outputState: { address: POOL, version: 4, asMoveObject: { contents: { json: { value: "new" } } } } }] },
+          unchangedConsensusObjects: { pageInfo: { hasNextPage: false }, nodes: [] },
+        },
+      },
+    },
+  };
+
+  /** A ledger whose `getTransaction` answers `transaction`, or throws it when it is an error. */
+  function stateLedger(transaction: unknown, network?: string) {
+    const { client } = fakeLedger([1], []);
+    const masks: string[][] = [];
+    client.ledgerService.getTransaction = async ({ readMask }) => {
+      masks.push(readMask.paths);
+      if (transaction instanceof Error) throw transaction;
+      return { response: { transaction: transaction as never } };
+    };
+    return { client: network === undefined ? client : { ...client, network }, masks };
+  }
+
+  /** A local Sui GraphQL stand-in answering each POST with the next of `answers`. */
+  async function graphql(answers: (() => Response)[], run: (url: string, bodies: unknown[]) => Promise<void>) {
+    const bodies: unknown[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        bodies.push(await request.json());
+        return answers.shift()!();
+      },
+    });
+    try {
+      await run(`http://localhost:${server.port}/graphql`, bodies);
+    } finally {
+      server.stop(true);
+    }
+  }
+  const pruned = () => Object.assign(new Error(`Transaction ${TX} not found`), { code: "NOT_FOUND" });
+
+  it("reads touched objects from one GetTransaction while the node keeps it", async () => {
+    const { client, masks } = stateLedger(touched);
+    expect(await new SuiAdapter(client).readObjects({ objects: ["0x6", "0x9001"] }, at)).toEqual([{ value: "tick" }, { value: "new" }]);
+    expect(masks).toEqual([
+      ["effects.changed_objects", "effects.unchanged_consensus_objects", "objects.objects.object_id", "objects.objects.version", "objects.objects.json"],
+    ]);
+  });
+
+  it("reads a pruned transaction through GraphQL, the digest sent as a variable", async () => {
+    await graphql([() => Response.json(graphqlAnswer)], async (graphqlUrl, bodies) => {
+      const adapter = new SuiAdapter(stateLedger(pruned()).client, { graphqlUrl });
+      expect(await adapter.readObjects({ objects: [POOL] }, at)).toEqual([{ value: "new" }]);
+      const [body] = bodies as { query: string; variables: unknown }[];
+      expect(body!.variables).toEqual({ digest: TX });
+      expect(body!.query).toContain("transaction(digest: $digest)");
+    });
+  });
+
+  it("maps GraphQL failures", async () => {
+    const answers = [
+      () => new Response("slow down", { status: 429, headers: { "retry-after": "2" } }),
+      () => new Response("boom", { status: 500 }),
+      () => Response.json({ errors: [{ message: "bad query" }] }),
+      () => new Response("not json"),
+      () => Response.json({ data: { transaction: null } }),
+      () => Response.json({ data: { transaction: { effects: { objectChanges: {} } } } }),
+    ];
+    await graphql(answers, async (graphqlUrl) => {
+      const adapter = new SuiAdapter(stateLedger(pruned()).client, { graphqlUrl });
+      const read = () => adapter.readObjects({ objects: [POOL] }, at).catch((e: unknown) => e as StreamdError);
+      const limited = await read();
+      expect(limited).toBeInstanceOf(StreamdNetworkError);
+      expect(limited).toMatchObject({ statusCode: 429, retryAfter: 2000 });
+      expect(await read()).toMatchObject({ name: "StreamdNetworkError", statusCode: 500 });
+      expect(await read()).toMatchObject({ name: "StreamdNetworkError", message: expect.stringContaining("bad query") });
+      for (const message of ["returned no JSON", "knows no transaction", "unexpected shape"]) {
+        const err = await read();
+        expect(err).not.toBeInstanceOf(StreamdNetworkError);
+        expect(err.message).toContain(message);
+      }
+    });
+  });
+
+  it("defaults the GraphQL URL from the client's network, and rejects a pruned read without one", async () => {
+    let asked: string | undefined;
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => ((asked = url), Response.json(graphqlAnswer))) as typeof fetch;
+    try {
+      await new SuiAdapter(stateLedger(pruned(), "testnet").client).readObjects({ objects: [POOL] }, at);
+    } finally {
+      globalThis.fetch = real;
+    }
+    expect(asked).toBe("https://graphql.testnet.sui.io/graphql");
+    await expect(new SuiAdapter(stateLedger(pruned(), "localnet").client).readObjects({ objects: [POOL] }, at)).rejects.toThrow(
+      `This Sui node no longer has transaction ${TX}; pass graphqlUrl`,
+    );
+    expect(() => new SuiAdapter(stateLedger(touched).client, { graphqlUrl: "ftp://x" })).toThrow("Not a valid graphqlUrl");
+  });
+
+  it("refuses bad input before any request, and passes other gRPC failures on", async () => {
+    const { client, masks } = stateLedger(touched);
+    const adapter = new SuiAdapter(client);
+    await expect(adapter.readObjects({ objects: ["0xzz"] }, at)).rejects.toThrow("Not a valid Sui address");
+    await expect(adapter.readObjects({ objects: [] }, at)).rejects.toThrow("non-empty array");
+    await expect(adapter.readObjects({ objects: [POOL] }, { version: 5n })).rejects.toThrow("needs the event's transactionHash");
+    await expect(adapter.readObjects({ objects: [POOL] }, { version: 5n, transactionHash: "D1t1" })).rejects.toThrow("Not a valid Sui transaction digest");
+    expect(masks).toHaveLength(0);
+    await expect(adapter.readObjects({ objects: [LONG("9009")] }, at)).rejects.toThrow("did not write or read");
+    const busy = new SuiAdapter(stateLedger(Object.assign(new Error("busy"), { code: "RESOURCE_EXHAUSTED" })).client);
+    await expect(busy.readObjects({ objects: [POOL] }, at)).rejects.toMatchObject({ statusCode: 429 });
+  });
+
+  it("keeps no view", () => {
+    expect((new SuiAdapter(stateLedger(touched).client) as { view?: unknown }).view).toBeUndefined();
+  });
+});

@@ -1,5 +1,5 @@
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
-import { StreamdError } from "@streamd/core";
+import { StreamdError, StreamdNetworkError, parseRetryAfter } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
 import { toJson, type ProtoValue } from "./json.js";
 import { micros } from "./transfers.js";
@@ -152,4 +152,47 @@ export function graphqlStatesOf(effects: GraphqlEffects, ids: readonly string[],
     }
     throw untouched(id, digest);
   });
+}
+
+const OBJECT_FIELDS = "address version asMoveObject { contents { json } }";
+const STATE_QUERY = `query ($digest: String!) { transaction(digest: $digest) { effects {
+  objectChanges { pageInfo { hasNextPage } nodes { address outputState { ${OBJECT_FIELDS} } } }
+  unchangedConsensusObjects { pageInfo { hasNextPage } nodes { __typename ... on ConsensusObjectRead { object { ${OBJECT_FIELDS} } } } }
+} } }`;
+
+/**
+ * The effects of transaction `digest` from the Sui GraphQL service at `url`,
+ * which keeps history the fullnode has pruned: one POST, no client library.
+ */
+export async function graphqlEffects(url: string, digest: string): Promise<GraphqlEffects> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: STATE_QUERY, variables: { digest } }),
+    });
+  } catch (err) {
+    throw new StreamdNetworkError(`Sui GraphQL request failed: ${err instanceof Error ? err.message : String(err)}`, undefined, err);
+  }
+  if (!response.ok) {
+    const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
+    throw new StreamdNetworkError(`Sui GraphQL request failed with HTTP ${response.status}`, response.status, undefined, retryAfter);
+  }
+  let body: { data?: { transaction?: { effects?: GraphqlEffects } | null }; errors?: { message?: unknown }[] } | null;
+  try {
+    body = (await response.json()) as typeof body;
+  } catch (err) {
+    throw new StreamdError(`Sui GraphQL returned no JSON for transaction ${digest}`, err);
+  }
+  if (Array.isArray(body?.errors) && body.errors.length > 0) {
+    throw new StreamdNetworkError(`Sui GraphQL refused the read of ${digest}: ${String(body.errors[0]?.message).slice(0, 200)}`);
+  }
+  const transaction = body?.data?.transaction;
+  if (transaction === null) throw new StreamdError(`Sui GraphQL knows no transaction ${digest}`);
+  const effects = transaction?.effects;
+  if (typeof effects !== "object" || effects === null) {
+    throw new StreamdError(`Sui GraphQL returned the effects of ${digest} in an unexpected shape`);
+  }
+  return effects;
 }
