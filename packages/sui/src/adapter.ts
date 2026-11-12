@@ -148,7 +148,7 @@ interface Summary {
 }
 
 /** A gRPC failure as the poller and queries expect one: a network error, 429 when rate-limited, 410 when pruned. */
-function networkError(err: unknown): never {
+export function networkError(err: unknown): never {
   if (err instanceof StreamdError) throw err;
   const code = (err as { code?: unknown } | null)?.code;
   // A checkpoint the node no longer has is pruned history, as a 410 is on the Aptos fullnode.
