@@ -1,6 +1,5 @@
 import { createContext, createElement, useContext, type ReactNode } from "react";
 import { StreamdError, type StreamdClient } from "@streamd/core";
-import type { AptosClient } from "@streamd/aptos";
 
 const ClientContext = createContext<StreamdClient | undefined>(undefined);
 
@@ -26,11 +25,11 @@ export function useStreamdClient(client?: StreamdClient): StreamdClient {
   return resolved;
 }
 
-/** `useStreamdClient`, refusing a client without the Aptos methods. */
-export function useAptosClient(client?: AptosClient): AptosClient {
+/** `useStreamdClient`, refusing a client without `method`, which an `AptosClient` and a `SuiClient` both have. */
+export function useClientWith<T extends StreamdClient>(method: "eventsOf" | "transfers", client?: T): T {
   const resolved = useStreamdClient(client);
-  if (typeof (resolved as { eventsOf?: unknown }).eventsOf !== "function") {
-    throw new StreamdError("This hook needs an AptosClient from @streamd/aptos");
+  if (typeof (resolved as unknown as Record<string, unknown>)[method] !== "function") {
+    throw new StreamdError(`This hook needs a client with ${method}, such as an AptosClient or a SuiClient`);
   }
-  return resolved as AptosClient;
+  return resolved as T;
 }

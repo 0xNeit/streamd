@@ -12,7 +12,8 @@
   "scripts": {
     "build": "bun build.ts",
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:integration": "STREAMD_INTEGRATION=1 bun test tests/integration"
   },
   "dependencies": {
     "@streamd/aptos": "workspace:*",

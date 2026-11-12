@@ -736,3 +736,85 @@ describe("parseCommand compare", () => {
     });
   });
 });
+
+describe("--chain sui on every command", () => {
+  const SUI_TYPE = "0x3::validator::StakingRequestEvent";
+  const DIGEST = "Da2zqzrgB4Yis2qEgjVYh5N4Go1tXXDesyo4BKBkonqS";
+  const GRPC = "https://sui.example:443";
+  const SUI_ADDR = `0x${"0".repeat(62)}a1`;
+  const commands: [string, string[]][] = [
+    ["tail", [SUI_TYPE]],
+    ["forward", ["--to", "https://hook.example", SUI_TYPE]],
+    ["store", ["--db", "e.db", SUI_TYPE]],
+    ["query", ["--from-version", "1", SUI_TYPE]],
+    ["record", ["--from-version", "1", "--to-version", "2", SUI_TYPE]],
+    ["compare", ["--against", GRPC, "--from-version", "1", "--to-version", "2", SUI_TYPE]],
+    ["check", [SUI_TYPE]],
+    ["tx", [DIGEST]],
+  ];
+
+  function withKey<T>(fn: () => T): T {
+    const saved = process.env.APTOS_API_KEY;
+    process.env.APTOS_API_KEY = "from-env";
+    try {
+      return fn();
+    } finally {
+      if (saved === undefined) delete process.env.APTOS_API_KEY;
+      else process.env.APTOS_API_KEY = saved;
+    }
+  }
+
+  it.each(commands)("%s takes it, with a Sui network and gRPC URL and no key from the environment", (command, rest) => {
+    const parsed = withKey(() => parseCommand([command, "--chain", "sui", "--network", "testnet", "--node-url", GRPC, ...rest]));
+    expect(parsed.command).toBe(command as typeof parsed.command);
+    const options = (parsed as unknown as { options: Record<string, unknown> }).options;
+    expect(options).toMatchObject({ chain: "sui", network: "testnet", nodeUrl: GRPC });
+    expect(options.apiKey).toBeUndefined();
+  });
+
+  it.each(commands)("%s leaves chain unset for --chain aptos and by default", (command, rest) => {
+    expect((parseCommand([command, ...rest.map((a) => (a === DIGEST ? `0x${"ab".repeat(32)}` : a))]) as { options: object }).options).not.toHaveProperty("chain");
+    expect((parseCommand([command, "--chain", "aptos", ...rest.map((a) => (a === DIGEST ? `0x${"ab".repeat(32)}` : a))]) as { options: object }).options).not.toHaveProperty("chain");
+  });
+
+  it.each(commands)("%s refuses a Movement network, an API key and an unknown chain", (command, rest) => {
+    rejects([command, "--chain", "sui", "--network", "movement-mainnet", ...rest], /--network with --chain sui must be one of mainnet, testnet, devnet/);
+    rejects([command, "--chain", "sui", "--api-key", "k", ...rest], /--api-key is not sent to Sui nodes/);
+    rejects([command, "--chain", "evm", ...rest], /--chain must be aptos or sui: evm/);
+  });
+
+  it("builds module and account descriptors, the address in long form", () => {
+    expect(tail("--chain", "sui", SUI_TYPE).descriptor).toEqual({ kind: "module", eventType: [SUI_TYPE] });
+    expect(tail("--chain", "sui", "--account", "0xa1").descriptor).toEqual({ kind: "account", accountAddress: SUI_ADDR });
+    expect(tail("--chain", "sui", "--account", "0xa1", SUI_TYPE).descriptor).toEqual({ kind: "account", accountAddress: SUI_ADDR, eventTypes: [SUI_TYPE] });
+  });
+
+  it.each([
+    [["tail", "--chain", "sui", "--account", ADDR, "--handle", "0x1::m::S", "--field", "f"], /--handle is not available with --chain sui: Sui has no event handles/],
+    [["tail", "--chain", "sui", "--account", ADDR, "--field", "f"], /--field is not available with --chain sui/],
+    [["query", "--chain", "sui", "--from-version", "1", "--account", ADDR, "--creation-number", "3"], /--creation-number is not available with --chain sui/],
+    [["forward", "--chain", "sui", "--to", "https://h.example", "--account", ADDR, "--resource", "0x2::m::R"], /--resource is not available with --chain sui/],
+    [["record", "--chain", "sui", "--from-version", "1", "--to-version", "2", "--account", ADDR, "--resource", "0x2::m::R"], /--resource is not available with --chain sui/],
+    [["tail", "--chain", "sui", "--account", "nothex"], /Not a valid Sui address: nothex/],
+    [["tx", "--chain", "sui", `0x${"ab".repeat(32)}`], /not a Sui transaction digest/],
+    [["tx", "--chain", "sui", "0OIl0OIl0OIl0OIl0OIl0OIl0OIl0OIl"], /not a Sui transaction digest/],
+    [["tx", DIGEST], /not a transaction hash/],
+  ])("refuses %j", (argv, message) => {
+    rejects(argv as string[], message as RegExp);
+  });
+
+  it("checks the API key after the other flags, as before", () => {
+    rejects(["tail", "--api-key", "", "--from-version", "x", TYPE], /--from-version must be a non-negative integer/);
+    rejects(["query", "--api-key", "", "--from-version", "1", "--limit", "0", TYPE], /--limit/);
+    rejects(["record", "--api-key", "", "--from-version", "1", "--to-version", "2", "--limit", "0", TYPE], /--limit/);
+    rejects(["tx", "--api-key", "", "--timeout", "x", `0x${"ab".repeat(32)}`], /--timeout/);
+  });
+
+  it("takes --from-time and a tx timeout under sui", () => {
+    expect(tail("--chain", "sui", "--from-time", "1970-01-02", SUI_TYPE).fromTime).toBe(86_400_000_000n);
+    expect(parseCommand(["tx", "--chain", "sui", "--timeout", "5", DIGEST])).toEqual({
+      command: "tx",
+      options: { chain: "sui", hash: DIGEST, network: "mainnet", timeout: 5 },
+    });
+  });
+});
