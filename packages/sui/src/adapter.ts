@@ -1,5 +1,5 @@
 import { bcs } from "@mysten/sui/bcs";
-import { isValidTransactionDigest, normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
+import { isValidSuiAddress, isValidTransactionDigest, normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
 import type {
   BlockHeights,
@@ -13,6 +13,8 @@ import type {
   TransactionSimulation,
 } from "@streamd/core";
 import { toJson, type ProtoValue } from "./json.js";
+import { coinType, transfersOf, type BalanceChangeTransaction } from "./transfers.js";
+import type { Transfer } from "@streamd/core";
 
 /** The `ListEvents` filter: terms are ORed, the literals inside one are ANDed. */
 interface Literal {
@@ -34,10 +36,28 @@ interface SuiEvent {
   transactionIndex?: bigint;
   eventIndex?: number;
 }
-interface ListEventsFrame {
-  event?: SuiEvent;
+interface Frame {
   watermark?: { cursor?: Uint8Array; checkpoint?: bigint };
   end?: { reason?: number };
+}
+interface ListEventsFrame extends Frame {
+  event?: SuiEvent;
+}
+interface ListTransactionsFrame extends Frame {
+  transaction?: BalanceChangeTransaction & { checkpoint?: bigint; transactionIndex?: bigint };
+}
+/** An `EventPage` of transfer records. */
+export type TransferPage = Omit<EventPage, "events"> & { events: StreamdEvent<Transfer>[] };
+
+/** The bounds and paging every `List*` query takes. */
+interface QueryBounds {
+  startCheckpoint?: bigint;
+  endCheckpoint?: bigint;
+  options: { limit: number; ordering: number; after?: Uint8Array };
+}
+interface TransactionLiteral {
+  negated: boolean;
+  predicate: { oneofKind: "affectedAddress"; affectedAddress: { address: string } };
 }
 interface ExecutedTransaction {
   digest?: string;
@@ -72,6 +92,16 @@ export interface SuiLedgerClient {
     }): PromiseLike<{ response: CheckpointResponse }>;
     getTransaction(input: { digest: string; readMask: { paths: string[] } }): PromiseLike<{ response: { transaction?: ExecutedTransaction } }>;
     getServiceInfo(input: object): PromiseLike<{ response: { checkpointHeight?: bigint; lowestAvailableCheckpoint?: bigint } }>;
+    /** Needed only for `fetchTransfers`. */
+    listTransactions?(
+      input: QueryBounds & { readMask: { paths: string[] }; filter?: { terms: { literals: TransactionLiteral[] }[] } },
+      options?: { abort?: AbortSignal },
+    ): { responses: AsyncIterable<ListTransactionsFrame> };
+  };
+  /** Needed only for `getBalance` and `coinInfo`. */
+  stateService?: {
+    getBalance(input: { owner: string; coinType: string }): PromiseLike<{ response: { balance?: { balance?: bigint } } }>;
+    getCoinInfo(input: { coinType: string }): PromiseLike<{ response: { metadata?: { symbol?: string; decimals?: number } } }>;
   };
   /** Needed only for `simulateTransactionEvents`. */
   transactionExecutionService?: {
@@ -96,6 +126,17 @@ const KEPT_SUMMARIES = 4096;
 const EVENT_FIELDS = ["event_type", "sender", "json", "checkpoint", "transaction_digest", "transaction_index", "event_index"];
 const TRANSACTION_FIELDS = ["digest", "checkpoint", "effects.status", "events.events.event_type", "events.events.sender", "events.events.json"];
 const SIMULATION_FIELDS = ["transaction.effects.status", "transaction.events.events.event_type", "transaction.events.events.sender", "transaction.events.events.json"];
+const TRANSFER_FIELDS = [
+  "digest",
+  "checkpoint",
+  "transaction_index",
+  "timestamp",
+  "transaction.sender",
+  "transaction.gas_payment.owner",
+  "effects.gas_used",
+  "balance_changes",
+  "events.events.event_type",
+];
 const CHECKS_ENABLED = 0;
 const SUMMARY_FIELDS = ["sequence_number", "summary.total_network_transactions", "summary.timestamp"];
 
@@ -126,12 +167,15 @@ function eventType(type: unknown): string {
   }
 }
 
-function suiAddress(value: unknown): string {
+export function suiAddress(value: unknown): string {
+  let address: string | undefined;
   try {
-    return normalizeSuiAddress(value as string);
+    address = normalizeSuiAddress(value as string);
   } catch {
-    throw new StreamdError(`Not a valid Sui address: ${String(value)}`);
+    // Falls through to the refusal below.
   }
+  if (address === undefined || !isValidSuiAddress(address)) throw new StreamdError(`Not a valid Sui address: ${String(value)}`);
+  return address;
 }
 
 /**
@@ -226,6 +270,7 @@ const fromBase64 = (text: string) => {
 export class SuiAdapter implements EventAdapter {
   private readonly ledger: SuiLedgerClient["ledgerService"];
   private readonly executor: SuiLedgerClient["transactionExecutionService"];
+  private readonly stateService: SuiLedgerClient["stateService"];
   private readonly summaries = new Map<bigint, Promise<Summary>>();
 
   constructor(client: SuiLedgerClient) {
@@ -234,6 +279,7 @@ export class SuiAdapter implements EventAdapter {
     }
     this.ledger = client.ledgerService;
     this.executor = client.transactionExecutionService;
+    this.stateService = client.stateService;
   }
 
   /** The last transaction of the newest checkpoint. */
@@ -305,6 +351,100 @@ export class SuiAdapter implements EventAdapter {
     if (descriptor.kind === "account" && descriptor.eventTypes?.length === 0) {
       return { events: [], nextCursor: options.cursor, hasMore: false };
     }
+    return this.walk<ListEventsFrame>(
+      options,
+      (bounds) => this.ledger.listEvents({ readMask: { paths: EVENT_FIELDS }, filter, ...bounds }),
+      async (frame) => (frame.event === undefined ? [] : [await this.toEvent(frame.event)]),
+    );
+  }
+
+  /**
+   * The transfers each transaction made, from its balance changes, paged as
+   * `fetchEvents` pages events, with `limit` counting transactions. Each
+   * address's records sum to its change in the transaction, less the gas fee:
+   * per coin type, each receiver takes from the earliest sender with outflow
+   * left. `eventIndex` is the transaction's event count plus the record's
+   * position, so a record never shares an id with an event. `account` is
+   * sent to the node as an affected address, then keeps the records naming
+   * it; `asset` is a coin type, matched before pairing.
+   */
+  async fetchTransfers(
+    options: FetchOptions = {},
+    filter: { account?: string; asset?: string } = {},
+  ): Promise<TransferPage> {
+    if (typeof this.ledger.listTransactions !== "function") {
+      throw new StreamdError("fetchTransfers needs the SuiGrpcClient's ledgerService.listTransactions");
+    }
+    const account = filter.account === undefined ? undefined : suiAddress(filter.account);
+    const asset = filter.asset === undefined ? undefined : coinType(filter.asset);
+    const affected: TransactionLiteral = { negated: false, predicate: { oneofKind: "affectedAddress", affectedAddress: { address: account! } } };
+    const page = await this.walk<ListTransactionsFrame>(
+      options,
+      (bounds) =>
+        this.ledger.listTransactions!({
+          readMask: { paths: TRANSFER_FIELDS },
+          ...(account !== undefined && { filter: { terms: [{ literals: [affected] }] } }),
+          ...bounds,
+        }),
+      async ({ transaction }) => {
+        if (transaction === undefined) return [];
+        const { checkpoint, transactionIndex } = transaction;
+        if (checkpoint === undefined || transactionIndex === undefined) {
+          throw new StreamdError("Sui node returned a transaction without its position");
+        }
+        const records = transfersOf(transaction, (await this.base(checkpoint)) + transactionIndex, asset);
+        return account === undefined ? records : records.filter(({ data }) => data.from === account || data.to === account);
+      },
+    );
+    return page as TransferPage;
+  }
+
+  /** `owner`'s total balance of `type`, a coin type, at the node's latest state: Sui reads no balance at a version. */
+  async getBalance(owner: string, type: string): Promise<bigint> {
+    const state = this.state("getBalance");
+    const [address, coin] = [suiAddress(owner), coinType(type)];
+    let found: bigint | undefined;
+    try {
+      found = (await state.getBalance({ owner: address, coinType: coin })).response.balance?.balance;
+    } catch (err) {
+      networkError(err);
+    }
+    if (typeof found !== "bigint") throw new StreamdError(`Sui node returned no ${coin} balance for ${address}`);
+    return found;
+  }
+
+  /** A coin type's symbol and decimals, or `undefined` when the node knows no metadata for it. */
+  async coinInfo(type: string): Promise<{ symbol: string; decimals: number } | undefined> {
+    const state = this.state("coinInfo");
+    const coin = coinType(type);
+    let metadata: { symbol?: string; decimals?: number } | undefined;
+    try {
+      ({ response: { metadata } } = await state.getCoinInfo({ coinType: coin }));
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code === "NOT_FOUND") return undefined;
+      networkError(err);
+    }
+    if (metadata === undefined) return undefined;
+    const { symbol, decimals } = metadata;
+    if (typeof symbol !== "string" || !Number.isInteger(decimals)) throw new StreamdError(`The metadata of ${coin} is malformed`);
+    return { symbol, decimals: decimals! };
+  }
+
+  private state(method: string): NonNullable<SuiLedgerClient["stateService"]> {
+    if (this.stateService === undefined) throw new StreamdError(`${method} needs the SuiGrpcClient's stateService`);
+    return this.stateService;
+  }
+
+  /**
+   * One page of a `List*` query from `options`: its checkpoint bounds, the
+   * frames `open` streams, each turned into events by `toEvents`, and the
+   * cursor, `hasMore` and `throughVersion` its watermark gives.
+   */
+  private async walk<F extends Frame>(
+    options: FetchOptions,
+    open: (bounds: QueryBounds) => { responses: AsyncIterable<F> },
+    toEvents: (frame: F) => Promise<StreamdEvent[]>,
+  ): Promise<EventPage> {
     const limit = options.limit ?? DEFAULT_LIMIT;
     if (!Number.isSafeInteger(limit) || limit < 0) throw new StreamdError(`Not a valid limit: ${limit}`);
     const after = options.cursor === undefined ? undefined : fromBase64(options.cursor);
@@ -316,11 +456,9 @@ export class SuiAdapter implements EventAdapter {
     // The node's end bound is exclusive: stop after the checkpoint holding toVersion.
     const endCheckpoint = toVersion === undefined ? undefined : (await this.checkpointOf(toVersion)) + 1n;
 
-    const frames: ListEventsFrame[] = [];
+    const frames: F[] = [];
     try {
-      const call = this.ledger.listEvents({
-        readMask: { paths: EVENT_FIELDS },
-        filter,
+      const call = open({
         ...(startCheckpoint !== undefined && { startCheckpoint }),
         ...(endCheckpoint !== undefined && { endCheckpoint }),
         options: { limit, ordering: ASCENDING, ...(after !== undefined && { after }) },
@@ -331,16 +469,16 @@ export class SuiAdapter implements EventAdapter {
     }
 
     const events: StreamdEvent[] = [];
-    let watermark: ListEventsFrame["watermark"];
+    let watermark: Frame["watermark"];
     let reason: number | undefined;
     for (const frame of frames) {
       if (frame.watermark?.cursor !== undefined) watermark = frame.watermark;
       if (frame.end?.reason !== undefined) reason = frame.end.reason;
-      if (frame.event === undefined) continue;
-      const event = await this.toEvent(frame.event);
-      if (fromVersion !== undefined && after === undefined && event.version < fromVersion) continue;
-      if (toVersion !== undefined && event.version > toVersion) continue;
-      events.push(event);
+      for (const event of await toEvents(frame)) {
+        if (fromVersion !== undefined && after === undefined && event.version < fromVersion) continue;
+        if (toVersion !== undefined && event.version > toVersion) continue;
+        events.push(event);
+      }
     }
     const page: EventPage = {
       events,
