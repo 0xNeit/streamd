@@ -318,6 +318,34 @@ describe("SuiClient object descriptors", () => {
   });
 });
 
+describe("SuiClient received account descriptors", () => {
+  const SIZES = [1, 3, 2];
+  const ALICE = LONG("a11ce");
+  const BOB = LONG("b0b");
+  const TYPE = `${LONG("abc")}::pool::Swap`;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const received = { kind: "account" as const, accountAddress: "0xa11ce", received: true };
+
+  it("delivers events of transactions the address received to getEvents and on, keyed apart from the signed walk", async () => {
+    const listed: FakeListed[] = [
+      { cp: 1n, ti: 1n, sender: BOB, typed: [{ type: TYPE }], changes: [[ALICE, TYPE, 1n]] },
+      { cp: 2n, ti: 0n, sender: BOB, typed: [{ type: TYPE }], changes: [[BOB, TYPE, 1n]] },
+    ];
+    const wired = withTransfers(fakeLedger(SIZES, []).client, SIZES, listed);
+    const sui = new SuiClient({ sui: wired.client as unknown as SuiGrpcClient });
+    expect((await sui.getEvents(received, { fromVersion: 0n })).map((e) => [e.version, e.sender])).toEqual([[2n, BOB]]);
+    const seen: bigint[] = [];
+    const sub = sui.on(received, (e) => void seen.push(e.version), { fromVersion: 3n, pollInterval: 5 });
+    expect(sui.listenerCount({ ...received, accountAddress: ALICE })).toBe(1);
+    expect(sui.listenerCount({ kind: "account", accountAddress: ALICE })).toBe(0);
+    listed.push({ cp: 2n, ti: 1n, sender: BOB, typed: [{ type: TYPE }], changes: [[ALICE, TYPE, 2n]] });
+    await wait(40);
+    expect(seen).toEqual([5n]);
+    sub.unsubscribe();
+    await expect(sui.eventsOf(digest(1), received)).rejects.toThrow("received account descriptor");
+  });
+});
+
 describe("SuiClient object state", () => {
   const POOL = LONG("9001");
   const json = { kind: { oneofKind: "structValue" as const, structValue: { fields: { value: { kind: { oneofKind: "stringValue" as const, stringValue: "after" } } } } } };

@@ -2,6 +2,7 @@ import { bcs } from "@mysten/sui/bcs";
 import { isValidSuiAddress, isValidTransactionDigest, normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { StreamdError, StreamdNetworkError, requireObjectRequest } from "@streamd/core";
 import type {
+  AccountEventDescriptor,
   BlockHeights,
   BlockInfo,
   EventAdapter,
@@ -18,7 +19,7 @@ import { attachCalls, callsOf, CALL_FIELDS, withCall, type BatchGetTransactions,
 import { toJson, type ProtoValue } from "./json.js";
 import { graphqlEffects, graphqlStatesOf, objectChangesOf, objectStatesOf, type ObjectChangeTransaction, type StateTransaction } from "./objects.js";
 import { networks, type SuiNetworkPreset } from "./networks.js";
-import { coinType, transfersOf, type BalanceChangeTransaction } from "./transfers.js";
+import { coinType, micros, transfersOf, type BalanceChangeTransaction } from "./transfers.js";
 import type { Transfer } from "@streamd/core";
 
 /** The `ListEvents` filter: terms are ORed, the literals inside one are ANDed. */
@@ -51,7 +52,14 @@ interface ListEventsFrame extends Frame {
   event?: SuiEvent;
 }
 interface ListTransactionsFrame extends Frame {
-  transaction?: BalanceChangeTransaction & ObjectChangeTransaction & Position;
+  transaction?: BalanceChangeTransaction & ObjectChangeTransaction & ReceivedTransaction;
+}
+/** The part of a `ListTransactions` transaction that a received walk delivers events from. */
+interface ReceivedTransaction extends Position {
+  digest?: string;
+  timestamp?: { seconds: bigint; nanos: number };
+  events?: { events: SuiEvent[] };
+  transaction?: CallTransaction;
 }
 /** An `EventPage` of transfer records. */
 export type TransferPage = Omit<EventPage, "events"> & { events: StreamdEvent<Transfer>[] };
@@ -111,7 +119,7 @@ export interface SuiLedgerClient {
     getServiceInfo(input: object): PromiseLike<{ response: { checkpointHeight?: bigint; lowestAvailableCheckpoint?: bigint } }>;
     /** Needed only for `entryFunction` on `fetchEvents`' events, which go without it when this is absent. */
     batchGetTransactions?: BatchGetTransactions;
-    /** Needed only for `fetchTransfers` and `object` descriptors. */
+    /** Needed only for `fetchTransfers`, `object` descriptors and received `account` ones. */
     listTransactions?(
       input: QueryBounds & { readMask: { paths: string[] }; filter?: { terms: { literals: TransactionLiteral[] }[] } },
       options?: { abort?: AbortSignal },
@@ -183,6 +191,14 @@ const OBJECT_FIELDS = [
   "effects.changed_objects",
   ...["object_id", "version", "object_type", "json"].map((f) => `objects.objects.${f}`),
 ];
+const RECEIVED_FIELDS = [
+  "digest",
+  "checkpoint",
+  "transaction_index",
+  "timestamp",
+  ...["event_type", "package_id", "module", "sender", "json"].map((f) => `events.events.${f}`),
+  ...CALL_FIELDS.map((f) => `transaction.${f}`),
+];
 const STATE_FIELDS = [
   "effects.changed_objects",
   "effects.unchanged_consensus_objects",
@@ -241,6 +257,7 @@ export function suiDescriptor(descriptor: EventDescriptor): EventDescriptor {
       return { ...descriptor, eventType: (Array.isArray(types) ? types.map(eventType) : eventType(types)) as typeof types };
     }
     case "account":
+      receivedOf(descriptor);
       return {
         ...descriptor,
         accountAddress: suiAddress(descriptor.accountAddress),
@@ -252,6 +269,11 @@ export function suiDescriptor(descriptor: EventDescriptor): EventDescriptor {
       filterOf(descriptor);
       return descriptor;
   }
+}
+
+function receivedOf({ received }: AccountEventDescriptor): boolean {
+  if (received !== undefined && typeof received !== "boolean") throw new StreamdError(`Not a valid received flag (true or false): ${String(received)}`);
+  return received === true;
 }
 
 function filterOf(descriptor: EventDescriptor): EventFilter {
@@ -330,9 +352,11 @@ const fromBase64 = (text: string) => {
  * `LedgerService` of the `SuiGrpcClient` passed in. A `version` is Sui's
  * global transaction number, the previous checkpoint's running total plus
  * the transaction's index in its checkpoint, so relative starts count
- * transactions as on Aptos. Serves `module` and `account` descriptors, and
- * `object` ones from a `ListTransactions` walk over the transactions that
- * changed the object, each change delivered as `objectChangesOf` shapes it.
+ * transactions as on Aptos. Serves `module` and `account` descriptors,
+ * `received` account ones from a `ListTransactions` walk over the
+ * transactions affecting the address, and `object` ones from a walk over the
+ * transactions that changed the object, each change delivered as
+ * `objectChangesOf` shapes it.
  */
 export class SuiAdapter implements EventAdapter {
   private readonly ledger: SuiLedgerClient["ledgerService"];
@@ -426,6 +450,7 @@ export class SuiAdapter implements EventAdapter {
     if (descriptor.kind === "account" && descriptor.eventTypes?.length === 0) {
       return { events: [], nextCursor: options.cursor, hasMore: false };
     }
+    if (descriptor.kind === "account" && receivedOf(descriptor)) return this.fetchReceived(descriptor, options);
     const origins = new Map<StreamdEvent, SuiEvent>();
     const page = await this.walk<ListEventsFrame>(
       options,
@@ -492,6 +517,34 @@ export class SuiAdapter implements EventAdapter {
       options,
       (bounds) => list({ readMask: { paths: OBJECT_FIELDS }, filter: { terms: [{ literals: [affected] }] }, ...bounds }),
       async ({ transaction }) => (transaction === undefined ? [] : objectChangesOf(transaction, await this.versionOf(transaction), objectId)),
+    );
+  }
+
+  /**
+   * The events of every transaction the node lists as affecting the account,
+   * whoever signed it, read with the transaction so its call comes along;
+   * `limit` counts transactions.
+   */
+  private async fetchReceived(descriptor: AccountEventDescriptor, options: FetchOptions): Promise<EventPage> {
+    const { accountAddress: address, eventTypes } = suiDescriptor(descriptor) as AccountEventDescriptor;
+    const types = eventTypes === undefined ? undefined : new Set(eventTypes);
+    const list = this.listing("A received account descriptor");
+    const affected: TransactionLiteral = { negated: false, predicate: { oneofKind: "affectedAddress", affectedAddress: { address } } };
+    return this.walk<ListTransactionsFrame>(
+      options,
+      (bounds) => list({ readMask: { paths: RECEIVED_FIELDS }, filter: { terms: [{ literals: [affected] }] }, ...bounds }),
+      async ({ transaction }) => {
+        if (transaction === undefined) return [];
+        const version = await this.versionOf(transaction);
+        const calls = callsOf(transaction.transaction);
+        return ((transaction.events?.events ?? []) as SuiEvent[]).flatMap((raw, eventIndex) => {
+          const event = withCall(this.shaped(raw, version, eventIndex), calls, raw);
+          if (types !== undefined && !types.has(event.type)) return [];
+          if (transaction.digest !== undefined) event.transactionHash = transaction.digest;
+          if (transaction.timestamp !== undefined) event.timestamp = micros(transaction.timestamp);
+          return [event];
+        });
+      },
     );
   }
 

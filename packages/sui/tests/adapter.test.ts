@@ -540,6 +540,71 @@ describe("SuiAdapter entry functions", () => {
   });
 });
 
+describe("SuiAdapter received account descriptors", () => {
+  const BOB = LONG("b0b");
+  const SUI = `${LONG("2")}::sui::SUI`;
+  const swap = { package: "0xabc", module: "pool", function: "swap", typeArguments: [], arguments: [{ kind: 1 }] };
+  // Versions: checkpoint 1 starts at 1, 2 at 4, 3 at 6. Alice signs only the last.
+  const LISTED: FakeListed[] = [
+    { cp: 1n, ti: 0n, sender: BOB, typed: [{ type: SWAP, pkg: LONG("abc"), module: "pool" }, { type: STAKE }], ptb: ptb([swap]), changes: [[BOB, SUI, -3n], [ALICE, SUI, 3n]] },
+    { cp: 1n, ti: 2n, sender: BOB, typed: [{ type: SWAP }], changes: [[BOB, SUI, -1n]] },
+    { cp: 2n, ti: 1n, sender: BOB, typed: [{ type: STAKE }], changes: [[ALICE, SUI, 1n]] },
+    { cp: 3n, ti: 3n, sender: ALICE, typed: [{ type: SWAP }], changes: [] },
+  ];
+  const received: EventDescriptor = { kind: "account", accountAddress: "0xa11ce", received: true };
+  const adapter = () => {
+    const wired = withTransfers(fakeLedger(SIZES, EVENTS).client, SIZES, LISTED);
+    return { sui: new SuiAdapter(wired.client), calls: wired.calls };
+  };
+  const ids = (page: { events: { version: bigint; eventIndex: number; type: string }[] }) => page.events.map((e) => [e.version, e.eventIndex, e.type]);
+
+  it("walks every transaction affecting the address, by cursor, with hasMore and throughVersion", async () => {
+    const { sui, calls } = adapter();
+    const first = await sui.fetchEvents(received, { fromVersion: 0n, limit: 1 });
+    expect(ids(first)).toEqual([[1n, 0, SWAP], [1n, 1, STAKE]]);
+    expect(first).toMatchObject({ hasMore: true, throughVersion: 3n });
+    expect(first.events[0]).toEqual({
+      type: SWAP,
+      data: { n: "0" },
+      version: 1n,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+      sender: BOB,
+      entryFunction: { function: `${LONG("abc")}::pool::swap`, typeArguments: [], arguments: ["GasCoin"] },
+      transactionHash: "D1t0",
+      timestamp: 1_700_000_001_000_000n,
+    });
+    expect(first.events[1]!.entryFunction).toBeUndefined();
+    const rest = await sui.fetchEvents(received, { cursor: first.nextCursor, limit: 10 });
+    expect(ids(rest)).toEqual([[5n, 0, STAKE], [9n, 0, SWAP]]);
+    expect(rest).toMatchObject({ hasMore: false, throughVersion: 9n });
+    expect(calls.list[0]!.filter).toEqual({ terms: [{ literals: [{ negated: false, predicate: { oneofKind: "affectedAddress", affectedAddress: { address: ALICE } } }] }] });
+    expect((calls.list[0]!.readMask as { paths: string[] }).paths).toEqual(
+      expect.arrayContaining(["transaction_index", "events.events.json", "transaction.kind.programmable_transaction.commands"]),
+    );
+  });
+
+  it("narrows by eventTypes, honours fromVersion and toVersion, and makes no call for an empty list", async () => {
+    const { sui, calls } = adapter();
+    const stakesOnly = await sui.fetchEvents({ ...received, eventTypes: ["0x3::validator::StakingRequestEvent"] } as EventDescriptor, { fromVersion: 0n });
+    expect(ids(stakesOnly)).toEqual([[1n, 1, STAKE], [5n, 0, STAKE]]);
+    expect(ids(await sui.fetchEvents(received, { fromVersion: 2n, toVersion: 6n }))).toEqual([[5n, 0, STAKE]]);
+    const before = calls.list.length;
+    expect((await sui.fetchEvents({ ...received, eventTypes: [] } as EventDescriptor, { fromVersion: 0n })).events).toEqual([]);
+    expect(calls.list).toHaveLength(before);
+  });
+
+  it("refuses a non-boolean flag and a client without listTransactions, and leaves the signed walk as it was", async () => {
+    const { sui, calls } = adapter();
+    await expect(sui.fetchEvents({ ...received, received: "yes" } as never, { fromVersion: 0n })).rejects.toThrow("received flag");
+    expect(calls.list).toHaveLength(0);
+    await expect(new SuiAdapter(fakeLedger(SIZES, EVENTS).client).fetchEvents(received, {})).rejects.toThrow("listTransactions");
+    const signed = await sui.fetchEvents({ kind: "account", accountAddress: ALICE, received: false }, { fromVersion: 0n });
+    expect(signed.events.map((e) => e.version)).toEqual([0n, 4n, 9n]);
+    expect(calls.list).toHaveLength(0);
+  });
+});
+
 describe("SuiAdapter object descriptors", () => {
   const POOL = LONG("9001");
   // Versions: checkpoint 1 starts at 1, 2 at 4, 3 at 6.
