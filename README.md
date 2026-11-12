@@ -51,8 +51,8 @@ TypeScript types:
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
 - `@streamd/store-postgres` (`packages/store-postgres`) - the same over a Postgres client you
   supply. See [Store events in Postgres](#store-events-in-postgres).
-- `@streamd/sui` (`packages/sui`) - `SuiAdapter`, the same client over Sui events. `@mysten/sui`
-  is a peer dependency. See [Sui](#sui).
+- `@streamd/sui` (`packages/sui`) - `SuiClient` and `SuiAdapter`, the same client over Sui events,
+  and Sui network presets. `@mysten/sui` is a peer dependency. See [Sui](#sui).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents` and `useTransfers` take an
   `AptosClient`. See [React hooks](#react-hooks).
@@ -1725,15 +1725,23 @@ const streamd = new StreamdClient({
 longer answer JSON-RPC):
 
 ```ts
-import { SuiGrpcClient } from "@mysten/sui/grpc";
-import { StreamdClient } from "@streamd/core";
-import { SuiAdapter } from "@streamd/sui";
+import { SuiClient, networks } from "@streamd/sui";
 
-const sui = new StreamdClient({
-  adapter: new SuiAdapter(new SuiGrpcClient({ network: "mainnet", baseUrl: "https://fullnode.mainnet.sui.io:443" })),
-});
+const sui = new SuiClient({ sui: networks.mainnet });
 sui.on({ kind: "module", eventType: "0x3::validator::StakingRequestEvent" }, (e) => console.log(e.version, e.data));
 ```
+
+`SuiClient` is a `StreamdClient` whose `adapter` defaults to a `SuiAdapter`. `sui` is a
+`SuiGrpcClient` from `@mysten/sui/grpc`, or the options to build one; a preset from `networks`
+is such options, so `new SuiGrpcClient(networks.testnet)` works too. Pass `adapter` to read
+through something else, such as a `CachingAdapter` over a `SuiAdapter`, and every other
+`StreamdClient` option as usual. Construction without `sui` throws.
+
+| Preset | Network | gRPC endpoint |
+| --- | --- | --- |
+| `networks.mainnet` | `mainnet` | `https://fullnode.mainnet.sui.io:443` |
+| `networks.testnet` | `testnet` | `https://fullnode.testnet.sui.io:443` |
+| `networks.devnet` | `devnet` | `https://fullnode.devnet.sui.io:443` |
 
 - **Versions are Sui's global transaction numbers:** the running total before the event's
   checkpoint plus the transaction's index in it, so `fromVersion: -1000n` means 1000 transactions
@@ -2620,7 +2628,7 @@ bun run test               # unit tests in every package, through turbo
 bun run typecheck
 bun run build              # each package into its own dist/
 bun run demo               # live demo against mainnet
-bun run test:integration   # @streamd/core integration tests, hits mainnet
+bun run test:integration   # @streamd/aptos and @streamd/sui integration tests, hit mainnet
 bun packages/cli/scripts/framework.ts  # regenerate @streamd/aptos/framework from its ABI snapshots
 ```
 
