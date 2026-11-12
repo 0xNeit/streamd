@@ -165,7 +165,7 @@ describe("graphqlStatesOf", () => {
     expect(() => graphqlStatesOf(effects, [OTHER], "D1")).toThrow(`Transaction D1 did not write or read ${OTHER}`);
     expect(() => graphqlStatesOf(effects, [LONG("9006")], "D1")).toThrow("as no Move object");
     const paged = { ...effects, objectChanges: { ...effects.objectChanges, pageInfo: { hasNextPage: true } } };
-    expect(() => graphqlStatesOf(paged, [OTHER], "D1")).toThrow("one GraphQL page of 1024");
+    expect(() => graphqlStatesOf(paged, [OTHER], "D1")).toThrow("more objects than one GraphQL page holds");
     expect(graphqlStatesOf(paged, [POOL], "D1")).toEqual([{ value: "new" }]);
     expect(() => graphqlStatesOf({ objectChanges: {} } as never, [POOL], "D1")).toThrow(StreamdError);
   });

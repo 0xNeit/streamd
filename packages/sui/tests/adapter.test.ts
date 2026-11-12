@@ -661,6 +661,9 @@ describe("SuiAdapter object state", () => {
       const [body] = bodies as { query: string; variables: unknown }[];
       expect(body!.variables).toEqual({ digest: TX });
       expect(body!.query).toContain("transaction(digest: $digest)");
+      // The service's default page of read-only consensus inputs is 20, below what one transaction can read.
+      expect(body!.query).toContain("objectChanges(first: 1024)");
+      expect(body!.query).toContain("unchangedConsensusObjects(first: 50)");
     });
   });
 
@@ -668,7 +671,7 @@ describe("SuiAdapter object state", () => {
     const answers = [
       () => new Response("slow down", { status: 429, headers: { "retry-after": "2" } }),
       () => new Response("boom", { status: 500 }),
-      () => Response.json({ errors: [{ message: "bad query" }] }),
+      () => Response.json({ errors: [{ message: "bad query\n\u001b[31m" }] }),
       () => new Response("not json"),
       () => Response.json({ data: { transaction: null } }),
       () => Response.json({ data: { transaction: { effects: { objectChanges: {} } } } }),
@@ -680,7 +683,7 @@ describe("SuiAdapter object state", () => {
       expect(limited).toBeInstanceOf(StreamdNetworkError);
       expect(limited).toMatchObject({ statusCode: 429, retryAfter: 2000 });
       expect(await read()).toMatchObject({ name: "StreamdNetworkError", statusCode: 500 });
-      expect(await read()).toMatchObject({ name: "StreamdNetworkError", message: expect.stringContaining("bad query") });
+      expect(await read()).toMatchObject({ name: "StreamdNetworkError", message: expect.stringContaining('"bad query\\n\\u001b[31m"') });
       for (const message of ["returned no JSON", "knows no transaction", "unexpected shape"]) {
         const err = await read();
         expect(err).not.toBeInstanceOf(StreamdNetworkError);

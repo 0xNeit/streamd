@@ -148,16 +148,19 @@ export function graphqlStatesOf(effects: GraphqlEffects, ids: readonly string[],
     const read = reads.find((r) => r?.__typename === "ConsensusObjectRead" && same(r.object?.address, id));
     if (read?.object != null) return contents(read.object, id);
     if (effects.objectChanges?.pageInfo?.hasNextPage || effects.unchangedConsensusObjects?.pageInfo?.hasNextPage) {
-      throw new StreamdError(`Transaction ${digest} touched more objects than one GraphQL page of 1024 holds, and ${id} is not in it`);
+      throw new StreamdError(`Transaction ${digest} touched more objects than one GraphQL page holds, and ${id} is not in it`);
     }
     throw untouched(id, digest);
   });
 }
 
+// The service's largest pages: a transaction past them is refused rather than paged.
+const CHANGES_PAGE = 1024;
+const READS_PAGE = 50;
 const OBJECT_FIELDS = "address version asMoveObject { contents { json } }";
 const STATE_QUERY = `query ($digest: String!) { transaction(digest: $digest) { effects {
-  objectChanges { pageInfo { hasNextPage } nodes { address outputState { ${OBJECT_FIELDS} } } }
-  unchangedConsensusObjects { pageInfo { hasNextPage } nodes { __typename ... on ConsensusObjectRead { object { ${OBJECT_FIELDS} } } } }
+  objectChanges(first: ${CHANGES_PAGE}) { pageInfo { hasNextPage } nodes { address outputState { ${OBJECT_FIELDS} } } }
+  unchangedConsensusObjects(first: ${READS_PAGE}) { pageInfo { hasNextPage } nodes { __typename ... on ConsensusObjectRead { object { ${OBJECT_FIELDS} } } } }
 } } }`;
 
 /**
@@ -186,7 +189,7 @@ export async function graphqlEffects(url: string, digest: string): Promise<Graph
     throw new StreamdError(`Sui GraphQL returned no JSON for transaction ${digest}`, err);
   }
   if (Array.isArray(body?.errors) && body.errors.length > 0) {
-    throw new StreamdNetworkError(`Sui GraphQL refused the read of ${digest}: ${String(body.errors[0]?.message).slice(0, 200)}`);
+    throw new StreamdNetworkError(`Sui GraphQL refused the read of ${digest}: ${JSON.stringify(String(body.errors[0]?.message).slice(0, 200))}`);
   }
   const transaction = body?.data?.transaction;
   if (transaction === null) throw new StreamdError(`Sui GraphQL knows no transaction ${digest}`);

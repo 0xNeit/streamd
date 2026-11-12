@@ -136,7 +136,9 @@ export interface SuiAdapterOptions {
   /**
    * The Sui GraphQL endpoint `readObjects` reads transactions the fullnode
    * has pruned from. Defaults to the `networks` preset's for the client's
-   * `network`; without either, such reads reject.
+   * `network`; without either, such reads reject. That default is Mysten
+   * Labs' public service even when the client reads a private node, so pass
+   * this to keep pruned reads elsewhere.
    */
   graphqlUrl?: string;
 }
