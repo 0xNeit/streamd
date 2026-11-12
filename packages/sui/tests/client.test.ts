@@ -4,7 +4,7 @@ import type { MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiClient, networks } from "../src/index.js";
 import type { SuiClientConfig } from "../src/index.js";
-import { LONG, digest, fakeLedger, transactionBytes, withSimulator, withTransfers, type FakeListed, type FakeSimulation, type FakeTransaction } from "./helpers.js";
+import { LONG, digest, fakeLedger, fakeNames, transactionBytes, withSimulator, withTransfers, type FakeListed, type FakeSimulation, type FakeTransaction } from "./helpers.js";
 
 const STAKE = `${LONG("3")}::validator::StakingRequestEvent` as MoveEventType;
 const stakes = { kind: "module", eventType: STAKE } as const;
@@ -244,6 +244,27 @@ describe("SuiClient transfers and balances", () => {
     expect(() => sui.balances("nope")).toThrow(StreamdError);
     expect(() => sui.balances(ALICE, { asset: "nope" })).toThrow("coin type");
     expect(() => sui.balances(ALICE, { asset: [] })).toThrow("empty");
+  });
+
+  it("takes SuiNS names for account and balances, resolving each once", async () => {
+    const CAROL = LONG("ca401");
+    const listed: FakeListed[] = [...LISTED, { cp: 2n, ti: 1n, changes: [[CAROL, SUI, -2n], [ALICE, SUI, 2n]] }];
+    const wired = withTransfers(fakeLedger(SIZES, []).client, SIZES, listed, new Map([[`${CAROL}:${SUI}`, 4n]]), new Map());
+    const names = fakeNames({ "carol.sui": "0xca401", "@carol": CAROL });
+    const sui = new SuiClient({ sui: { ...wired.client, nameService: names.nameService } as unknown as SuiGrpcClient });
+    const carols = await sui.getTransfers({ fromVersion: 0n, account: "carol.sui" });
+    expect(carols.map((e) => e.data)).toEqual([{ asset: SUI, amount: 2n, from: CAROL, to: ALICE }]);
+    expect(names.calls.lookups).toEqual(["carol.sui"]);
+    const seen: bigint[] = [];
+    const sub = sui.transfers((e) => void seen.push(e.data.amount), { fromVersion: 0n, pollInterval: 5, account: "@carol" });
+    await wait(30);
+    sub.unsubscribe();
+    expect(seen).toEqual([2n]);
+    using wallet = sui.balances("carol.sui", { pollInterval: 5 });
+    expect(await wallet.ready).toEqual(new Map([[SUI, 4n]]));
+    expect(wired.calls.balances[0]).toBe(`${CAROL}:${SUI}`);
+    expect(names.calls.lookups).toEqual(["carol.sui", "@carol", "carol.sui"]);
+    expect(() => sui.transfers(() => {}, { account: "carol" })).toThrow(StreamdError);
   });
 
   it("reads transfers through a SuiAdapter over sui when given another adapter", async () => {

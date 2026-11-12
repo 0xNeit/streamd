@@ -102,8 +102,9 @@ export interface SuiTransferOptions {
   /** Only transfers of this coin type, in any form (`"0x2::sui::SUI"`). */
   asset?: string;
   /**
-   * Only transfers this Sui address sent or received. The node narrows the
-   * walk to transactions affecting it, so this is what saves reads.
+   * Only transfers this Sui address or SuiNS name sent or received; a name
+   * resolves once, on the first page. The node narrows the walk to
+   * transactions affecting it, so this is what saves reads.
    */
   account?: string;
   /** Adds `symbol` and `decimals`, read once per coin type; a coin type with no metadata leaves them off. */
@@ -122,10 +123,16 @@ export const TRANSFER_DESCRIPTOR: EventDescriptor = { kind: "module", eventType:
 // Coin metadata never changes, so overflowing only costs a repeat read.
 const CACHE_SIZE = 10_000;
 
+/** A coin type in long form, and the account as a lazy address, since it may be a name. */
+export interface TransferNarrowing {
+  asset?: string;
+  account?: () => Promise<string>;
+}
+
 /** `sui`'s transfers as an `EventAdapter`, so the poller and queries walk them as events. */
 export function transferSource(
   sui: SuiAdapter,
-  filter: Pick<SuiTransferOptions, "account" | "asset">,
+  { asset, account }: TransferNarrowing,
   withAssetInfo = false,
 ): EventAdapter {
   const infos = new Map<string, Promise<{ symbol: string; decimals: number } | undefined>>();
@@ -141,7 +148,7 @@ export function transferSource(
   };
   return {
     fetchEvents: async (_descriptor, options) => {
-      const page = await sui.fetchTransfers(options, filter);
+      const page = await sui.fetchTransfers(options, { asset, ...(account !== undefined && { account: await account() }) });
       if (!withAssetInfo) return page;
       const events = await Promise.all(
         page.events.map(async (event) => {

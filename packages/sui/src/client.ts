@@ -16,9 +16,10 @@ import type {
   Subscription,
   Transfer,
 } from "@streamd/core";
-import { SuiAdapter, requireDigest, requireTransactionBytes, suiAddress, suiDescriptor } from "./adapter.js";
+import { SuiAdapter, requireDigest, requireTransactionBytes, suiDescriptor } from "./adapter.js";
+import { addressOrName, nameService, resolveName } from "./names.js";
 import { TRANSFER_DESCRIPTOR, coinType, transferSource } from "./transfers.js";
-import type { SuiTransferFilter, SuiTransferListenerOptions, SuiTransferOptions } from "./transfers.js";
+import type { SuiTransferFilter, SuiTransferListenerOptions, SuiTransferOptions, TransferNarrowing } from "./transfers.js";
 
 const SUI = coinType("0x2::sui::SUI");
 
@@ -31,11 +32,28 @@ const SUI_BALANCES: BalanceReader = {
   read: (adapter, owner, asset) => (adapter as SuiAdapter).getBalance(owner, asset),
 };
 
+/**
+ * `account` as a lazy address, checked at the call so a typo fails there: a
+ * SuiNS name resolves once, on first use, and a failed lookup is tried again
+ * by the next page.
+ */
+function accountOf(sui: SuiGrpcClient, account: string): () => Promise<string> {
+  const address = addressOrName(account);
+  if (address !== undefined) return () => Promise.resolve(address);
+  nameService(sui);
+  let resolved: Promise<string> | undefined;
+  return () =>
+    (resolved ??= resolveName(sui, account).catch((err: unknown) => {
+      resolved = undefined;
+      throw err;
+    }));
+}
+
 /** `asset` and `account` checked at the call, so a typo fails there rather than on the first page. */
-function transferFilter({ asset, account }: SuiTransferOptions): Pick<SuiTransferOptions, "asset" | "account"> {
+function transferFilter(sui: SuiGrpcClient, { asset, account }: SuiTransferOptions): TransferNarrowing {
   return {
     ...(asset !== undefined && { asset: coinType(asset) }),
-    ...(account !== undefined && { account: suiAddress(account) }),
+    ...(account !== undefined && { account: accountOf(sui, account) }),
   };
 }
 
@@ -85,8 +103,8 @@ export class SuiClient extends StreamdClient {
    * and `eventIndex` the transaction's event count plus its position among
    * the records, so it never shares an id with an event.
    *
-   * `asset` narrows to one coin type; `account` to what one address sent or
-   * received, narrowed on the node. Unnarrowed, a walk reads every
+   * `asset` narrows to one coin type; `account` to what one address (or
+   * SuiNS name, resolved once) sent or received, narrowed on the node. Unnarrowed, a walk reads every
    * transaction on the chain, so following mainnet live needs a `batchSize`
    * near the node's 500-transaction page. Reads go through a `SuiAdapter`
    * over `sui`, the client's own when it is one. Like `reduce()`, it is not
@@ -95,7 +113,7 @@ export class SuiClient extends StreamdClient {
    */
   transfers(callback: EventCallback<Transfer>, options: SuiTransferListenerOptions = {}): Subscription {
     const { asset, account, withAssetInfo, ...rest } = options;
-    const source = transferSource(this.ledger, transferFilter({ asset, account }), withAssetInfo);
+    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo);
     return this.subscribe(TRANSFER_DESCRIPTOR, callback as EventCallback, rest, undefined, rest.id, () => source);
   }
 
@@ -105,7 +123,7 @@ export class SuiClient extends StreamdClient {
    */
   async getTransfers(filter: SuiTransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
     const { asset, account, withAssetInfo, ...rest } = filter;
-    const source = transferSource(this.ledger, transferFilter({ asset, account }), withAssetInfo);
+    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo);
     return new EventQuery(source, this.limiter).getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
@@ -115,11 +133,12 @@ export class SuiClient extends StreamdClient {
    * list; without it, SUI is followed. Balances are keyed by coin type in
    * long form. Sui reads a balance only at its latest state, so a change's
    * `version` is the head read just before it, and the balance is no older.
-   * A coin type held nowhere reads 0. Like `reduce()`, it is not a listener
+   * A coin type held nowhere reads 0. `address` may be a SuiNS name,
+   * resolved once on the first read. Like `reduce()`, it is not a listener
    * for `off()` or `listenerCount()`; `destroy()` ends it.
    */
   balances(address: string, options?: BalancesOptions): Balances {
-    const owner = suiAddress(address);
+    const owner = accountOf(this.sui, address);
     return startBalances(
       {
         adapter: this.ledger,
@@ -129,7 +148,7 @@ export class SuiClient extends StreamdClient {
           this.subscribe(TRANSFER_DESCRIPTOR, callback, listener, undefined, undefined, () => wrap(this.ledger)),
         track: this.reduceHost.track,
       },
-      () => Promise.resolve(owner),
+      owner,
       SUI_BALANCES,
       options,
     );
