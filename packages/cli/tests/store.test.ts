@@ -80,6 +80,12 @@ describe("runStore", () => {
     expect(cursors(db)).toContain("mine");
   });
 
+  it("prefixes the cursor name with sui under --chain sui", async () => {
+    const db = new Database(":memory:");
+    await run(new MemoryAdapter([ev(1)]), db, options({ chain: "sui" }), () => cursors(db).length === 1);
+    expect(cursors(db)).toEqual([`sui:mainnet:${JSON.stringify(options().descriptor)}`]);
+  });
+
   it("names the cursor for a handle by creation number", async () => {
     const db = new Database(":memory:");
     const descriptor = { kind: "handle", accountAddress: "0x1", creationNumber: 7n } as const;
