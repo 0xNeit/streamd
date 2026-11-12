@@ -1,0 +1,361 @@
+{
+ "storageId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+ "originalId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+ "modules": [
+  {
+   "name": "address",
+   "datatypes": []
+  },
+  {
+   "name": "ascii",
+   "datatypes": [
+    {
+     "name": "Char",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "byte",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 3
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "String",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "bytes",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "bcs",
+   "datatypes": []
+  },
+  {
+   "name": "bit_vector",
+   "datatypes": [
+    {
+     "name": "BitVector",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "length",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "bit_field",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 2
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "bool",
+   "datatypes": []
+  },
+  {
+   "name": "debug",
+   "datatypes": []
+  },
+  {
+   "name": "fixed_point32",
+   "datatypes": [
+    {
+     "name": "FixedPoint32",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "value",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "hash",
+   "datatypes": []
+  },
+  {
+   "name": "internal",
+   "datatypes": [
+    {
+     "name": "Permit",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "macros",
+   "datatypes": []
+  },
+  {
+   "name": "option",
+   "datatypes": [
+    {
+     "name": "Option",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "vec",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "string",
+   "datatypes": [
+    {
+     "name": "String",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "bytes",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "type_name",
+   "datatypes": [
+    {
+     "name": "TypeName",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "name",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::ascii::String"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "u128",
+   "datatypes": []
+  },
+  {
+   "name": "u16",
+   "datatypes": []
+  },
+  {
+   "name": "u256",
+   "datatypes": []
+  },
+  {
+   "name": "u32",
+   "datatypes": []
+  },
+  {
+   "name": "u64",
+   "datatypes": []
+  },
+  {
+   "name": "u8",
+   "datatypes": []
+  },
+  {
+   "name": "uq32_32",
+   "datatypes": [
+    {
+     "name": "UQ32_32",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pos0",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "uq64_64",
+   "datatypes": [
+    {
+     "name": "UQ64_64",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000001",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pos0",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 7
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "vector",
+   "datatypes": []
+  }
+ ]
+}

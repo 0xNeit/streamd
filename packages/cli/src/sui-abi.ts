@@ -112,15 +112,17 @@ const describe = (err: unknown) => (err instanceof Error ? err.message : String(
  * Reads Sui packages for `generateEventTypes`. Each module becomes one
  * `ModuleAbi` per defining package id, since an upgraded package carries types
  * earlier versions introduced and events name every type by the version that
- * introduced it. Every datatype with `copy` and `drop` counts as an event:
- * that is all `sui::event::emit` asks, and the node serves no bytecode to say
- * which ones a module actually emits.
+ * introduced it. Every datatype with `copy` and `drop` in a module `targets`
+ * returned counts as an event: that is all `sui::event::emit` asks, and the
+ * node serves no bytecode to say which ones a module actually emits. Types
+ * other modules declare are only referenced, so they get no descriptor.
  */
 export function suiCodegen(service: SuiPackageService): {
   targets: (refs: ModuleRef[]) => Promise<ModuleRef[]>;
   load: LoadModule;
 } {
   const packages = new Map<string, Promise<Package>>();
+  const named = new Set<string>();
   const read = (packageId: string): Promise<Package> => {
     const id = long(packageId);
     if (!packages.has(id)) {
@@ -209,9 +211,9 @@ export function suiCodegen(service: SuiPackageService): {
   const fieldAbis = (list: Datatype["fields"]): Promise<FieldAbi[]> =>
     Promise.all(list.map(async (f) => ({ name: f.name, type: await moveType(f.type) })));
 
-  const struct = async (d: Datatype): Promise<StructAbi> => ({
+  const struct = async (d: Datatype, isEvent: boolean): Promise<StructAbi> => ({
     name: d.name,
-    isEvent: d.emittable,
+    isEvent: isEvent && d.emittable,
     isEnum: d.isEnum,
     isResource: false,
     typeParams: d.typeParams,
@@ -227,7 +229,7 @@ export function suiCodegen(service: SuiPackageService): {
     return {
       address: id,
       name: module,
-      structs: await Promise.all(own.map(struct)),
+      structs: await Promise.all(own.map((d) => struct(d, named.has(`${id}::${module}`)))),
       views: [],
     } satisfies ModuleAbi;
   };
@@ -244,6 +246,7 @@ export function suiCodegen(service: SuiPackageService): {
         for (const d of datatypes) {
           if (!d.emittable) continue;
           found = true;
+          named.add(`${d.definingId}::${module}`);
           out.set(`${d.definingId}::${module}`, { address: d.definingId, module });
         }
       }

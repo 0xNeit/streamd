@@ -190,7 +190,9 @@ describe("suiCodegen", () => {
   it("resolves a type a later version introduced through its package's versions, reading each package once", async () => {
     const { svc, reads, listed } = service();
     const source = await generate([{ address: OTHER }], svc);
-    expect(source).toContain(`/** \`${V2}::pool::NewInfo\`, an event */`);
+    // Declared in a module not named, so a type without a descriptor.
+    expect(source).toContain(`/** \`${V2}::pool::NewInfo\` */\nexport interface NewInfo {`);
+    expect(source).not.toContain("export const NewInfo");
     expect(listed).toEqual([V1]);
     expect(reads.sort()).toEqual([OTHER, V1, V2].sort());
   });
