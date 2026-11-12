@@ -56,6 +56,26 @@ describe("onTransaction, one descriptor", () => {
     expect(groups[0]!.timestamp).toBeUndefined();
   });
 
+  it("names the transaction's call only when every event carrying one agrees", async () => {
+    const call = (fn: string) => ({ function: `0x1::m::${fn}`, typeArguments: [], arguments: ["1"] });
+    const events = [
+      { ...ev(10, 0), entryFunction: call("a") },
+      { ...ev(10, 1), entryFunction: call("b") },
+      { ...ev(11, 0), entryFunction: call("a") },
+      ev(11, 1),
+      { ...ev(11, 2), entryFunction: call("a") },
+    ];
+    const client = new StreamdClient({ adapter: new MemoryAdapter(events) });
+    const groups: TransactionGroup[] = [];
+    client.onTransaction(descriptor, (g) => void groups.push(g));
+    await advanceTimersByTimeAsync(10);
+    client.destroy();
+
+    expect(shape(groups)).toEqual(["10:0,1", "11:0,1,2"]);
+    expect(groups[0]!.entryFunction).toBeUndefined();
+    expect(groups[1]!.entryFunction).toEqual(call("a"));
+  });
+
   it("without throughVersion, holds the highest version until a later one or the end", async () => {
     const adapter = scripted([
       { events: [ev(10, 0), ev(10, 1)], nextCursor: "a", hasMore: true },

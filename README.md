@@ -239,7 +239,9 @@ const sub = streamd.onTransaction([swaps, deposits], async (tx) => {
 `onTransaction` calls your handler once per transaction with every matching event it
 emitted, in `eventIndex` order, and transactions in version order. `decode`, `where` and
 `withState` apply per event first, so a transaction with no match is not delivered. The
-optional fields come from the first event carrying them; `handle` events carry none.
+optional fields come from the first event carrying them, and `entryFunction` only when every
+event carrying one agrees (on Sui, events of one transaction can come from different
+commands); `handle` events carry none.
 
 Adapter pages can end partway through a transaction (handle events and `MemoryAdapter`
 page by event), so events are held by version until the page's `throughVersion` passes

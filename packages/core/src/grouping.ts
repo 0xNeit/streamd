@@ -13,6 +13,7 @@ import type {
 } from "./types.js";
 import type { Delivery } from "./poller.js";
 import { StreamdError } from "./errors.js";
+import { sameValue } from "./compare.js";
 import { CursorManager } from "./cursor.js";
 import { isThenable } from "./filter.js";
 import { ASYNC_DISPOSE } from "./utils.js";
@@ -88,6 +89,8 @@ function groupOf(version: bigint, events: StreamdEvent[]): TransactionGroup {
     const from = events.find((e) => e[key] !== undefined);
     if (from !== undefined) (group as unknown as Record<string, unknown>)[key] = from[key];
   }
+  // On Sui the events of one transaction can come from different commands, so no one call is the transaction's.
+  if (events.some((e) => e.entryFunction !== undefined && !sameValue(e.entryFunction, group.entryFunction))) delete group.entryFunction;
   return group;
 }
 

@@ -164,7 +164,8 @@ async function walk(adapter: EventAdapter, descriptor: EventDescriptor, s: Setti
   return { events, pages, covered: covered(events, through, ended, s), error };
 }
 
-function sameValue(x: unknown, y: unknown): boolean {
+/** Deep equality over JSON-like values. */
+export function sameValue(x: unknown, y: unknown): boolean {
   if (x === y) return true;
   if (!isObject(x) || !isObject(y) || Array.isArray(x) !== Array.isArray(y)) return false;
   const keys = Object.keys(x);
