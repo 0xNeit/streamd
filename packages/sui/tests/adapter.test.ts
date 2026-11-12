@@ -675,7 +675,7 @@ describe("SuiAdapter object state", () => {
     ];
     await graphql(answers, async (graphqlUrl) => {
       const adapter = new SuiAdapter(stateLedger(pruned()).client, { graphqlUrl });
-      const read = () => adapter.readObjects({ objects: [POOL] }, at).catch((e: unknown) => e as StreamdError);
+      const read = () => adapter.readObjects({ objects: [POOL] }, at).then(() => new StreamdError("read"), (e: unknown) => e as StreamdError);
       const limited = await read();
       expect(limited).toBeInstanceOf(StreamdNetworkError);
       expect(limited).toMatchObject({ statusCode: 429, retryAfter: 2000 });
