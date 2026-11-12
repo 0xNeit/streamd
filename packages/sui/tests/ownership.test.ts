@@ -114,7 +114,7 @@ describe("ownedBy", () => {
     expect(await alice(ev({ id: NFT }))).toBe(true);
     expect(reads).toEqual([NFT, NFT]);
     const refused = client({ [NFT]: grpcError("INVALID_ARGUMENT", "bad id") });
-    const err = await ownedBy(refused.sui, ALICE)(ev({ id: NFT })).catch((e: unknown) => e);
+    const err = await Promise.resolve(ownedBy(refused.sui, ALICE)(ev({ id: NFT }))).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
   });
