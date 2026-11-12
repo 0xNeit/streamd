@@ -21,6 +21,8 @@ export { RequestLimiter } from "./limiter.js";
 export { UNSIGNED_INTEGER, fieldDecoder } from "./decode.js";
 export { descriptorKey, onAbort, raceAbort, sleep } from "./utils.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
+export { formatAmount, startBalances } from "./balances.js";
+export type { BalanceReader, BalancesHost } from "./balances.js";
 export {
   committedEvents,
   eventsOf,
@@ -114,6 +116,10 @@ export type {
 
 export type {
   AccountEventDescriptor,
+  BalanceChange,
+  Balances,
+  BalancesOptions,
+  Transfer,
   BatchCallback,
   TransactionCallback,
   TransactionGroup,

@@ -4,7 +4,9 @@ import { UNSIGNED_INTEGER } from "@streamd/core";
 import { RequestLimiter } from "@streamd/core";
 import { requireAddress } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, StreamdEvent, ViewRequest } from "@streamd/core";
-import type { Transfer } from "./types.js";
+import type { Transfer } from "@streamd/core";
+
+export { formatAmount } from "@streamd/core";
 
 const FA_WITHDRAW = "0x1::fungible_asset::Withdraw";
 const FA_DEPOSIT = "0x1::fungible_asset::Deposit";
@@ -72,21 +74,6 @@ function legacyTokenId(id: unknown): string | undefined {
   const owner = address(creator);
   if (owner === undefined || typeof collection !== "string" || typeof name !== "string") return undefined;
   return `${owner}::${collection}::${name}::${BigInt(version)}`;
-}
-
-/**
- * `amount` in whole units as a decimal string, every digit kept and trailing
- * zeros dropped. It never passes through a float, so a `u128` stays exact.
- */
-export function formatAmount(amount: bigint, decimals: number): string {
-  if (typeof amount !== "bigint") throw new StreamdError(`Not a valid amount: ${String(amount)}`);
-  if (!Number.isInteger(decimals) || decimals < 0 || decimals > 255) {
-    throw new StreamdError(`Not a valid decimals: ${String(decimals)} (expected 0..255)`);
-  }
-  const digits = (amount < 0n ? -amount : amount).toString().padStart(decimals + 1, "0");
-  const split = digits.length - decimals;
-  const fraction = digits.slice(split).replace(/0+$/, "");
-  return `${amount < 0n ? "-" : ""}${digits.slice(0, split)}${fraction === "" ? "" : `.${fraction}`}`;
 }
 
 /** Addresses inside a coin type or an asset address, in long form, for comparing. */
