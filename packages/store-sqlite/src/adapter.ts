@@ -42,6 +42,7 @@ function descriptorWhere(descriptor: EventDescriptor): Where {
       return typeList(Array.isArray(eventType) ? eventType : [eventType as string]);
     }
     case "account": {
+      if (descriptor.received === true) throw new StreamdError("StoreAdapter keys account events by sender, so it cannot serve received ones");
       const sender: Where = { sql: "sender = ?", params: [requireAddress(descriptor.accountAddress)] };
       if (descriptor.eventTypes === undefined) return sender;
       if (descriptor.eventTypes.length === 0) return { sql: "0", params: [] };

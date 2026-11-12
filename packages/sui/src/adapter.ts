@@ -2,6 +2,7 @@ import { bcs } from "@mysten/sui/bcs";
 import { isValidSuiAddress, isValidTransactionDigest, normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { StreamdError, StreamdNetworkError, requireObjectRequest } from "@streamd/core";
 import type {
+  AccountEventDescriptor,
   BlockHeights,
   BlockInfo,
   EventAdapter,
@@ -17,8 +18,8 @@ import type {
 import { attachCalls, callsOf, CALL_FIELDS, withCall, type BatchGetTransactions, type CallTransaction } from "./calls.js";
 import { toJson, type ProtoValue } from "./json.js";
 import { graphqlEffects, graphqlStatesOf, objectChangesOf, objectStatesOf, type ObjectChangeTransaction, type StateTransaction } from "./objects.js";
-import { networks, type SuiNetworkPreset } from "./networks.js";
-import { coinType, transfersOf, type BalanceChangeTransaction } from "./transfers.js";
+import { networks } from "./networks.js";
+import { coinType, micros, transfersOf, type BalanceChangeTransaction } from "./transfers.js";
 import type { Transfer } from "@streamd/core";
 
 /** The `ListEvents` filter: terms are ORed, the literals inside one are ANDed. */
@@ -51,7 +52,14 @@ interface ListEventsFrame extends Frame {
   event?: SuiEvent;
 }
 interface ListTransactionsFrame extends Frame {
-  transaction?: BalanceChangeTransaction & ObjectChangeTransaction & Position;
+  transaction?: BalanceChangeTransaction & ObjectChangeTransaction & ReceivedTransaction;
+}
+/** The part of a `ListTransactions` transaction that a received walk delivers events from. */
+interface ReceivedTransaction extends Position {
+  digest?: string;
+  timestamp?: { seconds: bigint; nanos: number };
+  events?: { events: SuiEvent[] };
+  transaction?: CallTransaction;
 }
 /** An `EventPage` of transfer records. */
 export type TransferPage = Omit<EventPage, "events"> & { events: StreamdEvent<Transfer>[] };
@@ -111,7 +119,7 @@ export interface SuiLedgerClient {
     getServiceInfo(input: object): PromiseLike<{ response: { checkpointHeight?: bigint; lowestAvailableCheckpoint?: bigint } }>;
     /** Needed only for `entryFunction` on `fetchEvents`' events, which go without it when this is absent. */
     batchGetTransactions?: BatchGetTransactions;
-    /** Needed only for `fetchTransfers` and `object` descriptors. */
+    /** Needed only for `fetchTransfers`, `object` descriptors and received `account` ones. */
     listTransactions?(
       input: QueryBounds & { readMask: { paths: string[] }; filter?: { terms: { literals: TransactionLiteral[] }[] } },
       options?: { abort?: AbortSignal },
@@ -183,6 +191,14 @@ const OBJECT_FIELDS = [
   "effects.changed_objects",
   ...["object_id", "version", "object_type", "json"].map((f) => `objects.objects.${f}`),
 ];
+const RECEIVED_FIELDS = [
+  "digest",
+  "checkpoint",
+  "transaction_index",
+  "timestamp",
+  ...["event_type", "package_id", "module", "sender", "json"].map((f) => `events.events.${f}`),
+  ...CALL_FIELDS.map((f) => `transaction.${f}`),
+];
 const STATE_FIELDS = [
   "effects.changed_objects",
   "effects.unchanged_consensus_objects",
@@ -241,6 +257,7 @@ export function suiDescriptor(descriptor: EventDescriptor): EventDescriptor {
       return { ...descriptor, eventType: (Array.isArray(types) ? types.map(eventType) : eventType(types)) as typeof types };
     }
     case "account":
+      receivedOf(descriptor);
       return {
         ...descriptor,
         accountAddress: suiAddress(descriptor.accountAddress),
@@ -252,6 +269,11 @@ export function suiDescriptor(descriptor: EventDescriptor): EventDescriptor {
       filterOf(descriptor);
       return descriptor;
   }
+}
+
+function receivedOf({ received }: AccountEventDescriptor): boolean {
+  if (received !== undefined && typeof received !== "boolean") throw new StreamdError(`Not a valid received flag (true or false): ${String(received)}`);
+  return received === true;
 }
 
 function filterOf(descriptor: EventDescriptor): EventFilter {
@@ -326,13 +348,28 @@ const fromBase64 = (text: string) => {
 };
 
 /**
+ * A cursor is the node's own, plus `.<version>` while the walk has kept no
+ * event yet: the node starts at a checkpoint, not a version, so transactions
+ * below the walk's `fromVersion` can still follow the cursor and must be
+ * dropped on resume too.
+ */
+function parseCursor(text: string | undefined): { after?: Uint8Array; floor?: bigint } {
+  if (text === undefined) return {};
+  const [token, floor, extra] = text.split(".");
+  if (extra !== undefined || (floor !== undefined && !/^\d+$/.test(floor))) throw new StreamdError(`Not a cursor this adapter issued: ${text}`);
+  return { after: fromBase64(token!), ...(floor !== undefined && { floor: BigInt(floor) }) };
+}
+
+/**
  * Serves Sui events through the `EventAdapter` contract, over the Sui gRPC
  * `LedgerService` of the `SuiGrpcClient` passed in. A `version` is Sui's
  * global transaction number, the previous checkpoint's running total plus
  * the transaction's index in its checkpoint, so relative starts count
- * transactions as on Aptos. Serves `module` and `account` descriptors, and
- * `object` ones from a `ListTransactions` walk over the transactions that
- * changed the object, each change delivered as `objectChangesOf` shapes it.
+ * transactions as on Aptos. Serves `module` and `account` descriptors,
+ * `received` account ones from a `ListTransactions` walk over the
+ * transactions affecting the address, and `object` ones from a walk over the
+ * transactions that changed the object, each change delivered as
+ * `objectChangesOf` shapes it.
  */
 export class SuiAdapter implements EventAdapter {
   private readonly ledger: SuiLedgerClient["ledgerService"];
@@ -347,9 +384,7 @@ export class SuiAdapter implements EventAdapter {
     if (typeof client?.ledgerService?.listEvents !== "function") {
       throw new StreamdError("SuiAdapter needs a SuiGrpcClient from @mysten/sui/grpc");
     }
-    const preset = typeof client.network === "string" && Object.hasOwn(networks, client.network)
-      ? (networks as Record<string, SuiNetworkPreset>)[client.network]
-      : undefined;
+    const preset = client.network === "mainnet" || client.network === "testnet" || client.network === "devnet" ? networks[client.network] : undefined;
     this.graphqlUrl = httpUrl(options?.graphqlUrl ?? preset?.graphqlUrl);
     this.ledger = client.ledgerService;
     this.executor = client.transactionExecutionService;
@@ -369,7 +404,8 @@ export class SuiAdapter implements EventAdapter {
    */
   async getEarliestVersion(): Promise<bigint> {
     let low = await this.lowest();
-    let high = (await this.latest()).sequence;
+    // An archive keeps its reported lowest, so one read spares a bisection over the whole chain.
+    let high = (await this.readable(low)) !== undefined ? low : (await this.latest()).sequence;
     while (low < high) {
       const mid = (low + high) / 2n;
       if ((await this.readable(mid)) !== undefined) high = mid;
@@ -426,6 +462,7 @@ export class SuiAdapter implements EventAdapter {
     if (descriptor.kind === "account" && descriptor.eventTypes?.length === 0) {
       return { events: [], nextCursor: options.cursor, hasMore: false };
     }
+    if (descriptor.kind === "account" && receivedOf(descriptor)) return this.fetchReceived(descriptor, options);
     const origins = new Map<StreamdEvent, SuiEvent>();
     const page = await this.walk<ListEventsFrame>(
       options,
@@ -495,6 +532,34 @@ export class SuiAdapter implements EventAdapter {
     );
   }
 
+  /**
+   * The events of every transaction the node lists as affecting the account,
+   * whoever signed it, read with the transaction so its call comes along;
+   * `limit` counts transactions.
+   */
+  private async fetchReceived(descriptor: AccountEventDescriptor, options: FetchOptions): Promise<EventPage> {
+    const { accountAddress: address, eventTypes } = suiDescriptor(descriptor) as AccountEventDescriptor;
+    const types = eventTypes === undefined ? undefined : new Set(eventTypes);
+    const list = this.listing("A received account descriptor");
+    const affected: TransactionLiteral = { negated: false, predicate: { oneofKind: "affectedAddress", affectedAddress: { address } } };
+    return this.walk<ListTransactionsFrame>(
+      options,
+      (bounds) => list({ readMask: { paths: RECEIVED_FIELDS }, filter: { terms: [{ literals: [affected] }] }, ...bounds }),
+      async ({ transaction }) => {
+        if (transaction === undefined) return [];
+        const version = await this.versionOf(transaction);
+        const calls = callsOf(transaction.transaction);
+        return ((transaction.events?.events ?? []) as SuiEvent[]).flatMap((raw, eventIndex) => {
+          const event = withCall(this.shaped(raw, version, eventIndex), calls, raw);
+          if (types !== undefined && !types.has(event.type)) return [];
+          if (transaction.digest !== undefined) event.transactionHash = transaction.digest;
+          if (transaction.timestamp !== undefined) event.timestamp = micros(transaction.timestamp);
+          return [event];
+        });
+      },
+    );
+  }
+
   private listing(what: string): NonNullable<SuiLedgerClient["ledgerService"]["listTransactions"]> {
     const list = this.ledger.listTransactions;
     if (typeof list !== "function") throw new StreamdError(`${what} needs the SuiGrpcClient's ledgerService.listTransactions`);
@@ -515,7 +580,8 @@ export class SuiAdapter implements EventAdapter {
    * read without writing, `null` for one it deleted or wrapped. Only objects
    * in the effects have a state at that transaction, so any other id
    * rejects. Read over gRPC while the fullnode keeps the transaction, then
-   * over Sui GraphQL, which reaches back to genesis.
+   * over Sui GraphQL, which reaches back to genesis; with no GraphQL
+   * endpoint, a pruned transaction fails with 410.
    */
   async readObjects(request: ObjectRequest, at: Pick<StreamdEvent, "version" | "transactionHash">, _descriptor?: EventDescriptor): Promise<unknown[]> {
     const ids = requireObjectRequest(request).objects.map(suiAddress);
@@ -526,8 +592,9 @@ export class SuiAdapter implements EventAdapter {
       ({ response: { transaction: found } } = await this.ledger.getTransaction({ digest, readMask: { paths: STATE_FIELDS } }));
     } catch (err) {
       if ((err as { code?: unknown } | null)?.code !== "NOT_FOUND") networkError(err);
+      // A 410, so ArchiveFallbackAdapter can send the read to an archive node.
       if (this.graphqlUrl === undefined) {
-        throw new StreamdError(`This Sui node no longer has transaction ${digest}; pass graphqlUrl to SuiAdapter to read it through Sui GraphQL`);
+        throw new StreamdNetworkError(`This Sui node no longer has transaction ${digest}; pass graphqlUrl to SuiAdapter to read it through Sui GraphQL`, 410);
       }
       return graphqlStatesOf(await graphqlEffects(this.graphqlUrl, digest), ids, digest);
     }
@@ -583,9 +650,10 @@ export class SuiAdapter implements EventAdapter {
   ): Promise<EventPage> {
     const limit = options.limit ?? DEFAULT_LIMIT;
     if (!Number.isSafeInteger(limit) || limit < 0) throw new StreamdError(`Not a valid limit: ${limit}`);
-    const after = options.cursor === undefined ? undefined : fromBase64(options.cursor);
+    const { after, floor: carried } = parseCursor(options.cursor);
     if (limit === 0) return { events: [], nextCursor: options.cursor, hasMore: false };
     const { fromVersion, toVersion } = options;
+    const floor = after === undefined ? fromVersion : carried;
     // Without a cursor or a start, a walk starts at the head, as on the Aptos fullnode.
     const startCheckpoint =
       after !== undefined ? undefined : fromVersion !== undefined ? await this.startOf(fromVersion) : (await this.latest()).sequence;
@@ -611,14 +679,17 @@ export class SuiAdapter implements EventAdapter {
       if (frame.watermark?.cursor !== undefined) watermark = frame.watermark;
       if (frame.end?.reason !== undefined) reason = frame.end.reason;
       for (const event of await toEvents(frame)) {
-        if (fromVersion !== undefined && after === undefined && event.version < fromVersion) continue;
+        if (floor !== undefined && event.version < floor) continue;
         if (toVersion !== undefined && event.version > toVersion) continue;
         events.push(event);
       }
     }
     const page: EventPage = {
       events,
-      nextCursor: watermark?.cursor === undefined ? options.cursor : toBase64(watermark.cursor),
+      nextCursor:
+        watermark?.cursor === undefined
+          ? options.cursor
+          : `${toBase64(watermark.cursor)}${floor !== undefined && events.length === 0 ? `.${floor}` : ""}`,
       hasMore: reason === ITEM_LIMIT || reason === SCAN_LIMIT,
     };
     if (watermark?.checkpoint !== undefined) {

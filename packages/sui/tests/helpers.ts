@@ -201,6 +201,10 @@ export interface FakeListed {
   gas?: bigint;
   events?: number;
   changes: [address: string, coinType: string, amount: bigint][];
+  /** Typed events, which replace `events`' untyped ones: each event's type and the package and module that emitted it. */
+  typed?: { type: string; pkg?: string; module?: string }[];
+  /** The transaction's commands, for its events' calls. */
+  ptb?: CallTransaction;
   /** Object changes: the id, its output version (omitted for a delete) and its contents' `value`. */
   objects?: { id: string; version?: bigint; value?: string }[];
 }
@@ -247,9 +251,17 @@ export function withTransfers(
               checkpoint: t.cp,
               transactionIndex: t.ti,
               timestamp: { seconds: 1_700_000_000n + t.cp, nanos: 0 },
-              transaction: { sender: t.sender ?? LONG("a11ce"), gasPayment: { owner: t.sender ?? LONG("a11ce") } },
+              transaction: { sender: t.sender ?? LONG("a11ce"), gasPayment: { owner: t.sender ?? LONG("a11ce") }, ...t.ptb },
               balanceChanges: t.changes.map(([a, coinType, amount]) => ({ address: a, coinType, amount: String(amount) })),
-              events: { events: Array.from({ length: t.events ?? 0 }, () => ({})) },
+              events: {
+                events: t.typed?.map((e, i) => ({
+                  eventType: e.type,
+                  packageId: e.pkg,
+                  module: e.module,
+                  sender: t.sender ?? LONG("a11ce"),
+                  json: structOf({ n: String(i) }),
+                })) ?? Array.from({ length: t.events ?? 0 }, () => ({})),
+              },
               effects: {
                 gasUsed: { computationCost: t.gas ?? 0n, storageCost: 0n, storageRebate: 0n },
                 changedObjects: (t.objects ?? []).map((o) => ({

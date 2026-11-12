@@ -95,6 +95,13 @@ export interface AccountEventDescriptor {
   accountAddress: string;
   /** Restrict to these Move event types; omit for every event. */
   eventTypes?: string[];
+  /**
+   * Every transaction that affected the account, the ones it only received
+   * included, instead of the ones it signed. Served by `SuiAdapter`;
+   * `IndexerAccountAdapter` always serves every transaction touching the
+   * account, and adapters that see only signed transactions refuse it.
+   */
+  received?: boolean;
 }
 
 /**

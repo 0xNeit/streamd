@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { StreamdClient, StreamdError, StreamdNetworkError, checkAdapter, eventId } from "@streamd/core";
+import { ArchiveFallbackAdapter, StreamdClient, StreamdError, StreamdNetworkError, checkAdapter, eventId } from "@streamd/core";
 import type { EventDescriptor, MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiAdapter } from "../src/index.js";
@@ -71,6 +71,21 @@ describe("SuiAdapter", () => {
     expect(rest.events.map(eventId)).toEqual(["4:0"]);
     expect(rest.hasMore).toBe(false);
     await expect(adapter.fetchEvents(stakes, { cursor: "not base64!" })).rejects.toBeInstanceOf(StreamdError);
+  });
+
+  it("keeps dropping versions below fromVersion after resuming from a page that kept nothing", async () => {
+    // Checkpoint 3 holds versions 6 to 9: a start at 9 scans 6, 7 and 8 first.
+    const early = [0n, 1n, 2n, 3n].map((ti) => ({ cp: 3n, ti, ei: 0, type: STAKE }));
+    const adapter = new SuiAdapter(fakeLedger(SIZES, early).client);
+    const whole = await adapter.fetchEvents(stakes, { fromVersion: 9n, limit: 4 });
+    expect(whole.events.map(eventId)).toEqual(["9:0"]);
+    const first = await adapter.fetchEvents(stakes, { fromVersion: 9n, limit: 1 });
+    expect(first.events).toEqual([]);
+    const rest = await adapter.fetchEvents(stakes, { cursor: first.nextCursor, limit: 3 });
+    expect(rest.events.map(eventId)).toEqual(["9:0"]);
+    const after = await adapter.fetchEvents(stakes, { cursor: rest.nextCursor });
+    expect(after.nextCursor).not.toContain(".");
+    await expect(adapter.fetchEvents(stakes, { cursor: `${first.nextCursor}x` })).rejects.toBeInstanceOf(StreamdError);
   });
 
   it("refuses handle and resource descriptors and bad types, and maps gRPC failures to network errors", async () => {
@@ -540,6 +555,94 @@ describe("SuiAdapter entry functions", () => {
   });
 });
 
+describe("SuiAdapter received account descriptors", () => {
+  const BOB = LONG("b0b");
+  const SUI = `${LONG("2")}::sui::SUI`;
+  const swap = { package: "0xabc", module: "pool", function: "swap", typeArguments: [], arguments: [{ kind: 1 }] };
+  // Versions: checkpoint 1 starts at 1, 2 at 4, 3 at 6. Alice signs only the last.
+  const LISTED: FakeListed[] = [
+    { cp: 1n, ti: 0n, sender: BOB, typed: [{ type: SWAP, pkg: LONG("abc"), module: "pool" }, { type: STAKE }], ptb: ptb([swap]), changes: [[BOB, SUI, -3n], [ALICE, SUI, 3n]] },
+    { cp: 1n, ti: 2n, sender: BOB, typed: [{ type: SWAP }], changes: [[BOB, SUI, -1n]] },
+    { cp: 2n, ti: 1n, sender: BOB, typed: [{ type: STAKE }], changes: [[ALICE, SUI, 1n]] },
+    { cp: 3n, ti: 3n, sender: ALICE, typed: [{ type: SWAP }], changes: [] },
+  ];
+  const received: EventDescriptor = { kind: "account", accountAddress: "0xa11ce", received: true };
+  const adapter = () => {
+    const wired = withTransfers(fakeLedger(SIZES, EVENTS).client, SIZES, LISTED);
+    return { sui: new SuiAdapter(wired.client), calls: wired.calls };
+  };
+  const ids = (page: { events: { version: bigint; eventIndex: number; type: string }[] }) => page.events.map((e) => [e.version, e.eventIndex, e.type]);
+
+  it("walks every transaction affecting the address, by cursor, with hasMore and throughVersion", async () => {
+    const { sui, calls } = adapter();
+    const first = await sui.fetchEvents(received, { fromVersion: 0n, limit: 1 });
+    expect(ids(first)).toEqual([[1n, 0, SWAP], [1n, 1, STAKE]]);
+    expect(first).toMatchObject({ hasMore: true, throughVersion: 3n });
+    expect(first.events[0]).toEqual({
+      type: SWAP,
+      data: { n: "0" },
+      version: 1n,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+      sender: BOB,
+      entryFunction: { function: `${LONG("abc")}::pool::swap`, typeArguments: [], arguments: ["GasCoin"] },
+      transactionHash: "D1t0",
+      timestamp: 1_700_000_001_000_000n,
+    });
+    expect(first.events[1]!.entryFunction).toBeUndefined();
+    const rest = await sui.fetchEvents(received, { cursor: first.nextCursor, limit: 10 });
+    expect(ids(rest)).toEqual([[5n, 0, STAKE], [9n, 0, SWAP]]);
+    expect(rest).toMatchObject({ hasMore: false, throughVersion: 9n });
+    expect(calls.list[0]!.filter).toEqual({ terms: [{ literals: [{ negated: false, predicate: { oneofKind: "affectedAddress", affectedAddress: { address: ALICE } } }] }] });
+    expect((calls.list[0]!.readMask as { paths: string[] }).paths).toEqual(
+      expect.arrayContaining(["transaction_index", "events.events.json", "transaction.kind.programmable_transaction.commands"]),
+    );
+  });
+
+  it("narrows by eventTypes, honours fromVersion and toVersion, and makes no call for an empty list", async () => {
+    const { sui, calls } = adapter();
+    const stakesOnly = await sui.fetchEvents({ ...received, eventTypes: ["0x3::validator::StakingRequestEvent"] } as EventDescriptor, { fromVersion: 0n });
+    expect(ids(stakesOnly)).toEqual([[1n, 1, STAKE], [5n, 0, STAKE]]);
+    expect(ids(await sui.fetchEvents(received, { fromVersion: 2n, toVersion: 6n }))).toEqual([[5n, 0, STAKE]]);
+    const before = calls.list.length;
+    expect((await sui.fetchEvents({ ...received, eventTypes: [] } as EventDescriptor, { fromVersion: 0n })).events).toEqual([]);
+    expect(calls.list).toHaveLength(before);
+  });
+
+  it("refuses a non-boolean flag and a client without listTransactions, and leaves the signed walk as it was", async () => {
+    const { sui, calls } = adapter();
+    await expect(sui.fetchEvents({ ...received, received: "yes" } as never, { fromVersion: 0n })).rejects.toThrow("received flag");
+    expect(calls.list).toHaveLength(0);
+    await expect(new SuiAdapter(fakeLedger(SIZES, EVENTS).client).fetchEvents(received, {})).rejects.toThrow("listTransactions");
+    const signed = await sui.fetchEvents({ kind: "account", accountAddress: ALICE, received: false }, { fromVersion: 0n });
+    expect(signed.events.map((e) => e.version)).toEqual([0n, 4n, 9n]);
+    expect(calls.list).toHaveLength(0);
+  });
+});
+
+describe("SuiAdapter behind ArchiveFallbackAdapter", () => {
+  // The fullnode keeps checkpoints 2 and up, so versions below 6 are pruned there; the archive keeps all.
+  const nodes = () => {
+    const fullnode = fakeLedger(SIZES, EVENTS, undefined, 2n);
+    const archive = fakeLedger(SIZES, EVENTS);
+    return { fullnode, archive, both: new ArchiveFallbackAdapter(new SuiAdapter(fullnode.client), new SuiAdapter(archive.client)) };
+  };
+
+  it("serves a start below the fullnode's edge from the archive, and one above it from the fullnode", async () => {
+    const { fullnode, archive, both } = nodes();
+    expect((await both.fetchEvents(stakes, { fromVersion: 0n, limit: 10 })).events.map(eventId)).toEqual(["0:0", "3:1", "4:0"]);
+    expect([fullnode.calls.list.length, archive.calls.list.length]).toEqual([0, 1]);
+    expect((await both.fetchEvents({ kind: "module", eventType: [SWAP] }, { fromVersion: 6n, limit: 10 })).events.map(eventId)).toEqual(["9:4"]);
+    expect([fullnode.calls.list.length, archive.calls.list.length]).toEqual([1, 1]);
+  });
+
+  it("takes the earliest version from the archive in one checkpoint read", async () => {
+    const { archive, both } = nodes();
+    expect(await both.getEarliestVersion!(stakes)).toBe(0n);
+    expect(archive.calls.checkpoints).toEqual(["0"]);
+  });
+});
+
 describe("SuiAdapter object descriptors", () => {
   const POOL = LONG("9001");
   // Versions: checkpoint 1 starts at 1, 2 at 4, 3 at 6.
@@ -667,6 +770,11 @@ describe("SuiAdapter object state", () => {
     });
   });
 
+  it("sends a pruned read to the archive behind ArchiveFallbackAdapter when the fullnode has no GraphQL endpoint", async () => {
+    const both = new ArchiveFallbackAdapter(new SuiAdapter(stateLedger(pruned(), "localnet").client), new SuiAdapter(stateLedger(touched).client));
+    expect(await both.readObjects!({ objects: [POOL] }, at)).toEqual([{ value: "new" }]);
+  });
+
   it("maps GraphQL failures", async () => {
     const answers = [
       () => new Response("slow down", { status: 429, headers: { "retry-after": "2" } }),
@@ -702,9 +810,9 @@ describe("SuiAdapter object state", () => {
       globalThis.fetch = real;
     }
     expect(asked).toBe("https://graphql.testnet.sui.io/graphql");
-    await expect(new SuiAdapter(stateLedger(pruned(), "localnet").client).readObjects({ objects: [POOL] }, at)).rejects.toThrow(
-      `This Sui node no longer has transaction ${TX}; pass graphqlUrl`,
-    );
+    const err = await new SuiAdapter(stateLedger(pruned(), "localnet").client).readObjects({ objects: [POOL] }, at).catch((e: unknown) => e);
+    expect((err as Error).message).toContain(`This Sui node no longer has transaction ${TX}; pass graphqlUrl`);
+    expect((err as StreamdNetworkError).statusCode).toBe(410);
     expect(() => new SuiAdapter(stateLedger(touched).client, { graphqlUrl: "ftp://x" })).toThrow("Not a valid graphqlUrl");
   });
 

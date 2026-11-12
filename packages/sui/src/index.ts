@@ -4,7 +4,7 @@ export type { SuiTransferFilter, SuiTransferListenerOptions, SuiTransferOptions 
 export { formatAmount } from "@streamd/core";
 export type { BalanceChange, Balances, BalancesOptions, Transfer } from "@streamd/core";
 export { networks } from "./networks.js";
-export type { SuiNetworkPreset } from "./networks.js";
+export type { SuiArchivePreset, SuiNetworkPreset, SuiTransport } from "./networks.js";
 export { primaryName, resolveName } from "./names.js";
 export { ownedBy } from "./ownership.js";
 export type { OwnedByOptions } from "./ownership.js";
