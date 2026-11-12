@@ -348,6 +348,19 @@ const fromBase64 = (text: string) => {
 };
 
 /**
+ * A cursor is the node's own, plus `.<version>` while the walk has kept no
+ * event yet: the node starts at a checkpoint, not a version, so transactions
+ * below the walk's `fromVersion` can still follow the cursor and must be
+ * dropped on resume too.
+ */
+function parseCursor(text: string | undefined): { after?: Uint8Array; floor?: bigint } {
+  if (text === undefined) return {};
+  const [token, floor, extra] = text.split(".");
+  if (extra !== undefined || (floor !== undefined && !/^\d+$/.test(floor))) throw new StreamdError(`Not a cursor this adapter issued: ${text}`);
+  return { after: fromBase64(token!), ...(floor !== undefined && { floor: BigInt(floor) }) };
+}
+
+/**
  * Serves Sui events through the `EventAdapter` contract, over the Sui gRPC
  * `LedgerService` of the `SuiGrpcClient` passed in. A `version` is Sui's
  * global transaction number, the previous checkpoint's running total plus
@@ -637,9 +650,10 @@ export class SuiAdapter implements EventAdapter {
   ): Promise<EventPage> {
     const limit = options.limit ?? DEFAULT_LIMIT;
     if (!Number.isSafeInteger(limit) || limit < 0) throw new StreamdError(`Not a valid limit: ${limit}`);
-    const after = options.cursor === undefined ? undefined : fromBase64(options.cursor);
+    const { after, floor: carried } = parseCursor(options.cursor);
     if (limit === 0) return { events: [], nextCursor: options.cursor, hasMore: false };
     const { fromVersion, toVersion } = options;
+    const floor = after === undefined ? fromVersion : carried;
     // Without a cursor or a start, a walk starts at the head, as on the Aptos fullnode.
     const startCheckpoint =
       after !== undefined ? undefined : fromVersion !== undefined ? await this.startOf(fromVersion) : (await this.latest()).sequence;
@@ -665,14 +679,17 @@ export class SuiAdapter implements EventAdapter {
       if (frame.watermark?.cursor !== undefined) watermark = frame.watermark;
       if (frame.end?.reason !== undefined) reason = frame.end.reason;
       for (const event of await toEvents(frame)) {
-        if (fromVersion !== undefined && after === undefined && event.version < fromVersion) continue;
+        if (floor !== undefined && event.version < floor) continue;
         if (toVersion !== undefined && event.version > toVersion) continue;
         events.push(event);
       }
     }
     const page: EventPage = {
       events,
-      nextCursor: watermark?.cursor === undefined ? options.cursor : toBase64(watermark.cursor),
+      nextCursor:
+        watermark?.cursor === undefined
+          ? options.cursor
+          : `${toBase64(watermark.cursor)}${floor !== undefined && events.length === 0 ? `.${floor}` : ""}`,
       hasMore: reason === ITEM_LIMIT || reason === SCAN_LIMIT,
     };
     if (watermark?.checkpoint !== undefined) {

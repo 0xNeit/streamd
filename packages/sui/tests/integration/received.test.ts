@@ -40,10 +40,13 @@ describe.skipIf(!enabled)("SuiAdapter received account descriptors (mainnet)", (
   it("pages by cursor with no gap or repeat", async () => {
     const head = await adapter.getHeadVersion();
     using sui = new SuiClient({ sui: grpc });
-    // The busiest signer of recent transfers, so the walk has several transactions to page over.
-    const counts = new Map<string, number>();
-    for (const r of await sui.getTransfers({ fromVersion: head - 600n, toVersion: head })) counts.set(r.sender!, (counts.get(r.sender!) ?? 0) + 1);
-    const [address] = [...counts].sort((a, b) => b[1] - a[1])[0]!;
+    // The signer of the most recent transfer transactions (not records: one transaction can hold
+    // many), so the walk has several transactions to page over.
+    const sent = new Map<string, Set<bigint>>();
+    for (const r of await sui.getTransfers({ fromVersion: head - 600n, toVersion: head })) {
+      sent.set(r.sender!, (sent.get(r.sender!) ?? new Set()).add(r.version));
+    }
+    const [address] = [...sent].sort((a, b) => b[1].size - a[1].size)[0]!;
     const descriptor: EventDescriptor = { kind: "account", accountAddress: address, received: true };
     // The node may end a page early at its scan limit, so both walks follow hasMore to the end.
     const walk = async (limit: number) => {

@@ -73,6 +73,21 @@ describe("SuiAdapter", () => {
     await expect(adapter.fetchEvents(stakes, { cursor: "not base64!" })).rejects.toBeInstanceOf(StreamdError);
   });
 
+  it("keeps dropping versions below fromVersion after resuming from a page that kept nothing", async () => {
+    // Checkpoint 3 holds versions 6 to 9: a start at 9 scans 6, 7 and 8 first.
+    const early = [0n, 1n, 2n, 3n].map((ti) => ({ cp: 3n, ti, ei: 0, type: STAKE }));
+    const adapter = new SuiAdapter(fakeLedger(SIZES, early).client);
+    const whole = await adapter.fetchEvents(stakes, { fromVersion: 9n, limit: 4 });
+    expect(whole.events.map(eventId)).toEqual(["9:0"]);
+    const first = await adapter.fetchEvents(stakes, { fromVersion: 9n, limit: 1 });
+    expect(first.events).toEqual([]);
+    const rest = await adapter.fetchEvents(stakes, { cursor: first.nextCursor, limit: 3 });
+    expect(rest.events.map(eventId)).toEqual(["9:0"]);
+    const after = await adapter.fetchEvents(stakes, { cursor: rest.nextCursor });
+    expect(after.nextCursor).not.toContain(".");
+    await expect(adapter.fetchEvents(stakes, { cursor: `${first.nextCursor}x` })).rejects.toBeInstanceOf(StreamdError);
+  });
+
   it("refuses handle and resource descriptors and bad types, and maps gRPC failures to network errors", async () => {
     const { client } = fakeLedger(SIZES, EVENTS);
     const adapter = new SuiAdapter(client);
