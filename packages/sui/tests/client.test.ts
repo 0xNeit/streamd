@@ -4,7 +4,7 @@ import type { MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiClient, networks } from "../src/index.js";
 import type { SuiClientConfig } from "../src/index.js";
-import { LONG, digest, fakeLedger, transactionBytes, withSimulator, type FakeSimulation, type FakeTransaction } from "./helpers.js";
+import { LONG, digest, fakeLedger, transactionBytes, withSimulator, withTransfers, type FakeListed, type FakeSimulation, type FakeTransaction } from "./helpers.js";
 
 const STAKE = `${LONG("3")}::validator::StakingRequestEvent` as MoveEventType;
 const stakes = { kind: "module", eventType: STAKE } as const;
@@ -175,5 +175,80 @@ describe("SuiClient simulations", () => {
     expect((err as StreamdAssertionError).transactionHash).toBeUndefined();
     expect((err as StreamdAssertionError).events).toHaveLength(3);
     expect(requests).toHaveLength(2);
+  });
+});
+
+describe("SuiClient transfers and balances", () => {
+  const SUI = `${LONG("2")}::sui::SUI`;
+  const USDC = `${LONG("dba")}::usdc::USDC`;
+  const [ALICE, BOB] = [LONG("a11ce"), LONG("b0b")];
+  const SIZES = [1, 3, 2];
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  function client(listed: FakeListed[], balances?: Map<string, bigint>, extra: Partial<SuiClientConfig> = {}) {
+    const ledger = fakeLedger(SIZES, []);
+    const wired = withTransfers(ledger.client, SIZES, listed, balances, new Map([[SUI, { symbol: "SUI", decimals: 9 }]]));
+    return { sui: new SuiClient({ sui: wired.client as unknown as SuiGrpcClient, ...extra }), calls: wired.calls };
+  }
+  const LISTED: FakeListed[] = [
+    { cp: 1n, ti: 0n, gas: 1n, changes: [[ALICE, SUI, -11n], [BOB, SUI, 10n]] },
+    { cp: 1n, ti: 1n, changes: [[BOB, USDC, -7n], [ALICE, USDC, 7n]] },
+    { cp: 2n, ti: 0n, changes: [[ALICE, SUI, -3n], [BOB, SUI, 3n]] },
+  ];
+
+  it("returns paired records over a range, with limit, where and asset info", async () => {
+    const { sui } = client(LISTED);
+    const all = await sui.getTransfers({ fromVersion: 0n });
+    expect(all.map((e) => [e.version, e.data.asset, e.data.amount])).toEqual([[1n, SUI, 10n], [2n, USDC, 7n], [4n, SUI, 3n]]);
+    const usdc = await sui.getTransfers({ fromVersion: 0n, where: (e) => e.type === USDC });
+    expect(usdc.map((e) => e.data)).toEqual([{ asset: USDC, amount: 7n, from: BOB, to: ALICE }]);
+    expect(await sui.getTransfers({ fromVersion: 0n, limit: 1 })).toHaveLength(1);
+    const info = await sui.getTransfers({ fromVersion: 0n, asset: "0x2::sui::SUI", withAssetInfo: true });
+    expect(info.map((e) => [e.data.symbol, e.data.decimals])).toEqual([["SUI", 9], ["SUI", 9]]);
+    const noInfo = await sui.getTransfers({ fromVersion: 0n, asset: USDC, withAssetInfo: true });
+    expect(noInfo[0]!.data.symbol).toBeUndefined();
+  });
+
+  it("follows new transactions live, is not a listener, and stops on unsubscribe", async () => {
+    const listed: FakeListed[] = [];
+    const { sui } = client(listed);
+    const seen: bigint[] = [];
+    const sub = sui.transfers((e) => void seen.push(e.data.amount), { fromVersion: 0n, pollInterval: 5, account: "0xb0b" });
+    expect(sui.listenerCount()).toBe(0);
+    await wait(20);
+    listed.push(...LISTED);
+    await wait(40);
+    expect(seen).toEqual([10n, 7n, 3n]);
+    sub.unsubscribe();
+    expect(sub.active).toBe(false);
+  });
+
+  it("reads SUI balances by default, reports a change, and keys by long-form type", async () => {
+    const balances = new Map([[`${ALICE}:${SUI}`, 5n]]);
+    const { sui, calls } = client([], balances);
+    const changes: bigint[] = [];
+    using wallet = sui.balances("0xa11ce", { pollInterval: 5, onChange: (_, c) => void changes.push(c.data.balance) });
+    expect(await wallet.ready).toEqual(new Map([[SUI, 5n]]));
+    expect(calls.balances[0]).toBe(`${ALICE}:${SUI}`);
+    balances.set(`${ALICE}:${SUI}`, 8n);
+    await wait(30);
+    expect(changes).toEqual([8n]);
+    expect(wallet.get("0x2::sui::SUI")).toBe(8n);
+    expect(sui.listenerCount()).toBe(0);
+  });
+
+  it("refuses a bad account, asset or coin type at the call", async () => {
+    const { sui } = client([]);
+    expect(() => sui.transfers(() => {}, { account: "nope" })).toThrow(StreamdError);
+    expect(() => sui.transfers(() => {}, { asset: "nope" })).toThrow("coin type");
+    await expect(sui.getTransfers({ account: "nope" })).rejects.toThrow(StreamdError);
+    expect(() => sui.balances("nope")).toThrow(StreamdError);
+    expect(() => sui.balances(ALICE, { asset: "nope" })).toThrow("coin type");
+    expect(() => sui.balances(ALICE, { asset: [] })).toThrow("empty");
+  });
+
+  it("reads transfers through a SuiAdapter over sui when given another adapter", async () => {
+    const { sui, calls } = client(LISTED, undefined, { adapter: new MemoryAdapter([]) });
+    expect(await sui.getTransfers({ fromVersion: 0n })).toHaveLength(3);
+    expect(calls.list.length).toBeGreaterThan(0);
   });
 });

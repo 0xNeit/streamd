@@ -1,6 +1,7 @@
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { StreamdError } from "@streamd/core";
-import type { StreamdEvent, Transfer } from "@streamd/core";
+import type { EventAdapter, EventDescriptor, EventFilter, StreamdEvent, SubscriptionOptions, Transfer } from "@streamd/core";
+import type { SuiAdapter } from "./adapter.js";
 
 /** The part of a `ListTransactions` transaction that transfers are built from. */
 export interface BalanceChangeTransaction {
@@ -94,4 +95,65 @@ export function transfersOf(txn: BalanceChangeTransaction, version: bigint, asse
     if (sender !== undefined && sender !== "") event.sender = normalizeSuiAddress(sender);
     return event;
   });
+}
+
+/** Narrowing for `SuiClient.transfers` and `getTransfers`. */
+export interface SuiTransferOptions {
+  /** Only transfers of this coin type, in any form (`"0x2::sui::SUI"`). */
+  asset?: string;
+  /**
+   * Only transfers this Sui address sent or received. The node narrows the
+   * walk to transactions affecting it, so this is what saves reads.
+   */
+  account?: string;
+  /** Adds `symbol` and `decimals`, read once per coin type; a coin type with no metadata leaves them off. */
+  withAssetInfo?: boolean;
+}
+
+/** Options for `SuiClient.transfers`. */
+export type SuiTransferListenerOptions = SubscriptionOptions & SuiTransferOptions;
+
+/** Filter for `SuiClient.getTransfers`. */
+export type SuiTransferFilter = EventFilter & SuiTransferOptions;
+
+/** The descriptor transfer walks run under. No adapter serves it: `transferSource` answers it. */
+export const TRANSFER_DESCRIPTOR: EventDescriptor = { kind: "module", eventType: "0x2::coin::Coin" };
+
+// Coin metadata never changes, so overflowing only costs a repeat read.
+const CACHE_SIZE = 10_000;
+
+/** `sui`'s transfers as an `EventAdapter`, so the poller and queries walk them as events. */
+export function transferSource(
+  sui: SuiAdapter,
+  filter: Pick<SuiTransferOptions, "account" | "asset">,
+  withAssetInfo = false,
+): EventAdapter {
+  const infos = new Map<string, Promise<{ symbol: string; decimals: number } | undefined>>();
+  const info = (asset: string) => {
+    let found = infos.get(asset);
+    if (found === undefined) {
+      found = sui.coinInfo(asset);
+      found.catch(() => infos.delete(asset));
+      if (infos.size >= CACHE_SIZE) infos.delete(infos.keys().next().value!);
+      infos.set(asset, found);
+    }
+    return found;
+  };
+  return {
+    fetchEvents: async (_descriptor, options) => {
+      const page = await sui.fetchTransfers(options, filter);
+      if (!withAssetInfo) return page;
+      const events = await Promise.all(
+        page.events.map(async (event) => {
+          const known = await info(event.data.asset);
+          return known === undefined ? event : { ...event, data: { ...event.data, ...known } };
+        }),
+      );
+      return { ...page, events };
+    },
+    getHeadVersion: () => sui.getHeadVersion(),
+    getEarliestVersion: () => sui.getEarliestVersion(),
+    getBlock: (descriptor, height) => sui.getBlock(descriptor, height),
+    getBlockHeights: () => sui.getBlockHeights(),
+  };
 }
