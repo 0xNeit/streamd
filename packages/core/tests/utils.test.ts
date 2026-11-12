@@ -167,6 +167,17 @@ describe("descriptorKey for resource descriptors", () => {
   });
 });
 
+describe("descriptorKey for received account descriptors", () => {
+  it("keeps the signed-only key unchanged and tells received apart", () => {
+    const signed = descriptorKey({ kind: "account", accountAddress: "0x1" });
+    expect(signed).toBe(JSON.stringify(["account", LONG_0X1, null]));
+    expect(descriptorKey({ kind: "account", accountAddress: "0x1", received: false })).toBe(signed);
+    const received = descriptorKey({ kind: "account", accountAddress: "0x1", received: true });
+    expect(received).toBe(JSON.stringify(["account", LONG_0X1, null, true]));
+    expect(fetchKey({ kind: "account", accountAddress: "0x1", received: true }, {})).not.toBe(fetchKey({ kind: "account", accountAddress: "0x1" }, {}));
+  });
+});
+
 describe("descriptorKey for object descriptors", () => {
   it("is equal across id spellings and distinct by id", () => {
     const short = descriptorKey({ kind: "object", objectId: "0x1" });

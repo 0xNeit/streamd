@@ -135,6 +135,15 @@ describe("previewEvents in core", () => {
   });
 });
 
+describe("transaction lookups with a received account descriptor", () => {
+  it("reject before any lookup", async () => {
+    const { adapter, seen } = lookups(0, { version: 5n, success: true, vmStatus: "success", events: [] });
+    const received = { kind: "account" as const, accountAddress: "0x1", received: true };
+    await expect(eventsOf(adapter, limiter, 0, ID, received, {})).rejects.toThrow("received account descriptor");
+    expect(seen).toEqual([]);
+  });
+});
+
 describe("transaction lookups with an object descriptor", () => {
   it("reject before any lookup or simulation", async () => {
     const { adapter, seen } = lookups(0, { version: 5n, success: true, vmStatus: "success", events: [] });

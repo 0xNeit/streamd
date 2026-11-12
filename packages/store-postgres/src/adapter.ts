@@ -30,6 +30,9 @@ function descriptorWhere(descriptor: EventDescriptor): Where {
       return types(Array.isArray(eventType) ? eventType : [eventType as string]);
     }
     case "account": {
+      if (descriptor.received === true) {
+        throw new StreamdError("PostgresStoreAdapter keys account events by sender, so it cannot serve received ones");
+      }
       const sender = requireAddress(descriptor.accountAddress);
       if (descriptor.eventTypes === undefined) return (bind) => `sender = ${bind(sender)}`;
       const typed = types(descriptor.eventTypes);

@@ -1399,6 +1399,15 @@ describe("FullnodeScanAdapter resource changes", () => {
   });
 });
 
+describe("FullnodeScanAdapter received account descriptors", () => {
+  it("refuses them before any request", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    const received = { kind: "account" as const, accountAddress: "0x1", received: true };
+    await expect(new FullnodeScanAdapter(aptos).fetchEvents(received, {})).rejects.toThrow("IndexerAccountAdapter");
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe("FullnodeScanAdapter object descriptors", () => {
   it("refuses them before any request", async () => {
     const { aptos, calls } = fakeNode(() => ({ data: {} }));

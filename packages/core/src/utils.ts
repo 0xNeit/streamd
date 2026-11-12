@@ -140,6 +140,8 @@ export function descriptorKey(d: EventDescriptor | undefined): string | undefine
         "account",
         normalizeAddress(d.accountAddress) ?? d.accountAddress,
         d.eventTypes === undefined ? null : typeSet(d.eventTypes),
+        // Only when set, so every key from before the option stays as it was.
+        ...(d.received === true ? [true] : []),
       ]);
     case "resource":
       return JSON.stringify([
