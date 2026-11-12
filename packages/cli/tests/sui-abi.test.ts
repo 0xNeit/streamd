@@ -120,10 +120,13 @@ function service(packages = [STD_PKG, SUI_PKG, V1_PKG, V2_PKG, OTHER_PKG]) {
       if (found === undefined) throw Object.assign(new Error("not found"), { code: "NOT_FOUND" });
       return { response: { package: found } };
     },
-    async listPackageVersions({ packageId }) {
+    // One version per page, ascending, as the node orders them.
+    async listPackageVersions({ packageId, pageToken }) {
       listed.push(packageId);
       const versions = packages.filter((p) => p.originalId === packageId).map((p, i) => ({ packageId: p.storageId, version: BigInt(i + 1) }));
-      return { response: { versions: versions.reverse() } };
+      const page = pageToken === undefined ? 0 : pageToken[0]!;
+      const more = page + 1 < versions.length;
+      return { response: { versions: versions.slice(page, page + 1), ...(more && { nextPageToken: new Uint8Array([page + 1]) }) } };
     },
   };
   return { svc, reads, listed };
@@ -193,8 +196,18 @@ describe("suiCodegen", () => {
     // Declared in a module not named, so a type without a descriptor.
     expect(source).toContain(`/** \`${V2}::pool::NewInfo\` */\nexport interface NewInfo {`);
     expect(source).not.toContain("export const NewInfo");
-    expect(listed).toEqual([V1]);
+    // Two pages: the upgrade is the second version listed.
+    expect(listed).toEqual([V1, V1]);
     expect(reads.sort()).toEqual([OTHER, V1, V2].sort());
+  });
+
+  it("refuses a node that pages versions without end", async () => {
+    const { svc } = service();
+    const endless: SuiPackageService = {
+      getPackage: svc.getPackage,
+      listPackageVersions: async () => ({ response: { versions: [], nextPageToken: new Uint8Array([1]) } }),
+    };
+    await expect(generate([{ address: OTHER }], endless)).rejects.toThrow(`Sui node listed more than 100 pages of versions of package ${V1}`);
   });
 
   it("checks the Sui JSON shapes with --validators", async () => {

@@ -37,6 +37,7 @@ const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const COPY = 1;
 const DROP = 2;
 const ENUM = 2;
+const MAX_VERSION_PAGES = 100;
 const VECTOR = 9;
 const DATATYPE = 10;
 const TYPE_PARAMETER = 11;
@@ -142,10 +143,17 @@ export function suiCodegen(service: SuiPackageService): {
     return packages.get(id)!;
   };
 
-  const latest = async (originalId: string): Promise<string | undefined> => {
+  const latestIds = new Map<string, Promise<string | undefined>>();
+  const latest = (originalId: string): Promise<string | undefined> => {
+    if (!latestIds.has(originalId)) latestIds.set(originalId, walkVersions(originalId));
+    return latestIds.get(originalId)!;
+  };
+  const walkVersions = async (originalId: string): Promise<string | undefined> => {
     let best: { id: string; version: bigint } | undefined;
     let pageToken: Uint8Array | undefined;
-    do {
+    for (let page = 0; ; page++) {
+      // A node that never stops paging is refused rather than followed forever.
+      if (page === MAX_VERSION_PAGES) throw new StreamdError(`Sui node listed more than ${MAX_VERSION_PAGES} pages of versions of package ${originalId}`);
       let response;
       try {
         ({ response } = await service.listPackageVersions({ packageId: originalId, pageSize: 100, ...(pageToken && { pageToken }) }));
@@ -157,9 +165,9 @@ export function suiCodegen(service: SuiPackageService): {
           best = { id: address(v.packageId, originalId, "version id"), version: v.version };
         }
       }
-      pageToken = response?.nextPageToken?.length ? response.nextPageToken : undefined;
-    } while (pageToken !== undefined);
-    return best?.id;
+      if (!response?.nextPageToken?.length) return best?.id;
+      pageToken = response.nextPageToken;
+    }
   };
 
   const find = (pkg: Package, module: string, name: string) => pkg.modules.get(module)?.find((d) => d.name === name);

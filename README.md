@@ -2784,7 +2784,7 @@ streamd codegen --chain sui --out src/protocol.ts 0x<package id>
 - No view or handle builders: Sui has neither. `--validators` works, against the JSON below.
 - `--network` takes `mainnet`, `testnet` or `devnet`, and `--node-url` a Sui gRPC URL.
   `--api-key` is refused and `APTOS_API_KEY` is never read: public Sui nodes take no key.
-- `@mysten/sui` is an optional peer of `@streamd/cli`, loaded only for `--chain sui`.
+- `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`. `@mysten/sui` is an optional peer of `@streamd/cli`, but `@streamd/sui`, a dependency, still declares it as a peer, so package managers may install or ask for it.
 
 Each type describes the JSON a Sui node returns, as `SuiAdapter` delivers it:
 
