@@ -3,7 +3,7 @@ import { StreamdClient, StreamdError, StreamdNetworkError, checkAdapter, eventId
 import type { EventDescriptor, MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiAdapter } from "../src/index.js";
-import { LONG, fakeLedger, type FakeEvent } from "./helpers.js";
+import { LONG, digest, fakeLedger, type FakeEvent, type FakeTransaction } from "./helpers.js";
 
 const STAKE = `${LONG("3")}::validator::StakingRequestEvent` as MoveEventType;
 const SWAP = `${LONG("abc")}::pool::Swap` as MoveEventType;
@@ -280,5 +280,59 @@ describe("SuiAdapter time and block bounds through the client", () => {
     const { client } = fakeLedger(SIZES, EVENTS, undefined, 2n);
     using streamd = new StreamdClient({ adapter: new SuiAdapter(client) });
     expect((await streamd.getEvents(all, { fromTime: 0n })).map(eventId)).toEqual(["9:4"]);
+  });
+});
+
+describe("SuiAdapter transaction lookups", () => {
+  const OK = digest(1);
+  const FAILED = digest(2);
+  const PENDING = digest(3);
+  const TRANSACTIONS: FakeTransaction[] = [
+    { digest: OK, cp: 1n, ti: 2n, events: [{ type: "0x3::validator::StakingRequestEvent", sender: "0xa11ce", amount: "7" }, { type: SWAP }] },
+    { digest: FAILED, cp: 3n, ti: 1n, error: "MoveAbort(m::z, 101) in command 1", events: [] },
+    { digest: PENDING, ti: 0n, events: [{ type: SWAP }] },
+  ];
+  const adapter = (fail?: () => unknown) => new SuiAdapter(fakeLedger(SIZES, [], fail, 0n, TRANSACTIONS).client);
+
+  it("returns a checkpointed transaction's events, placed as fetchEvents places them", async () => {
+    const found = await adapter().getTransactionEvents(OK);
+    expect(found).toMatchObject({ version: 3n, success: true, vmStatus: "success" });
+    expect(found!.events).toEqual([
+      { type: STAKE, data: { amount: "7" }, version: 3n, sequenceNumber: 0n, eventIndex: 0, transactionHash: OK, sender: ALICE, timestamp: 1_700_000_001_000_005n },
+      { type: SWAP, data: { amount: "1" }, version: 3n, sequenceNumber: 0n, eventIndex: 1, transactionHash: OK, timestamp: 1_700_000_001_000_005n },
+    ]);
+  });
+
+  it("reports a failed transaction with its error description", async () => {
+    expect(await adapter().getTransactionEvents(FAILED)).toEqual({
+      version: 7n,
+      success: false,
+      vmStatus: "MoveAbort(m::z, 101) in command 1",
+      events: [],
+    });
+  });
+
+  it("answers undefined for an unknown or uncheckpointed transaction", async () => {
+    expect(await adapter().getTransactionEvents(digest(9))).toBeUndefined();
+    expect(await adapter().getTransactionEvents(PENDING)).toBeUndefined();
+  });
+
+  it("refuses a malformed or hex digest before any call", async () => {
+    const { client, calls } = fakeLedger(SIZES, [], undefined, 0n, TRANSACTIONS);
+    const sui = new SuiAdapter(client);
+    for (const bad of [`0x${"ab".repeat(32)}`, "not-base58!", digest(1).slice(0, 20), 7 as unknown as string]) {
+      const err = await sui.getTransactionEvents(bad).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+    expect(calls.transactions).toEqual([]);
+  });
+
+  it("turns another gRPC failure into a network error", async () => {
+    const err = await adapter(() => Object.assign(new Error("slow down"), { code: "RESOURCE_EXHAUSTED" }))
+      .getTransactionEvents(OK)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(429);
   });
 });
