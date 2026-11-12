@@ -173,3 +173,80 @@ export function withSimulator(client: SuiLedgerClient, result: FakeSimulation, f
   };
   return { client: simulating, requests };
 }
+
+/** A transaction `listTransactions` serves: its place, signer, gas payer and net gas, and balance changes. */
+export interface FakeListed {
+  cp: bigint;
+  ti: bigint;
+  sender?: string;
+  gas?: bigint;
+  events?: number;
+  changes: [address: string, coinType: string, amount: bigint][];
+}
+
+/**
+ * `client` with a `listTransactions` over `listed`, paged as `listEvents` is
+ * in `fakeLedger` (`sizes` must match it), and a `stateService` answering
+ * from `balances` (`owner:coinType` keys) and `coins`.
+ */
+export function withTransfers(
+  client: SuiLedgerClient,
+  sizes: number[],
+  listed: FakeListed[],
+  balances = new Map<string, bigint>(),
+  coins = new Map<string, { symbol: string; decimals: number }>(),
+) {
+  const calls = { list: [] as Record<string, unknown>[], balances: [] as string[], coins: [] as string[] };
+  const ledgerService: SuiLedgerClient["ledgerService"] = {
+    ...client.ledgerService,
+    listTransactions(input) {
+      calls.list.push(input as unknown as Record<string, unknown>);
+      async function* responses() {
+        const start = input.options.after !== undefined ? input.options.after[0]! : 0;
+        const last = input.endCheckpoint === undefined ? BigInt(sizes.length - 1) : input.endCheckpoint - 1n;
+        const address = input.filter?.terms[0]?.literals[0]?.predicate.affectedAddress.address;
+        let sent = 0;
+        let i = start;
+        for (; i < listed.length; i++) {
+          const t = listed[i]!;
+          if (input.startCheckpoint !== undefined && t.cp < input.startCheckpoint) continue;
+          if (t.cp > last) break;
+          if (address !== undefined && !t.changes.some(([a]) => a === address) && t.sender !== address) continue;
+          if (sent === input.options.limit) {
+            yield { watermark: { cursor: new Uint8Array([i]), checkpoint: t.cp - 1n }, end: { reason: 1 } };
+            return;
+          }
+          sent++;
+          yield {
+            transaction: {
+              digest: `D${t.cp}t${t.ti}`,
+              checkpoint: t.cp,
+              transactionIndex: t.ti,
+              timestamp: { seconds: 1_700_000_000n + t.cp, nanos: 0 },
+              transaction: { sender: t.sender ?? LONG("a11ce"), gasPayment: { owner: t.sender ?? LONG("a11ce") } },
+              effects: { gasUsed: { computationCost: t.gas ?? 0n, storageCost: 0n, storageRebate: 0n } },
+              balanceChanges: t.changes.map(([a, coinType, amount]) => ({ address: a, coinType, amount: String(amount) })),
+              events: { events: Array.from({ length: t.events ?? 0 }, () => ({})) },
+            },
+            watermark: { cursor: new Uint8Array([i + 1]), checkpoint: t.cp - 1n },
+          };
+        }
+        yield { watermark: { cursor: new Uint8Array([i]), checkpoint: last }, end: { reason: 3 } };
+      }
+      return { responses: responses() };
+    },
+  };
+  const stateService: NonNullable<SuiLedgerClient["stateService"]> = {
+    async getBalance({ owner, coinType }) {
+      calls.balances.push(`${owner}:${coinType}`);
+      return { response: { balance: { balance: balances.get(`${owner}:${coinType}`) ?? 0n } } };
+    },
+    async getCoinInfo({ coinType }) {
+      calls.coins.push(coinType);
+      const coin = coins.get(coinType);
+      if (coin === undefined) throw Object.assign(new Error(`Coin type ${coinType} not found`), { code: "NOT_FOUND" });
+      return { response: { metadata: coin } };
+    },
+  };
+  return { client: { ...client, ledgerService, stateService } as SuiLedgerClient, calls };
+}

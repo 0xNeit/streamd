@@ -3,7 +3,7 @@ import { StreamdClient, StreamdError, StreamdNetworkError, checkAdapter, eventId
 import type { EventDescriptor, MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiAdapter } from "../src/index.js";
-import { LONG, digest, fakeLedger, transactionBytes, withSimulator, type FakeEvent, type FakeTransaction } from "./helpers.js";
+import { LONG, digest, fakeLedger, transactionBytes, withSimulator, withTransfers, type FakeEvent, type FakeListed, type FakeTransaction } from "./helpers.js";
 
 const STAKE = `${LONG("3")}::validator::StakingRequestEvent` as MoveEventType;
 const SWAP = `${LONG("abc")}::pool::Swap` as MoveEventType;
@@ -392,5 +392,82 @@ describe("SuiAdapter simulations", () => {
     const err = await new SuiAdapter(client).simulateTransactionEvents({ transaction: await transactionBytes() }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect((err as Error).message).toContain("invalid transaction");
+  });
+});
+
+describe("SuiAdapter transfers and balances", () => {
+  const SUI = `${LONG("2")}::sui::SUI`;
+  const USDC = `${LONG("dba")}::usdc::USDC`;
+  const BOB = LONG("b0b");
+  const CAROL = LONG("ca401");
+  // Versions: checkpoint 1 starts at 1, 2 at 4, 3 at 6.
+  const LISTED: FakeListed[] = [
+    { cp: 1n, ti: 0n, gas: 2n, events: 1, changes: [[ALICE, SUI, -12n], [BOB, SUI, 10n]] },
+    { cp: 1n, ti: 2n, sender: BOB, changes: [[BOB, USDC, -5n], [CAROL, USDC, 5n]] },
+    { cp: 2n, ti: 1n, changes: [[CAROL, USDC, -1n]] },
+    { cp: 3n, ti: 3n, sender: CAROL, changes: [[CAROL, SUI, -4n], [ALICE, SUI, 4n]] },
+  ];
+  const adapter = (balances?: Map<string, bigint>, coins?: Map<string, { symbol: string; decimals: number }>) => {
+    const { client } = fakeLedger(SIZES, []);
+    const wired = withTransfers(client, SIZES, LISTED, balances, coins);
+    return { adapter: new SuiAdapter(wired.client), calls: wired.calls };
+  };
+  const pairs = (page: { events: { version: bigint; eventIndex: number; data: { from?: string; to?: string; amount: bigint } }[] }) =>
+    page.events.map((e) => [e.version, e.eventIndex, e.data.from, e.data.to, e.data.amount]);
+
+  it("pages transfers by cursor, with hasMore and throughVersion as fetchEvents has them", async () => {
+    const { adapter: sui, calls } = adapter();
+    const first = await sui.fetchTransfers({ fromVersion: 0n, limit: 2 });
+    expect(pairs(first)).toEqual([[1n, 1, ALICE, BOB, 10n], [3n, 0, BOB, CAROL, 5n]]);
+    expect(first).toMatchObject({ hasMore: true, throughVersion: 3n });
+    expect(first.events[0]).toMatchObject({ type: SUI, transactionHash: "D1t0", timestamp: 1_700_000_001_000_000n, sender: ALICE });
+    const rest = await sui.fetchTransfers({ cursor: first.nextCursor, limit: 10 });
+    expect(pairs(rest)).toEqual([[5n, 0, CAROL, undefined, 1n], [9n, 0, CAROL, ALICE, 4n]]);
+    expect(rest).toMatchObject({ hasMore: false, throughVersion: 9n });
+    expect((calls.list[0]!.readMask as { paths: string[] }).paths).toContain("balance_changes");
+    expect(calls.list[0]!.filter).toBeUndefined();
+  });
+
+  it("starts at fromVersion and drops records past toVersion", async () => {
+    const { adapter: sui } = adapter();
+    expect(pairs(await sui.fetchTransfers({ fromVersion: 3n, toVersion: 5n }))).toEqual([[3n, 0, BOB, CAROL, 5n], [5n, 0, CAROL, undefined, 1n]]);
+  });
+
+  it("narrows by account through the node and the records, and by a short-form asset", async () => {
+    const { adapter: sui, calls } = adapter();
+    const carol = await sui.fetchTransfers({ fromVersion: 0n }, { account: "0xca401" });
+    expect(pairs(carol)).toEqual([[3n, 0, BOB, CAROL, 5n], [5n, 0, CAROL, undefined, 1n], [9n, 0, CAROL, ALICE, 4n]]);
+    expect(calls.list[0]!.filter).toEqual({ terms: [{ literals: [{ negated: false, predicate: { oneofKind: "affectedAddress", affectedAddress: { address: CAROL } } }] }] });
+    const sui2 = await sui.fetchTransfers({ fromVersion: 0n }, { asset: "0x2::sui::SUI" });
+    expect(sui2.events.map((e) => e.data.asset)).toEqual([SUI, SUI]);
+    await expect(sui.fetchTransfers({}, { account: "nope" })).rejects.toThrow(StreamdError);
+    await expect(sui.fetchTransfers({}, { asset: "nope" })).rejects.toThrow("coin type");
+  });
+
+  it("reads a balance and coin info through the state service", async () => {
+    const { adapter: sui, calls } = adapter(new Map([[`${ALICE}:${SUI}`, 42n]]), new Map([[SUI, { symbol: "SUI", decimals: 9 }]]));
+    expect(await sui.getBalance("0xa11ce", "0x2::sui::SUI")).toBe(42n);
+    expect(calls.balances).toEqual([`${ALICE}:${SUI}`]);
+    await expect(sui.getBalance(ALICE, "nope")).rejects.toThrow("coin type");
+    expect(calls.balances).toHaveLength(1);
+    expect(await sui.coinInfo("0x2::sui::SUI")).toEqual({ symbol: "SUI", decimals: 9 });
+    expect(await sui.coinInfo(USDC)).toBeUndefined();
+  });
+
+  it("refuses a client without the services, and maps a failed read", async () => {
+    const plain = new SuiAdapter(fakeLedger(SIZES, []).client);
+    await expect(plain.fetchTransfers({})).rejects.toThrow("listTransactions");
+    await expect(plain.getBalance(ALICE, SUI)).rejects.toThrow("stateService");
+    await expect(plain.coinInfo(SUI)).rejects.toThrow("stateService");
+    const { client } = fakeLedger(SIZES, []);
+    const failing = new SuiAdapter({
+      ...client,
+      stateService: {
+        getBalance: async () => Promise.reject(Object.assign(new Error("busy"), { code: "RESOURCE_EXHAUSTED" })),
+        getCoinInfo: async () => Promise.reject(Object.assign(new Error("down"), { code: "UNAVAILABLE" })),
+      },
+    });
+    await expect(failing.getBalance(ALICE, SUI)).rejects.toMatchObject({ statusCode: 429 });
+    await expect(failing.coinInfo(SUI)).rejects.toThrow(StreamdNetworkError);
   });
 });

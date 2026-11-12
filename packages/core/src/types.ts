@@ -1068,3 +1068,58 @@ export interface BlockInfo {
   /** Block time in microseconds since the Unix epoch. */
   timestamp: bigint;
 }
+
+/**
+ * One asset movement, the `data` of the records a chain client's
+ * `transfers` and `getTransfers` deliver. A movement paired with the one that
+ * funded it carries both sides; one nothing funded (a mint) has no `from`,
+ * and one nothing received (a burn) no `to`.
+ */
+export interface Transfer {
+  /** The asset, as the chain client documents it: an address, a coin type, or a token id, in long form. */
+  asset: string;
+  /** Base units; `1n` for a token object. */
+  amount: bigint;
+  /** The sending owner, in long form. */
+  from?: string;
+  /** The receiving owner, in long form. */
+  to?: string;
+  /** The asset's symbol, with `withAssetInfo`; absent for tokens and when the asset has none to read. */
+  symbol?: string;
+  /** The asset's decimals, with `withAssetInfo`; use `formatAmount` to apply them. */
+  decimals?: number;
+}
+
+/** One asset's balance at a version; `balances()` delivers these to `onChange`. */
+export interface BalanceChange {
+  /** The asset in long form, as the chain client keys it. */
+  asset: string;
+  /** Base units, read at or after the change's `version`. */
+  balance: bigint;
+}
+
+/** Options for a chain client's `balances`. Balances are read at the head, so nothing moves the start. */
+export interface BalancesOptions
+  extends Pick<
+    ListenerOptions,
+    "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "dedupWindow" | "onError" | "onCaughtUp" | "signal"
+  > {
+  /** The assets to follow, one or a list (default: the chain's native coin). */
+  asset?: string | readonly string[];
+  /** Called after a balance changes, with every balance known so far. A throw goes to `onError`. */
+  onChange?: (balances: ReadonlyMap<string, bigint>, change: StreamdEvent<BalanceChange>) => void;
+}
+
+/** A running `balances()`: one wallet's balances, kept current. */
+export interface Balances {
+  /** A copy of every balance known so far, by asset in long form. */
+  readonly value: ReadonlyMap<string, bigint>;
+  /** One asset's balance, given in any form; `undefined` until it is known. */
+  get(asset: string): bigint | undefined;
+  /** Resolves once following has started; rejects if the first read fails or it is stopped first. */
+  readonly ready: Promise<ReadonlyMap<string, bigint>>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
+}

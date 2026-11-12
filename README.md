@@ -1790,6 +1790,31 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   tx.moveCall({ target: "0x3::sui_system::request_add_stake", arguments: [tx.object("0x5"), stake, tx.pure.address(validator)] });
   const events = await sui.previewEvents(await tx.build({ client: grpc }));
   ```
+- **Transfers:** `sui.transfers(callback, { asset?, account?, withAssetInfo? })` and
+  `sui.getTransfers(filter)` deliver `Transfer { from, to, asset, amount }` records, as on Aptos.
+  Sui has no transfer events, so they are built from each transaction's balance changes (each
+  address's net change per coin type), walked with `ListTransactions`. The gas fee is taken out of
+  the payer's SUI change first, so a fee is never a transfer and a failed transaction yields
+  none. Then, per coin type, each receiver takes from the earliest sender with outflow left, as
+  much as both have: inflow no sender covers (a mint, or coins out of a pool) has no `from`,
+  outflow no receiver took has no `to`, and each address's records sum to its change. A record
+  keeps the transaction's `version`, digest, `timestamp` and `sender`; its `type` is the coin
+  type, and its `eventIndex` the transaction's event count plus its position among the records,
+  so it never shares an id with an event. `asset` is a coin type in any form; `account` an
+  address, narrowed on the node to transactions affecting it, which is what makes a live
+  subscription cheap: unnarrowed, a walk reads every transaction on the chain, and following
+  mainnet needs a `batchSize` near the node's 500-transaction page. `withAssetInfo` adds `symbol`
+  and `decimals` from the coin's metadata, and `formatAmount` applies them. Object (NFT)
+  transfers are not balance changes and are not reported.
+
+  ```ts
+  sui.transfers((t) => console.log(t.data.from, "->", t.data.to, formatAmount(t.data.amount, 9)), { account: me, asset: "0x2::sui::SUI" });
+  ```
+- **Balances:** `sui.balances(address, { asset?, onChange? })` keeps an address's coin balances
+  current, reading each coin type (SUI when none is named) through the state service every
+  `pollInterval`, keyed by coin type in long form, with `value`, `get`, `ready` and `onChange`
+  as on Aptos. Sui reads a balance only at its latest state, so a change's `version` is the head
+  read just before it. A coin type held nowhere reads `0`.
 - **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
   a version before that fails with `410`. Views are not served yet.
 

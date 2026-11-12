@@ -2,13 +2,19 @@ import type { MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos
 import type {
   EventFilter,
   EventPredicate,
-  StreamdEvent,
-  ListenerOptions,
   SubscriptionOptions,
   TransactionSimulation,
 } from "@streamd/core";
 
-export type { EventExpectation, EventsOfOptions, ExpectEventsOptions } from "@streamd/core";
+export type {
+  BalanceChange,
+  Balances,
+  BalancesOptions,
+  EventExpectation,
+  EventsOfOptions,
+  ExpectEventsOptions,
+  Transfer,
+} from "@streamd/core";
 
 /** Options for `StreamdClient.expectPreview`: the simulation's signer keys and the assertions' `decode`. */
 export type ExpectPreviewOptions = Pick<
@@ -25,32 +31,6 @@ export interface PreviewEventsOptions
   where?: EventPredicate;
   /** `data` fields, by path, turned from decimal strings into `bigint`, as `EventFilter.decode`. */
   decode?: readonly string[];
-}
-
-/**
- * One coin, fungible-asset or token movement, the `data` of the events
- * `StreamdClient.transfers` and `getTransfers` deliver. A deposit paired with
- * the withdraw that funded it carries both sides; a deposit nothing funded (a
- * mint) has no `from`, and a withdraw nothing received (a burn) no `to`. A
- * token object's transfer always carries both.
- */
-export interface Transfer {
-  /**
-   * Fungible-asset metadata address in long form, the coin type as reported,
-   * a token object's address in long form, or a legacy token's id as
-   * `creator::collection::name::property_version` (creator in long form).
-   */
-  asset: string;
-  /** Base units; `1n` for a token object. */
-  amount: bigint;
-  /** Owner of the withdrawn store, the coin or token account, or the object's previous owner, in long form. */
-  from?: string;
-  /** Owner of the receiving store, the coin or token account, or the object's new owner, in long form. */
-  to?: string;
-  /** The asset's symbol, with `withAssetInfo`; absent for tokens and when the asset has none to read. */
-  symbol?: string;
-  /** The asset's decimals, with `withAssetInfo`; use `formatAmount` to apply them. */
-  decimals?: number;
 }
 
 export interface TransferOptions {
@@ -74,40 +54,6 @@ export interface TransferOptions {
    * two views per asset, cached. A view that aborts leaves them off.
    */
   withAssetInfo?: boolean;
-}
-
-/** One asset's balance at a version; `balances()` delivers these to `onChange`. */
-export interface BalanceChange {
-  /** The asset in long form, with APT always its fungible-asset address. */
-  asset: string;
-  /** Base units, read by view at the change's `version`. */
-  balance: bigint;
-}
-
-/** Options for `StreamdClient.balances`. Balances are read at the head, so nothing moves the start. */
-export interface BalancesOptions
-  extends Pick<
-    ListenerOptions,
-    "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "dedupWindow" | "onError" | "onCaughtUp" | "signal"
-  > {
-  /** The fungible-asset addresses or coin types to follow, one or a list (default: APT). */
-  asset?: string | readonly string[];
-  /** Called after a balance changes, with every balance known so far. A throw goes to `onError`. */
-  onChange?: (balances: ReadonlyMap<string, bigint>, change: StreamdEvent<BalanceChange>) => void;
-}
-
-/** A running `balances()`: one wallet's balances, kept current. */
-export interface Balances {
-  /** A copy of every balance known so far, by asset in long form. */
-  readonly value: ReadonlyMap<string, bigint>;
-  /** One asset's balance, given in any form; `undefined` until it is known. */
-  get(asset: string): bigint | undefined;
-  /** Resolves once following has started; rejects if the first read fails or it is stopped first. */
-  readonly ready: Promise<ReadonlyMap<string, bigint>>;
-  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
-  readonly active: boolean;
-  unsubscribe(): void;
-  [Symbol.dispose](): void;
 }
 
 /** Options for `StreamdClient.transfers`. */

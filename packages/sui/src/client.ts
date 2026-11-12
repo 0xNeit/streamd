@@ -1,15 +1,43 @@
 import { SuiGrpcClient, type SuiGrpcClientOptions } from "@mysten/sui/grpc";
-import { StreamdClient, StreamdError, checkTimeout, eventsOf, expectEvents, expectPreview, previewEvents } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsOf, expectEvents, expectPreview, previewEvents, startBalances } from "@streamd/core";
 import type {
+  BalanceReader,
+  Balances,
+  BalancesOptions,
   EventAdapter,
+  EventCallback,
   EventDescriptor,
   EventExpectation,
   EventOf,
   EventsOfOptions,
   ExpectEventsOptions,
   StreamdConfig,
+  StreamdEvent,
+  Subscription,
+  Transfer,
 } from "@streamd/core";
-import { SuiAdapter, requireDigest, requireTransactionBytes, suiDescriptor } from "./adapter.js";
+import { SuiAdapter, requireDigest, requireTransactionBytes, suiAddress, suiDescriptor } from "./adapter.js";
+import { TRANSFER_DESCRIPTOR, coinType, transferSource } from "./transfers.js";
+import type { SuiTransferFilter, SuiTransferListenerOptions, SuiTransferOptions } from "./transfers.js";
+
+const SUI = coinType("0x2::sui::SUI");
+
+/** Sui balances by `StateService.GetBalance`, which reads the latest state: there is no balance at a version. */
+const SUI_BALANCES: BalanceReader = {
+  check: () => {},
+  assets: (named) => [...new Set((named === undefined ? [SUI] : typeof named === "string" ? [named] : named).map(coinType))],
+  canonical: coinType,
+  type: (asset) => `${coinType("0x2::balance::Balance")}<${asset}>`,
+  read: (adapter, owner, asset) => (adapter as SuiAdapter).getBalance(owner, asset),
+};
+
+/** `asset` and `account` checked at the call, so a typo fails there rather than on the first page. */
+function transferFilter({ asset, account }: SuiTransferOptions): Pick<SuiTransferOptions, "asset" | "account"> {
+  return {
+    ...(asset !== undefined && { asset: coinType(asset) }),
+    ...(account !== undefined && { account: suiAddress(account) }),
+  };
+}
 
 /** `StreamdClient`'s config, with the Sui gRPC client the Sui methods read through; `adapter` defaults to a `SuiAdapter` over it. */
 export type SuiClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -20,11 +48,13 @@ export type SuiClientConfig = Omit<StreamdConfig, "adapter"> & {
 
 /**
  * A `StreamdClient` for Sui: everything the chain-neutral client does, over a
- * `SuiAdapter` by default, plus transaction lookups, simulations and the
- * assertions on them.
+ * `SuiAdapter` by default, plus coin transfers and balances, transaction
+ * lookups, simulations and the assertions on them.
  */
 export class SuiClient extends StreamdClient {
   protected readonly sui: SuiGrpcClient;
+  /** Reads balances and balance changes, which no `EventAdapter` method carries: the client's adapter when it is a `SuiAdapter`. */
+  private readonly ledger: SuiAdapter;
 
   constructor(config: SuiClientConfig) {
     const given: unknown = config?.sui;
@@ -37,6 +67,72 @@ export class SuiClient extends StreamdClient {
     const { sui: _given, ...rest } = config;
     super({ ...rest, adapter: config.adapter ?? new SuiAdapter(sui) });
     this.sui = sui;
+    this.ledger = this.adapter instanceof SuiAdapter ? this.adapter : new SuiAdapter(sui);
+  }
+
+  /**
+   * Follow coin transfers as they land, each delivered as an event whose
+   * `data` is a `Transfer`, from the balance changes of every transaction,
+   * walked with `ListTransactions`. Sui has no transfer events: a
+   * transaction's effects carry each address's net change per coin type.
+   *
+   * The gas fee is taken out of the payer's SUI change first, as it is not a
+   * transfer. Then, per coin type, each receiver takes from the earliest
+   * sender with outflow left, as much as both have: inflow no sender covers
+   * has no `from`, outflow no receiver took has no `to`. Each address's
+   * records sum to its change, less gas. A record keeps the transaction's
+   * `version`, digest, `timestamp` and `sender`, has `type` the coin type,
+   * and `eventIndex` the transaction's event count plus its position among
+   * the records, so it never shares an id with an event.
+   *
+   * `asset` narrows to one coin type; `account` to what one address sent or
+   * received, narrowed on the node. Unnarrowed, a walk reads every
+   * transaction on the chain, so following mainnet live needs a `batchSize`
+   * near the node's 500-transaction page. Reads go through a `SuiAdapter`
+   * over `sui`, the client's own when it is one. Like `reduce()`, it is not
+   * a listener for `off()` or `listenerCount()`; `unsubscribe()` or
+   * `destroy()` ends it.
+   */
+  transfers(callback: EventCallback<Transfer>, options: SuiTransferListenerOptions = {}): Subscription {
+    const { asset, account, withAssetInfo, ...rest } = options;
+    const source = transferSource(this.ledger, transferFilter({ asset, account }), withAssetInfo);
+    return this.subscribe(TRANSFER_DESCRIPTOR, callback as EventCallback, rest, undefined, rest.id, () => source);
+  }
+
+  /**
+   * Past transfers, built as `transfers()` builds them, over the range and
+   * options `getEvents` takes; `where` and `limit` apply to the records.
+   */
+  async getTransfers(filter: SuiTransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
+    const { asset, account, withAssetInfo, ...rest } = filter;
+    const source = transferSource(this.ledger, transferFilter({ asset, account }), withAssetInfo);
+    return new EventQuery(source, this.limiter).getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
+  }
+
+  /**
+   * Keep one address's coin balances current, by reading each at the head
+   * every `pollInterval`. `asset` names the coin types to follow, one or a
+   * list; without it, SUI is followed. Balances are keyed by coin type in
+   * long form. Sui reads a balance only at its latest state, so a change's
+   * `version` is the head read just before it, and the balance is no older.
+   * A coin type held nowhere reads 0. Like `reduce()`, it is not a listener
+   * for `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  balances(address: string, options?: BalancesOptions): Balances {
+    const owner = suiAddress(address);
+    return startBalances(
+      {
+        adapter: this.ledger,
+        descriptor: TRANSFER_DESCRIPTOR,
+        onError: this.onError,
+        subscribe: (callback, listener, wrap) =>
+          this.subscribe(TRANSFER_DESCRIPTOR, callback, listener, undefined, undefined, () => wrap(this.ledger)),
+        track: this.reduceHost.track,
+      },
+      () => Promise.resolve(owner),
+      SUI_BALANCES,
+      options,
+    );
   }
 
   /**
