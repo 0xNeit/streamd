@@ -22,7 +22,8 @@ export function addressOrName(value: string): string | undefined {
   return undefined;
 }
 
-function nameService(sui: SuiGrpcClient): NameService {
+/** `sui`'s name service, or a `StreamdError` when it has none, so a caller can refuse a name up front. */
+export function nameService(sui: SuiGrpcClient): NameService {
   const service = (sui as { nameService?: Partial<NameService> } | null)?.nameService;
   if (typeof service?.lookupName !== "function" || typeof service.reverseLookupName !== "function") {
     throw new StreamdError("Resolving a SuiNS name needs a SuiGrpcClient");

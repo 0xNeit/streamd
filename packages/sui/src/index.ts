@@ -6,5 +6,7 @@ export type { BalanceChange, Balances, BalancesOptions, Transfer } from "@stream
 export { networks } from "./networks.js";
 export type { SuiNetworkPreset } from "./networks.js";
 export { primaryName, resolveName } from "./names.js";
+export { ownedBy } from "./ownership.js";
+export type { OwnedByOptions } from "./ownership.js";
 export { SuiClient } from "./client.js";
 export type { SuiClientConfig } from "./client.js";
