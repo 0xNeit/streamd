@@ -16,6 +16,7 @@ const PASS_THROUGH = [
   "getBlock",
   "getBlockHeights",
   "view",
+  "readObjects",
 ] as const;
 
 /**

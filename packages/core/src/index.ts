@@ -72,6 +72,7 @@ export {
   requireLedgerVersion,
   requireResourceType,
   requireTransactionHash,
+  requireObjectRequest,
   requireViewRequest,
   validateOffset,
 } from "./adapters/validate.js";
@@ -164,6 +165,8 @@ export type {
   StreamdEvent,
   Subscription,
   SubscriptionOptions,
+  ObjectRequest,
+  StateRequest,
   StateRequestBuilder,
   SubscriptionStatus,
   TransactionEvents,
