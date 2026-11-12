@@ -52,7 +52,7 @@ TypeScript types:
 - `@streamd/store-postgres` (`packages/store-postgres`) - the same over a Postgres client you
   supply. See [Store events in Postgres](#store-events-in-postgres).
 - `@streamd/sui` (`packages/sui`) - `SuiClient` and `SuiAdapter`, the same client over Sui events,
-  and Sui network presets. `@mysten/sui` is a peer dependency. See [Sui](#sui).
+  Sui network presets, and `resolveName`, `primaryName` and `ownedBy` over SuiNS and object owners. `@mysten/sui` is a peer dependency. See [Sui](#sui).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents` and `useTransfers` take an
   `AptosClient`. See [React hooks](#react-hooks).
@@ -1815,6 +1815,42 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   `pollInterval`, keyed by coin type in long form, with `value`, `get`, `ready` and `onChange`
   as on Aptos. Sui reads a balance only at its latest state, so a change's `version` is the head
   read just before it. A coin type held nowhere reads `0`.
+- **Names:** `resolveName(grpc, nameOrAddress)` turns a SuiNS name into the long-form address it
+  points to, through the node's name service at its head, and `primaryName(grpc, address)` returns
+  an address's default name (`alice.sui`) or `undefined`, resolved forward as a check so a name
+  that no longer points back counts as none, as on Aptos. `grpc` is a `SuiGrpcClient`. Both forms
+  work, `alice.sui` and `@alice`, subnames included (`pay.alice.sui`, `pay@alice`); a string
+  starting `0x` is always an address. An unregistered or expired name, a registered one with no
+  target address (many have none), a malformed one, and any name on a network without SuiNS
+  (devnet) reject with a `StreamdError`; a node or transport failure with a `StreamdNetworkError`.
+  `sui.transfers` and `sui.getTransfers` take a name as `account`, and `sui.balances` as its
+  address, each resolved once on first use, a failed lookup retried. Descriptors take addresses
+  only.
+
+  ```ts
+  import { primaryName, resolveName } from "@streamd/sui";
+
+  const alice = await resolveName(grpc, "alice.sui");
+  console.log((await primaryName(grpc, event.sender!)) ?? event.sender);
+  ```
+- **Owned objects:** `ownedBy(grpc, wallet, { fields?, maxConcurrentRequests? })` is an async
+  `where` predicate matching events whose `data` names an object `wallet` owns, directly or
+  through objects it owns. It reads the top-level `id`, `object_id` and `nft_id` fields in order
+  (kiosk `ItemListed`/`ItemPurchased`/`ItemDelisted` name the item by `id`), each counting when it
+  is an address string; `fields` replaces the list, and an event naming none costs no read. Each
+  hop up the owner chain is one object read, at most 8; `wallet` may be an address, an object id
+  (objects own objects on Sui) or a name, resolved once. Shared, immutable, deleted and wrapped
+  objects are not owned, nor is a dynamic field of a table or bag, whose parent id is not an
+  object of its own. Answers are cached per object and event version (1000 entries), and
+  `maxConcurrentRequests` (default 4) caps reads in flight, outside the client's limiter.
+  **Ownership is read at the head, not at the event's version:** Sui reads an object at one of
+  its own versions, not a ledger version, and nothing maps an event's version to the version an
+  object had then, so a live listener sees current owners and a history query today's owners. A
+  transport failure rejects with `StreamdNetworkError`, so a listener retries the event.
+
+  ```ts
+  sui.on({ kind: "module", eventType: "0x2::kiosk::ItemListed" }, onListed, { where: ownedBy(grpc, "alice.sui") });
+  ```
 - **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
   a version before that fails with `410`. Views are not served yet.
 

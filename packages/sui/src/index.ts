@@ -5,5 +5,8 @@ export { formatAmount } from "@streamd/core";
 export type { BalanceChange, Balances, BalancesOptions, Transfer } from "@streamd/core";
 export { networks } from "./networks.js";
 export type { SuiNetworkPreset } from "./networks.js";
+export { primaryName, resolveName } from "./names.js";
+export { ownedBy } from "./ownership.js";
+export type { OwnedByOptions } from "./ownership.js";
 export { SuiClient } from "./client.js";
 export type { SuiClientConfig } from "./client.js";

@@ -250,3 +250,30 @@ export function withTransfers(
   };
   return { client: { ...client, ledgerService, stateService } as SuiLedgerClient, calls };
 }
+
+export const grpcError = (code: string, message = code) => Object.assign(new Error(message), { code });
+
+/**
+ * A name service answering `lookupName` from `names` (a target address, `null`
+ * for a record with none, or an error to throw) and `reverseLookupName` from
+ * `reverse`; anything unlisted is `NOT_FOUND`.
+ */
+export function fakeNames(names: Record<string, string | null | Error>, reverse: Record<string, string | Error> = {}) {
+  const calls = { lookups: [] as string[], reverse: [] as string[] };
+  const answer = <T>(value: T | Error | undefined, wrap: (v: T) => object) => {
+    if (value instanceof Error) throw value;
+    if (value === undefined) throw grpcError("NOT_FOUND");
+    return { response: { record: wrap(value) } };
+  };
+  const nameService = {
+    lookupName: async ({ name }: { name?: string }) => {
+      calls.lookups.push(name!);
+      return answer(names[name!], (target: string | null) => ({ name, ...(target !== null && { targetAddress: target }) }));
+    },
+    reverseLookupName: async ({ address }: { address?: string }) => {
+      calls.reverse.push(address!);
+      return answer(reverse[address!], (name: string) => ({ name }));
+    },
+  };
+  return { nameService, calls };
+}
