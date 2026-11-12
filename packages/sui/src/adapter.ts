@@ -272,6 +272,8 @@ export class SuiAdapter implements EventAdapter {
   private readonly executor: SuiLedgerClient["transactionExecutionService"];
   private readonly stateService: SuiLedgerClient["stateService"];
   private readonly summaries = new Map<bigint, Promise<Summary>>();
+  /** The checkpoint holding each version placed so far. */
+  private readonly places = new Map<bigint, bigint>();
 
   constructor(client: SuiLedgerClient) {
     if (typeof client?.ledgerService?.listEvents !== "function") {
@@ -605,7 +607,10 @@ export class SuiAdapter implements EventAdapter {
   /** The earliest checkpoint whose running total passes `version`, found by bisection. */
   private async checkpointOf(version: bigint): Promise<bigint> {
     if (typeof version !== "bigint" || version < 0n) throw new StreamdError(`Not a valid version: ${String(version)}`);
-    let low = await this.lowest();
+    const known = this.places.get(version);
+    if (known !== undefined) return known;
+    const lowest = await this.lowest();
+    let low = lowest;
     let high = (await this.latest()).sequence;
     if ((await this.summary(high)).total <= version) return high;
     while (low < high) {
@@ -614,6 +619,12 @@ export class SuiAdapter implements EventAdapter {
       const summary = await this.readable(mid);
       if (summary !== undefined && summary.total > version) high = mid;
       else low = mid + 1n;
+    }
+    // Above the lowest kept checkpoint the answer is the one holding the version, which never
+    // changes; the bisection's range moves with the head, so its reads would not repeat.
+    if (low > lowest) {
+      this.places.set(version, low);
+      if (this.places.size > KEPT_SUMMARIES) this.places.delete(this.places.keys().next().value!);
     }
     return low;
   }
