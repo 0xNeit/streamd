@@ -429,6 +429,10 @@ export class FullnodeScanAdapter implements EventAdapter {
         return this.fetchAccountEvents(descriptor, options);
       case "resource":
         return this.fetchResourceChanges(descriptor, options);
+      case "object":
+        throw new StreamdError(
+          "FullnodeScanAdapter cannot serve object descriptors: follow an Aptos object's resources with a resource descriptor",
+        );
       default:
         return this.fetchModuleEvents(descriptor, options);
     }

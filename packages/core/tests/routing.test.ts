@@ -433,3 +433,24 @@ describe("RoutingAdapter resource route", () => {
     await expect(adapter.fetchEvents(resourceDesc, {})).rejects.toThrow('descriptor kind "resource"');
   });
 });
+
+describe("RoutingAdapter object descriptors", () => {
+  const objectDesc: EventDescriptor = { kind: "object", objectId: "0x6" };
+
+  it("sends them to the default", async () => {
+    const seen: EventDescriptor[] = [];
+    const fallback = {
+      fetchEvents: async (d: EventDescriptor) => {
+        seen.push(d);
+        return { events: [], nextCursor: undefined, hasMore: false };
+      },
+    };
+    await new RoutingAdapter({ module: new MemoryAdapter(), default: fallback }).fetchEvents(objectDesc, {});
+    expect(seen).toEqual([objectDesc]);
+  });
+
+  it("rejects them with no default", async () => {
+    const adapter = new RoutingAdapter({ module: new MemoryAdapter(), resource: new MemoryAdapter() });
+    await expect(adapter.fetchEvents(objectDesc, {})).rejects.toThrow('descriptor kind "object"');
+  });
+});

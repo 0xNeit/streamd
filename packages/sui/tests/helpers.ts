@@ -35,6 +35,12 @@ export interface FakeTransaction {
 }
 
 export const str = (s: string) => ({ kind: { oneofKind: "stringValue" as const, stringValue: s } });
+const structOf = (fields: Record<string, string>) => ({
+  kind: { oneofKind: "structValue" as const, structValue: { fields: Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, str(v)])) } },
+});
+
+/** The type `withTransfers`' object changes carry. */
+export const OBJECT_TYPE = `${"0x" + "dee9".padStart(64, "0")}::pool::Pool`;
 
 /**
  * Checkpoint n holds `sizes[n]` transactions; events are scanned in order. The
@@ -195,6 +201,8 @@ export interface FakeListed {
   gas?: bigint;
   events?: number;
   changes: [address: string, coinType: string, amount: bigint][];
+  /** Object changes: the id, its output version (omitted for a delete) and its contents' `value`. */
+  objects?: { id: string; version?: bigint; value?: string }[];
 }
 
 /**
@@ -217,7 +225,9 @@ export function withTransfers(
       async function* responses() {
         const start = input.options.after !== undefined ? input.options.after[0]! : 0;
         const last = input.endCheckpoint === undefined ? BigInt(sizes.length - 1) : input.endCheckpoint - 1n;
-        const address = input.filter?.terms[0]?.literals[0]?.predicate.affectedAddress.address;
+        const predicate = input.filter?.terms[0]?.literals[0]?.predicate;
+        const address = predicate?.oneofKind === "affectedAddress" ? predicate.affectedAddress.address : undefined;
+        const object = predicate?.oneofKind === "affectedObject" ? predicate.affectedObject.objectId : undefined;
         let sent = 0;
         let i = start;
         for (; i < listed.length; i++) {
@@ -225,6 +235,7 @@ export function withTransfers(
           if (input.startCheckpoint !== undefined && t.cp < input.startCheckpoint) continue;
           if (t.cp > last) break;
           if (address !== undefined && !t.changes.some(([a]) => a === address) && t.sender !== address) continue;
+          if (object !== undefined && !t.objects?.some((o) => o.id === object)) continue;
           if (sent === input.options.limit) {
             yield { watermark: { cursor: new Uint8Array([i]), checkpoint: t.cp - 1n }, end: { reason: 1 } };
             return;
@@ -237,9 +248,22 @@ export function withTransfers(
               transactionIndex: t.ti,
               timestamp: { seconds: 1_700_000_000n + t.cp, nanos: 0 },
               transaction: { sender: t.sender ?? LONG("a11ce"), gasPayment: { owner: t.sender ?? LONG("a11ce") } },
-              effects: { gasUsed: { computationCost: t.gas ?? 0n, storageCost: 0n, storageRebate: 0n } },
               balanceChanges: t.changes.map(([a, coinType, amount]) => ({ address: a, coinType, amount: String(amount) })),
               events: { events: Array.from({ length: t.events ?? 0 }, () => ({})) },
+              effects: {
+                gasUsed: { computationCost: t.gas ?? 0n, storageCost: 0n, storageRebate: 0n },
+                changedObjects: (t.objects ?? []).map((o) => ({
+                  objectId: o.id,
+                  outputState: o.version === undefined ? 1 : 2,
+                  ...(o.version !== undefined && { outputVersion: o.version }),
+                  objectType: OBJECT_TYPE,
+                })),
+              },
+              objects: {
+                objects: (t.objects ?? []).flatMap((o) =>
+                  o.version === undefined ? [] : [{ objectId: o.id, version: o.version, json: structOf({ value: o.value ?? "" }) }],
+                ),
+              },
             },
             watermark: { cursor: new Uint8Array([i + 1]), checkpoint: t.cp - 1n },
           };

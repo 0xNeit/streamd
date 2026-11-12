@@ -594,3 +594,10 @@ describe("MemoryAdapter.push", () => {
     expect((await waiting).version).toBe(9n);
   });
 });
+
+describe("MemoryAdapter object descriptors", () => {
+  it("refuses them, since its events name no object", async () => {
+    const adapter = new MemoryAdapter([ev(1)]);
+    await expect(adapter.fetchEvents({ kind: "object", objectId: "0x6" })).rejects.toThrow("object descriptors");
+  });
+});

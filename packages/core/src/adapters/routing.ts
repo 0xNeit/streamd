@@ -245,6 +245,9 @@ export class RoutingAdapter implements EventAdapter {
       case "resource":
         target = this.resourceAdapter ?? this.defaultAdapter;
         break;
+      case "object":
+        target = this.defaultAdapter;
+        break;
       default: {
         const unknown: never = descriptor;
         throw new StreamdError(

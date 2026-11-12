@@ -968,6 +968,7 @@ Every call takes an event descriptor:
 | `handle` | A legacy `EventHandle` on an account | `{ kind: "handle", accountAddress, eventHandleStruct, fieldName }` or, by its guid, `{ kind: "handle", accountAddress, creationNumber: 3n }` |
 | `account` | Events from transactions an account **sent** | `{ kind: "account", accountAddress, eventTypes?: [...] }` |
 | `resource` | Every write or delete of one resource, even when no event fires | `{ kind: "resource", accountAddress, resourceType: "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>" }` |
+| `object` | Every change to one Sui object, even when no event fires ([Sui](#sui) only) | `{ kind: "object", objectId: "0x6" }` |
 
 When `module.eventType` is an array of Move types, `FullnodeScanAdapter` serves
 all of them in a single transaction scan per page, delivering matches in
@@ -1324,7 +1325,8 @@ streamd.on(descriptor, (event) => {
 transaction, so their ids stay unique per handle but are not transaction
 positions. A `resource` change's `eventIndex` is the transaction's event count
 plus the change's position in its write set, so a change never shares an id with
-an event of the same transaction.
+an event of the same transaction; an `object` change's is the event count plus its
+position among the transaction's object changes.
 
 ## Filtering
 
@@ -1780,9 +1782,30 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   `previewEvents` read the commands in the request they already make. Transfer records carry
   no `entryFunction`, as on Aptos. A structural client without `batchGetTransactions` gets
   events without it.
-- **Descriptors:** `module` (a type or a list, in one request) and `account` (events from
-  transactions the address sent, optionally narrowed by `eventTypes`). Sui has no event handles
-  or account resources, so `handle` and `resource` are refused.
+- **Descriptors:** `module` (a type or a list, in one request), `account` (events from
+  transactions the address sent, optionally narrowed by `eventTypes`) and `object` (below). Sui
+  has no event handles or account resources, so `handle` and `resource` are refused.
+- **Object changes:** `{ kind: "object", objectId }` delivers every change to one object, Sui's
+  counterpart of `resource`: created, mutated, transferred, wrapped, unwrapped or deleted, whoever
+  sent the transaction. It walks `ListTransactions` filtered to the transactions whose effects
+  change the object, so the node does the narrowing. Each change is a `StreamdEvent`: `type` the
+  object's type in long form, `data` its contents (JSON, as events have it) once the transaction
+  ran, or `null` when it deleted or wrapped the object, `sequenceNumber` `0n`, `eventIndex` the
+  transaction's event count plus the change's position among its object changes, and the
+  transaction's digest, `timestamp` and `sender`; no `entryFunction`. `data` is the contents only:
+  an owner change with unchanged contents still arrives, with the same `data`. `objectId` may be
+  short (`0x6`). A wrap and an unwrap follow from the effects (`null`, then contents again) but
+  were not seen on mainnet when this was built. An object held inside another changes with its
+  parent and has no change of its own, and a dynamic field changes on its `dynamic_field::Field`
+  object, not the parent. A shared object such as the Clock (`0x6`) changes in nearly every
+  checkpoint, and every page reads the JSON of every object in each transaction, so follow busy
+  objects with care. `eventsOf` and `previewEvents` refuse it, as they refuse `resource`, and so
+  do `MemoryAdapter`, `FullnodeScanAdapter` (follow an Aptos object's resources instead) and
+  `checkDescriptor`; `RoutingAdapter` sends it to its `default`.
+
+  ```ts
+  sui.on({ kind: "object", objectId: pool }, (change) => console.log(change.version, change.data ?? "deleted"));
+  ```
 - **Blocks are checkpoints:** `getBlock(descriptor, height)` takes a checkpoint sequence number
   and returns its versions (the previous checkpoint's total up to its own, minus one) and its
   timestamp, and `getBlockHeights()` the node's lowest and latest checkpoints. So `fromTime`

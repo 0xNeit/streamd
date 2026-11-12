@@ -8,12 +8,14 @@ import type {
   EventDescriptor,
   EventPage,
   FetchOptions,
+  ObjectDescriptor,
   StreamdEvent,
   TransactionEvents,
   TransactionSimulation,
 } from "@streamd/core";
 import { attachCalls, callsOf, CALL_FIELDS, withCall, type BatchGetTransactions, type CallTransaction } from "./calls.js";
 import { toJson, type ProtoValue } from "./json.js";
+import { objectChangesOf, type ObjectChangeTransaction } from "./objects.js";
 import { coinType, transfersOf, type BalanceChangeTransaction } from "./transfers.js";
 import type { Transfer } from "@streamd/core";
 
@@ -47,7 +49,7 @@ interface ListEventsFrame extends Frame {
   event?: SuiEvent;
 }
 interface ListTransactionsFrame extends Frame {
-  transaction?: BalanceChangeTransaction & { checkpoint?: bigint; transactionIndex?: bigint };
+  transaction?: BalanceChangeTransaction & ObjectChangeTransaction & Position;
 }
 /** An `EventPage` of transfer records. */
 export type TransferPage = Omit<EventPage, "events"> & { events: StreamdEvent<Transfer>[] };
@@ -60,7 +62,13 @@ interface QueryBounds {
 }
 interface TransactionLiteral {
   negated: boolean;
-  predicate: { oneofKind: "affectedAddress"; affectedAddress: { address: string } };
+  predicate:
+    | { oneofKind: "affectedAddress"; affectedAddress: { address: string } }
+    | { oneofKind: "affectedObject"; affectedObject: { objectId: string } };
+}
+interface Position {
+  checkpoint?: bigint;
+  transactionIndex?: bigint;
 }
 interface ExecutedTransaction {
   digest?: string;
@@ -98,7 +106,7 @@ export interface SuiLedgerClient {
     getServiceInfo(input: object): PromiseLike<{ response: { checkpointHeight?: bigint; lowestAvailableCheckpoint?: bigint } }>;
     /** Needed only for `entryFunction` on `fetchEvents`' events, which go without it when this is absent. */
     batchGetTransactions?: BatchGetTransactions;
-    /** Needed only for `fetchTransfers`. */
+    /** Needed only for `fetchTransfers` and `object` descriptors. */
     listTransactions?(
       input: QueryBounds & { readMask: { paths: string[] }; filter?: { terms: { literals: TransactionLiteral[] }[] } },
       options?: { abort?: AbortSignal },
@@ -148,6 +156,16 @@ const TRANSFER_FIELDS = [
   "effects.gas_used",
   "balance_changes",
   "events.events.event_type",
+];
+const OBJECT_FIELDS = [
+  "digest",
+  "checkpoint",
+  "transaction_index",
+  "timestamp",
+  "transaction.sender",
+  "events.events.event_type",
+  "effects.changed_objects",
+  ...["object_id", "version", "object_type", "json"].map((f) => `objects.objects.${f}`),
 ];
 const CHECKS_ENABLED = 0;
 const SUMMARY_FIELDS = ["sequence_number", "summary.total_network_transactions", "summary.timestamp"];
@@ -207,6 +225,8 @@ export function suiDescriptor(descriptor: EventDescriptor): EventDescriptor {
         accountAddress: suiAddress(descriptor.accountAddress),
         ...(descriptor.eventTypes !== undefined && { eventTypes: descriptor.eventTypes.map(eventType) }),
       };
+    case "object":
+      return { ...descriptor, objectId: suiAddress(descriptor.objectId) };
     default:
       filterOf(descriptor);
       return descriptor;
@@ -277,7 +297,9 @@ const fromBase64 = (text: string) => {
  * `LedgerService` of the `SuiGrpcClient` passed in. A `version` is Sui's
  * global transaction number, the previous checkpoint's running total plus
  * the transaction's index in its checkpoint, so relative starts count
- * transactions as on Aptos. Serves `module` and `account` descriptors.
+ * transactions as on Aptos. Serves `module` and `account` descriptors, and
+ * `object` ones from a `ListTransactions` walk over the transactions that
+ * changed the object, each change delivered as `objectChangesOf` shapes it.
  */
 export class SuiAdapter implements EventAdapter {
   private readonly ledger: SuiLedgerClient["ledgerService"];
@@ -361,6 +383,7 @@ export class SuiAdapter implements EventAdapter {
   }
 
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
+    if (descriptor?.kind === "object") return this.fetchObjectChanges(descriptor, options);
     const filter = filterOf(descriptor);
     if (descriptor.kind === "account" && descriptor.eventTypes?.length === 0) {
       return { events: [], nextCursor: options.cursor, hasMore: false };
@@ -401,31 +424,50 @@ export class SuiAdapter implements EventAdapter {
     options: FetchOptions = {},
     filter: { account?: string; asset?: string } = {},
   ): Promise<TransferPage> {
-    if (typeof this.ledger.listTransactions !== "function") {
-      throw new StreamdError("fetchTransfers needs the SuiGrpcClient's ledgerService.listTransactions");
-    }
+    const list = this.listing("fetchTransfers");
     const account = filter.account === undefined ? undefined : suiAddress(filter.account);
     const asset = filter.asset === undefined ? undefined : coinType(filter.asset);
     const affected: TransactionLiteral = { negated: false, predicate: { oneofKind: "affectedAddress", affectedAddress: { address: account! } } };
     const page = await this.walk<ListTransactionsFrame>(
       options,
       (bounds) =>
-        this.ledger.listTransactions!({
+        list({
           readMask: { paths: TRANSFER_FIELDS },
           ...(account !== undefined && { filter: { terms: [{ literals: [affected] }] } }),
           ...bounds,
         }),
       async ({ transaction }) => {
         if (transaction === undefined) return [];
-        const { checkpoint, transactionIndex } = transaction;
-        if (checkpoint === undefined || transactionIndex === undefined) {
-          throw new StreamdError("Sui node returned a transaction without its position");
-        }
-        const records = transfersOf(transaction, (await this.base(checkpoint)) + transactionIndex, asset);
+        const records = transfersOf(transaction, await this.versionOf(transaction), asset);
         return account === undefined ? records : records.filter(({ data }) => data.from === account || data.to === account);
       },
     );
     return page as TransferPage;
+  }
+
+  /** Every change to one object, from the transactions the node lists as affecting it. */
+  private async fetchObjectChanges(descriptor: ObjectDescriptor, options: FetchOptions): Promise<EventPage> {
+    const objectId = suiAddress(descriptor.objectId);
+    const list = this.listing("An object descriptor");
+    const affected: TransactionLiteral = { negated: false, predicate: { oneofKind: "affectedObject", affectedObject: { objectId } } };
+    return this.walk<ListTransactionsFrame>(
+      options,
+      (bounds) => list({ readMask: { paths: OBJECT_FIELDS }, filter: { terms: [{ literals: [affected] }] }, ...bounds }),
+      async ({ transaction }) => (transaction === undefined ? [] : objectChangesOf(transaction, await this.versionOf(transaction), objectId)),
+    );
+  }
+
+  private listing(what: string): NonNullable<SuiLedgerClient["ledgerService"]["listTransactions"]> {
+    const list = this.ledger.listTransactions;
+    if (typeof list !== "function") throw new StreamdError(`${what} needs the SuiGrpcClient's ledgerService.listTransactions`);
+    return list.bind(this.ledger);
+  }
+
+  private async versionOf({ checkpoint, transactionIndex }: Position): Promise<bigint> {
+    if (checkpoint === undefined || transactionIndex === undefined) {
+      throw new StreamdError("Sui node returned a transaction without its position");
+    }
+    return (await this.base(checkpoint)) + transactionIndex;
   }
 
   /** `owner`'s total balance of `type`, a coin type, at the node's latest state: Sui reads no balance at a version. */
