@@ -1755,6 +1755,7 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
 | `networks.mainnet` | `mainnet` | `https://fullnode.mainnet.sui.io:443` | `https://graphql.mainnet.sui.io/graphql` |
 | `networks.testnet` | `testnet` | `https://fullnode.testnet.sui.io:443` | `https://graphql.testnet.sui.io/graphql` |
 | `networks.devnet` | `devnet` | `https://fullnode.devnet.sui.io:443` | `https://graphql.devnet.sui.io/graphql` |
+| `networks.mainnetArchive(transport)` | `mainnet` | `archive.mainnet.sui.io:443`, native gRPC only ([below](#sui-history-past-the-fullnode)) | mainnet's |
 
 - **Versions are Sui's global transaction numbers:** the running total before the event's
   checkpoint plus the transaction's index in it, so `fromVersion: -1000n` means 1000 transactions
@@ -1790,8 +1791,26 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   no `entryFunction`, as on Aptos. A structural client without `batchGetTransactions` gets
   events without it.
 - **Descriptors:** `module` (a type or a list, in one request), `account` (events from
-  transactions the address sent, optionally narrowed by `eventTypes`) and `object` (below). Sui
-  has no event handles or account resources, so `handle` and `resource` are refused.
+  transactions the address sent, optionally narrowed by `eventTypes`, or with `received: true`
+  every transaction that affected it, below) and `object` (below). Sui has no event handles or
+  account resources, so `handle` and `resource` are refused.
+- **Received transactions:** `{ kind: "account", accountAddress, received: true }` delivers the
+  events of every transaction the node lists as affecting the address: the ones it signed, and
+  the ones it only received, such as coins someone else sent it, which the plain `account`
+  descriptor never sees. It walks `ListTransactions` filtered by affected address, reading each
+  transaction's events and commands in the same request, so events are exactly what a `module`
+  walk delivers for them (`version`, `eventIndex`, digest, `timestamp`, `sender` the signer,
+  `entryFunction`), and `eventTypes` narrows them. A transaction that affected the address but
+  emitted no events (a plain coin transfer often emits none) delivers nothing; follow those with
+  `sui.transfers({ account })`. `limit` counts transactions. `received` must be a boolean. It is a
+  core option, so `FullnodeScanAdapter` (Aptos sees received transactions through
+  `IndexerAccountAdapter`, which always includes them), `StoreAdapter`, `PostgresStoreAdapter`,
+  and `eventsOf`/`previewEvents` narrowing refuse it rather than answer with signed transactions
+  only; `received: false` is the same as leaving it out.
+
+  ```ts
+  sui.on({ kind: "account", accountAddress: me, received: true }, (e) => console.log(e.sender, e.type));
+  ```
 - **Object changes:** `{ kind: "object", objectId }` delivers every change to one object, Sui's
   counterpart of `resource`: created, mutated, transferred, wrapped, unwrapped or deleted, whoever
   sent the transaction. It walks `ListTransactions` filtered to the transactions whose effects
@@ -1975,7 +1994,8 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   sui.on(ItemListed("0x<package id>::nft::Nft"), (e) => console.log(e.data.kiosk), { decode: ItemListedDecode });
   ```
 - **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
-  a version before that fails with `410`. Object state at the event reads past it, through GraphQL.
+  a version before that fails with `410`. Object state at the event reads past it, through GraphQL,
+  and the mainnet archive serves the rest ([below](#sui-history-past-the-fullnode)).
 - **Command line and React:** every `streamd` command takes [`--chain sui`](#sui-from-the-command-line),
   and `useTransfers` and `useTransactionEvents` take a `SuiClient` (see [React hooks](#react-hooks)).
 
@@ -2232,6 +2252,48 @@ await next;
 Each pushed event must be above the highest version the adapter holds, since
 a transaction never appears below one already read. Events in one call may
 share a version. Anything else throws a `StreamdError` and adds nothing.
+
+#### Sui history past the fullnode
+
+Mysten Labs' mainnet archive keeps every checkpoint from 0 and answers the same gRPC
+`LedgerService`, with cursors that mean the same as the fullnode's, so the same
+`ArchiveFallbackAdapter` pairs it with the fullnode. It speaks native gRPC only: the gRPC-web
+transport `SuiGrpcClient` uses by default gets `404`, and browsers have nothing else, so this is
+for Node and Bun. `networks.mainnetArchive(transport)` takes a native transport you install and
+build yourself (streamd adds no dependency for it), aimed at `networks.mainnetArchive.host`, and
+returns the options for `new SuiGrpcClient(...)`. It refuses anything that is not a transport, so
+a URL cannot be passed by mistake.
+
+```ts
+// bun add @protobuf-ts/grpc-transport @grpc/grpc-js
+import { ChannelCredentials } from "@grpc/grpc-js";
+import { GrpcTransport } from "@protobuf-ts/grpc-transport";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
+import { ArchiveFallbackAdapter } from "@streamd/core";
+import { SuiAdapter, SuiClient, networks } from "@streamd/sui";
+
+const fullnode = new SuiGrpcClient(networks.mainnet);
+const transport = new GrpcTransport({ host: networks.mainnetArchive.host, channelCredentials: ChannelCredentials.createSsl() });
+const archive = new SuiGrpcClient(networks.mainnetArchive(transport));
+
+const sui = new SuiClient({ sui: fullnode, adapter: new ArchiveFallbackAdapter(new SuiAdapter(fullnode), new SuiAdapter(archive)) });
+await sui.getEvents(StakingRequestEvent, { fromVersion: 2_948_762_402n, limit: 10 }); // a year back, from the archive
+```
+
+- **What moves:** event pages for every descriptor (`received` account walks and `object` changes
+  included), blocks, and `withState` object reads, whenever the fullnode answers `410`. The
+  earliest version (0) and oldest checkpoint come from the archive, in one read; the head and
+  simulations from the fullnode. A start a year back cost about 14 seconds when measured, most of
+  it the bisection that places the version among the archive's checkpoints, read once per version.
+- **Object state:** with a GraphQL endpoint (the default on a preset network) the fullnode's
+  adapter reads a pruned transaction's objects through GraphQL itself; without one it answers
+  `410`, and the archive reads them with `GetTransaction`.
+- **What stays on the fullnode:** `sui.transfers`, `getTransfers` and `balances` read the `sui`
+  client the `SuiClient` was built with, not its `adapter`, so a pruned range fails with `410`;
+  for older transfers build a `SuiClient` over the archive client itself. `eventsOf` waits on the
+  fullnode, which answers a pruned digest and an unknown one alike, as not yet committed.
+- **Not measured:** the archive's rate limits beyond a 40-request burst, and whether Mysten Labs
+  keeps it as a supported public service.
 
 ## Networks
 
