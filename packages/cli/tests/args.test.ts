@@ -764,8 +764,8 @@ describe("--chain sui on every command", () => {
 
   it.each(commands)("%s takes it, with a Sui network and gRPC URL and no key from the environment", (command, rest) => {
     const parsed = withKey(() => parseCommand([command, "--chain", "sui", "--network", "testnet", "--node-url", GRPC, ...rest]));
-    expect(parsed.command).toBe(command);
-    const options = (parsed as { options: Record<string, unknown> }).options;
+    expect(parsed.command).toBe(command as typeof parsed.command);
+    const options = (parsed as unknown as { options: Record<string, unknown> }).options;
     expect(options).toMatchObject({ chain: "sui", network: "testnet", nodeUrl: GRPC });
     expect(options.apiKey).toBeUndefined();
   });
