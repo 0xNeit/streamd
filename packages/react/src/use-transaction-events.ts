@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { StreamdTransactionError, type EventDescriptor, type EventOf } from "@streamd/core";
-import type { EventsOfOptions, StreamdClient } from "@streamd/core";
+import { StreamdTransactionError, type EventDescriptor, type EventOf, type EventsOfOptions, type StreamdClient } from "@streamd/core";
 import { useClientWith } from "./context.js";
 import { toError, valueKey, withLatestFunctions } from "./key.js";
 

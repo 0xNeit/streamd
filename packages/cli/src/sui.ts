@@ -10,10 +10,14 @@ export async function loadSui(): Promise<[typeof import("@mysten/sui/grpc"), typ
   try {
     return await Promise.all([import("@mysten/sui/grpc"), import("@streamd/sui")]);
   } catch (err) {
-    const missing = (err as { code?: unknown } | null)?.code === "ERR_MODULE_NOT_FOUND" || /Cannot find (package|module)/.test(String(err));
-    if (missing) throw new StreamdError("--chain sui needs @mysten/sui installed", err);
+    if (isMissingModule(err)) throw new StreamdError("--chain sui needs @mysten/sui installed", err);
     throw err;
   }
+}
+
+/** Node reports a missing package by code, Bun by message. */
+export function isMissingModule(err: unknown): boolean {
+  return (err as { code?: unknown } | null)?.code === "ERR_MODULE_NOT_FOUND" || /Cannot find (package|module)/.test(String(err));
 }
 
 export async function suiChain(endpoint: Endpoint): Promise<Chain> {

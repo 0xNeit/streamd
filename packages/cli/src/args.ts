@@ -366,6 +366,7 @@ interface EndpointFlags {
   "api-key"?: string;
 }
 
+/** The chain, network and node URL; the key is `withKey`'s, so each command checks it where it always has. */
 function endpoint(values: EndpointFlags, sui: boolean): Endpoint {
   const options: Endpoint = { network: network(values.network) };
   const url = nodeUrl(values["node-url"]);
@@ -374,13 +375,19 @@ function endpoint(values: EndpointFlags, sui: boolean): Endpoint {
     if (!SUI_NETWORKS.includes(options.network)) {
       throw new UsageError(`--network with --chain sui must be one of ${SUI_NETWORKS.join(", ")}: ${options.network}`);
     }
-    // Public Sui nodes take no key, so none is sent.
-    if (values["api-key"] !== undefined) throw new UsageError("--api-key is not sent to Sui nodes");
     options.chain = "sui";
-  } else {
-    const key = apiKey(values["api-key"], options.network, url);
-    if (key !== undefined) options.apiKey = key;
   }
+  return options;
+}
+
+function withKey<T extends Endpoint>(options: T, flag: string | undefined): T {
+  // Public Sui nodes take no key, so none is sent.
+  if (options.chain === "sui") {
+    if (flag !== undefined) throw new UsageError("--api-key is not sent to Sui nodes");
+    return options;
+  }
+  const key = apiKey(flag, options.network, options.nodeUrl);
+  if (key !== undefined) options.apiKey = key;
   return options;
 }
 
@@ -517,7 +524,7 @@ function descriptor(
       throw new UsageError(`${flag} cannot be combined with --handle or --field`);
     }
     if (types.length > 0) throw new UsageError(`event types cannot be combined with ${flag}`);
-    const accountAddress = checkedAddress(flags.account, false);
+    const accountAddress = wrap(() => requireAddress(flags.account!));
     return flags.resource !== undefined
       ? { kind: "resource", accountAddress, resourceType: wrap(() => requireResourceType(flags.resource)) as MoveEventType }
       : { kind: "handle", accountAddress, creationNumber: creationNumber(number!) };
@@ -571,6 +578,7 @@ function source(command: string, values: SourceFlags, positionals: string[]): So
   const fromVersion = version(values["from-version"]);
   const fromTime = startTime(values);
   const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
+  withKey(options, values["api-key"]);
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
   if (fromTime !== undefined) options.fromTime = fromTime;
   if (pollInterval !== undefined) options.pollInterval = pollInterval;
@@ -666,6 +674,7 @@ function parseRecord(args: string[]): ParsedCommand {
     toVersion,
   };
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  withKey(options, values["api-key"]);
   if (limit !== undefined) options.limit = limit;
   if (values.out !== undefined) options.out = values.out;
   return { command: "record", options };
@@ -697,6 +706,7 @@ function parseCompare(args: string[]): ParsedCommand {
     fromVersion,
     toVersion,
   };
+  withKey(options, values["api-key"]);
   const maxPages = integer("max-pages", values["max-pages"], 1, 1000);
   if (maxPages !== undefined) options.maxPages = maxPages;
   const limit = integer("limit", values.limit, 1, 1000);
@@ -730,6 +740,7 @@ function parseQuery(args: string[]): ParsedCommand {
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
   if (fromTime !== undefined) options.fromTime = fromTime;
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  withKey(options, values["api-key"]);
   if (limit !== undefined) options.limit = limit;
   return { command: "query", options };
 }
@@ -750,6 +761,7 @@ function parseTx(args: string[]): ParsedCommand {
   if (!sui && !TRANSACTION_HASH.test(hash)) throw new UsageError(`not a transaction hash: ${hash}`);
   const options: TxOptions = { hash, ...endpoint(values, sui) };
   const timeout = integer("timeout", values.timeout, 0, MAX_TIMEOUT);
+  withKey(options, values["api-key"]);
   if (timeout !== undefined) options.timeout = timeout;
   return { command: "tx", options };
 }
@@ -765,6 +777,7 @@ function parseCheck(args: string[]): ParsedCommand {
     descriptor: descriptor("check", {}, positionals, sui) as ModuleEventDescriptor,
     ...endpoint(values, sui),
   };
+  withKey(options, values["api-key"]);
   return { command: "check", options };
 }
 
@@ -793,6 +806,7 @@ function parseCodegen(args: string[]): ParsedCommand {
     modules: positionals.map((p) => moduleRef(p, sui)),
     ...endpoint(values, sui),
   };
+  withKey(options, values["api-key"]);
   if (values.out !== undefined) {
     if (values.out === "") throw new UsageError("--out must not be empty");
     options.out = values.out;

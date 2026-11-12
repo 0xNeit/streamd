@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "bun:test";
 import { AptosClient, FullnodeScanAdapter } from "@streamd/aptos";
 import { SuiAdapter, SuiClient } from "@streamd/sui";
 import { chainFor } from "../src/chain.js";
+import { isMissingModule } from "../src/sui.js";
 
 const realFetch = globalThis.fetch;
 afterEach(() => {
@@ -35,5 +36,13 @@ describe("chainFor", () => {
     const custom = await chainFor({ chain: "sui", network: "mainnet", nodeUrl: "https://a.example:443" });
     expect((await reached(custom.adapter()))[0]).toStartWith("https://a.example:443/");
     expect((await reached(custom.adapter("https://b.example:443")))[0]).toStartWith("https://b.example:443/");
+  });
+});
+
+describe("isMissingModule", () => {
+  it("knows Node's code and Bun's message, and nothing else", () => {
+    expect(isMissingModule(Object.assign(new Error("x"), { code: "ERR_MODULE_NOT_FOUND" }))).toBe(true);
+    expect(isMissingModule(new Error("Cannot find package '@mysten/sui' from '/x/cli.js'"))).toBe(true);
+    expect(isMissingModule(new SyntaxError("Unexpected token"))).toBe(false);
   });
 });

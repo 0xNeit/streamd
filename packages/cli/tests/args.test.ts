@@ -754,11 +754,13 @@ describe("--chain sui on every command", () => {
   ];
 
   function withKey<T>(fn: () => T): T {
+    const saved = process.env.APTOS_API_KEY;
     process.env.APTOS_API_KEY = "from-env";
     try {
       return fn();
     } finally {
-      delete process.env.APTOS_API_KEY;
+      if (saved === undefined) delete process.env.APTOS_API_KEY;
+      else process.env.APTOS_API_KEY = saved;
     }
   }
 
@@ -799,6 +801,13 @@ describe("--chain sui on every command", () => {
     [["tx", DIGEST], /not a transaction hash/],
   ])("refuses %j", (argv, message) => {
     rejects(argv as string[], message as RegExp);
+  });
+
+  it("checks the API key after the other flags, as before", () => {
+    rejects(["tail", "--api-key", "", "--from-version", "x", TYPE], /--from-version must be a non-negative integer/);
+    rejects(["query", "--api-key", "", "--from-version", "1", "--limit", "0", TYPE], /--limit/);
+    rejects(["record", "--api-key", "", "--from-version", "1", "--to-version", "2", "--limit", "0", TYPE], /--limit/);
+    rejects(["tx", "--api-key", "", "--timeout", "x", `0x${"ab".repeat(32)}`], /--timeout/);
   });
 
   it("takes --from-time and a tx timeout under sui", () => {
