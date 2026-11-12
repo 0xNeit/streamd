@@ -1,5 +1,5 @@
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
-import { StreamdError } from "@streamd/core";
+import { StreamdError, StreamdNetworkError, parseRetryAfter } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
 import { toJson, type ProtoValue } from "./json.js";
 import { micros } from "./transfers.js";
@@ -64,4 +64,138 @@ export function objectChangesOf(txn: ObjectChangeTransaction, version: bigint, o
     out.push(event);
   });
   return out;
+}
+
+/** The part of a `GetTransaction` answer that object states are read from. */
+export interface StateTransaction {
+  effects?: {
+    changedObjects?: ChangedObject[];
+    unchangedConsensusObjects?: { kind?: number; objectId?: string; version?: bigint }[];
+  };
+  objects?: ObjectChangeTransaction["objects"];
+}
+
+interface GraphqlObject {
+  address?: string;
+  version?: number;
+  asMoveObject?: { contents?: { json?: unknown } | null } | null;
+}
+interface Connection<T> {
+  pageInfo?: { hasNextPage?: boolean };
+  nodes?: T[];
+}
+/** The effects of a GraphQL `transaction(digest)` answer, as the adapter's query asks for them. */
+export interface GraphqlEffects {
+  objectChanges?: Connection<{ address?: string; outputState?: GraphqlObject | null }>;
+  unchangedConsensusObjects?: Connection<{ __typename?: string; object?: GraphqlObject | null }>;
+}
+
+const OBJECT_WRITE = 2;
+const READ_ONLY_ROOT = 1;
+
+const same = (raw: string | undefined, id: string) => raw !== undefined && normalizeSuiAddress(raw) === id;
+
+function untouched(id: string, digest: string): StreamdError {
+  return new StreamdError(
+    `Transaction ${digest} did not write or read ${id}, so it has no state as that transaction left it: only objects in its effects can be read`,
+  );
+}
+const notObject = (id: string, digest: string) =>
+  new StreamdError(`Transaction ${digest} left ${id} as no Move object (a package or an accumulator)`);
+
+/**
+ * Each of `ids` (long form) as transaction `digest` left it, from its gRPC
+ * effects and object set: the JSON at the output version of an object it
+ * wrote, at the read version of a consensus object it only read, `null` for
+ * one it deleted or wrapped. An object outside its effects is refused.
+ */
+export function objectStatesOf(txn: StateTransaction, ids: readonly string[], digest: string): unknown[] {
+  return ids.map((id) => {
+    let version: bigint | undefined;
+    const change = txn.effects?.changedObjects?.find((c) => same(c.objectId, id));
+    if (change !== undefined) {
+      if (change.outputState === DOES_NOT_EXIST) return null;
+      if (change.outputState !== OBJECT_WRITE) throw notObject(id, digest);
+      version = change.outputVersion;
+    } else {
+      const read = txn.effects?.unchangedConsensusObjects?.find((u) => u.kind === READ_ONLY_ROOT && same(u.objectId, id));
+      if (read === undefined) throw untouched(id, digest);
+      version = read.version;
+    }
+    const object = txn.objects?.objects.find((o) => same(o.objectId, id) && o.version === version);
+    if (object?.json === undefined) throw new StreamdError(`Sui node returned transaction ${digest} without ${id} at version ${version}`);
+    return toJson(object.json);
+  });
+}
+
+function nodesOf<T>(connection: Connection<T> | undefined, digest: string): T[] {
+  if (!Array.isArray(connection?.nodes)) throw new StreamdError(`Sui GraphQL returned the effects of ${digest} in an unexpected shape`);
+  return connection.nodes;
+}
+
+/** `objectStatesOf` over the effects Sui GraphQL returns for a transaction the fullnode has pruned. */
+export function graphqlStatesOf(effects: GraphqlEffects, ids: readonly string[], digest: string): unknown[] {
+  const changes = nodesOf(effects?.objectChanges, digest);
+  const reads = nodesOf(effects?.unchangedConsensusObjects, digest);
+  const contents = (object: GraphqlObject, id: string) => {
+    const json = object.asMoveObject?.contents?.json;
+    if (json === undefined || json === null) throw notObject(id, digest);
+    return json;
+  };
+  return ids.map((id) => {
+    const change = changes.find((c) => same(c?.address, id));
+    if (change !== undefined) return change.outputState == null ? null : contents(change.outputState, id);
+    const read = reads.find((r) => r?.__typename === "ConsensusObjectRead" && same(r.object?.address, id));
+    if (read?.object != null) return contents(read.object, id);
+    if (effects.objectChanges?.pageInfo?.hasNextPage || effects.unchangedConsensusObjects?.pageInfo?.hasNextPage) {
+      throw new StreamdError(`Transaction ${digest} touched more objects than one GraphQL page holds, and ${id} is not in it`);
+    }
+    throw untouched(id, digest);
+  });
+}
+
+// The service's largest pages: a transaction past them is refused rather than paged.
+const CHANGES_PAGE = 1024;
+const READS_PAGE = 50;
+const OBJECT_FIELDS = "address version asMoveObject { contents { json } }";
+const STATE_QUERY = `query ($digest: String!) { transaction(digest: $digest) { effects {
+  objectChanges(first: ${CHANGES_PAGE}) { pageInfo { hasNextPage } nodes { address outputState { ${OBJECT_FIELDS} } } }
+  unchangedConsensusObjects(first: ${READS_PAGE}) { pageInfo { hasNextPage } nodes { __typename ... on ConsensusObjectRead { object { ${OBJECT_FIELDS} } } } }
+} } }`;
+
+/**
+ * The effects of transaction `digest` from the Sui GraphQL service at `url`,
+ * which keeps history the fullnode has pruned: one POST, no client library.
+ */
+export async function graphqlEffects(url: string, digest: string): Promise<GraphqlEffects> {
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query: STATE_QUERY, variables: { digest } }),
+    });
+  } catch (err) {
+    throw new StreamdNetworkError(`Sui GraphQL request failed: ${err instanceof Error ? err.message : String(err)}`, undefined, err);
+  }
+  if (!response.ok) {
+    const retryAfter = parseRetryAfter(response.headers.get("retry-after"));
+    throw new StreamdNetworkError(`Sui GraphQL request failed with HTTP ${response.status}`, response.status, undefined, retryAfter);
+  }
+  let body: { data?: { transaction?: { effects?: GraphqlEffects } | null }; errors?: { message?: unknown }[] } | null;
+  try {
+    body = (await response.json()) as typeof body;
+  } catch (err) {
+    throw new StreamdError(`Sui GraphQL returned no JSON for transaction ${digest}`, err);
+  }
+  if (Array.isArray(body?.errors) && body.errors.length > 0) {
+    throw new StreamdNetworkError(`Sui GraphQL refused the read of ${digest}: ${JSON.stringify(String(body.errors[0]?.message).slice(0, 200))}`);
+  }
+  const transaction = body?.data?.transaction;
+  if (transaction === null) throw new StreamdError(`Sui GraphQL knows no transaction ${digest}`);
+  const effects = transaction?.effects;
+  if (typeof effects !== "object" || effects === null) {
+    throw new StreamdError(`Sui GraphQL returned the effects of ${digest} in an unexpected shape`);
+  }
+  return effects;
 }

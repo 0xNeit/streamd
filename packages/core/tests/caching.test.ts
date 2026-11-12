@@ -341,3 +341,17 @@ describe("CachingAdapter with a page store", () => {
     expect(() => new CachingAdapter(source().adapter, { store: {} as never })).toThrow(StreamdError);
   });
 });
+
+describe("CachingAdapter readObjects", () => {
+  it("passes readObjects through uncached, only when the source has it", async () => {
+    let calls = 0;
+    const source = Object.assign(new MemoryAdapter(), {
+      readObjects: async (_r: unknown, at: { version: bigint }) => (calls++, [String(at.version)]),
+    });
+    const cached = new CachingAdapter(source);
+    expect(await cached.readObjects!({ objects: ["0x1"] }, { version: 4n })).toEqual(["4"]);
+    expect(await cached.readObjects!({ objects: ["0x1"] }, { version: 4n })).toEqual(["4"]);
+    expect(calls).toBe(2);
+    expect(new CachingAdapter(new MemoryAdapter()).readObjects).toBeUndefined();
+  });
+});

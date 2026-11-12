@@ -7,6 +7,7 @@ import type {
   EventAdapter,
   HandleEventDescriptor,
   ModuleEventDescriptor,
+  ObjectRequest,
   ViewRequest,
 } from "../types.js";
 
@@ -71,6 +72,17 @@ export function requireViewRequest(value: unknown): ViewRequest {
   if (typeArguments !== undefined) checked.typeArguments = [...(typeArguments as string[])];
   if (functionArguments !== undefined) checked.functionArguments = [...functionArguments];
   return checked;
+}
+
+/** An object read with a non-empty list of non-empty ids; the adapter checks their form. */
+export function requireObjectRequest(value: unknown): ObjectRequest {
+  if (!isObject(value)) throw new StreamdError("An object request must be an object");
+  if ("function" in value) throw new StreamdError("A state request names a view function or objects, not both");
+  const { objects } = value;
+  if (!Array.isArray(objects) || objects.length === 0 || objects.some((id) => typeof id !== "string" || id === "")) {
+    throw new StreamdError("objects must be a non-empty array of non-empty object ids");
+  }
+  return { objects: [...(objects as string[])] };
 }
 
 export function requireLedgerVersion(value: unknown): bigint {

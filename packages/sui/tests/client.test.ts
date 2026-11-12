@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { MemoryAdapter, fromFunction, parseEvent, serializeEvent, StreamdAssertionError, StreamdError, StreamdTimeoutError, StreamdTransactionError } from "@streamd/core";
 import type { MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
-import { SuiClient, networks } from "../src/index.js";
+import { SuiAdapter, SuiClient, networks } from "../src/index.js";
 import type { SuiClientConfig } from "../src/index.js";
 import { LONG, digest, fakeLedger, fakeNames, ptb, withCalls, transactionBytes, withSimulator, withTransfers, type FakeListed, type FakeSimulation, type FakeTransaction } from "./helpers.js";
 
@@ -315,5 +315,34 @@ describe("SuiClient object descriptors", () => {
     expect(seen).toEqual([null]);
     sub.unsubscribe();
     await expect(sui.eventsOf(digest(1), pool)).rejects.toThrow("not object changes");
+  });
+});
+
+describe("SuiClient object state", () => {
+  const POOL = LONG("9001");
+  const json = { kind: { oneofKind: "structValue" as const, structValue: { fields: { value: { kind: { oneofKind: "stringValue" as const, stringValue: "after" } } } } } };
+
+  it("attaches objects as the event's transaction left them, and still refuses views", async () => {
+    const { client } = fakeLedger([1, 2], [{ cp: 1n, ti: 1n, ei: 0, type: STAKE }]);
+    client.ledgerService.getTransaction = async () => ({
+      response: {
+        transaction: {
+          effects: { changedObjects: [{ objectId: POOL, outputState: 2, outputVersion: 4n }] },
+          objects: { objects: [{ objectId: POOL, version: 4n, json }] },
+        } as never,
+      },
+    });
+    const reader = new SuiAdapter(client);
+    const adapter = Object.assign(
+      new MemoryAdapter([{ type: STAKE, data: {}, version: 2n, sequenceNumber: 0n, eventIndex: 0, transactionHash: digest(2) }]),
+      { readObjects: reader.readObjects.bind(reader) },
+    );
+    const sui = new SuiClient({ sui: client as unknown as SuiGrpcClient, adapter });
+    const [event] = await sui.getEvents(stakes, { fromVersion: 0n, withState: () => ({ objects: ["0x9001"] }) });
+    expect(event!.state).toEqual([{ value: "after" }]);
+    const plain = new SuiClient({ sui: client as unknown as SuiGrpcClient });
+    await expect(
+      plain.getEvents(stakes, { fromVersion: 0n, withState: () => ({ function: "0x2::clock::timestamp_ms" }) }),
+    ).rejects.toThrow("withState needs an adapter that implements view");
   });
 });

@@ -7,6 +7,7 @@ describe("networks", () => {
     expect(preset.network).toBe(name as never);
     expect(new URL(preset.baseUrl).protocol).toBe("https:");
     expect(new URL(preset.baseUrl).hostname).toBe(`fullnode.${name}.sui.io`);
+    expect(preset.graphqlUrl).toBe(`https://graphql.${name}.sui.io/graphql`);
     expect(typeof new SuiGrpcClient(preset).ledgerService.listEvents).toBe("function");
   });
 

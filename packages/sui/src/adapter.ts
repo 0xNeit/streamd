@@ -1,6 +1,6 @@
 import { bcs } from "@mysten/sui/bcs";
 import { isValidSuiAddress, isValidTransactionDigest, normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
-import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import { StreamdError, StreamdNetworkError, requireObjectRequest } from "@streamd/core";
 import type {
   BlockHeights,
   BlockInfo,
@@ -9,13 +9,15 @@ import type {
   EventPage,
   FetchOptions,
   ObjectDescriptor,
+  ObjectRequest,
   StreamdEvent,
   TransactionEvents,
   TransactionSimulation,
 } from "@streamd/core";
 import { attachCalls, callsOf, CALL_FIELDS, withCall, type BatchGetTransactions, type CallTransaction } from "./calls.js";
 import { toJson, type ProtoValue } from "./json.js";
-import { objectChangesOf, type ObjectChangeTransaction } from "./objects.js";
+import { graphqlEffects, graphqlStatesOf, objectChangesOf, objectStatesOf, type ObjectChangeTransaction, type StateTransaction } from "./objects.js";
+import { networks, type SuiNetworkPreset } from "./networks.js";
 import { coinType, transfersOf, type BalanceChangeTransaction } from "./transfers.js";
 import type { Transfer } from "@streamd/core";
 
@@ -73,7 +75,8 @@ interface Position {
 interface ExecutedTransaction {
   digest?: string;
   checkpoint?: bigint;
-  effects?: { status?: { success?: boolean; error?: { description?: string } } };
+  effects?: { status?: { success?: boolean; error?: { description?: string } } } & StateTransaction["effects"];
+  objects?: StateTransaction["objects"];
   events?: { events: SuiEvent[] };
   transaction?: CallTransaction;
 }
@@ -87,6 +90,8 @@ interface CheckpointResponse {
 
 /** The part of `@mysten/sui`'s `SuiGrpcClient` the adapter uses. */
 export interface SuiLedgerClient {
+  /** Picks the default `graphqlUrl` when it names a preset in `networks`. */
+  network?: string;
   ledgerService: {
     listEvents(
       input: {
@@ -125,6 +130,17 @@ export interface SuiLedgerClient {
       checks: number;
     }): PromiseLike<{ response: { transaction?: ExecutedTransaction } }>;
   };
+}
+
+export interface SuiAdapterOptions {
+  /**
+   * The Sui GraphQL endpoint `readObjects` reads transactions the fullnode
+   * has pruned from. Defaults to the `networks` preset's for the client's
+   * `network`; without either, such reads reject. That default is Mysten
+   * Labs' public service even when the client reads a private node, so pass
+   * this to keep pruned reads elsewhere.
+   */
+  graphqlUrl?: string;
 }
 
 /** A transaction to simulate on Sui: the BCS `TransactionData` bytes `await tx.build({ client })` returns. */
@@ -166,6 +182,11 @@ const OBJECT_FIELDS = [
   "events.events.event_type",
   "effects.changed_objects",
   ...["object_id", "version", "object_type", "json"].map((f) => `objects.objects.${f}`),
+];
+const STATE_FIELDS = [
+  "effects.changed_objects",
+  "effects.unchanged_consensus_objects",
+  ...["object_id", "version", "json"].map((f) => `objects.objects.${f}`),
 ];
 const CHECKS_ENABLED = 0;
 const SUMMARY_FIELDS = ["sequence_number", "summary.total_network_transactions", "summary.timestamp"];
@@ -284,6 +305,18 @@ function statusOf(found: ExecutedTransaction | undefined, what: string): { succe
   return { success: status.success, vmStatus: status.success ? "success" : status.error?.description ?? "failure" };
 }
 
+function httpUrl(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  let protocol: string | undefined;
+  try {
+    protocol = new URL(value as string).protocol;
+  } catch {
+    // Falls through to the refusal below.
+  }
+  if (protocol !== "http:" && protocol !== "https:") throw new StreamdError(`Not a valid graphqlUrl (http or https): ${String(value).slice(0, 80)}`);
+  return value as string;
+}
+
 const pruned = (err: unknown) => err instanceof StreamdNetworkError && err.statusCode === 410;
 
 const toBase64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
@@ -308,11 +341,16 @@ export class SuiAdapter implements EventAdapter {
   private readonly summaries = new Map<bigint, Promise<Summary>>();
   /** The checkpoint holding each version placed so far. */
   private readonly places = new Map<bigint, bigint>();
+  private readonly graphqlUrl: string | undefined;
 
-  constructor(client: SuiLedgerClient) {
+  constructor(client: SuiLedgerClient, options: SuiAdapterOptions = {}) {
     if (typeof client?.ledgerService?.listEvents !== "function") {
       throw new StreamdError("SuiAdapter needs a SuiGrpcClient from @mysten/sui/grpc");
     }
+    const preset = typeof client.network === "string" && Object.hasOwn(networks, client.network)
+      ? (networks as Record<string, SuiNetworkPreset>)[client.network]
+      : undefined;
+    this.graphqlUrl = httpUrl(options?.graphqlUrl ?? preset?.graphqlUrl);
     this.ledger = client.ledgerService;
     this.executor = client.transactionExecutionService;
     this.stateService = client.stateService;
@@ -468,6 +506,33 @@ export class SuiAdapter implements EventAdapter {
       throw new StreamdError("Sui node returned a transaction without its position");
     }
     return (await this.base(checkpoint)) + transactionIndex;
+  }
+
+  /**
+   * Each object `request` names as the transaction `at.transactionHash` left
+   * it, from that transaction's effects: its contents after the transaction
+   * for an object it created or mutated, as read for a consensus object it
+   * read without writing, `null` for one it deleted or wrapped. Only objects
+   * in the effects have a state at that transaction, so any other id
+   * rejects. Read over gRPC while the fullnode keeps the transaction, then
+   * over Sui GraphQL, which reaches back to genesis.
+   */
+  async readObjects(request: ObjectRequest, at: Pick<StreamdEvent, "version" | "transactionHash">, _descriptor?: EventDescriptor): Promise<unknown[]> {
+    const ids = requireObjectRequest(request).objects.map(suiAddress);
+    if (at?.transactionHash === undefined) throw new StreamdError("readObjects needs the event's transactionHash, its transaction's digest");
+    const digest = requireDigest(at.transactionHash);
+    let found: ExecutedTransaction | undefined;
+    try {
+      ({ response: { transaction: found } } = await this.ledger.getTransaction({ digest, readMask: { paths: STATE_FIELDS } }));
+    } catch (err) {
+      if ((err as { code?: unknown } | null)?.code !== "NOT_FOUND") networkError(err);
+      if (this.graphqlUrl === undefined) {
+        throw new StreamdError(`This Sui node no longer has transaction ${digest}; pass graphqlUrl to SuiAdapter to read it through Sui GraphQL`);
+      }
+      return graphqlStatesOf(await graphqlEffects(this.graphqlUrl, digest), ids, digest);
+    }
+    if (found === undefined) throw new StreamdError(`Sui node returned no transaction ${digest}`);
+    return objectStatesOf(found, ids, digest);
   }
 
   /** `owner`'s total balance of `type`, a coin type, at the node's latest state: Sui reads no balance at a version. */

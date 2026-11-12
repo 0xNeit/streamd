@@ -3,10 +3,12 @@
 export type SuiNetworkPreset = Readonly<{
   network: "mainnet" | "testnet" | "devnet";
   baseUrl: string;
+  /** Mysten Labs' Sui GraphQL endpoint, which `SuiAdapter` reads transactions the fullnode has pruned from. */
+  graphqlUrl: string;
 }>;
 
 function preset(network: SuiNetworkPreset["network"]): SuiNetworkPreset {
-  return Object.freeze({ network, baseUrl: `https://fullnode.${network}.sui.io:443` });
+  return Object.freeze({ network, baseUrl: `https://fullnode.${network}.sui.io:443`, graphqlUrl: `https://graphql.${network}.sui.io/graphql` });
 }
 
 /** Mysten Labs' public fullnodes, which serve the gRPC API `SuiAdapter` reads. */
