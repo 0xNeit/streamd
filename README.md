@@ -1769,8 +1769,29 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   hash is refused. An event's `version` and `eventIndex` match what `on()` and `getEvents`
   deliver for it. `SuiAdapter.getTransactionEvents` reads the checkpoint's digest list to place
   the transaction, since the node does not report its index.
+- **Simulations:** `sui.previewEvents(bytes, descriptor?, { decode?, where? })` simulates built,
+  unsigned transaction bytes and returns the events they would emit, and
+  `sui.expectPreview(bytes).toEmit(descriptor)` / `notToEmit` assert on them, each assertion
+  simulating afresh. `bytes` is what `await tx.build({ client })` returns; nothing is signed or
+  submitted, so any sender can be simulated with its own coins as gas. Building a `Transaction`
+  with a client already simulates it once to pick gas, and one that aborts fails there with the
+  SDK's error, so pass bytes rather than a `Transaction`. A simulated transaction has no
+  checkpoint: its events carry the next version the chain would give a transaction (one past the
+  head at the time) and no `transactionHash` or `timestamp`. A failed simulation rejects with
+  `StreamdTransactionError` whose `vmStatus` is the execution error and whose `transactionHash` is
+  undefined; a request the node refuses (such as a gas coin the sender does not own) with
+  `StreamdNetworkError`. `SuiAdapter.simulateTransactionEvents` goes through the client's
+  `transactionExecutionService`.
+
+  ```ts
+  const tx = new Transaction();
+  tx.setSender(staker);
+  const [stake] = tx.splitCoins(tx.gas, [1_000_000_000n]);
+  tx.moveCall({ target: "0x3::sui_system::request_add_stake", arguments: [tx.object("0x5"), stake, tx.pure.address(validator)] });
+  const events = await sui.previewEvents(await tx.build({ client: grpc }));
+  ```
 - **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
-  a version before that fails with `410`. Views and simulations are not served yet.
+  a version before that fails with `410`. Views are not served yet.
 
 ### Spreading load across fullnodes
 
