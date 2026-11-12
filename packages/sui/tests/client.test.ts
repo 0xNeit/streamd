@@ -292,3 +292,28 @@ describe("SuiClient entry functions", () => {
     expect(parseEvent(serializeEvent(found[0]!))).toEqual(found[0]!);
   });
 });
+
+describe("SuiClient object descriptors", () => {
+  const SIZES = [1, 3, 2];
+  const POOL = LONG("9001");
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const pool = { kind: "object" as const, objectId: "0x9001" };
+
+  it("delivers an object's changes to getEvents and on, and refuses it for eventsOf", async () => {
+    const listed: FakeListed[] = [
+      { cp: 1n, ti: 1n, changes: [], objects: [{ id: POOL, version: 3n, value: "x" }] },
+      { cp: 2n, ti: 0n, changes: [], objects: [{ id: LONG("9002"), version: 1n }] },
+    ];
+    const wired = withTransfers(fakeLedger(SIZES, []).client, SIZES, listed);
+    const sui = new SuiClient({ sui: wired.client as unknown as SuiGrpcClient });
+    expect((await sui.getEvents(pool, { fromVersion: 0n })).map((e) => [e.version, e.data])).toEqual([[2n, { value: "x" }]]);
+    const seen: unknown[] = [];
+    const sub = sui.on(pool, (e) => void seen.push(e.data), { fromVersion: 3n, pollInterval: 5 });
+    expect(sui.listenerCount({ kind: "object", objectId: POOL })).toBe(1);
+    listed.push({ cp: 2n, ti: 1n, changes: [], objects: [{ id: POOL }] });
+    await wait(40);
+    expect(seen).toEqual([null]);
+    sub.unsubscribe();
+    await expect(sui.eventsOf(digest(1), pool)).rejects.toThrow("not object changes");
+  });
+});

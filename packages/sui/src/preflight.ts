@@ -127,7 +127,7 @@ const result = (types: SuiEventTypeCheck[], ok = true): SuiDescriptorCheck => ({
  * package. Only the outer datatype of a generic type is checked. An `account`
  * descriptor's address is only validated (Sui has no account object), and its
  * `eventTypes` checked like a `module` descriptor's. `handle` and `resource`
- * descriptors are refused: Sui has neither.
+ * descriptors are refused: Sui has neither; so is `object`, which names no type.
  */
 export async function checkDescriptor(
   sui: SuiGrpcClient,
@@ -149,6 +149,6 @@ export async function checkDescriptor(
       return result(await checkTypes(sui, eventTypes), eventTypes.length > 0);
     }
     default:
-      throw new StreamdError("checkDescriptor checks module and account descriptors: Sui has no event handles or account resources");
+      throw new StreamdError("checkDescriptor checks module and account descriptors: Sui has no event handles or account resources, and an object descriptor names no type");
   }
 }

@@ -3,7 +3,7 @@ import { StreamdClient, StreamdError, StreamdNetworkError, checkAdapter, eventId
 import type { EventDescriptor, MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiAdapter } from "../src/index.js";
-import { LONG, digest, fakeLedger, ptb, transactionBytes, withCalls, withSimulator, withTransfers, type FakeEvent, type FakeListed, type FakeTransaction } from "./helpers.js";
+import { LONG, digest, fakeLedger, ptb, transactionBytes, withCalls, withSimulator, withTransfers, OBJECT_TYPE, type FakeEvent, type FakeListed, type FakeTransaction } from "./helpers.js";
 
 const STAKE = `${LONG("3")}::validator::StakingRequestEvent` as MoveEventType;
 const SWAP = `${LONG("abc")}::pool::Swap` as MoveEventType;
@@ -537,5 +537,57 @@ describe("SuiAdapter entry functions", () => {
     const preview = await new SuiAdapter(client).simulateTransactionEvents({ transaction: await transactionBytes() });
     expect(preview.events[0]!.entryFunction).toEqual(call);
     expect((requests[0] as { readMask: { paths: string[] } }).readMask.paths).toContain("transaction.transaction.kind.programmable_transaction.commands");
+  });
+});
+
+describe("SuiAdapter object descriptors", () => {
+  const POOL = LONG("9001");
+  // Versions: checkpoint 1 starts at 1, 2 at 4, 3 at 6.
+  const LISTED: FakeListed[] = [
+    { cp: 1n, ti: 0n, events: 2, changes: [], objects: [{ id: LONG("9002"), version: 1n }, { id: POOL, version: 1n, value: "a" }] },
+    { cp: 1n, ti: 2n, changes: [], objects: [{ id: LONG("9002"), version: 2n }] },
+    { cp: 2n, ti: 1n, sender: LONG("b0b"), changes: [], objects: [{ id: POOL, version: 2n, value: "b" }] },
+    { cp: 3n, ti: 3n, changes: [], objects: [{ id: POOL }] },
+  ];
+  const pool: EventDescriptor = { kind: "object", objectId: "0x9001" };
+  const adapter = () => {
+    const wired = withTransfers(fakeLedger(SIZES, []).client, SIZES, LISTED);
+    return { sui: new SuiAdapter(wired.client), calls: wired.calls };
+  };
+  const changes = (page: { events: { version: bigint; eventIndex: number; data: unknown }[] }) =>
+    page.events.map((e) => [e.version, e.eventIndex, e.data]);
+
+  it("walks the transactions that changed the object, by cursor, with hasMore and throughVersion", async () => {
+    const { sui, calls } = adapter();
+    const first = await sui.fetchEvents(pool, { fromVersion: 0n, limit: 2 });
+    expect(changes(first)).toEqual([[1n, 3, { value: "a" }], [5n, 0, { value: "b" }]]);
+    expect(first).toMatchObject({ hasMore: true, throughVersion: 5n });
+    expect(first.events[1]).toEqual({
+      type: OBJECT_TYPE,
+      data: { value: "b" },
+      version: 5n,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+      transactionHash: "D2t1",
+      timestamp: 1_700_000_002_000_000n,
+      sender: LONG("b0b"),
+    });
+    const rest = await sui.fetchEvents(pool, { cursor: first.nextCursor, limit: 10 });
+    expect(changes(rest)).toEqual([[9n, 0, null]]);
+    expect(rest).toMatchObject({ hasMore: false, throughVersion: 9n });
+    expect(calls.list[0]!.filter).toEqual({ terms: [{ literals: [{ negated: false, predicate: { oneofKind: "affectedObject", affectedObject: { objectId: POOL } } }] }] });
+    expect((calls.list[0]!.readMask as { paths: string[] }).paths).toEqual(expect.arrayContaining(["effects.changed_objects", "objects.objects.json"]));
+  });
+
+  it("honours fromVersion and toVersion", async () => {
+    const { sui } = adapter();
+    expect(changes(await sui.fetchEvents(pool, { fromVersion: 2n, toVersion: 6n }))).toEqual([[5n, 0, { value: "b" }]]);
+  });
+
+  it("refuses a malformed id before any call, and a client without listTransactions", async () => {
+    const { sui, calls } = adapter();
+    await expect(sui.fetchEvents({ kind: "object", objectId: "nope" }, { fromVersion: 0n })).rejects.toThrow("Sui address");
+    expect(calls.list).toHaveLength(0);
+    await expect(new SuiAdapter(fakeLedger(SIZES, []).client).fetchEvents(pool, {})).rejects.toThrow("listTransactions");
   });
 });
