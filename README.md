@@ -1759,9 +1759,18 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   starts at the first checkpoint stamped at or after it, and `fromBlock`/`toBlock` bound a query
   by checkpoint. A checkpoint the node has pruned fails with `410`, one not yet produced with
   `404`.
+- **Transaction lookups:** `sui.eventsOf(digest, descriptor?, options?)` waits for the
+  transaction with that base58 digest to be checkpointed and returns its events, and
+  `sui.expectEvents(digest).toEmit(descriptor)` / `notToEmit` assert on them, with the same
+  options, timeout and errors as on Aptos (the wait loop is core's, shared by both chains). A
+  descriptor's types and address may be short (`0x3::validator::...`). A failed transaction
+  rejects with `StreamdTransactionError` whose `vmStatus` is the execution error (`MoveAbort(...)
+  in command 1`); one never checkpointed within `timeout` with `StreamdTimeoutError`; a `0x` hex
+  hash is refused. An event's `version` and `eventIndex` match what `on()` and `getEvents`
+  deliver for it. `SuiAdapter.getTransactionEvents` reads the checkpoint's digest list to place
+  the transaction, since the node does not report its index.
 - **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
-  a version before that fails with `410`. Views, simulations and transaction lookups are not
-  served yet.
+  a version before that fails with `410`. Views and simulations are not served yet.
 
 ### Spreading load across fullnodes
 
