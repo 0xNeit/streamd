@@ -20,6 +20,41 @@ export interface GenerateOptions {
   handles?: boolean;
   /** Writes an `is<Type>` runtime check per generated type; default false. */
   validators?: boolean;
+  /** How the chain's node writes values as JSON; default Aptos's. */
+  dialect?: Dialect;
+}
+
+type StructType = Extract<MoveType, { kind: "struct" }>;
+
+/** What a check of a framework struct's value can call on. */
+export interface CheckContext {
+  args: MoveType[];
+  /** A call of a shared helper, on `arg`. */
+  use: (helper: Helper, arg: string) => string;
+  /** A check of `value` against `t`, a type argument. */
+  inner: (t: MoveType, value: string) => string;
+  /** A fresh callback parameter name. */
+  item: string;
+}
+
+/** A framework struct whose JSON is not its fields, so no interface is generated. */
+export interface Builtin {
+  /** Its TypeScript type, given its type arguments' types. */
+  type: (args: string[]) => string;
+  check: (value: string, ctx: CheckContext) => string;
+  /** Its type arguments never appear in its JSON, so their structs are not generated. */
+  opaque?: boolean;
+}
+
+/** The rules that differ between chains' JSON. */
+export interface Dialect {
+  builtin: (t: StructType) => Builtin | undefined;
+  /** The property an enum value names its variant in. */
+  variantKey: string;
+  /** Source of `streamdIsBytes`, the check of a `vector<u8>`. */
+  bytes: string;
+  /** The header line saying how wide integers arrive. */
+  note: string;
 }
 
 interface Entry {
@@ -54,10 +89,36 @@ const BUILTINS: Record<string, "String" | "Option" | "Object"> = {
   "object::Object": "Object",
 };
 
-/** Framework structs whose JSON is not their fields, so no interface is generated. */
-function builtin(t: Extract<MoveType, { kind: "struct" }>) {
+function builtin(t: StructType) {
   return long(t.address) === FRAMEWORK ? BUILTINS[`${t.module}::${t.name}`] : undefined;
 }
+
+const APTOS_BUILTINS: Record<"String" | "Option" | "Object", Builtin> = {
+  String: { type: () => "string", check: (v) => `typeof ${v} === "string"` },
+  Object: {
+    opaque: true,
+    type: () => "{ inner: string }",
+    check: (v, c) => `${c.use("record", v)} && ${c.use("address", `${v}["inner"]`)}`,
+  },
+  Option: {
+    type: ([inner]) => `{ vec: [] | [${inner}] }`,
+    check: (v, c) => {
+      const inner = c.inner(c.args[0]!, c.item);
+      const vec = `${v}["vec"]`;
+      return `${c.use("record", v)} && Array.isArray(${vec}) && ${vec}.length <= 1 && ${vec}.every((${c.item}: unknown) => ${inner})`;
+    },
+  },
+};
+
+const APTOS: Dialect = {
+  builtin: (t) => {
+    const kind = builtin(t);
+    return kind === undefined ? undefined : APTOS_BUILTINS[kind];
+  },
+  variantKey: "__variant__",
+  bytes: "const streamdIsBytes = (v: unknown) => typeof v === \"string\" && /^0x(?:[0-9a-fA-F]{2})*$/.test(v);",
+  note: "// u64, u128, u256, i64, i128 and i256 values are decimal strings, as the fullnode returns them.",
+};
 
 /** The payload type of a legacy `0x1::event::EventHandle<T>` field, if `t` is one. */
 const handlePayload = (t: MoveType): MoveType | undefined =>
@@ -72,7 +133,7 @@ const fieldsOf = (s: StructAbi): FieldAbi[] =>
 async function collect(
   targets: ModuleRef[],
   load: LoadModule,
-  { list, handles: withHandles = true }: GenerateOptions,
+  { list, handles: withHandles = true, dialect = APTOS }: GenerateOptions,
 ): Promise<{ entries: Map<string, Entry>; views: ViewEntry[]; handles: HandleEntry[] }> {
   const modules = new Map<string, Promise<ModuleAbi>>();
   const getModule = (address: string, name: string) => {
@@ -153,10 +214,10 @@ async function collect(
     }
     if (t.kind === "vector") return visit(owner, field, t.of);
     if (t.kind !== "struct") return;
-    const kind = builtin(t);
-    if (kind === "Object") return; // its type argument never appears in JSON
+    const known = dialect.builtin(t);
+    if (known?.opaque) return;
     for (const arg of t.args) await visit(owner, field, arg);
-    if (kind !== undefined) return;
+    if (known !== undefined) return;
     const abi = await getModule(t.address, t.module);
     const struct = abi.structs.find((s) => s.name === t.name);
     if (struct === undefined) {
@@ -214,22 +275,23 @@ function assignNames(entries: Entry[]): Map<string, string> {
   return names;
 }
 
-function tsType(t: MoveType, names: Map<string, string>): string {
+function tsType(t: MoveType, names: Map<string, string>, d: Dialect): string {
   switch (t.kind) {
     case "primitive":
       if (t.name === "bool") return "boolean";
       return NARROW.has(t.name) ? "number" : "string";
     case "param":
       return `T${t.index}`;
-    case "vector":
+    case "vector": {
       if (t.of.kind === "primitive" && t.of.name === "u8") return "string";
-      return `${tsType(t.of, names)}[]`;
+      const item = tsType(t.of, names, d);
+      return / \| null$/.test(item) ? `(${item})[]` : `${item}[]`;
+    }
     case "struct": {
-      const kind = builtin(t);
-      if (kind === "String") return "string";
-      if (kind === "Object") return "{ inner: string }";
-      const args = t.args.map((a) => tsType(a, names));
-      if (kind === "Option") return `{ vec: [] | [${args[0]}] }`;
+      const known = d.builtin(t);
+      if (known?.opaque) return known.type([]);
+      const args = t.args.map((a) => tsType(a, names, d));
+      if (known !== undefined) return known.type(args);
       const name = names.get(`${moduleKey(t.address, t.module)}::${t.name}`)!;
       return args.length === 0 ? name : `${name}<${args.join(", ")}>`;
     }
@@ -251,17 +313,19 @@ function renderDecodeList(name: string, fields: string[], names: Map<string, str
   return `export const ${free} = [${fields.map((f) => JSON.stringify(f)).join(", ")}] as const;`;
 }
 
-function render(e: Entry, names: Map<string, string>): string {
+const propertyName = (key: string) => (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key));
+
+function render(e: Entry, names: Map<string, string>, d: Dialect): string {
   const name = names.get(e.key)!;
   const count = e.struct.typeParams;
   const params = Array.from({ length: count }, (_, i) => `T${i}`);
   const generics = count === 0 ? "" : `<${params.map((p) => `${p} = unknown`).join(", ")}>`;
-  const field = (f: FieldAbi) => `${f.name}: ${tsType(f.type, names)}`;
+  const field = (f: FieldAbi) => `${f.name}: ${tsType(f.type, names, d)}`;
   const out = [`/** \`${qualified(e)}\`${e.struct.isEvent ? ", an event" : ""} */`];
 
   if (e.struct.isEnum) {
     const variants = e.struct.variants.map(
-      (v) => `  | { ${[`__variant__: "${v.name}"`, ...v.fields.map(field)].join("; ")} }`,
+      (v) => `  | { ${[`${propertyName(d.variantKey)}: "${v.name}"`, ...v.fields.map(field)].join("; ")} }`,
     );
     out.push(`export type ${name}${generics} =`, ...(variants.length ? variants : ["  never"]));
     out[out.length - 1] += ";";
@@ -343,7 +407,7 @@ const usesParam = (t: MoveType): boolean =>
 function renderHandle(h: HandleEntry, name: string, names: Map<string, string>): string {
   const count = h.struct.typeParams;
   const args = Array.from({ length: count }, (_, i) => `t${i}`);
-  const payload = tsType(h.payload, names);
+  const payload = tsType(h.payload, names, APTOS);
   const generics = usesParam(h.payload)
     ? `<${Array.from({ length: count }, (_, i) => `T${i} = unknown`).join(", ")}>`
     : "";
@@ -367,9 +431,9 @@ const HELPERS = {
   uint: "const streamdIsUint = (v: unknown) => (typeof v === \"string\" && /^\\d+$/.test(v)) || (typeof v === \"bigint\" && v >= 0n);",
   int: "const streamdIsInt = (v: unknown) => (typeof v === \"string\" && /^-?\\d+$/.test(v)) || typeof v === \"bigint\";",
   address: "const streamdIsAddress = (v: unknown) => typeof v === \"string\" && /^0x[0-9a-fA-F]{1,64}$/.test(v);",
-  bytes: "const streamdIsBytes = (v: unknown) => typeof v === \"string\" && /^0x(?:[0-9a-fA-F]{2})*$/.test(v);",
+  bytes: APTOS.bytes,
 } as const;
-type Helper = keyof typeof HELPERS;
+export type Helper = keyof typeof HELPERS;
 
 const SIGNED_WIDE = new Set(["i64", "i128", "i256"]);
 
@@ -377,7 +441,7 @@ const SIGNED_WIDE = new Set(["i64", "i128", "i256"]);
  * A boolean expression checking `value` against `t`, as the fullnode writes it
  * in JSON; `depth` keeps nested callbacks' parameter names apart.
  */
-function check(t: MoveType, value: string, guards: Map<string, string>, used: Set<Helper>, depth = 0): string {
+function check(t: MoveType, value: string, guards: Map<string, string>, used: Set<Helper>, d: Dialect, depth = 0): string {
   const use = (helper: Helper, arg = value) => (used.add(helper), `streamd${helper === "record" ? "IsRecord" : `Is${pascal(helper)}`}(${arg})`);
   switch (t.kind) {
     case "primitive":
@@ -392,17 +456,13 @@ function check(t: MoveType, value: string, guards: Map<string, string>, used: Se
     case "vector": {
       if (t.of.kind === "primitive" && t.of.name === "u8") return use("bytes");
       const item = `v${depth}`;
-      return `Array.isArray(${value}) && ${value}.every((${item}: unknown) => ${check(t.of, item, guards, used, depth + 1)})`;
+      return `Array.isArray(${value}) && ${value}.every((${item}: unknown) => ${check(t.of, item, guards, used, d, depth + 1)})`;
     }
     case "struct": {
-      const kind = builtin(t);
-      if (kind === "String") return `typeof ${value} === "string"`;
-      if (kind === "Object") return `${use("record")} && ${use("address", `${value}["inner"]`)}`;
-      if (kind === "Option") {
-        const item = `v${depth}`;
-        const inner = check(t.args[0]!, item, guards, used, depth + 1);
-        const vec = `${value}["vec"]`;
-        return `${use("record")} && Array.isArray(${vec}) && ${vec}.length <= 1 && ${vec}.every((${item}: unknown) => ${inner})`;
+      const known = d.builtin(t);
+      if (known !== undefined) {
+        const inner = (arg: MoveType, v: string) => check(arg, v, guards, used, d, depth + 1);
+        return known.check(value, { args: t.args, use, inner, item: `v${depth}` });
       }
       return `${guards.get(`${moduleKey(t.address, t.module)}::${t.name}`)!}(${value})`;
     }
@@ -411,8 +471,8 @@ function check(t: MoveType, value: string, guards: Map<string, string>, used: Se
   }
 }
 
-function renderGuard(e: Entry, name: string, guard: string, guards: Map<string, string>, used: Set<Helper>): string {
-  const field = (f: FieldAbi) => check(f.type, `value[${JSON.stringify(f.name)}]`, guards, used);
+function renderGuard(e: Entry, name: string, guard: string, guards: Map<string, string>, used: Set<Helper>, d: Dialect): string {
+  const field = (f: FieldAbi) => check(f.type, `value[${JSON.stringify(f.name)}]`, guards, used, d);
   const all = (fields: FieldAbi[], first: string) =>
     [first, ...fields.map(field).filter((c) => c !== "true")].join(" && ");
   used.add("record");
@@ -428,7 +488,7 @@ function renderGuard(e: Entry, name: string, guard: string, guards: Map<string, 
     doc,
     `export function ${guard}(value: unknown): value is ${name} {`,
     "  if (!streamdIsRecord(value)) return false;",
-    '  switch (value["__variant__"]) {',
+    `  switch (value[${JSON.stringify(d.variantKey)}]) {`,
     ...cases,
     "    default:",
     "      return false;",
@@ -472,6 +532,7 @@ export async function generateEventTypes(
   load: LoadModule,
   options: GenerateOptions = {},
 ): Promise<string> {
+  const dialect = options.dialect ?? APTOS;
   const collected = await collect(targets, load, options);
   const entries = [...collected.entries.values()].sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
   const key = ({ module, view }: ViewEntry) => `${moduleKey(module.address, module.name)}::${view.name}`;
@@ -492,23 +553,23 @@ export async function generateEventTypes(
     }
   }
   const used = new Set<Helper>();
-  const checks = options.validators ? entries.map((e) => renderGuard(e, names.get(e.key)!, guards.get(e.key)!, guards, used)) : [];
+  const checks = options.validators ? entries.map((e) => renderGuard(e, names.get(e.key)!, guards.get(e.key)!, guards, used, dialect)) : [];
   const header = [
     `// Generated by streamd codegen from the on-chain ABIs of ${targets
       .map((t) => (t.module === undefined ? t.address : `${t.address}::${t.module}`))
       .join(", ")}.`,
     "// Do not edit: regenerate after a module upgrade.",
-    "// u64, u128, u256, i64, i128 and i256 values are decimal strings, as the fullnode returns them.",
+    dialect.note,
     ...(entries.some((e) => e.struct.isEvent) ? ['import { defineEvent } from "@streamd/core";'] : []),
     ...(views.length > 0 ? ['import type { ViewRequest } from "@streamd/core";'] : []),
     ...(handles.length > 0 ? ['import type { HandleEventDescriptor } from "@streamd/core";'] : []),
   ];
   const sections = [
     header.join("\n"),
-    ...entries.map((e) => render(e, names)),
+    ...entries.map((e) => render(e, names, dialect)),
     ...views.map((v, i) => renderView(v, builders[i]!)),
     ...handles.map((h, i) => renderHandle(h, handleBuilders[i]!, names)),
-    ...(checks.length > 0 ? [(Object.keys(HELPERS) as Helper[]).filter((h) => used.has(h)).map((h) => HELPERS[h]).join("\n"), ...checks] : []),
+    ...(checks.length > 0 ? [(Object.keys(HELPERS) as Helper[]).filter((h) => used.has(h)).map((h) => (h === "bytes" ? dialect.bytes : HELPERS[h])).join("\n"), ...checks] : []),
   ];
   return `${sections.join("\n\n")}\n`;
 }

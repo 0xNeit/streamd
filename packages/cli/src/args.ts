@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { requireAddress, requireEventType, requireResourceType } from "@streamd/core";
+import { normalizeAddress, requireAddress, requireEventType, requireResourceType } from "@streamd/core";
 import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
 import type { ModuleRef } from "./codegen.js";
 
@@ -115,7 +115,10 @@ export interface CheckOptions {
 }
 
 export interface CodegenOptions {
+  /** Unset for Aptos. */
+  chain?: "sui";
   modules: ModuleRef[];
+  /** With `chain: "sui"`, only mainnet, testnet or devnet. */
   network: Network;
   nodeUrl?: string;
   /** Sent to the fullnode as the SDK's API key; never printed. */
@@ -254,6 +257,7 @@ const CHECK_OPTIONS = {
 } as const;
 
 const CODEGEN_OPTIONS = {
+  chain: { type: "string" },
   network: { type: "string" },
   "node-url": { type: "string" },
   "api-key": { type: "string" },
@@ -288,7 +292,7 @@ export const USAGE = `Usage:
   streamd tx <hash>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
-  streamd codegen [--out <file>] [--validators] (<address> | <address>::<module>)...
+  streamd codegen [--chain aptos|sui] [--out <file>] [--validators] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
 
 tail follows matching events and prints each as one JSON line on stdout.
@@ -304,6 +308,8 @@ compare reads one range from two nodes and prints what one has that the other
 does not, exiting 1 if they disagree.
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
+With --chain sui it reads Sui packages, where every struct or enum with copy
+and drop is an event.
 
 Options:
   --account <address>    events from transactions this account sent
@@ -339,6 +345,8 @@ Options:
   --order <asc|desc>     query: oldest or newest first (default: asc)
   --out <file>           codegen, record: write to this file instead of stdout
   --validators           codegen: also write an is<Type> runtime check per type
+  --chain <name>         codegen: aptos or sui (default: aptos); with sui, --network is
+                         mainnet, testnet or devnet and --node-url a Sui gRPC URL
   --against <url>        compare: the second node's fullnode URL (required)
   --max-pages <n>        compare: most pages read from each node (default: 10)
   -h, --help             show this help
@@ -749,17 +757,29 @@ function parseCheck(args: string[]): ParsedCommand {
   return { command: "check", options };
 }
 
-function moduleRef(raw: string): ModuleRef {
+function moduleRef(raw: string, sui: boolean): ModuleRef {
+  const check = (address: string) => {
+    if (!sui) wrap(() => requireAddress(address));
+    else if (normalizeAddress(address) === undefined) throw new UsageError(`Not a valid Sui address: ${address}`);
+  };
   if (!raw.includes("::")) {
-    wrap(() => requireAddress(raw));
+    check(raw);
     return { address: raw };
   }
   const [address = "", module = "", ...rest] = raw.split("::");
   if (rest.length > 0 || !MODULE_NAME.test(module)) {
     throw new UsageError(`expected <address> or <address>::<module>: ${raw}`);
   }
-  wrap(() => requireAddress(address));
+  check(address);
   return { address, module };
+}
+
+const SUI_NETWORKS: readonly Network[] = ["mainnet", "testnet", "devnet"];
+
+function chain(raw: string | undefined): boolean {
+  if (raw === undefined || raw === "aptos") return false;
+  if (raw === "sui") return true;
+  throw new UsageError(`--chain must be aptos or sui: ${raw}`);
 }
 
 function parseCodegen(args: string[]): ParsedCommand {
@@ -768,14 +788,24 @@ function parseCodegen(args: string[]): ParsedCommand {
   );
   if (values.help) return { command: "help" };
   if (positionals.length === 0) throw new UsageError("codegen needs at least one <address> or <address>::<module>");
+  const sui = chain(values.chain);
   const options: CodegenOptions = {
-    modules: positionals.map(moduleRef),
+    modules: positionals.map((p) => moduleRef(p, sui)),
     network: network(values.network),
   };
   const url = nodeUrl(values["node-url"]);
   if (url !== undefined) options.nodeUrl = url;
-  const key = apiKey(values["api-key"], options.network, url);
-  if (key !== undefined) options.apiKey = key;
+  if (sui) {
+    if (!SUI_NETWORKS.includes(options.network)) {
+      throw new UsageError(`--network with --chain sui must be one of ${SUI_NETWORKS.join(", ")}: ${options.network}`);
+    }
+    // Public Sui nodes take no key, so none is sent.
+    if (values["api-key"] !== undefined) throw new UsageError("--api-key is not sent to Sui nodes");
+    options.chain = "sui";
+  } else {
+    const key = apiKey(values["api-key"], options.network, url);
+    if (key !== undefined) options.apiKey = key;
+  }
   if (values.out !== undefined) {
     if (values.out === "") throw new UsageError("--out must not be empty");
     options.out = values.out;

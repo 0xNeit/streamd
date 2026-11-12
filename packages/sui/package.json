@@ -13,6 +13,16 @@
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
       }
+    },
+    "./framework": {
+      "import": {
+        "types": "./dist/framework.d.ts",
+        "default": "./dist/framework.js"
+      },
+      "require": {
+        "types": "./dist/framework.d.cts",
+        "default": "./dist/framework.cjs"
+      }
     }
   },
   "main": "./dist/index.cjs",

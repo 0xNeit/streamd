@@ -1,0 +1,5847 @@
+{
+ "storageId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+ "originalId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+ "modules": [
+  {
+   "name": "accumulator",
+   "datatypes": [
+    {
+     "name": "AccumulatorRoot",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Key",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "address",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "U128",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "value",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 7
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "accumulator_metadata",
+   "datatypes": [
+    {
+     "name": "AccumulatorObjectCountKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Metadata",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "fields",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "MetadataKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Owner",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "balances",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      },
+      {
+       "name": "owner",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "OwnerKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "owner",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "accumulator_settlement",
+   "datatypes": [
+    {
+     "name": "EventStreamHead",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "mmr",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 8
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "checkpoint_seq",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "num_events",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "address",
+   "datatypes": []
+  },
+  {
+   "name": "address_alias",
+   "datatypes": [
+    {
+     "name": "AddressAliasState",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "version",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "AddressAliases",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "aliases",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_set::VecSet"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "AliasKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pos0",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "allowance",
+   "datatypes": [
+    {
+     "name": "Allowance",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "settings",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::allowance::Settings"
+       }
+      },
+      {
+       "name": "current_spend",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 8
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "AllowanceCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "allowance",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "AllowanceProposal",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pos0",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::allowance::Settings"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "AllowanceWithdrawal",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        3
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "allowance",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "is_sponsor",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      },
+      {
+       "name": "inner",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::funds_accumulator::Withdrawal"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "RateLimit",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 2,
+     "fields": [],
+     "variants": [
+      {
+       "fields": [
+        {
+         "name": "limit",
+         "position": 0,
+         "type": {
+          "typeParameterInstantiation": [],
+          "type": 8
+         }
+        },
+        {
+         "name": "spent",
+         "position": 1,
+         "type": {
+          "typeParameterInstantiation": [],
+          "type": 8
+         }
+        },
+        {
+         "name": "anchor_ms",
+         "position": 2,
+         "type": {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 6
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+         }
+        },
+        {
+         "name": "index",
+         "position": 3,
+         "type": {
+          "typeParameterInstantiation": [],
+          "type": 6
+         }
+        },
+        {
+         "name": "window",
+         "position": 4,
+         "type": {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::allowance::Window"
+         }
+        }
+       ],
+       "name": "Windowed",
+       "position": 0
+      }
+     ]
+    },
+    {
+     "name": "Settings",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "funder",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "spender",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "app",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::type_name::TypeName"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "lifetime_cap",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 8
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "start_timestamp_ms",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 6
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "expiration_timestamp_ms",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 6
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "rate_limit",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::allowance::RateLimit"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "name",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "SettingsPermit",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "SpendPermit",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Window",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 2,
+     "fields": [],
+     "variants": [
+      {
+       "fields": [
+        {
+         "name": "pos0",
+         "position": 0,
+         "type": {
+          "typeParameterInstantiation": [],
+          "type": 6
+         }
+        }
+       ],
+       "name": "PeriodicMs",
+       "position": 0
+      },
+      {
+       "fields": [
+        {
+         "name": "pos0",
+         "position": 0,
+         "type": {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        }
+       ],
+       "name": "CalendarMonths",
+       "position": 1
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "authenticator_state",
+   "datatypes": [
+    {
+     "name": "ActiveJwk",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "jwk_id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::authenticator_state::JwkId"
+       }
+      },
+      {
+       "name": "jwk",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::authenticator_state::JWK"
+       }
+      },
+      {
+       "name": "epoch",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "AuthenticatorState",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "version",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "AuthenticatorStateInner",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "version",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "active_jwks",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::authenticator_state::ActiveJwk"
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "JWK",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "kty",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "e",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "n",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "alg",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "JwkId",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "iss",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "kid",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "bag",
+   "datatypes": [
+    {
+     "name": "Bag",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "size",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "balance",
+   "datatypes": [
+    {
+     "name": "Balance",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "value",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Supply",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "value",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "bcs",
+   "datatypes": [
+    {
+     "name": "BCS",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "bytes",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "bls12381",
+   "datatypes": [
+    {
+     "name": "G1",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "G2",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "GT",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Scalar",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "UncompressedG1",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "borrow",
+   "datatypes": [
+    {
+     "name": "Borrow",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "ref",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "obj",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Referent",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        3,
+        4
+       ],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "value",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "clock",
+   "datatypes": [
+    {
+     "name": "Clock",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "timestamp_ms",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "coin",
+   "datatypes": [
+    {
+     "name": "Coin",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "balance",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "CoinMetadata",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "decimals",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 3
+       }
+      },
+      {
+       "name": "name",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "symbol",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::ascii::String"
+       }
+      },
+      {
+       "name": "description",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "icon_url",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::url::Url"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "CurrencyCreated",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "decimals",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 3
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "DenyCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "DenyCapV2",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "allow_global_pause",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "RegulatedCoinMetadata",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "coin_metadata_object",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "deny_cap_object",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "TreasuryCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "total_supply",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Supply"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "coin_registry",
+   "datatypes": [
+    {
+     "name": "Borrow",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "CoinRegistry",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Currency",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "decimals",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 3
+       }
+      },
+      {
+       "name": "name",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "symbol",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "description",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "icon_url",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "supply",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 11,
+            "typeParameter": 0
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::coin_registry::SupplyState"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "regulated",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::coin_registry::RegulatedState"
+       }
+      },
+      {
+       "name": "treasury_cap_id",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "metadata_cap_id",
+       "position": 9,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::coin_registry::MetadataCapState"
+       }
+      },
+      {
+       "name": "extra_fields",
+       "position": 10,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::coin_registry::ExtraField"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_map::VecMap"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "CurrencyInitializer",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "currency",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::coin_registry::Currency"
+       }
+      },
+      {
+       "name": "extra_fields",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      },
+      {
+       "name": "is_otw",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "CurrencyKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ExtraField",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pos0",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::type_name::TypeName"
+       }
+      },
+      {
+       "name": "pos1",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "LegacyMetadataKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "MetadataCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "MetadataCapState",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 2,
+     "fields": [],
+     "variants": [
+      {
+       "fields": [
+        {
+         "name": "pos0",
+         "position": 0,
+         "type": {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+         }
+        }
+       ],
+       "name": "Claimed",
+       "position": 0
+      },
+      {
+       "fields": [],
+       "name": "Unclaimed",
+       "position": 1
+      },
+      {
+       "fields": [],
+       "name": "Deleted",
+       "position": 2
+      }
+     ]
+    },
+    {
+     "name": "RegulatedState",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 2,
+     "fields": [],
+     "variants": [
+      {
+       "fields": [
+        {
+         "name": "cap",
+         "position": 0,
+         "type": {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+         }
+        },
+        {
+         "name": "allow_global_pause",
+         "position": 1,
+         "type": {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 2
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+         }
+        },
+        {
+         "name": "variant",
+         "position": 2,
+         "type": {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        }
+       ],
+       "name": "Regulated",
+       "position": 0
+      },
+      {
+       "fields": [],
+       "name": "Unregulated",
+       "position": 1
+      },
+      {
+       "fields": [],
+       "name": "Unknown",
+       "position": 2
+      }
+     ]
+    },
+    {
+     "name": "SupplyState",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 2,
+     "fields": [],
+     "variants": [
+      {
+       "fields": [
+        {
+         "name": "pos0",
+         "position": 0,
+         "type": {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 11,
+            "typeParameter": 0
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Supply"
+         }
+        }
+       ],
+       "name": "Fixed",
+       "position": 0
+      },
+      {
+       "fields": [
+        {
+         "name": "pos0",
+         "position": 0,
+         "type": {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 11,
+            "typeParameter": 0
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Supply"
+         }
+        }
+       ],
+       "name": "BurnOnly",
+       "position": 1
+      },
+      {
+       "fields": [],
+       "name": "Unknown",
+       "position": 2
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "config",
+   "datatypes": [
+    {
+     "name": "Config",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Setting",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1,
+        2,
+        3
+       ],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "data",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 11,
+            "typeParameter": 0
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::config::SettingData"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "SettingData",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1,
+        2,
+        3
+       ],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "newer_value_epoch",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "newer_value",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "older_value_opt",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "deny_list",
+   "datatypes": [
+    {
+     "name": "AddressKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pos0",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ConfigKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "per_type_index",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "per_type_key",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ConfigWriteCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "DenyList",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "lists",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "GlobalPauseKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "PerTypeConfigCreated",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "key",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::deny_list::ConfigKey"
+       }
+      },
+      {
+       "name": "config_id",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "PerTypeList",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "denied_count",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 6
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::table::Table"
+       }
+      },
+      {
+       "name": "denied_addresses",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 3
+           }
+          ],
+          "type": 9
+         },
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 1
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_set::VecSet"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::table::Table"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "derived_object",
+   "datatypes": [
+    {
+     "name": "Claimed",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pos0",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ClaimedStatus",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 2,
+     "fields": [],
+     "variants": [
+      {
+       "fields": [],
+       "name": "Reserved",
+       "position": 0
+      }
+     ]
+    },
+    {
+     "name": "DerivedObjectKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1,
+        2,
+        3
+       ],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pos0",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 11,
+        "typeParameter": 0
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "display",
+   "datatypes": [
+    {
+     "name": "Display",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        4
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "fields",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_map::VecMap"
+       }
+      },
+      {
+       "name": "version",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 4
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "DisplayCreated",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        4
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "VersionUpdated",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        4
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "version",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 4
+       }
+      },
+      {
+       "name": "fields",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_map::VecMap"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "display_registry",
+   "datatypes": [
+    {
+     "name": "Display",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "fields",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_map::VecMap"
+       }
+      },
+      {
+       "name": "cap_id",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "DisplayCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "DisplayKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "DisplayRegistry",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "SystemMigrationCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "dynamic_field",
+   "datatypes": [
+    {
+     "name": "Field",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1,
+        2,
+        3
+       ],
+       "isPhantom": false
+      },
+      {
+       "constraints": [
+        3
+       ],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "name",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 11,
+        "typeParameter": 0
+       }
+      },
+      {
+       "name": "value",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 11,
+        "typeParameter": 1
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "dynamic_object_field",
+   "datatypes": [
+    {
+     "name": "Wrapper",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "name",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 11,
+        "typeParameter": 0
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "ecdsa_k1",
+   "datatypes": []
+  },
+  {
+   "name": "ecdsa_r1",
+   "datatypes": []
+  },
+  {
+   "name": "ecvrf",
+   "datatypes": []
+  },
+  {
+   "name": "ed25519",
+   "datatypes": []
+  },
+  {
+   "name": "event",
+   "datatypes": []
+  },
+  {
+   "name": "forwarding_address",
+   "datatypes": [
+    {
+     "name": "ForwardingAddressRegistry",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "funds_accumulator",
+   "datatypes": [
+    {
+     "name": "Withdrawal",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        3
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "owner",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "limit",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 8
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "groth16",
+   "datatypes": [
+    {
+     "name": "Curve",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 3
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "PreparedVerifyingKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "vk_gamma_abc_g1_bytes",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "alpha_g1_beta_g2_bytes",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "gamma_g2_neg_pc_bytes",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "delta_g2_neg_pc_bytes",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ProofPoints",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "bytes",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "PublicProofInputs",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "bytes",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "group_ops",
+   "datatypes": [
+    {
+     "name": "Element",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "bytes",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "hash",
+   "datatypes": []
+  },
+  {
+   "name": "hex",
+   "datatypes": []
+  },
+  {
+   "name": "hmac",
+   "datatypes": []
+  },
+  {
+   "name": "kiosk",
+   "datatypes": [
+    {
+     "name": "Borrow",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "kiosk_id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "item_id",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Item",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ItemDelisted",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        3,
+        4
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "kiosk",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "id",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ItemListed",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        3,
+        4
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "kiosk",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "id",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "price",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ItemPurchased",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        3,
+        4
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "kiosk",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "id",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "price",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Kiosk",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "profits",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      },
+      {
+       "name": "owner",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "item_count",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 5
+       }
+      },
+      {
+       "name": "allow_extensions",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "KioskOwnerCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "for",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Listing",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "is_exclusive",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Lock",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "PurchaseCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        3,
+        4
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "kiosk_id",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "item_id",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "min_price",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "kiosk_extension",
+   "datatypes": [
+    {
+     "name": "Extension",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "storage",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      },
+      {
+       "name": "permissions",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 7
+       }
+      },
+      {
+       "name": "is_enabled",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ExtensionKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "linked_table",
+   "datatypes": [
+    {
+     "name": "LinkedTable",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1,
+        2,
+        3
+       ],
+       "isPhantom": false
+      },
+      {
+       "constraints": [
+        3
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "size",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "head",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "tail",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Node",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1,
+        2,
+        3
+       ],
+       "isPhantom": false
+      },
+      {
+       "constraints": [
+        3
+       ],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "prev",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "next",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "value",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 11,
+        "typeParameter": 1
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "math",
+   "datatypes": []
+  },
+  {
+   "name": "nitro_attestation",
+   "datatypes": [
+    {
+     "name": "NitroAttestationDocument",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "module_id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "timestamp",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "digest",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "pcrs",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::nitro_attestation::PCREntry"
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "public_key",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 3
+           }
+          ],
+          "type": 9
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "user_data",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 3
+           }
+          ],
+          "type": 9
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "nonce",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 3
+           }
+          ],
+          "type": 9
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "PCREntry",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "index",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 3
+       }
+      },
+      {
+       "name": "value",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "object",
+   "datatypes": [
+    {
+     "name": "ID",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "bytes",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "UID",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "object_bag",
+   "datatypes": [
+    {
+     "name": "ObjectBag",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "size",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "object_table",
+   "datatypes": [
+    {
+     "name": "ObjectTable",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1,
+        2,
+        3
+       ],
+       "isPhantom": true
+      },
+      {
+       "constraints": [
+        3,
+        4
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "size",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "package",
+   "datatypes": [
+    {
+     "name": "Publisher",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "package",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::ascii::String"
+       }
+      },
+      {
+       "name": "module_name",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::ascii::String"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "UpgradeCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "package",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "version",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "policy",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 3
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "UpgradeReceipt",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "cap",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "package",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "UpgradeTicket",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "cap",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "package",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "policy",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 3
+       }
+      },
+      {
+       "name": "digest",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "party",
+   "datatypes": [
+    {
+     "name": "Party",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "default",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::party::Permissions"
+       }
+      },
+      {
+       "name": "members",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::party::Permissions"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_map::VecMap"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Permissions",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pos0",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "pay",
+   "datatypes": []
+  },
+  {
+   "name": "poseidon",
+   "datatypes": []
+  },
+  {
+   "name": "priority_queue",
+   "datatypes": [
+    {
+     "name": "Entry",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        2
+       ],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "priority",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "value",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 11,
+        "typeParameter": 0
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "PriorityQueue",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        2
+       ],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "entries",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 11,
+            "typeParameter": 0
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::priority_queue::Entry"
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "protocol_config",
+   "datatypes": []
+  },
+  {
+   "name": "prover",
+   "datatypes": []
+  },
+  {
+   "name": "random",
+   "datatypes": [
+    {
+     "name": "Random",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "inner",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::versioned::Versioned"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "RandomGenerator",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "seed",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "counter",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 4
+       }
+      },
+      {
+       "name": "buffer",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "RandomInner",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "version",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "epoch",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "randomness_round",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "random_bytes",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "rangeproofs",
+   "datatypes": []
+  },
+  {
+   "name": "ristretto255",
+   "datatypes": [
+    {
+     "name": "G",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Scalar",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "scratch",
+   "datatypes": [
+    {
+     "name": "BorrowMarker",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        2
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pos0",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "BorrowMarkerKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Permit",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1,
+        2
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "sui",
+   "datatypes": [
+    {
+     "name": "SUI",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "table",
+   "datatypes": [
+    {
+     "name": "Table",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1,
+        2,
+        3
+       ],
+       "isPhantom": true
+      },
+      {
+       "constraints": [
+        3
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "size",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "table_vec",
+   "datatypes": [
+    {
+     "name": "TableVec",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        3
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "contents",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 6
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::table::Table"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "token",
+   "datatypes": [
+    {
+     "name": "ActionRequest",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "name",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "amount",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "sender",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "recipient",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "spent_balance",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 11,
+            "typeParameter": 0
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "approvals",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::type_name::TypeName"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_set::VecSet"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "RuleKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "is_protected",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Token",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "balance",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "TokenPolicy",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "spent_balance",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      },
+      {
+       "name": "rules",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         },
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 10,
+            "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::type_name::TypeName"
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_set::VecSet"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_map::VecMap"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "TokenPolicyCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "for",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "TokenPolicyCreated",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "is_mutable",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "transfer",
+   "datatypes": [
+    {
+     "name": "Receiving",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        4
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "version",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "transfer_policy",
+   "datatypes": [
+    {
+     "name": "RuleKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        2
+       ],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "TransferPolicy",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "balance",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      },
+      {
+       "name": "rules",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::type_name::TypeName"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_set::VecSet"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "TransferPolicyCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "policy_id",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "TransferPolicyCreated",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "TransferPolicyDestroyed",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "TransferRequest",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [
+      {
+       "constraints": [],
+       "isPhantom": true
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "item",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "paid",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "from",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "receipts",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::type_name::TypeName"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_set::VecSet"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "tx_context",
+   "datatypes": [
+    {
+     "name": "TxContext",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "sender",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "tx_hash",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "epoch",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "epoch_timestamp_ms",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "ids_created",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "types",
+   "datatypes": []
+  },
+  {
+   "name": "url",
+   "datatypes": [
+    {
+     "name": "Url",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "url",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::ascii::String"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "vdf",
+   "datatypes": []
+  },
+  {
+   "name": "vec_map",
+   "datatypes": [
+    {
+     "name": "Entry",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1
+       ],
+       "isPhantom": false
+      },
+      {
+       "constraints": [],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "key",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 11,
+        "typeParameter": 0
+       }
+      },
+      {
+       "name": "value",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 11,
+        "typeParameter": 1
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "VecMap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1
+       ],
+       "isPhantom": false
+      },
+      {
+       "constraints": [],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "contents",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 11,
+            "typeParameter": 0
+           },
+           {
+            "typeParameterInstantiation": [],
+            "type": 11,
+            "typeParameter": 1
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_map::Entry"
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "vec_set",
+   "datatypes": [
+    {
+     "name": "VecSet",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [
+      {
+       "constraints": [
+        1,
+        2
+       ],
+       "isPhantom": false
+      }
+     ],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "contents",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 11,
+          "typeParameter": 0
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "versioned",
+   "datatypes": [
+    {
+     "name": "VersionChangeCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "versioned_id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "old_version",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Versioned",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "version",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "zklogin_verified_id",
+   "datatypes": [
+    {
+     "name": "VerifiedID",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "owner",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "key_claim_name",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "key_claim_value",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "issuer",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "audience",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "zklogin_verified_issuer",
+   "datatypes": [
+    {
+     "name": "VerifiedIssuer",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000002",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "owner",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "issuer",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  }
+ ]
+}

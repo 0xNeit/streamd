@@ -1,0 +1,2771 @@
+{
+ "storageId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+ "originalId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+ "modules": [
+  {
+   "name": "genesis",
+   "datatypes": [
+    {
+     "name": "GenesisChainParameters",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "protocol_version",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "chain_start_timestamp_ms",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "epoch_duration_ms",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake_subsidy_start_epoch",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake_subsidy_initial_distribution_amount",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake_subsidy_period_length",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake_subsidy_decrease_rate",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 4
+       }
+      },
+      {
+       "name": "max_validator_count",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "min_validator_joining_stake",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_low_stake_threshold",
+       "position": 9,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_very_low_stake_threshold",
+       "position": 10,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_low_stake_grace_period",
+       "position": 11,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "GenesisValidatorMetadata",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "name",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "description",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "image_url",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "project_url",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "sui_address",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "gas_price",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "commission_rate",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "protocol_public_key",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "proof_of_possession",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "network_public_key",
+       "position": 9,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "worker_public_key",
+       "position": 10,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "network_address",
+       "position": 11,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "p2p_address",
+       "position": 12,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "primary_address",
+       "position": 13,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "worker_address",
+       "position": 14,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "TokenAllocation",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "recipient_address",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "amount_mist",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "staked_with_validator",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "TokenDistributionSchedule",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "stake_subsidy_fund_mist",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "allocations",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::genesis::TokenAllocation"
+         }
+        ],
+        "type": 9
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "stake_subsidy",
+   "datatypes": [
+    {
+     "name": "StakeSubsidy",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "balance",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      },
+      {
+       "name": "distribution_counter",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "current_distribution_amount",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake_subsidy_period_length",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake_subsidy_decrease_rate",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 4
+       }
+      },
+      {
+       "name": "extra_fields",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "staking_pool",
+   "datatypes": [
+    {
+     "name": "FungibleStakedSui",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "pool_id",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "value",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "FungibleStakedSuiData",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "total_supply",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "principal",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "FungibleStakedSuiDataKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "PoolTokenExchangeRate",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "sui_amount",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "pool_token_amount",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "StakedSui",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "pool_id",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "stake_activation_epoch",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "principal",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "StakingPool",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "activation_epoch",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 6
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "deactivation_epoch",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 6
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "sui_balance",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "rewards_pool",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      },
+      {
+       "name": "pool_token_balance",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "exchange_rates",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 6
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::PoolTokenExchangeRate"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::table::Table"
+       }
+      },
+      {
+       "name": "pending_stake",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "pending_total_sui_withdraw",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "pending_pool_token_withdraw",
+       "position": 9,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "extra_fields",
+       "position": 10,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "UnderflowSuiBalance",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "storage_fund",
+   "datatypes": [
+    {
+     "name": "StorageFund",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "total_object_storage_rebates",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      },
+      {
+       "name": "non_refundable_balance",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "sui_system",
+   "datatypes": [
+    {
+     "name": "AccumulatorStorageCostKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "SuiSystemState",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "version",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "sui_system_state_inner",
+   "datatypes": [
+    {
+     "name": "ExecutionTimeObservationChunkKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "chunk_index",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "SuiSystemStateInner",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "epoch",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "protocol_version",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "system_state_version",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validators",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::validator_set::ValidatorSet"
+       }
+      },
+      {
+       "name": "storage_fund",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::storage_fund::StorageFund"
+       }
+      },
+      {
+       "name": "parameters",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::sui_system_state_inner::SystemParameters"
+       }
+      },
+      {
+       "name": "reference_gas_price",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_report_records",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         },
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 1
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_set::VecSet"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_map::VecMap"
+       }
+      },
+      {
+       "name": "stake_subsidy",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::stake_subsidy::StakeSubsidy"
+       }
+      },
+      {
+       "name": "safe_mode",
+       "position": 9,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      },
+      {
+       "name": "safe_mode_storage_rewards",
+       "position": 10,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      },
+      {
+       "name": "safe_mode_computation_rewards",
+       "position": 11,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      },
+      {
+       "name": "safe_mode_storage_rebates",
+       "position": 12,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "safe_mode_non_refundable_storage_fee",
+       "position": 13,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "epoch_start_timestamp_ms",
+       "position": 14,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "extra_fields",
+       "position": 15,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "SuiSystemStateInnerV2",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "epoch",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "protocol_version",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "system_state_version",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validators",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::validator_set::ValidatorSet"
+       }
+      },
+      {
+       "name": "storage_fund",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::storage_fund::StorageFund"
+       }
+      },
+      {
+       "name": "parameters",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::sui_system_state_inner::SystemParametersV2"
+       }
+      },
+      {
+       "name": "reference_gas_price",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_report_records",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         },
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 1
+           }
+          ],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_set::VecSet"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_map::VecMap"
+       }
+      },
+      {
+       "name": "stake_subsidy",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::stake_subsidy::StakeSubsidy"
+       }
+      },
+      {
+       "name": "safe_mode",
+       "position": 9,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      },
+      {
+       "name": "safe_mode_storage_rewards",
+       "position": 10,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      },
+      {
+       "name": "safe_mode_computation_rewards",
+       "position": 11,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::sui::SUI"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::balance::Balance"
+       }
+      },
+      {
+       "name": "safe_mode_storage_rebates",
+       "position": 12,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "safe_mode_non_refundable_storage_fee",
+       "position": 13,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "epoch_start_timestamp_ms",
+       "position": 14,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "extra_fields",
+       "position": 15,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "SystemEpochInfoEvent",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "epoch",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "protocol_version",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "reference_gas_price",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "total_stake",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "storage_fund_reinvestment",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "storage_charge",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "storage_rebate",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "storage_fund_balance",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake_subsidy_amount",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "total_gas_fees",
+       "position": 9,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "total_stake_rewards_distributed",
+       "position": 10,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "leftover_storage_fund_inflow",
+       "position": 11,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "SystemParameters",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "epoch_duration_ms",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake_subsidy_start_epoch",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "max_validator_count",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "min_validator_joining_stake",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_low_stake_threshold",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_very_low_stake_threshold",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_low_stake_grace_period",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "extra_fields",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "SystemParametersV2",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "epoch_duration_ms",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake_subsidy_start_epoch",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "min_validator_count",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "max_validator_count",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "min_validator_joining_stake",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_low_stake_threshold",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_very_low_stake_threshold",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_low_stake_grace_period",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "extra_fields",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "validator",
+   "datatypes": [
+    {
+     "name": "ConvertingToFungibleStakedSuiEvent",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pool_id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "stake_activation_epoch",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "staked_sui_principal_amount",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "fungible_staked_sui_amount",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "RedeemingFungibleStakedSuiEvent",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pool_id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "fungible_staked_sui_amount",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "sui_amount",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "StakingRequestEvent",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pool_id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "validator_address",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "staker_address",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "epoch",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "amount",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "UnstakingRequestEvent",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "pool_id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "validator_address",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "staker_address",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "stake_activation_epoch",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "unstaking_epoch",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "principal_amount",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "reward_amount",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "Validator",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "metadata",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::validator::ValidatorMetadata"
+       }
+      },
+      {
+       "name": "voting_power",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "operation_cap_id",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "gas_price",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "staking_pool",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::StakingPool"
+       }
+      },
+      {
+       "name": "commission_rate",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "next_epoch_stake",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "next_epoch_gas_price",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "next_epoch_commission_rate",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "extra_fields",
+       "position": 9,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ValidatorMetadata",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "sui_address",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "protocol_pubkey_bytes",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "network_pubkey_bytes",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "worker_pubkey_bytes",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "proof_of_possession",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 3
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "name",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "description",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "image_url",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::url::Url"
+       }
+      },
+      {
+       "name": "project_url",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::url::Url"
+       }
+      },
+      {
+       "name": "net_address",
+       "position": 9,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "p2p_address",
+       "position": 10,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "primary_address",
+       "position": 11,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "worker_address",
+       "position": 12,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+       }
+      },
+      {
+       "name": "next_epoch_protocol_pubkey_bytes",
+       "position": 13,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 3
+           }
+          ],
+          "type": 9
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "next_epoch_proof_of_possession",
+       "position": 14,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 3
+           }
+          ],
+          "type": 9
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "next_epoch_network_pubkey_bytes",
+       "position": 15,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 3
+           }
+          ],
+          "type": 9
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "next_epoch_worker_pubkey_bytes",
+       "position": 16,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [
+           {
+            "typeParameterInstantiation": [],
+            "type": 3
+           }
+          ],
+          "type": 9
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "next_epoch_net_address",
+       "position": 17,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "next_epoch_p2p_address",
+       "position": 18,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "next_epoch_primary_address",
+       "position": 19,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "next_epoch_worker_address",
+       "position": 20,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::string::String"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000001::option::Option"
+       }
+      },
+      {
+       "name": "extra_fields",
+       "position": 21,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "validator_cap",
+   "datatypes": [
+    {
+     "name": "UnverifiedValidatorOperationCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3,
+      4
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "id",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::UID"
+       }
+      },
+      {
+       "name": "authorizer_validator_address",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ValidatorOperationCap",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "authorizer_validator_address",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "validator_set",
+   "datatypes": [
+    {
+     "name": "ValidatorEpochInfoEvent",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "epoch",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_address",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "reference_gas_survey_quote",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "commission_rate",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "pool_staking_reward",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "storage_fund_staking_reward",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "pool_token_exchange_rate",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::PoolTokenExchangeRate"
+       }
+      },
+      {
+       "name": "tallying_rule_reporters",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "tallying_rule_global_score",
+       "position": 9,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ValidatorEpochInfoEventV2",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "epoch",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_address",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "reference_gas_survey_quote",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "voting_power",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "commission_rate",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "pool_staking_reward",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "storage_fund_staking_reward",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "pool_token_exchange_rate",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::staking_pool::PoolTokenExchangeRate"
+       }
+      },
+      {
+       "name": "tallying_rule_reporters",
+       "position": 9,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "tallying_rule_global_score",
+       "position": 10,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ValidatorJoinEvent",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "epoch",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_address",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "staking_pool_id",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ValidatorLeaveEvent",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "epoch",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "validator_address",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 1
+       }
+      },
+      {
+       "name": "staking_pool_id",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+       }
+      },
+      {
+       "name": "is_voluntary",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "ValidatorSet",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "total_stake",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "active_validators",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::validator::Validator"
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "pending_active_validators",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::validator::Validator"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::table_vec::TableVec"
+       }
+      },
+      {
+       "name": "pending_removals",
+       "position": 3,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 6
+         }
+        ],
+        "type": 9
+       }
+      },
+      {
+       "name": "staking_pool_mappings",
+       "position": 4,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::table::Table"
+       }
+      },
+      {
+       "name": "inactive_validators",
+       "position": 5,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::object::ID"
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::validator_wrapper::ValidatorWrapper"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::table::Table"
+       }
+      },
+      {
+       "name": "validator_candidates",
+       "position": 6,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 10,
+          "typeName": "0x0000000000000000000000000000000000000000000000000000000000000003::validator_wrapper::ValidatorWrapper"
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::table::Table"
+       }
+      },
+      {
+       "name": "at_risk_validators",
+       "position": 7,
+       "type": {
+        "typeParameterInstantiation": [
+         {
+          "typeParameterInstantiation": [],
+          "type": 1
+         },
+         {
+          "typeParameterInstantiation": [],
+          "type": 6
+         }
+        ],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::vec_map::VecMap"
+       }
+      },
+      {
+       "name": "extra_fields",
+       "position": 8,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::bag::Bag"
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "VotingPowerAdmissionStartEpochKey",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      1,
+      2,
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "dummy_field",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 2
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "validator_wrapper",
+   "datatypes": [
+    {
+     "name": "ValidatorWrapper",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      3
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "inner",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 10,
+        "typeName": "0x0000000000000000000000000000000000000000000000000000000000000002::versioned::Versioned"
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  },
+  {
+   "name": "voting_power",
+   "datatypes": [
+    {
+     "name": "VotingPowerInfo",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "validator_index",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "voting_power",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    },
+    {
+     "name": "VotingPowerInfoV2",
+     "definingId": "0x0000000000000000000000000000000000000000000000000000000000000003",
+     "abilities": [
+      2
+     ],
+     "typeParameters": [],
+     "kind": 1,
+     "fields": [
+      {
+       "name": "validator_index",
+       "position": 0,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "voting_power",
+       "position": 1,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      },
+      {
+       "name": "stake",
+       "position": 2,
+       "type": {
+        "typeParameterInstantiation": [],
+        "type": 6
+       }
+      }
+     ],
+     "variants": []
+    }
+   ]
+  }
+ ]
+}

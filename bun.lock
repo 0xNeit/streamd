@@ -33,13 +33,19 @@
         "@streamd/aptos": "workspace:*",
         "@streamd/core": "workspace:*",
         "@streamd/store-sqlite": "workspace:*",
+        "@streamd/sui": "workspace:*",
       },
       "devDependencies": {
         "@aptos-labs/ts-sdk": "^6.3.1",
+        "@mysten/sui": "2.39.1",
       },
       "peerDependencies": {
         "@aptos-labs/ts-sdk": ">=1.0.0",
+        "@mysten/sui": "2.39.1",
       },
+      "optionalPeers": [
+        "@mysten/sui",
+      ],
     },
     "packages/core": {
       "name": "@streamd/core",
