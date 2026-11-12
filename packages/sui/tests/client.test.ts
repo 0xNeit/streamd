@@ -4,7 +4,7 @@ import type { MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiClient, networks } from "../src/index.js";
 import type { SuiClientConfig } from "../src/index.js";
-import { LONG, digest, fakeLedger, type FakeTransaction } from "./helpers.js";
+import { LONG, digest, fakeLedger, transactionBytes, withSimulator, type FakeSimulation, type FakeTransaction } from "./helpers.js";
 
 const STAKE = `${LONG("3")}::validator::StakingRequestEvent` as MoveEventType;
 const stakes = { kind: "module", eventType: STAKE } as const;
@@ -114,5 +114,66 @@ describe("SuiClient transaction events", () => {
     expect(err).toMatchObject({ transactionHash: OK });
     expect((err as StreamdAssertionError).events.length).toBe(3);
     await expect(expectation.toEmit({ kind: "handle", accountAddress: ALICE, creationNumber: 1n })).rejects.toThrow(StreamdError);
+  });
+});
+
+describe("SuiClient simulations", () => {
+  const SWAP = `${LONG("abc")}::pool::Swap` as MoveEventType;
+  const ALICE = LONG("a11ce");
+  const client = (result: FakeSimulation) => {
+    const { client: ledger } = fakeLedger([1, 2], []);
+    const { client: simulating, requests } = withSimulator(ledger, result);
+    return { sui: new SuiClient({ sui: simulating as unknown as SuiGrpcClient }), requests };
+  };
+  const EVENTS: FakeSimulation = {
+    events: [
+      { type: STAKE, sender: "0xa11ce", amount: "5" },
+      { type: SWAP, sender: "0xa11ce" },
+      { type: STAKE, sender: "0xb0b", amount: "9" },
+    ],
+  };
+
+  it("previews events, narrowed by a short-form type and by an account", async () => {
+    const { sui } = client(EVENTS);
+    const bytes = await transactionBytes();
+    const stakesShort = { kind: "module", eventType: "0x3::validator::StakingRequestEvent" as MoveEventType } as const;
+    expect((await sui.previewEvents(bytes, stakesShort)).map((e) => [e.eventIndex, e.version, e.transactionHash])).toEqual([
+      [0, 3n, undefined],
+      [2, 3n, undefined],
+    ]);
+    const byAlice = await sui.previewEvents(bytes, { kind: "account", accountAddress: "0xa11ce", eventTypes: [STAKE] }, { decode: ["amount"] });
+    expect(byAlice.map((e) => (e.data as { amount: bigint }).amount)).toEqual([5n]);
+    expect(byAlice[0]?.sender).toBe(ALICE);
+  });
+
+  it("rejects a failed simulation with StreamdTransactionError", async () => {
+    const { sui } = client({ error: "MoveAbort(m::z, 10) in command 1", events: [] });
+    const err = await sui.previewEvents(await transactionBytes()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdTransactionError);
+    expect(err).toMatchObject({ transactionHash: undefined, version: 3n, vmStatus: "MoveAbort(m::z, 10) in command 1" });
+  });
+
+  it("refuses bad bytes, a handle and a resource descriptor before any call", async () => {
+    const { sui, requests } = client(EVENTS);
+    const bytes = await transactionBytes();
+    await expect(sui.previewEvents(new Uint8Array([1, 2, 3]))).rejects.toThrow(StreamdError);
+    await expect(sui.previewEvents(bytes, { kind: "handle", accountAddress: ALICE, creationNumber: 1n })).rejects.toThrow(StreamdError);
+    await expect(sui.previewEvents(bytes, { kind: "resource", accountAddress: ALICE, resourceType: "0x2::coin::Coin" })).rejects.toThrow(StreamdError);
+    expect(() => sui.expectPreview("AAEC" as unknown as Uint8Array)).toThrow(StreamdError);
+    await expect(sui.expectPreview(bytes).toEmit({ kind: "handle", accountAddress: ALICE, creationNumber: 1n })).rejects.toThrow(StreamdError);
+    expect(requests).toEqual([]);
+  });
+
+  it("asserts on a simulation with expectPreview, one simulation per assertion", async () => {
+    const { sui, requests } = client(EVENTS);
+    const expectation = sui.expectPreview(await transactionBytes(), { decode: ["amount"] });
+    expect(requests).toHaveLength(0);
+    const swaps = await expectation.toEmit({ kind: "module", eventType: `0xabc::pool::Swap` as MoveEventType });
+    expect(swaps.map((e) => e.eventIndex)).toEqual([1]);
+    const err = await expectation.notToEmit({ kind: "module", eventType: "0x3::validator::StakingRequestEvent" as MoveEventType }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdAssertionError);
+    expect((err as StreamdAssertionError).transactionHash).toBeUndefined();
+    expect((err as StreamdAssertionError).events).toHaveLength(3);
+    expect(requests).toHaveLength(2);
   });
 });
