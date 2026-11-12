@@ -5,13 +5,21 @@ import type { ModuleRef } from "./codegen.js";
 
 export type Network = "mainnet" | "testnet" | "devnet" | "movement-mainnet" | "movement-testnet";
 
-/** Where events come from: shared by `tail` and `forward`. */
-export interface SourceOptions {
-  descriptor: EventDescriptor;
+/** Which chain and node a command reads. */
+export interface Endpoint {
+  /** Unset for Aptos. */
+  chain?: "sui";
+  /** With `chain: "sui"`, only mainnet, testnet or devnet. */
   network: Network;
+  /** A fullnode URL, or a gRPC URL for Sui. */
   nodeUrl?: string;
-  /** Sent to the fullnode as the SDK's API key; never printed. */
+  /** Sent to the fullnode as the SDK's API key; never printed, and never set for Sui. */
   apiKey?: string;
+}
+
+/** Where events come from: shared by `tail` and `forward`. */
+export interface SourceOptions extends Endpoint {
+  descriptor: EventDescriptor;
   fromVersion?: bigint;
   /** Microseconds since the epoch; never set with `fromVersion`. */
   fromTime?: bigint;
@@ -53,22 +61,15 @@ export interface StoreOptions extends SourceOptions {
   name?: string;
 }
 
-export interface TxOptions {
+export interface TxOptions extends Endpoint {
+  /** A transaction hash, or a base58 digest for Sui. */
   hash: string;
-  network: Network;
-  nodeUrl?: string;
-  /** Sent to the fullnode as the SDK's API key; never printed. */
-  apiKey?: string;
   /** How long to wait for the transaction to commit, in ms. */
   timeout?: number;
 }
 
-export interface QueryOptions {
+export interface QueryOptions extends Endpoint {
   descriptor: EventDescriptor;
-  network: Network;
-  nodeUrl?: string;
-  /** Sent to the fullnode as the SDK's API key; never printed. */
-  apiKey?: string;
   /** Exactly one of `fromVersion` and `fromTime` is set. */
   fromVersion?: bigint;
   fromTime?: bigint;
@@ -77,12 +78,8 @@ export interface QueryOptions {
   order: "asc" | "desc";
 }
 
-export interface RecordOptions {
+export interface RecordOptions extends Endpoint {
   descriptor: EventDescriptor;
-  network: Network;
-  nodeUrl?: string;
-  /** Sent to the fullnode as the SDK's API key; never printed. */
-  apiKey?: string;
   fromVersion: bigint;
   toVersion: bigint;
   limit?: number;
@@ -90,13 +87,10 @@ export interface RecordOptions {
   out?: string;
 }
 
-export interface CompareOptions {
+/** `apiKey` goes to the first node only. */
+export interface CompareOptions extends Endpoint {
   descriptor: EventDescriptor;
-  network: Network;
-  nodeUrl?: string;
-  /** Sent to the first node as the SDK's API key; never printed. */
-  apiKey?: string;
-  /** The second node's fullnode URL. */
+  /** The second node's fullnode URL, or gRPC URL for Sui. */
   against: string;
   fromVersion: bigint;
   toVersion: bigint;
@@ -106,23 +100,12 @@ export interface CompareOptions {
   limit?: number;
 }
 
-export interface CheckOptions {
+export interface CheckOptions extends Endpoint {
   descriptor: ModuleEventDescriptor;
-  network: Network;
-  nodeUrl?: string;
-  /** Sent to the fullnode as the SDK's API key; never printed. */
-  apiKey?: string;
 }
 
-export interface CodegenOptions {
-  /** Unset for Aptos. */
-  chain?: "sui";
+export interface CodegenOptions extends Endpoint {
   modules: ModuleRef[];
-  /** With `chain: "sui"`, only mainnet, testnet or devnet. */
-  network: Network;
-  nodeUrl?: string;
-  /** Sent to the fullnode as the SDK's API key; never printed. */
-  apiKey?: string;
   /** File to write; stdout when unset. */
   out?: string;
   /** Also write an `is<Type>` runtime check per generated type. */
@@ -161,11 +144,16 @@ const DESCRIPTOR_OPTIONS = {
   "creation-number": { type: "string" },
 } as const;
 
-const SOURCE_OPTIONS = {
-  ...DESCRIPTOR_OPTIONS,
+const ENDPOINT_OPTIONS = {
+  chain: { type: "string" },
   network: { type: "string" },
   "node-url": { type: "string" },
   "api-key": { type: "string" },
+} as const;
+
+const SOURCE_OPTIONS = {
+  ...DESCRIPTOR_OPTIONS,
+  ...ENDPOINT_OPTIONS,
   "from-version": { type: "string" },
   "poll-interval": { type: "string" },
   help: { type: "boolean", short: "h" },
@@ -202,9 +190,7 @@ const STORE_OPTIONS = {
 
 const COMPARE_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
-  network: { type: "string" },
-  "node-url": { type: "string" },
-  "api-key": { type: "string" },
+  ...ENDPOINT_OPTIONS,
   against: { type: "string" },
   "from-version": { type: "string" },
   "to-version": { type: "string" },
@@ -218,9 +204,7 @@ export const MAX_COMPARE_RANGE = 100_000n;
 
 const RECORD_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
-  network: { type: "string" },
-  "node-url": { type: "string" },
-  "api-key": { type: "string" },
+  ...ENDPOINT_OPTIONS,
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -231,9 +215,7 @@ const RECORD_OPTIONS = {
 const QUERY_OPTIONS = {
   ...FROM_TIME,
   ...DESCRIPTOR_OPTIONS,
-  network: { type: "string" },
-  "node-url": { type: "string" },
-  "api-key": { type: "string" },
+  ...ENDPOINT_OPTIONS,
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -242,25 +224,18 @@ const QUERY_OPTIONS = {
 } as const;
 
 const TX_OPTIONS = {
-  network: { type: "string" },
-  "node-url": { type: "string" },
-  "api-key": { type: "string" },
+  ...ENDPOINT_OPTIONS,
   timeout: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
 const CHECK_OPTIONS = {
-  network: { type: "string" },
-  "node-url": { type: "string" },
-  "api-key": { type: "string" },
+  ...ENDPOINT_OPTIONS,
   help: { type: "boolean", short: "h" },
 } as const;
 
 const CODEGEN_OPTIONS = {
-  chain: { type: "string" },
-  network: { type: "string" },
-  "node-url": { type: "string" },
-  "api-key": { type: "string" },
+  ...ENDPOINT_OPTIONS,
   out: { type: "string" },
   validators: { type: "boolean" },
   help: { type: "boolean", short: "h" },
@@ -289,10 +264,10 @@ export const USAGE = `Usage:
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
   streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
-  streamd tx <hash>
+  streamd tx <hash | digest>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
-  streamd codegen [--chain aptos|sui] [--out <file>] [--validators] (<address> | <address>::<module>)...
+  streamd codegen [--out <file>] [--validators] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
 
 tail follows matching events and prints each as one JSON line on stdout.
@@ -310,6 +285,7 @@ codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
+Every command takes --chain sui to read Sui instead of Aptos.
 
 Options:
   --account <address>    events from transactions this account sent
@@ -345,8 +321,10 @@ Options:
   --order <asc|desc>     query: oldest or newest first (default: asc)
   --out <file>           codegen, record: write to this file instead of stdout
   --validators           codegen: also write an is<Type> runtime check per type
-  --chain <name>         codegen: aptos or sui (default: aptos); with sui, --network is
-                         mainnet, testnet or devnet and --node-url a Sui gRPC URL
+  --chain <name>         aptos or sui (default: aptos); with sui, --network is mainnet,
+                         testnet or devnet, --node-url and --against are Sui gRPC URLs,
+                         tx takes a base58 digest, and --handle, --field,
+                         --creation-number, --resource and --api-key are refused
   --against <url>        compare: the second node's fullnode URL (required)
   --max-pages <n>        compare: most pages read from each node (default: 10)
   -h, --help             show this help
@@ -372,6 +350,45 @@ function apiKey(flag: string | undefined, network: Network, url: string | undefi
   if (flag !== undefined) return flag;
   if (url !== undefined || !APTOS_NETWORKS.includes(network)) return undefined;
   return process.env[API_KEY_ENV] || undefined;
+}
+
+const SUI_NETWORKS: readonly Network[] = ["mainnet", "testnet", "devnet"];
+
+function chain(raw: string | undefined): boolean {
+  if (raw === undefined || raw === "aptos") return false;
+  if (raw === "sui") return true;
+  throw new UsageError(`--chain must be aptos or sui: ${raw}`);
+}
+
+interface EndpointFlags {
+  network?: string;
+  "node-url"?: string;
+  "api-key"?: string;
+}
+
+function endpoint(values: EndpointFlags, sui: boolean): Endpoint {
+  const options: Endpoint = { network: network(values.network) };
+  const url = nodeUrl(values["node-url"]);
+  if (url !== undefined) options.nodeUrl = url;
+  if (sui) {
+    if (!SUI_NETWORKS.includes(options.network)) {
+      throw new UsageError(`--network with --chain sui must be one of ${SUI_NETWORKS.join(", ")}: ${options.network}`);
+    }
+    // Public Sui nodes take no key, so none is sent.
+    if (values["api-key"] !== undefined) throw new UsageError("--api-key is not sent to Sui nodes");
+    options.chain = "sui";
+  } else {
+    const key = apiKey(values["api-key"], options.network, url);
+    if (key !== undefined) options.apiKey = key;
+  }
+  return options;
+}
+
+function checkedAddress(raw: string, sui: boolean): string {
+  if (!sui) return wrap(() => requireAddress(raw));
+  const normal = normalizeAddress(raw);
+  if (normal === undefined) throw new UsageError(`Not a valid Sui address: ${raw}`);
+  return normal;
 }
 
 function integer(flag: string, raw: string | undefined, min: number, max: number) {
@@ -473,11 +490,22 @@ function creationNumber(raw: string): bigint {
   return number;
 }
 
+function refuseOnSui(flags: DescriptorFlags): void {
+  for (const flag of ["handle", "field", "creation-number"] as const) {
+    if (flags[flag] !== undefined) throw new UsageError(`--${flag} is not available with --chain sui: Sui has no event handles`);
+  }
+  if (flags.resource !== undefined) {
+    throw new UsageError("--resource is not available with --chain sui: no Sui source serves resource changes");
+  }
+}
+
 function descriptor(
   command: string,
   flags: DescriptorFlags,
   types: string[],
+  sui = false,
 ): EventDescriptor {
+  if (sui) refuseOnSui(flags);
   const number = flags["creation-number"];
   if (flags.resource !== undefined || number !== undefined) {
     if (flags.resource !== undefined && number !== undefined) {
@@ -489,7 +517,7 @@ function descriptor(
       throw new UsageError(`${flag} cannot be combined with --handle or --field`);
     }
     if (types.length > 0) throw new UsageError(`event types cannot be combined with ${flag}`);
-    const accountAddress = wrap(() => requireAddress(flags.account!));
+    const accountAddress = checkedAddress(flags.account, false);
     return flags.resource !== undefined
       ? { kind: "resource", accountAddress, resourceType: wrap(() => requireResourceType(flags.resource)) as MoveEventType }
       : { kind: "handle", accountAddress, creationNumber: creationNumber(number!) };
@@ -510,7 +538,7 @@ function descriptor(
     };
   }
   if (flags.account !== undefined) {
-    const accountAddress = wrap(() => requireAddress(flags.account!));
+    const accountAddress = checkedAddress(flags.account, sui);
     return eventTypes.length > 0
       ? { kind: "account", accountAddress, eventTypes }
       : { kind: "account", accountAddress };
@@ -521,10 +549,8 @@ function descriptor(
   return { kind: "module", eventType: eventTypes as MoveEventType[] };
 }
 
-interface SourceFlags extends DescriptorFlags {
-  network?: string;
-  "node-url"?: string;
-  "api-key"?: string;
+interface SourceFlags extends DescriptorFlags, EndpointFlags {
+  chain?: string;
   "from-time"?: string;
   "from-version"?: string;
   "poll-interval"?: string;
@@ -537,17 +563,14 @@ function startTime(values: { "from-time"?: string; "from-version"?: string }): b
 }
 
 function source(command: string, values: SourceFlags, positionals: string[]): SourceOptions {
+  const sui = chain(values.chain);
   const options: SourceOptions = {
-    descriptor: descriptor(command, values, positionals),
-    network: network(values.network),
+    descriptor: descriptor(command, values, positionals, sui),
+    ...endpoint(values, sui),
   };
-  const url = nodeUrl(values["node-url"]);
   const fromVersion = version(values["from-version"]);
   const fromTime = startTime(values);
   const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
-  if (url !== undefined) options.nodeUrl = url;
-  const key = apiKey(values["api-key"], options.network, url);
-  if (key !== undefined) options.apiKey = key;
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
   if (fromTime !== undefined) options.fromTime = fromTime;
   if (pollInterval !== undefined) options.pollInterval = pollInterval;
@@ -635,17 +658,14 @@ function parseRecord(args: string[]): ParsedCommand {
   }
   if (toVersion < fromVersion) throw new UsageError("--to-version must not be below --from-version");
   if (values.out === "") throw new UsageError("--out must not be empty");
+  const sui = chain(values.chain);
   const options: RecordOptions = {
-    descriptor: descriptor("record", values, positionals),
-    network: network(values.network),
+    descriptor: descriptor("record", values, positionals, sui),
+    ...endpoint(values, sui),
     fromVersion,
     toVersion,
   };
-  const url = nodeUrl(values["node-url"]);
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
-  if (url !== undefined) options.nodeUrl = url;
-  const key = apiKey(values["api-key"], options.network, url);
-  if (key !== undefined) options.apiKey = key;
   if (limit !== undefined) options.limit = limit;
   if (values.out !== undefined) options.out = values.out;
   return { command: "record", options };
@@ -669,17 +689,14 @@ function parseCompare(args: string[]): ParsedCommand {
   if (toVersion - fromVersion + 1n > MAX_COMPARE_RANGE) {
     throw new UsageError(`compare covers at most ${MAX_COMPARE_RANGE} versions at a time`);
   }
+  const sui = chain(values.chain);
   const options: CompareOptions = {
-    descriptor: descriptor("compare", values, positionals),
-    network: network(values.network),
+    descriptor: descriptor("compare", values, positionals, sui),
+    ...endpoint(values, sui),
     against: values.against,
     fromVersion,
     toVersion,
   };
-  const url = nodeUrl(values["node-url"]);
-  if (url !== undefined) options.nodeUrl = url;
-  const key = apiKey(values["api-key"], options.network, url);
-  if (key !== undefined) options.apiKey = key;
   const maxPages = integer("max-pages", values["max-pages"], 1, 1000);
   if (maxPages !== undefined) options.maxPages = maxPages;
   const limit = integer("limit", values.limit, 1, 1000);
@@ -703,24 +720,23 @@ function parseQuery(args: string[]): ParsedCommand {
   }
   const order = values.order ?? "asc";
   if (order !== "asc" && order !== "desc") throw new UsageError(`--order must be asc or desc: ${order}`);
+  const sui = chain(values.chain);
   const options: QueryOptions = {
-    descriptor: descriptor("query", values, positionals),
-    network: network(values.network),
+    descriptor: descriptor("query", values, positionals, sui),
+    ...endpoint(values, sui),
     toVersion,
     order,
   };
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
   if (fromTime !== undefined) options.fromTime = fromTime;
-  const url = nodeUrl(values["node-url"]);
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
-  if (url !== undefined) options.nodeUrl = url;
-  const key = apiKey(values["api-key"], options.network, url);
-  if (key !== undefined) options.apiKey = key;
   if (limit !== undefined) options.limit = limit;
   return { command: "query", options };
 }
 
 const TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/;
+// Base58 of 32 bytes; SuiClient checks the exact length.
+const SUI_DIGEST = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 function parseTx(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
@@ -729,13 +745,11 @@ function parseTx(args: string[]): ParsedCommand {
   if (values.help) return { command: "help" };
   const [hash, ...rest] = positionals;
   if (hash === undefined || rest.length > 0) throw new UsageError("tx needs one transaction hash");
-  if (!TRANSACTION_HASH.test(hash)) throw new UsageError(`not a transaction hash: ${hash}`);
-  const options: TxOptions = { hash, network: network(values.network) };
-  const url = nodeUrl(values["node-url"]);
+  const sui = chain(values.chain);
+  if (sui && !SUI_DIGEST.test(hash)) throw new UsageError(`not a Sui transaction digest: ${hash}`);
+  if (!sui && !TRANSACTION_HASH.test(hash)) throw new UsageError(`not a transaction hash: ${hash}`);
+  const options: TxOptions = { hash, ...endpoint(values, sui) };
   const timeout = integer("timeout", values.timeout, 0, MAX_TIMEOUT);
-  if (url !== undefined) options.nodeUrl = url;
-  const key = apiKey(values["api-key"], options.network, url);
-  if (key !== undefined) options.apiKey = key;
   if (timeout !== undefined) options.timeout = timeout;
   return { command: "tx", options };
 }
@@ -746,22 +760,16 @@ function parseCheck(args: string[]): ParsedCommand {
   );
   if (values.help) return { command: "help" };
   if (positionals.length === 0) throw new UsageError("check needs at least one event type");
+  const sui = chain(values.chain);
   const options: CheckOptions = {
-    descriptor: descriptor("check", {}, positionals) as ModuleEventDescriptor,
-    network: network(values.network),
+    descriptor: descriptor("check", {}, positionals, sui) as ModuleEventDescriptor,
+    ...endpoint(values, sui),
   };
-  const url = nodeUrl(values["node-url"]);
-  if (url !== undefined) options.nodeUrl = url;
-  const key = apiKey(values["api-key"], options.network, url);
-  if (key !== undefined) options.apiKey = key;
   return { command: "check", options };
 }
 
 function moduleRef(raw: string, sui: boolean): ModuleRef {
-  const check = (address: string) => {
-    if (!sui) wrap(() => requireAddress(address));
-    else if (normalizeAddress(address) === undefined) throw new UsageError(`Not a valid Sui address: ${address}`);
-  };
+  const check = (value: string) => void checkedAddress(value, sui);
   if (!raw.includes("::")) {
     check(raw);
     return { address: raw };
@@ -774,14 +782,6 @@ function moduleRef(raw: string, sui: boolean): ModuleRef {
   return { address, module };
 }
 
-const SUI_NETWORKS: readonly Network[] = ["mainnet", "testnet", "devnet"];
-
-function chain(raw: string | undefined): boolean {
-  if (raw === undefined || raw === "aptos") return false;
-  if (raw === "sui") return true;
-  throw new UsageError(`--chain must be aptos or sui: ${raw}`);
-}
-
 function parseCodegen(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: CODEGEN_OPTIONS, allowPositionals: true, strict: true }),
@@ -791,21 +791,8 @@ function parseCodegen(args: string[]): ParsedCommand {
   const sui = chain(values.chain);
   const options: CodegenOptions = {
     modules: positionals.map((p) => moduleRef(p, sui)),
-    network: network(values.network),
+    ...endpoint(values, sui),
   };
-  const url = nodeUrl(values["node-url"]);
-  if (url !== undefined) options.nodeUrl = url;
-  if (sui) {
-    if (!SUI_NETWORKS.includes(options.network)) {
-      throw new UsageError(`--network with --chain sui must be one of ${SUI_NETWORKS.join(", ")}: ${options.network}`);
-    }
-    // Public Sui nodes take no key, so none is sent.
-    if (values["api-key"] !== undefined) throw new UsageError("--api-key is not sent to Sui nodes");
-    options.chain = "sui";
-  } else {
-    const key = apiKey(values["api-key"], options.network, url);
-    if (key !== undefined) options.apiKey = key;
-  }
   if (values.out !== undefined) {
     if (values.out === "") throw new UsageError("--out must not be empty");
     options.out = values.out;
