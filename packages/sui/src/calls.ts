@@ -81,14 +81,16 @@ function toCall(call: MoveCall, inputs: Input[], commands: number): EntryFunctio
 export function callsOf(transaction: CallTransaction | undefined): (packageId: string | undefined, module: string | undefined) => EntryFunctionCall | undefined {
   const data = transaction?.kind?.data;
   if (data?.oneofKind !== "programmableTransaction" || data.programmableTransaction === undefined) return () => undefined;
-  const { inputs = [], commands = [] } = data.programmableTransaction;
+  const { inputs, commands } = data.programmableTransaction;
+  if (!Array.isArray(commands)) return () => undefined;
   const byModule = new Map<string, EntryFunctionCall | undefined>();
-  for (const { command } of commands) {
+  for (const entry of commands) {
+    const command = entry?.command;
     const call = command?.oneofKind === "moveCall" ? command.moveCall : undefined;
     if (typeof call?.package !== "string" || typeof call.module !== "string") continue;
     const key = `${normalizeSuiAddress(call.package)}::${call.module}`;
     // A second command on the same module makes every event of that module ambiguous.
-    byModule.set(key, byModule.has(key) ? undefined : toCall(call, inputs, commands.length));
+    byModule.set(key, byModule.has(key) ? undefined : toCall(call, Array.isArray(inputs) ? inputs : [], commands.length));
   }
   return (packageId, module) =>
     typeof packageId !== "string" || typeof module !== "string" ? undefined : byModule.get(`${normalizeSuiAddress(packageId)}::${module}`);

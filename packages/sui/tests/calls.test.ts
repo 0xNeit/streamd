@@ -52,6 +52,9 @@ describe("callsOf", () => {
     expect(callsOf({ kind: { data: { oneofKind: "consensusCommitPrologue" } } })(POOL, "pool")).toBeUndefined();
     expect(callsOf(undefined)(POOL, "pool")).toBeUndefined();
     expect(callsOf({})(POOL, "pool")).toBeUndefined();
+    const broken = { kind: { data: { oneofKind: "programmableTransaction", programmableTransaction: { commands: "x" as never } } } };
+    expect(callsOf(broken)(POOL, "pool")).toBeUndefined();
+    expect(callsOf(ptb([null as never, swap], "x" as never))(POOL, "pool")?.function).toBe(`${POOL}::pool::swap`);
   });
 
   it("drops only the malformed command", () => {
@@ -66,6 +69,7 @@ describe("callsOf", () => {
     ];
     const calls = callsOf(ptb([swap, ...bad]));
     expect(calls(POOL, "pool")?.function).toBe(`${POOL}::pool::swap`);
-    for (const module of ["a", "b", "c", "d", "e", "f"]) expect(calls(POOL, module)).toBeUndefined();
+    expect(calls("0xzz", "a")).toBeUndefined();
+    for (const module of ["b", "c", "d", "e", "f"]) expect(calls(POOL, module)).toBeUndefined();
   });
 });

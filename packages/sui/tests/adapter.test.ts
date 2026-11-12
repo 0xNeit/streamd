@@ -517,6 +517,18 @@ describe("SuiAdapter entry functions", () => {
     expect((err as Error).message).toContain("D2t0");
   });
 
+  it("reads more than 200 transactions in batches of 200, and maps a failed read", async () => {
+    const many: FakeEvent[] = Array.from({ length: 201 }, (_, i) => ({ cp: 3n, ti: BigInt(i), ei: 0, type: SWAP, ...from }));
+    const { client, batches } = withCalls(fakeLedger([1, 3, 2, 201], many).client, Object.fromEntries(many.map((e) => [`D3t${e.ti}`, ptb([swap], inputs)])));
+    const page = await new SuiAdapter(client).fetchEvents(swaps, { fromVersion: 0n, limit: 500 });
+    expect(batches.map((b) => b.length)).toEqual([200, 1]);
+    expect(page.events.every((e) => e.entryFunction !== undefined)).toBe(true);
+    const failing = withCalls(fakeLedger(SIZES, EVENTS_WITH).client, PTBS).client;
+    failing.ledgerService.batchGetTransactions = async () => { throw Object.assign(new Error("slow down"), { code: "RESOURCE_EXHAUSTED" }); };
+    const err = await new SuiAdapter(failing).fetchEvents(swaps, { fromVersion: 0n }).catch((e: unknown) => e);
+    expect((err as StreamdNetworkError).statusCode).toBe(429);
+  });
+
   it("attaches calls to transaction lookups and simulations from the same response", async () => {
     const tx: FakeTransaction = { digest: digest(1), cp: 1n, ti: 2n, ptb: ptb([swap], inputs), events: [{ type: SWAP, ...from }, { type: STAKE }] };
     const found = await new SuiAdapter(fakeLedger(SIZES, [], undefined, 0n, [tx]).client).getTransactionEvents(digest(1));
