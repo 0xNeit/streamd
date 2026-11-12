@@ -1,3 +1,4 @@
+import { Transaction } from "@mysten/sui/transactions";
 import { toBase58 } from "@mysten/sui/utils";
 import type { SuiLedgerClient } from "../src/index.js";
 
@@ -128,4 +129,47 @@ export function fakeLedger(
     },
   };
   return { client: { ledgerService: ledger }, calls };
+}
+
+/** Built transaction bytes with every input and the gas resolved, so building needs no node. */
+export async function transactionBytes(amount = 1_000_000_000n): Promise<Uint8Array> {
+  const tx = new Transaction();
+  tx.setSender(LONG("a11ce"));
+  tx.setGasPrice(1000n);
+  tx.setGasBudget(10_000_000n);
+  tx.setGasPayment([{ objectId: LONG("9a5"), version: "1", digest: digest(4) }]);
+  const [coin] = tx.splitCoins(tx.gas, [tx.pure.u64(amount)]);
+  tx.transferObjects([coin!], tx.pure.address(LONG("b0b")));
+  return tx.build();
+}
+
+export interface FakeSimulation {
+  error?: string;
+  events: { type: string; sender?: string; amount?: string }[];
+}
+
+/** `client` with a `transactionExecutionService` answering every simulation with `result`, or throwing `fail()`. */
+export function withSimulator(client: SuiLedgerClient, result: FakeSimulation, fail?: () => unknown) {
+  const requests: unknown[] = [];
+  const json = (amount = "1") => ({ kind: { oneofKind: "structValue" as const, structValue: { fields: { amount: str(amount) } } } });
+  const simulating: SuiLedgerClient = {
+    ...client,
+    transactionExecutionService: {
+      async simulateTransaction(input) {
+        requests.push(input);
+        const err = fail?.();
+        if (err !== undefined) throw err;
+        const status = result.error === undefined ? { success: true } : { success: false, error: { description: result.error } };
+        return {
+          response: {
+            transaction: {
+              effects: { status },
+              events: { events: result.events.map((e) => ({ eventType: e.type, ...(e.sender !== undefined && { sender: e.sender }), json: json(e.amount) })) },
+            },
+          },
+        };
+      },
+    },
+  };
+  return { client: simulating, requests };
 }
