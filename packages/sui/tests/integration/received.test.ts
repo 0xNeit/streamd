@@ -15,7 +15,7 @@ describe.skipIf(!enabled)("SuiAdapter received account descriptors (mainnet)", (
 
   it("delivers the events of a transaction the address only received, which the signed walk misses", async () => {
     using sui = new SuiClient({ sui: grpc });
-    const records = await sui.getTransfers({ fromVersion: -600n, toVersion: "head" });
+    const records = await sui.getTransfers({ fromVersion: -5000n, toVersion: "head" });
     let found: { recipient: string; signer: string; version: bigint; events: StreamdEvent[] } | undefined;
     for (const r of records) {
       if (r.data.to === undefined || r.data.to === r.sender) continue;
