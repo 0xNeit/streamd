@@ -22,6 +22,7 @@ import type {
 import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
 import { generateEventTypes } from "./codegen.js";
+import { SUI_DIALECT, suiCodegen } from "./sui-abi.js";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
 import { runQuery } from "./query.js";
@@ -203,7 +204,23 @@ function compare(options: CompareOptions): Promise<number> {
   });
 }
 
+// Loaded only here, so Aptos users need no Sui SDK.
+async function suiSource(options: CodegenOptions): Promise<string> {
+  const [{ SuiGrpcClient }, { networks: suiNetworks }] = await Promise.all([import("@mysten/sui/grpc"), import("@streamd/sui")]);
+  const preset = suiNetworks[options.network as keyof typeof suiNetworks];
+  const grpc = new SuiGrpcClient({ ...preset, ...(options.nodeUrl !== undefined && { baseUrl: options.nodeUrl }) });
+  const { targets, load } = suiCodegen(grpc.movePackageService);
+  return generateEventTypes(await targets(options.modules), load, { dialect: SUI_DIALECT, validators: options.validators === true });
+}
+
+async function write(options: CodegenOptions, source: string): Promise<number> {
+  if (options.out === undefined) process.stdout.write(source);
+  else await writeFile(options.out, source);
+  return 0;
+}
+
 async function codegen(options: CodegenOptions): Promise<number> {
+  if (options.chain === "sui") return write(options, await suiSource(options));
   const config = aptosConfig(options);
   // Both parts were validated as an address and an identifier before reaching the path.
   const load = async (address: string, module: string): Promise<ModuleAbi> => {
@@ -244,10 +261,7 @@ async function codegen(options: CodegenOptions): Promise<number> {
     } while (start !== undefined);
     return abis;
   };
-  const source = await generateEventTypes(options.modules, load, { list, validators: options.validators === true });
-  if (options.out === undefined) process.stdout.write(source);
-  else await writeFile(options.out, source);
-  return 0;
+  return write(options, await generateEventTypes(options.modules, load, { list, validators: options.validators === true }));
 }
 
 async function main(argv: string[]): Promise<number> {

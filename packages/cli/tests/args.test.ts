@@ -293,7 +293,36 @@ describe("parseCommand codegen", () => {
     [["codegen", "--out", "", "0x1::coin"], /--out must not be empty/],
     [["codegen", "--network", "moon", "0x1::coin"], /--network must be one of/],
     [["codegen", "--limit", "1", "0x1::coin"], /Unknown option/],
+    [["codegen", "--chain", "evm", "0x1::coin"], /--chain must be aptos or sui: evm/],
+    [["codegen", "--chain", "sui", "nothex"], /Not a valid Sui address: nothex/],
+    [["codegen", "--chain", "sui", "0x2::co-in"], /expected <address> or <address>::<module>/],
+    [["codegen", "--chain", "sui", "--network", "movement-mainnet", "0x2"], /--network with --chain sui must be one of mainnet, testnet, devnet/],
+    [["codegen", "--chain", "sui", "--api-key", "k", "0x2"], /--api-key is not sent to Sui nodes/],
   ])("rejects %j", (argv, message) => rejects(argv, message));
+
+  it("takes --chain sui with Sui networks and a gRPC URL, sending no key", () => {
+    const saved = process.env.APTOS_API_KEY;
+    process.env.APTOS_API_KEY = "from-env";
+    try {
+      expect(parseCommand(["codegen", "--chain", "sui", "--validators", "0x2::kiosk", "0x3"])).toEqual({
+        command: "codegen",
+        options: { chain: "sui", modules: [{ address: "0x2", module: "kiosk" }, { address: "0x3" }], network: "mainnet", validators: true },
+      });
+      expect(
+        parseCommand(["codegen", "--chain", "sui", "--network", "testnet", "--node-url", "https://sui.example:443", "0x2"]),
+      ).toEqual({
+        command: "codegen",
+        options: { chain: "sui", modules: [{ address: "0x2" }], network: "testnet", nodeUrl: "https://sui.example:443" },
+      });
+      expect(parseCommand(["codegen", "--chain", "aptos", "0x1::coin"])).toEqual({
+        command: "codegen",
+        options: { modules: [{ address: ADDR, module: "coin" }], network: "mainnet", apiKey: "from-env" },
+      });
+    } finally {
+      if (saved === undefined) delete process.env.APTOS_API_KEY;
+      else process.env.APTOS_API_KEY = saved;
+    }
+  });
 });
 
 describe("parseCommand store", () => {
