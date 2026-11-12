@@ -1018,6 +1018,40 @@ export interface TransactionEvents {
   events: StreamdEvent[];
 }
 
+/** Options for a chain client's `eventsOf`. */
+export interface EventsOfOptions {
+  /** Keep only events satisfying this predicate, after `decode`; a rejection rejects the call. */
+  where?: EventPredicate;
+  /** `data` fields, by path, turned from decimal strings into `bigint`, as `EventFilter.decode`. */
+  decode?: readonly string[];
+  /**
+   * How long to wait for the transaction to be committed, in ms (default
+   * 20000), before rejecting with `StreamdTimeoutError`.
+   */
+  timeout?: number;
+  /** Aborting rejects with the signal's `reason` and stops looking. */
+  signal?: AbortSignal;
+}
+
+/** Options for a chain client's `expectEvents`. */
+export type ExpectEventsOptions = Pick<EventsOfOptions, "decode" | "timeout" | "signal">;
+
+/**
+ * Assertions on one transaction's events, from a chain client's `expectEvents`.
+ * Each waits for the transaction as `eventsOf` does, then narrows its events
+ * by the descriptor, the expectation's `decode`, then `where`. A failed
+ * assertion rejects with `StreamdAssertionError`.
+ */
+export interface EventExpectation {
+  /** Resolves with the matching events, in transaction order; rejects when there are none. */
+  toEmit<TData = unknown>(
+    descriptor: EventDescriptor<TData>,
+    where?: EventPredicate,
+  ): Promise<EventOf<TData>[]>;
+  /** Resolves when no event matches; rejects naming the ones that do. */
+  notToEmit(descriptor: EventDescriptor, where?: EventPredicate): Promise<void>;
+}
+
 /** Block heights an adapter can serve, both inclusive, as `EventAdapter.getBlockHeights` reports them. */
 export interface BlockHeights {
   oldest: bigint;

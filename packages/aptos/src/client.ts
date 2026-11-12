@@ -1,5 +1,5 @@
 import { Aptos, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, requireTransactionHash } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, expectEvents, requireTransactionHash } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -10,7 +10,7 @@ import type {
   Subscription,
 } from "@streamd/core";
 import { startBalances } from "./balances.js";
-import { expectEvents, expectPreview } from "./expect.js";
+import { expectPreview } from "./expect.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
 import { addressOrName, resolveName } from "./names.js";
 import { eventsOf, previewEvents } from "./transaction.js";
