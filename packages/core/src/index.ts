@@ -21,7 +21,16 @@ export { RequestLimiter } from "./limiter.js";
 export { UNSIGNED_INTEGER, fieldDecoder } from "./decode.js";
 export { descriptorKey, onAbort, raceAbort, sleep } from "./utils.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
-export { committedEvents, eventsOf, expectEvents, narrower, transactionExpectation } from "./transaction.js";
+export {
+  committedEvents,
+  eventsOf,
+  expectEvents,
+  expectPreview,
+  narrower,
+  previewEvents,
+  simulatedEvents,
+  transactionExpectation,
+} from "./transaction.js";
 export {
   StreamdAssertionError,
   StreamdError,

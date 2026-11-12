@@ -8,6 +8,7 @@ import type {
   ExpectEventsOptions,
   StreamdEvent,
   TransactionEvents,
+  TransactionSimulation,
 } from "./types.js";
 import type { RequestLimiter } from "./limiter.js";
 import { StreamdAssertionError, StreamdError, StreamdTimeoutError, StreamdTransactionError } from "./errors.js";
@@ -225,6 +226,60 @@ export function expectEvents(
     `transaction ${transactionHash}`,
     transactionHash,
     (descriptor) => committedEvents(adapter, limiter, pollInterval, transactionHash, descriptor, options),
+    options,
+  );
+}
+
+/**
+ * Every event `simulation` would emit, through the adapter's
+ * `simulateTransactionEvents`, or a `StreamdTransactionError` when the
+ * simulation fails. `simulation` must already be checked by the chain's own
+ * rules; `descriptor` only routes the call.
+ */
+export async function simulatedEvents(
+  adapter: EventAdapter,
+  limiter: RequestLimiter,
+  simulation: TransactionSimulation,
+  descriptor: EventDescriptor | undefined,
+): Promise<StreamdEvent[]> {
+  if (adapter.simulateTransactionEvents === undefined) {
+    throw new StreamdError("previewEvents needs an adapter that implements simulateTransactionEvents");
+  }
+  const found = await limiter.run(() => adapter.simulateTransactionEvents!(simulation, descriptor));
+  if (!found.success) {
+    throw new StreamdTransactionError(
+      `Simulated transaction failed at version ${found.version}: ${found.vmStatus}`,
+      undefined,
+      found.version,
+      found.vmStatus,
+    );
+  }
+  return found.events;
+}
+
+/** The events `simulation` would emit, narrowed as `eventsOf` narrows them; input is refused before the call. */
+export async function previewEvents(
+  adapter: EventAdapter,
+  limiter: RequestLimiter,
+  simulation: TransactionSimulation,
+  descriptor: EventDescriptor | undefined,
+  options: Pick<EventsOfOptions, "decode" | "where">,
+): Promise<StreamdEvent[]> {
+  const narrow = narrower(descriptor, options);
+  return narrow(await simulatedEvents(adapter, limiter, simulation, descriptor));
+}
+
+/** The assertions behind a chain client's `expectPreview`; each one simulates afresh. */
+export function expectPreview(
+  adapter: EventAdapter,
+  limiter: RequestLimiter,
+  simulation: TransactionSimulation,
+  options: Pick<ExpectEventsOptions, "decode">,
+): EventExpectation {
+  return transactionExpectation(
+    "the simulated transaction",
+    undefined,
+    (descriptor) => simulatedEvents(adapter, limiter, simulation, descriptor),
     options,
   );
 }
