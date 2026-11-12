@@ -1,5 +1,5 @@
 import { SuiGrpcClient, type SuiGrpcClientOptions } from "@mysten/sui/grpc";
-import { StreamdClient, StreamdError, checkTimeout, eventsOf, expectEvents } from "@streamd/core";
+import { StreamdClient, StreamdError, checkTimeout, eventsOf, expectEvents, expectPreview, previewEvents } from "@streamd/core";
 import type {
   EventAdapter,
   EventDescriptor,
@@ -9,7 +9,7 @@ import type {
   ExpectEventsOptions,
   StreamdConfig,
 } from "@streamd/core";
-import { SuiAdapter, requireDigest, suiDescriptor } from "./adapter.js";
+import { SuiAdapter, requireDigest, requireTransactionBytes, suiDescriptor } from "./adapter.js";
 
 /** `StreamdClient`'s config, with the Sui gRPC client the Sui methods read through; `adapter` defaults to a `SuiAdapter` over it. */
 export type SuiClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -20,7 +20,8 @@ export type SuiClientConfig = Omit<StreamdConfig, "adapter"> & {
 
 /**
  * A `StreamdClient` for Sui: everything the chain-neutral client does, over a
- * `SuiAdapter` by default, plus transaction lookups and the assertions on them.
+ * `SuiAdapter` by default, plus transaction lookups, simulations and the
+ * assertions on them.
  */
 export class SuiClient extends StreamdClient {
   protected readonly sui: SuiGrpcClient;
@@ -78,6 +79,43 @@ export class SuiClient extends StreamdClient {
     const badTimeout = checkTimeout(options.timeout);
     if (badTimeout !== undefined) throw badTimeout;
     const inner = expectEvents(this.adapter, this.limiter, this.defaults.pollInterval!, digest, options);
+    return {
+      toEmit: async (descriptor, where) => inner.toEmit(suiDescriptor(descriptor) as typeof descriptor, where),
+      notToEmit: async (descriptor, where) => inner.notToEmit(suiDescriptor(descriptor), where),
+    };
+  }
+
+  /**
+   * Simulate built, unsigned transaction `bytes` (from `await tx.build({ client })`)
+   * and resolve with the events they would emit if run now, narrowed like
+   * `eventsOf`. Nothing is signed or submitted. The events carry the next
+   * version the chain would give a transaction and no `transactionHash`.
+   * Goes through `EventAdapter.simulateTransactionEvents`.
+   *
+   * Rejects with `StreamdTransactionError` (carrying the execution error as
+   * `vmStatus`) when the simulation fails, and with any simulation error as it is.
+   */
+  async previewEvents<TData = unknown>(
+    bytes: Uint8Array,
+    descriptor?: EventDescriptor<TData>,
+    options: Pick<EventsOfOptions, "decode" | "where"> = {},
+  ): Promise<EventOf<TData>[]> {
+    const transaction = requireTransactionBytes(bytes);
+    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor);
+    const events = await previewEvents(this.adapter, this.limiter, { transaction }, normal, options);
+    return events as unknown as EventOf<TData>[];
+  }
+
+  /**
+   * Assert what built, unsigned transaction `bytes` would emit, with nothing
+   * signed or submitted: `toEmit` and `notToEmit` as on `expectEvents`, each
+   * answered by its own simulation. A failed simulation rejects with
+   * `StreamdTransactionError`; a failed assertion with `StreamdAssertionError`,
+   * whose `transactionHash` is `undefined`. Throws at once on bytes that are
+   * not a built transaction.
+   */
+  expectPreview(bytes: Uint8Array, options: Pick<ExpectEventsOptions, "decode"> = {}): EventExpectation {
+    const inner = expectPreview(this.adapter, this.limiter, { transaction: requireTransactionBytes(bytes) }, options);
     return {
       toEmit: async (descriptor, where) => inner.toEmit(suiDescriptor(descriptor) as typeof descriptor, where),
       notToEmit: async (descriptor, where) => inner.notToEmit(suiDescriptor(descriptor), where),

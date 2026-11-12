@@ -1,6 +1,17 @@
+import { bcs } from "@mysten/sui/bcs";
 import { isValidTransactionDigest, normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
-import type { BlockHeights, BlockInfo, EventAdapter, EventDescriptor, EventPage, FetchOptions, StreamdEvent, TransactionEvents } from "@streamd/core";
+import type {
+  BlockHeights,
+  BlockInfo,
+  EventAdapter,
+  EventDescriptor,
+  EventPage,
+  FetchOptions,
+  StreamdEvent,
+  TransactionEvents,
+  TransactionSimulation,
+} from "@streamd/core";
 import { toJson, type ProtoValue } from "./json.js";
 
 /** The `ListEvents` filter: terms are ORed, the literals inside one are ANDed. */
@@ -62,6 +73,19 @@ export interface SuiLedgerClient {
     getTransaction(input: { digest: string; readMask: { paths: string[] } }): PromiseLike<{ response: { transaction?: ExecutedTransaction } }>;
     getServiceInfo(input: object): PromiseLike<{ response: { checkpointHeight?: bigint; lowestAvailableCheckpoint?: bigint } }>;
   };
+  /** Needed only for `simulateTransactionEvents`. */
+  transactionExecutionService?: {
+    simulateTransaction(input: {
+      transaction: { bcs: { value: Uint8Array } };
+      readMask: { paths: string[] };
+      checks: number;
+    }): PromiseLike<{ response: { transaction?: ExecutedTransaction } }>;
+  };
+}
+
+/** A transaction to simulate on Sui: the BCS `TransactionData` bytes `await tx.build({ client })` returns. */
+export interface SuiTransactionSimulation extends TransactionSimulation {
+  transaction: Uint8Array;
 }
 
 const ASCENDING = 0;
@@ -71,6 +95,8 @@ const DEFAULT_LIMIT = 25;
 const KEPT_SUMMARIES = 4096;
 const EVENT_FIELDS = ["event_type", "sender", "json", "checkpoint", "transaction_digest", "transaction_index", "event_index"];
 const TRANSACTION_FIELDS = ["digest", "checkpoint", "effects.status", "events.events.event_type", "events.events.sender", "events.events.json"];
+const SIMULATION_FIELDS = ["transaction.effects.status", "transaction.events.events.event_type", "transaction.events.events.sender", "transaction.events.events.json"];
+const CHECKS_ENABLED = 0;
 const SUMMARY_FIELDS = ["sequence_number", "summary.total_network_transactions", "summary.timestamp"];
 
 interface Summary {
@@ -163,6 +189,25 @@ export function requireDigest(value: unknown): string {
   return value;
 }
 
+/** Built, unsigned Sui transaction bytes: a BCS `TransactionData`, checked by parsing it. */
+export function requireTransactionBytes(value: unknown): Uint8Array {
+  if (value instanceof Uint8Array) {
+    try {
+      bcs.TransactionData.parse(value);
+      return value;
+    } catch {
+      // Falls through to the refusal below.
+    }
+  }
+  throw new StreamdError("Not built Sui transaction bytes: pass the Uint8Array from `await tx.build({ client })`");
+}
+
+function statusOf(found: ExecutedTransaction | undefined, what: string): { success: boolean; vmStatus: string } {
+  const status = found?.effects?.status;
+  if (status?.success === undefined) throw new StreamdError(`Sui node returned ${what} without its status`);
+  return { success: status.success, vmStatus: status.success ? "success" : status.error?.description ?? "failure" };
+}
+
 const pruned = (err: unknown) => err instanceof StreamdNetworkError && err.statusCode === 410;
 
 const toBase64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
@@ -180,6 +225,7 @@ const fromBase64 = (text: string) => {
  */
 export class SuiAdapter implements EventAdapter {
   private readonly ledger: SuiLedgerClient["ledgerService"];
+  private readonly executor: SuiLedgerClient["transactionExecutionService"];
   private readonly summaries = new Map<bigint, Promise<Summary>>();
 
   constructor(client: SuiLedgerClient) {
@@ -187,6 +233,7 @@ export class SuiAdapter implements EventAdapter {
       throw new StreamdError("SuiAdapter needs a SuiGrpcClient from @mysten/sui/grpc");
     }
     this.ledger = client.ledgerService;
+    this.executor = client.transactionExecutionService;
   }
 
   /** The last transaction of the newest checkpoint. */
@@ -326,20 +373,43 @@ export class SuiAdapter implements EventAdapter {
     }
     const checkpoint = found?.checkpoint;
     if (checkpoint === undefined) return undefined;
-    const status = found!.effects?.status;
-    if (status?.success === undefined) throw new StreamdError(`Sui node returned transaction ${digest} without its status`);
+    const status = statusOf(found, `transaction ${digest}`);
     const transactionIndex = await this.positionIn(checkpoint, digest);
     const events = await Promise.all(
       (found!.events?.events ?? []).map((raw, eventIndex) =>
         this.toEvent({ ...raw, checkpoint, transactionIndex, eventIndex, transactionDigest: digest }),
       ),
     );
-    return {
-      version: (await this.base(checkpoint)) + transactionIndex,
-      success: status.success,
-      vmStatus: status.success ? "success" : status.error?.description ?? "failure",
-      events,
-    };
+    return { version: (await this.base(checkpoint)) + transactionIndex, ...status, events };
+  }
+
+  /**
+   * Simulates the built, unsigned transaction bytes in `simulation`, which
+   * needs no signature and commits nothing. A simulated transaction has no
+   * checkpoint, so `version` is the next global transaction number, one past
+   * the head at the time: the earliest it could commit at. Events carry no
+   * `transactionHash` or `timestamp`. `vmStatus` is as `getTransactionEvents`
+   * reports it. A request the node refuses, such as a gas coin the sender
+   * does not own, fails as a `StreamdNetworkError`.
+   */
+  async simulateTransactionEvents(simulation: SuiTransactionSimulation, _descriptor?: EventDescriptor): Promise<TransactionEvents> {
+    const value = requireTransactionBytes(simulation?.transaction);
+    const executor = this.executor;
+    if (executor === undefined) {
+      throw new StreamdError("simulateTransactionEvents needs the SuiGrpcClient's transactionExecutionService");
+    }
+    let found: ExecutedTransaction | undefined;
+    let next: bigint;
+    try {
+      [{ response: { transaction: found } }, { total: next }] = await Promise.all([
+        executor.simulateTransaction({ transaction: { bcs: { value } }, readMask: { paths: SIMULATION_FIELDS }, checks: CHECKS_ENABLED }),
+        this.latest(),
+      ]);
+    } catch (err) {
+      networkError(err);
+    }
+    const events = (found?.events?.events ?? []).map((raw, eventIndex) => this.shaped(raw, next, eventIndex));
+    return { version: next, ...statusOf(found, "a simulation"), events };
   }
 
   private async positionIn(checkpoint: bigint, digest: string): Promise<bigint> {
@@ -363,16 +433,16 @@ export class SuiAdapter implements EventAdapter {
       throw new StreamdError("Sui node returned an event without its position or type");
     }
     const [base, own] = await Promise.all([this.base(checkpoint), this.summary(checkpoint)]);
-    const event: StreamdEvent = {
-      type: eventType(type),
-      data: toJson(raw.json),
-      version: base + transactionIndex,
-      sequenceNumber: 0n,
-      eventIndex,
-    };
+    const event = this.shaped(raw, base + transactionIndex, eventIndex);
     if (raw.transactionDigest !== undefined) event.transactionHash = raw.transactionDigest;
-    if (raw.sender !== undefined && raw.sender !== "") event.sender = normalizeSuiAddress(raw.sender);
     if (own.timestamp !== undefined) event.timestamp = own.timestamp;
+    return event;
+  }
+
+  private shaped(raw: SuiEvent, version: bigint, eventIndex: number): StreamdEvent {
+    if (raw.eventType === undefined) throw new StreamdError("Sui node returned an event without its type");
+    const event: StreamdEvent = { type: eventType(raw.eventType), data: toJson(raw.json), version, sequenceNumber: 0n, eventIndex };
+    if (raw.sender !== undefined && raw.sender !== "") event.sender = normalizeSuiAddress(raw.sender);
     return event;
   }
 

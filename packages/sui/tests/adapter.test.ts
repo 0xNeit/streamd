@@ -3,7 +3,7 @@ import { StreamdClient, StreamdError, StreamdNetworkError, checkAdapter, eventId
 import type { EventDescriptor, MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiAdapter } from "../src/index.js";
-import { LONG, digest, fakeLedger, type FakeEvent, type FakeTransaction } from "./helpers.js";
+import { LONG, digest, fakeLedger, transactionBytes, withSimulator, type FakeEvent, type FakeTransaction } from "./helpers.js";
 
 const STAKE = `${LONG("3")}::validator::StakingRequestEvent` as MoveEventType;
 const SWAP = `${LONG("abc")}::pool::Swap` as MoveEventType;
@@ -334,5 +334,63 @@ describe("SuiAdapter transaction lookups", () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect((err as StreamdNetworkError).statusCode).toBe(429);
+  });
+});
+
+describe("SuiAdapter simulations", () => {
+  const simulating = (result: Parameters<typeof withSimulator>[1], fail?: () => unknown) => {
+    const { client, calls } = fakeLedger(SIZES, []);
+    return { ...withSimulator(client, result, fail), calls };
+  };
+
+  it("previews the events at the next version, with no hash or timestamp", async () => {
+    const { client, requests } = simulating({ events: [{ type: "0x3::validator::StakingRequestEvent", sender: "0xa11ce", amount: "7" }, { type: SWAP }] });
+    const bytes = await transactionBytes();
+    expect(await new SuiAdapter(client).simulateTransactionEvents({ transaction: bytes })).toEqual({
+      version: 10n,
+      success: true,
+      vmStatus: "success",
+      events: [
+        { type: STAKE, data: { amount: "7" }, version: 10n, sequenceNumber: 0n, eventIndex: 0, sender: ALICE },
+        { type: SWAP, data: { amount: "1" }, version: 10n, sequenceNumber: 0n, eventIndex: 1 },
+      ],
+    });
+    expect(requests).toEqual([expect.objectContaining({ transaction: { bcs: { value: bytes } }, checks: 0 })]);
+  });
+
+  it("reports a failed simulation with its execution error", async () => {
+    const { client } = simulating({ error: "MoveAbort(m::z, 10) in command 1", events: [] });
+    expect(await new SuiAdapter(client).simulateTransactionEvents({ transaction: await transactionBytes() })).toEqual({
+      version: 10n,
+      success: false,
+      vmStatus: "MoveAbort(m::z, 10) in command 1",
+      events: [],
+    });
+  });
+
+  it("refuses anything but built transaction bytes before any call", async () => {
+    const { client, requests, calls } = simulating({ events: [] });
+    const sui = new SuiAdapter(client);
+    for (const bad of [new Uint8Array([1, 2, 3]), "AAEC", [0, 1], undefined]) {
+      const err = await sui.simulateTransactionEvents({ transaction: bad as Uint8Array }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+    expect(requests).toEqual([]);
+    expect(calls.checkpoints).toEqual([]);
+  });
+
+  it("refuses a client without the execution service", async () => {
+    const { client } = fakeLedger(SIZES, []);
+    const err = await new SuiAdapter(client).simulateTransactionEvents({ transaction: await transactionBytes() }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect((err as Error).message).toContain("transactionExecutionService");
+  });
+
+  it("turns a refused request into a network error", async () => {
+    const { client } = simulating({ events: [] }, () => Object.assign(new Error("invalid transaction"), { code: "INVALID_ARGUMENT" }));
+    const err = await new SuiAdapter(client).simulateTransactionEvents({ transaction: await transactionBytes() }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("invalid transaction");
   });
 });
