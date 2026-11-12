@@ -1924,6 +1924,8 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   ```
 - **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
   a version before that fails with `410`. Views are not served yet.
+- **Command line and React:** every `streamd` command takes [`--chain sui`](#sui-from-the-command-line),
+  and `useTransfers` and `useTransactionEvents` take a `SuiClient` (see [React hooks](#react-hooks)).
 
 ### Spreading load across fullnodes
 
@@ -2399,10 +2401,13 @@ function Feed() {
   `client.eventsOf` and returns `{ data, error, loading, vmStatus }`. A transaction that failed
   on chain sets `error` and `vmStatus`, the chain's status; one not found in time sets `error`
   alone. It takes `eventsOf`'s options plus `descriptor`. Nothing from the previous hash is kept,
-  and a `null` hash waits for nothing. It needs an `AptosClient`.
+  and a `null` hash waits for nothing. It needs a client with `eventsOf`
+  (`TransactionEventsClient`): an `AptosClient`, or a `SuiClient`, which takes a base58 digest.
 - **`useTransfers(options?)`** follows `client.transfers` and returns the same
   `{ events, error, status }` as `useEvents`, with each event's `data` a `Transfer`. It takes
-  `asset`, `account` and `maxEvents`; pass `null` to wait. It needs an `AptosClient`.
+  `asset`, `account` and `maxEvents`; pass `null` to wait. It needs a client with `transfers`
+  (`TransfersClient`): an `AptosClient`, or a `SuiClient`, whose `asset` is a coin type.
+  Either hook given another client throws a `StreamdError` naming the method.
 - **`useReduction(descriptor, reducer, initial, options?)`** runs `client.reduce` and returns
   `{ value, error, status }`. `value` is `initial` until the backfill finishes; `status` is
   `"idle"`, `"loading"`, `"live"`, or `"stopped"` once the backfill fails, the reducer throws or
@@ -2459,7 +2464,7 @@ the source has them, `transactionHash`, `timestamp`, `sender` and, last, `entryF
 {"type":"0x1::transaction_fee::FeeStatement","data":{"total_charge_gas_units":"7"},"version":"2817350001","sequenceNumber":"0","eventIndex":3,"transactionHash":"0x5c...","timestamp":"1730000000000000","sender":"0x9f..."}
 ```
 
-Every command that takes a descriptor takes all four kinds. With `--account`, add
+On Aptos, every command that takes a descriptor takes all four kinds. With `--account`, add
 `--handle` and `--field`, or `--creation-number <n>` for a handle by its number, or
 `--resource <type>` for every change to one resource:
 
@@ -2494,6 +2499,33 @@ Polling errors are reported on stderr and tailing continues until the subscripti
 up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes
 (as when piped into `head`); `1` when the subscription stopped on an error, or output or the
 cursor file could not be written; `2` for invalid arguments; `130` on a second Ctrl-C.
+
+### Sui from the command line
+
+Every command takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
+with the same output and exit codes:
+
+```sh
+streamd tail --chain sui 0x3::validator::StakingRequestEvent
+streamd query --chain sui --from-time 1h --limit 10 0x<package id>::pool::SwapEvent
+streamd tx --chain sui <digest>
+streamd check --chain sui 0x3::validator::StakingRequestEvent
+```
+
+- `--network` is `mainnet`, `testnet` or `devnet` (default `mainnet`), and `--node-url` and
+  `compare --against` are Sui gRPC URLs, such as `https://fullnode.testnet.sui.io:443`.
+- Descriptors are event types and `--account` (with or without types); `--handle`, `--field` and
+  `--creation-number` are refused, since Sui has no event handles, and so is `--resource`, which
+  no Sui source serves yet.
+- `--api-key` is refused and `APTOS_API_KEY` is never read: public Sui nodes take no key.
+- `tx` takes a base58 transaction digest. `--from-time` finds its start by checkpoint time.
+- `check` prints `@streamd/sui`'s statuses (`event`, `not-event`, `missing-package`,
+  `missing-module`, `missing-struct`, `defined-elsewhere`), widening the status column to fit;
+  a `defined-elsewhere` line adds the package id events name the type by.
+- `store`'s default cursor name starts `sui:`, as `sui:mainnet:<descriptor>`, so one database
+  can hold both chains without either resuming from the other's cursor.
+- `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`; without `@mysten/sui`
+  installed, it exits 1 with `--chain sui needs @mysten/sui installed`.
 
 ### Forward events to a webhook
 
