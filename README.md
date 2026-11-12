@@ -1851,6 +1851,33 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   ```ts
   sui.on({ kind: "module", eventType: "0x2::kiosk::ItemListed" }, onListed, { where: ownedBy(grpc, "alice.sui") });
   ```
+- **Descriptor check:** `checkDescriptor(grpc, descriptor)` reads each type's package through the
+  node's package service (one read per package) and returns `{ ok, types }` with a status per
+  type, as on Aptos. Sui has no `#[event]` attribute: `sui::event::emit` takes any struct or enum
+  with `copy` and `drop`, so those abilities are what makes a type an `event`, and there is no
+  `legacy`. Types are reported in long form, deduped on it, and a generic type is checked by its
+  outer datatype only. An `account` descriptor's address is validated (Sui has no account object
+  to look up) and its `eventTypes` checked like a `module` descriptor's; no `eventTypes` is `ok`
+  with no entries, an empty list is not. `handle` and `resource` are refused. `streamd check`
+  reads Aptos only for now.
+
+  | Status | Meaning |
+  | --- | --- |
+  | `event` | The struct or enum has `copy` and `drop`. |
+  | `not-event` | It lacks `copy` or `drop`, so no event can carry it. |
+  | `missing-package` | No package at that address, or the object there is not a package. |
+  | `missing-module` | The package has no such module. |
+  | `missing-struct` | The module declares no such struct or enum. |
+  | `defined-elsewhere` | The address is an upgraded package version, but an earlier version introduced the type, and events name it by that version's id, given as `definingId`. |
+
+  `ok` is true when every type is `event`.
+
+  ```ts
+  import { checkDescriptor } from "@streamd/sui";
+
+  const check = await checkDescriptor(grpc, { kind: "module", eventType: "0x3::validator::StakingRequestEvent" });
+  // { ok: true, types: [{ eventType: "0x00...03::validator::StakingRequestEvent", status: "event" }] }
+  ```
 - **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
   a version before that fails with `410`. Views are not served yet.
 
