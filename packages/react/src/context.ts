@@ -26,7 +26,7 @@ export function useStreamdClient(client?: StreamdClient): StreamdClient {
 }
 
 /** `useStreamdClient`, refusing a client without `method`, which an `AptosClient` and a `SuiClient` both have. */
-export function useClientWith<T extends StreamdClient>(method: "eventsOf" | "transfers", client?: T): T {
+export function useClientWith<T extends StreamdClient>(method: "balances" | "eventsOf" | "transfers", client?: T): T {
   const resolved = useStreamdClient(client);
   if (typeof (resolved as unknown as Record<string, unknown>)[method] !== "function") {
     throw new StreamdError(`This hook needs a client with ${method}, such as an AptosClient or a SuiClient`);
