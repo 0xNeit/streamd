@@ -2638,6 +2638,32 @@ up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when s
 (as when piped into `head`); `1` when the subscription stopped on an error, or output or the
 cursor file could not be written; `2` for invalid arguments; `130` on a second Ctrl-C.
 
+### Request stats
+
+`--stats` on the commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`,
+`transfers`, `balances` and `watch`) prints what the command has asked of each node, through
+`adapterMetrics`, as one JSON line on stderr: once when the command ends, by
+`--limit`, the end of its range, Ctrl-C, `SIGTERM`, stdout closing or a failure, and again each
+time the process gets `SIGUSR1` (not on Windows, which has no such signal). stdout keeps only
+events:
+
+```sh
+streamd tail --stats 0x1::transaction_fee::FeeStatement > fees.jsonl &
+kill -USR1 $!
+# {"stats":{"nodes":[{"fetchEvents":{"requests":42,"errors":0,"rateLimited":0,"latency":{"p50":180,"p95":410,"p99":650,"max":650}}}]}}
+```
+
+`nodes` holds one entry per `--node-url`, in the order given (one for the network's default
+node), and `archive` appears with `--archive`; each maps the adapter methods called so far to
+`requests`, `errors`, `rateLimited` and latency percentiles in milliseconds over the most recent
+1024 calls. The numbers are totals since the start, never reset. Nodes are named by position,
+never by URL, since a URL may carry a key. Each node is counted inside the pool, the archive
+fallback and `--cache`, so a page the cache answered is not a request, a `429` the pool moved to
+another node counts on both, and a pruned read counts as an error on the fullnode and a request
+on the archive. Reads made outside the adapter are not counted: name lookups (an `--account` or
+address given as a name), and with `--chain sui`, `transfers` and `balances`, which read the
+first node directly. A second Ctrl-C exits at once, without the line.
+
 ### Sui from the command line
 
 Every command but `handles` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
