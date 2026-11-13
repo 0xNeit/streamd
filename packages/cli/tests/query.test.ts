@@ -141,3 +141,13 @@ describe("runQuery", () => {
     client.destroy();
   });
 });
+
+describe("runQuery filter", () => {
+  it("prints only matching events, and counts --limit after the filter", async () => {
+    const sent = (v: number, sender: string): StreamdEvent => ({ ...ev(v), sender });
+    const adapter = new MemoryAdapter([sent(1, "0xa"), sent(2, "0xb"), sent(3, "0xa"), sent(4, "0xa"), sent(5, "0xa")]);
+    const filter = { senders: [`0x${"0".repeat(63)}a`], functions: [], where: [{ path: "n", op: "!=" as const, value: "3" }] };
+    const { versions } = await run(adapter, options({ fromVersion: 1n, toVersion: "head", limit: 2, filter }));
+    expect(versions).toEqual(["1", "4"]);
+  });
+});

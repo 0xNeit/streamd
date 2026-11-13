@@ -160,3 +160,13 @@ describe("runStore", () => {
     db.close?.();
   });
 });
+
+describe("runStore filter", () => {
+  it("stores only matching events, under a cursor name that carries the filter", async () => {
+    const db = new Database(":memory:");
+    const filter = { senders: [], functions: [], where: [{ path: "n", op: "==" as const, value: "2" }] };
+    await run(new MemoryAdapter([ev(1), ev(2), ev(3)]), db, options({ filter }), () => stored(db).length === 1);
+    expect(stored(db)).toEqual([2]);
+    expect(cursors(db)).toEqual([`mainnet:${JSON.stringify(options().descriptor)}:${JSON.stringify(filter)}`]);
+  });
+});

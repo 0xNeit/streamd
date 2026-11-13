@@ -483,3 +483,12 @@ describe("runForward --to-version and --batch-size", () => {
     expect(reads).toBe(0);
   });
 });
+
+describe("runForward filter", () => {
+  it("posts only matching events", async () => {
+    const h = harness(new MemoryAdapter([ev(1), ev(2), ev(3), ev(4)]));
+    const filter = { senders: [], functions: [], where: [{ path: "amount", op: ">" as const, value: "15" }, { path: "amount", op: "<" as const, value: "40" }] };
+    expect(await runForward(options({ fromVersion: 0n, toVersion: 4n, filter }), h.io)).toBe(0);
+    expect(received.flatMap(versions)).toEqual(["2", "3"]);
+  });
+});
