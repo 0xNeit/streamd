@@ -379,6 +379,7 @@ export const USAGE = `Usage:
   streamd forward --to <url> --account <address> [...]
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
+  streamd store --postgres <url> [options] <eventType>...
   streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
   streamd tx <hash | digest>
   streamd transfers [--asset <asset>] [--account <address | name>] [--to-version <n | head>] [options]
@@ -394,8 +395,8 @@ export const USAGE = `Usage:
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array,
 saving its position to a cursor file once the webhook acknowledges it.
-store follows matching events into a SQLite file, resuming from the cursor
-saved there when run again.
+store follows matching events into a SQLite file, or a Postgres database
+with --postgres, resuming from the cursor saved there when run again.
 query reads a closed range of history as JSON lines, then exits.
 tx waits for a transaction and prints its events, exiting 1 if it failed.
 transfers prints asset transfers as JSON lines: followed live, or with
@@ -464,7 +465,10 @@ Options:
   --header <h>           forward: request header 'Name: value', repeatable
   --secret <s>           forward: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER}
                          (or set ${SECRET_ENV}, which keeps it out of ps)
-  --db <file>            store: SQLite file to write (required)
+  --db <file>            store: SQLite file to write (this or --postgres)
+  --postgres <url>       store: Postgres database to write, postgres://user@host/db; Bun.SQL
+                         under Bun, pg under Node (npm i pg); the URL is never printed, and
+                         PGPASSWORD keeps the password out of it and out of ps
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
   --to-version <n>       record: end of the range (required); query: default the head;
                          forward: deliver up to here, then exit 0; transfers: a version or
