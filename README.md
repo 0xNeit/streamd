@@ -2458,6 +2458,7 @@ const local = new StreamdClient({ adapter: new PostgresStoreAdapter(pool) });
 ```
 
 With `Bun.sql`, wrap it: `{ query: async (text, params = []) => ({ rows: await sql.unsafe(text, params) }) }`.
+From the terminal, [`streamd store --postgres <url>`](#store-events) does this for you.
 
 - **One statement per write.** A batch and its cursor are written by a single `INSERT` whose
   parts are data-modifying CTEs, so they land together without a transaction, and a `Pool`
@@ -2564,7 +2565,8 @@ streamd tail --account 0x1 --handle "0x1::coin::CoinStore<0x1::aptos_coin::Aptos
 | Option | Meaning |
 | --- | --- |
 | `--network <name>` | `mainnet`, `testnet`, or `devnet` (default `mainnet`) |
-| `--node-url <url>` | fullnode URL, overriding the network's default |
+| `--node-url <url>` | fullnode URL, overriding the network's default; repeat it to spread reads |
+| `--archive <url>` | archive node for pruned reads, or `default` for Aptos mainnet's |
 | `--from-version <n>` | start at this version instead of the chain head |
 | `--poll-interval <ms>` | delay between polls (default `1000`) |
 | `--limit <n>` | exit after printing `n` events |
@@ -2593,6 +2595,28 @@ has for long-lived handles, it fails at the start, with `--handle` as well.
 `--network` takes `mainnet`, `testnet`, `devnet`, `movement-mainnet` or `movement-testnet`, and
 `--node-url` overrides its fullnode.
 
+Commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`, `transfers`,
+`balances` and `watch`) take `--node-url` more than once, spreading reads across the nodes through
+[`PoolAdapter`](#spreading-load-across-fullnodes): each walk stays on one node, and a node that
+answers `429` is set aside for 30 seconds while the others carry on. `--api-key` goes to the first
+node only. They also take `--archive <url>`, which sends only what the fullnodes refuse as pruned
+(`410`) to that archive node through [`ArchiveFallbackAdapter`](#history-the-fullnode-has-pruned),
+behind the one node or the pool; `--archive default` is Aptos mainnet's archive, refused on other
+networks:
+
+```sh
+streamd query --node-url https://my-node.example/v1 --node-url https://api.mainnet.aptoslabs.com/v1 \
+  --from-time 1h 0x1::transaction_fee::FeeStatement
+streamd query --archive default --from-version 1000 --limit 5 0x1::block::NewBlockEvent
+```
+
+Aptos Labs' archive gets the API key only when there is no `--node-url`, so a key reaches it only
+when it was already going to Aptos Labs' fullnode; an archive URL gets none. The archive allows
+few anonymous requests, so keep archive reads to narrow ranges. `check`, `codegen`, `handles`,
+`name` and `compare` read one node: a second `--node-url` there is refused, as is `--archive`.
+With `--chain sui`, gRPC URLs pool the same way (transfers and balances read the first node), and
+`--archive` is refused, since Sui's archive needs a native gRPC transport the CLI does not include.
+
 Every command takes `--api-key <key>` for a keyed fullnode, sent as `Authorization: Bearer`, the
 SDK's API key. Without the flag, `APTOS_API_KEY` from the environment is used, but only on
 `mainnet`, `testnet` or `devnet` with no `--node-url`, so a key meant for Aptos Labs' endpoints
@@ -2614,9 +2638,35 @@ up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when s
 (as when piped into `head`); `1` when the subscription stopped on an error, or output or the
 cursor file could not be written; `2` for invalid arguments; `130` on a second Ctrl-C.
 
+### Request stats
+
+`--stats` on the commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`,
+`transfers`, `balances` and `watch`) prints what the command has asked of each node, through
+`adapterMetrics`, as one JSON line on stderr: once when the command ends, by
+`--limit`, the end of its range, Ctrl-C, `SIGTERM`, stdout closing or a failure, and again each
+time the process gets `SIGUSR1` (not on Windows, which has no such signal). stdout keeps only
+events:
+
+```sh
+streamd tail --stats 0x1::transaction_fee::FeeStatement > fees.jsonl &
+kill -USR1 $!
+# {"stats":{"nodes":[{"fetchEvents":{"requests":42,"errors":0,"rateLimited":0,"latency":{"p50":180,"p95":410,"p99":650,"max":650}}}]}}
+```
+
+`nodes` holds one entry per `--node-url`, in the order given (one for the network's default
+node), and `archive` appears with `--archive`; each maps the adapter methods called so far to
+`requests`, `errors`, `rateLimited` and latency percentiles in milliseconds over the most recent
+1024 calls. The numbers are totals since the start, never reset. Nodes are named by position,
+never by URL, since a URL may carry a key. Each node is counted inside the pool, the archive
+fallback and `--cache`, so a page the cache answered is not a request, a `429` the pool moved to
+another node counts on both, and a pruned read counts as an error on the fullnode and a request
+on the archive. Reads made outside the adapter are not counted: name lookups (an `--account` or
+address given as a name), and with `--chain sui`, `transfers` and `balances`, which read the
+first node directly. A second Ctrl-C exits at once, without the line.
+
 ### Sui from the command line
 
-Every command takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
+Every command but `handles` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
 with the same output and exit codes:
 
 ```sh
@@ -2640,6 +2690,66 @@ streamd check --chain sui 0x3::validator::StakingRequestEvent
   can hold both chains without either resuming from the other's cursor.
 - `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`; without `@mysten/sui`
   installed, it exits 1 with `--chain sui needs @mysten/sui installed`.
+
+### Filter events
+
+`tail`, `query`, `forward`, `store` and `watch` narrow what they print, send or store with three
+repeatable flags, which run after fetching, through the [filters](#filtering) of the same names:
+
+```sh
+# deposits of at least 1 APT from one wallet's own transactions
+streamd tail --sender 0x9f... --where "amount>=100000000" 0x1::coin::CoinDeposit
+
+# events from either entry function, with a nested field equal to an address
+streamd query --from-time 1h --function 0x1::aptos_account::transfer \
+  --function 0x1::coin::transfer --where "store.owner==0x9f..." 0x1::fungible_asset::Deposit
+```
+
+| Flag | Matches |
+| --- | --- |
+| `--sender <address>` | the transaction was signed by one of the addresses (`fromSender`) |
+| `--function <address::module::function>` | the event came from a call to one of the functions (`fromFunction`) |
+| `--where <field><op><value>` | every clause holds on the event's `data` |
+
+The kinds combine: an event must pass every `--where` and, when given, one of the `--sender`
+addresses and one of the `--function` names. Addresses compare in long form, so `0x1` matches
+`0x000...01`. Events with no `sender` or `entryFunction`, such as handle events, never match those
+flags.
+
+In `--where`, the field is a dotted path into `data`, with numbers for array positions
+(`legs.0.amount`), and the operator is `==` (or `=`), `!=`, `<`, `<=`, `>` or `>=`; spaces around
+the field and value are ignored, so quote the expression. An integer value compares as an integer
+at full precision (`whereCompare`), whether the field is a decimal string or a number; a field
+that is missing or not an integer never matches, under `!=` too. Any other value is matched as
+text under `==` or `!=` (`whereField`), addresses in long form, with `true` and `false` also
+matching a JSON boolean; `!=` there also matches events without the field. A malformed
+expression, an unknown operator, or a text value under `<`, `<=`, `>` or `>=` exits `2`, naming
+the flag.
+
+`--decode <paths>` names `data` fields to read as unsigned integers before `--where` runs,
+through `fieldDecoder` (the [`decode`](#decode-integers) option): a comma-separated list, repeatable,
+with `*` for every element of an array.
+
+```sh
+streamd query --from-time 1h --decode amount --where "amount>=100000000" 0x1::fungible_asset::Deposit
+streamd tail --decode "legs.*.amount,fee" 0x9f...::pool::Swap
+```
+
+It does not change what is printed or what matches: JSON lines and `--format pretty` print the
+decoded bigints as the same decimal strings, `store` writes the same rows, and `--where` already
+compares integer strings at full precision. What it adds is a check. A named field that is
+missing is skipped, but one that is present and not an unsigned decimal string (a text value, a
+JSON number such as a `u8`, an object, or a non-array under `*`) is an error naming the field and
+the event's `version:eventIndex`: `query` exits `1`, and `tail`, `forward` and `store` print it to
+stderr, skip the event and carry on. Paths take `*`, not array positions, so `legs.0.amount` fails
+on an array; an empty entry or segment, or a leading `*`, exits `2`. The paths are not part of
+`store`'s default cursor name. The flag works the same under `--chain sui`, which also writes
+`u64` and wider as strings.
+
+`--limit` counts matches, so a rare match keeps `query` and `tail` reading until it fills.
+`store`'s default cursor name carries the filter, so a filtered and an unfiltered run into one
+database keep separate positions. A `--cursor-file` does not: give each filter its own. The flags
+work the same under `--chain sui`, where `sender` and `entryFunction` come from the transaction.
 
 ### Forward events to a webhook
 
@@ -2744,6 +2854,242 @@ takes the same descriptors as `tail`. Failed pages are retried. It exits 0 when 
 interrupted or piped into something that stops reading, such as `head`, 1 on failure, and 2 for
 bad usage.
 
+`--cache <file>` on `query` and `record` keeps every page the fullnode marks settled in a SQLite
+file, through `CachingAdapter` and `SqlitePageStore`, and the next run
+over the same range reads those pages from the file without asking the node, ahead of any pool or
+archive:
+
+```sh
+streamd query --cache pages.db --from-version 7984000000 --to-version 7984001000 0x1::fungible_asset::Deposit
+```
+
+- **What repeats.** A page is reused only for the same request, so run the same descriptor and
+  range. Pages reaching the head are never settled, so a query to the default head end reads its
+  last page every time, and the head itself, the `--from-time` block search and anything a page
+  does not hold are always read from the node.
+- **Per source.** Pages are kept under the network, plus a SHA-256 of the `--node-url`s and an
+  `--archive` URL when given, since a custom node can serve any chain whatever `--network` says;
+  the URLs themselves, which may carry a provider's key, are not written. The network's own
+  endpoint and the same URL given with `--node-url` therefore keep separate pages. A chain that is
+  reset, such as devnet or a localnet, needs a fresh file.
+- **Failures.** A file that cannot be opened as SQLite exits 1 before any read. A broken entry, or
+  a read or write that fails later, counts as a miss: the page comes from the node, and the first
+  such failure is reported on stderr.
+- **Sui.** `SuiAdapter` never marks a page settled, so `--cache` with `--chain sui` is refused.
+
+### Follow or query transfers
+
+`streamd transfers` prints [asset transfers](#asset-transfers) as JSON lines, through the chain
+client's `transfers()` or `getTransfers()`:
+
+```sh
+# APT transfers as they land
+streamd transfers --asset 0xa
+# what one account sent or received in a closed range, with symbols and decimals
+streamd transfers --account alice.apt --with-asset-info --from-version 8033637000 --to-version 8033638000
+# the latest 20 USDC transfers in a range, newest first
+streamd transfers --asset 0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b \
+  --from-version 8033637000 --to-version 8033638000 --order desc --limit 20
+```
+
+Each line is a record event as `tail` prints events, its `data` a `Transfer`, with `amount` in
+base units as a decimal string and `from` or `to` left out when that side is unknown:
+
+```json
+{"type":"0x1::fungible_asset::Deposit","data":{"asset":"0x...a","amount":"150000000","from":"0x9f...","to":"0x4c..."},"version":"3000000123","sequenceNumber":"0","eventIndex":2,"transactionHash":"0x5c...","timestamp":"1730000000000000","sender":"0x9f..."}
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--asset <asset>` | only this asset: on Aptos a fungible-asset metadata or token object address (`0xa` for APT), a coin type or a legacy token id; under `--chain sui` a coin type |
+| `--account <address or name>` | only what this account sent or received: an address, an ANS name on Aptos mainnet, or a SuiNS name under `--chain sui`, resolved once |
+| `--with-asset-info` | add `symbol` and `decimals` to each record, read once per asset |
+| `--to-version <n \| head>` | read the range up to this version, or the head read once, then exit; needs `--from-version` or `--from-time` |
+| `--order <asc \| desc>` | with `--to-version`: oldest or newest first (default `asc`) |
+| `--limit <n>` | exit after printing `n` records |
+| `--cursor-file <path>` | following: save and resume from here, as for `tail` |
+| `--batch-size <n>` | following: transactions per page (default `25`) |
+
+Without `--to-version` it follows from the head, `--from-version` or `--from-time`, as `tail`
+does, with `--poll-interval` and the same at-least-once `--cursor-file`. With it, the whole range
+is read before anything is printed, since `getTransfers` returns it at once, and failed pages are
+retried; `--cursor-file`, `--poll-interval` and `--batch-size` are refused there, and `--order`
+is refused without it. On Aptos each fungible-asset store in the range costs view reads, so
+a range without `--asset` is slow, about a minute per thousand mainnet versions with `--asset`
+and longer without, and `--order desc` walks all of it before printing. Aptos Labs' public
+endpoints rate-limit each IP; pass an `--api-key` for long ranges, since a refused read exits
+`1`. Every Aptos asset filter, the `account` filter's cost and the pairing
+rules are as described under [Asset transfers](#asset-transfers). Under `--chain sui`, records
+come from balance changes, `--account` narrows the walk on the node, and an unnarrowed follow
+reads every transaction on the chain, so give mainnet a `--batch-size` near `500`.
+
+`--sender`, `--function`, `--where` and `--decode` are not taken: `--asset` and `--account` are
+the narrowing, and `amount` is already an integer. A malformed `--asset` or `--account`, or a
+name that does not resolve, is the chain client's to judge, so it exits `1` with the client's
+message rather than `2`.
+
+Exit codes: `0` when the limit is reached, the range is printed, on Ctrl-C or `SIGTERM`, or when
+stdout closes; `1` when reading fails (following: once the subscription gives up), or output or
+the cursor file could not be read or written; `2` for invalid arguments; `130` on a second
+Ctrl-C while following.
+
+### Follow balances
+
+`streamd balances <address>` follows one wallet's [balances](#live-balances) through the chain
+client's `balances()`: each asset's balance once the first read finishes, then a line each time
+one changes.
+
+```sh
+# APT, the default
+streamd balances alice.apt
+# APT and USDC, read every 5 seconds, exiting after the first change
+streamd balances 0x4c... --asset 0xa \
+  --asset 0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b --poll-interval 5000 --limit 1
+# SUI, the default under --chain sui
+streamd balances --chain sui alice.sui
+```
+
+Every line is JSON with base units as decimal strings and `asset` as the client keys it, in long
+form. The opening line of each asset has no `previous` or `version`; a change line has both:
+
+```json
+{"asset":"0x...a","balance":"150000000"}
+{"asset":"0x...a","balance":"149990000","previous":"150000000","version":"3000000123"}
+```
+
+`version` is the head version the change was read at. On Aptos the balance is read at that
+version, so the change happened after the previous read and at or before it; under `--chain sui`
+balances are read at the latest state, which is no older than `version`. Several moves between
+two reads print as one line with the net balance, and a move that comes back to the same balance
+prints nothing.
+
+| Option | Meaning |
+| --- | --- |
+| `<address>` | an address, an ANS name on Aptos mainnet, or a SuiNS name under `--chain sui`, resolved once |
+| `--asset <asset>` | an asset to follow, repeatable: on Aptos a fungible-asset metadata address (`0xa` for APT) or a coin type, with `0xa` and `0x1::aptos_coin::AptosCoin` one entry; under `--chain sui` a coin type (default: APT, or SUI) |
+| `--poll-interval <ms>` | delay between reads (default `1000`) |
+| `--limit <n>` | exit after printing `n` changes; the opening lines are not counted |
+
+There is no start position or cursor file, since balances are read at the head, and no
+`--with-asset-info`: format a balance with `formatAmount`, or read an asset's symbol and decimals
+with `streamd transfers --with-asset-info`. A malformed `--asset`, a legacy token, or a name that
+does not resolve is the chain client's to judge, so it exits `1` with the client's message rather
+than `2`. A failed read is retried with backoff and reported on stderr; following stops after the
+client's error budget.
+
+Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes; `1` when
+the first read fails, reading gives up, or output could not be written; `2` for invalid
+arguments; `130` on a second Ctrl-C.
+
+### Watch several accounts
+
+`streamd watch <address>...` follows the transactions each address sent, with one
+[`watch`](#watch-lists) walk per address, and prints each event as a JSON line led by the watched
+address it came from:
+
+```sh
+# two accounts from the head, until Ctrl-C
+streamd watch 0x4c... 0x9f...
+# from a version, resuming each address from its own saved position on the next run
+streamd watch 0x4c... 0x9f... --from-version 3000000000 --cursor-file watch.json
+# only events with an amount of at least 1 APT, under --decode
+streamd watch 0x4c... 0x9f... --decode amount --where "amount>=100000000"
+streamd watch --chain sui 0x7d... 0x2b...
+```
+
+```json
+{"address":"0x00...4c","type":"0x1::coin::CoinWithdraw","data":{"amount":"150000000"},"version":"3000000123","sequenceNumber":"0","eventIndex":0,"sender":"0x4c..."}
+```
+
+A line is the `tail` line with a leading `address`, in long form. `parseEvent` reads events from
+named fields and ignores `address`, so a saved watch still loads through
+`MemoryAdapter.fromJsonLines`.
+
+| Option | Meaning |
+| --- | --- |
+| `<address>...` | one or more addresses (no names), each followed once |
+| `--from-version <n>`, `--from-time <t>` | where an address with no saved position starts (default: the head) |
+| `--cursor-file <path>` | read each address's position from here, and save them as they move |
+| `--sender`, `--function`, `--where`, `--decode` | narrow every walk, as on `tail` |
+| `--poll-interval <ms>` | delay between each walk's polls (default `1000`) |
+| `--limit <n>` | exit after printing `n` lines across every address |
+
+The cursor file holds `watch.positions`, one JSON object of long-form address to cursor, such as
+`{"0x00...4c":"3000000124"}`, replaced whole by a rename after a line, and at exit, whenever a
+position has moved. A saved position wins over `--from-version` and `--from-time` for that address.
+Positions for addresses not on the command line are carried through, their keys in long form, so
+leaving an address out for one run does not lose its place. It is at least once: a restart can
+reprint part of a page.
+
+An error on one walk is reported on stderr and retried. A walk that gives up is reported as
+`streamd: stopped following <address>` and the others carry on; its position stays in the cursor
+file, so the next run resumes it. When every walk has given up, the command exits `1`.
+
+There is no event-type narrowing and no `received` under `--chain sui`: `watch` builds each walk
+as `{ kind: "account", accountAddress }` itself. Narrow by data with `--where`, or follow one
+account with `streamd tail --account <address> <eventType>...`.
+
+Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes; `1` when
+the cursor file cannot be read or written, every walk gave up, or output could not be written; `2`
+for invalid arguments; `130` on a second Ctrl-C.
+
+### List event handles
+
+`streamd handles <address | name>` lists every `EventHandle` on an Aptos account through
+[`listEventHandles`](#discover-event-handles), one JSON line per handle, ready to follow:
+
+```sh
+streamd handles 0x1
+streamd handles alice.apt
+```
+
+```json
+{"resourceType":"0x1::block::BlockResource","path":["new_block_events"],"count":"1165098930","guid":{"creationNumber":"3","accountAddress":"0x1"},"descriptor":{"kind":"handle","accountAddress":"0x00...01","eventHandleStruct":"0x1::block::BlockResource","fieldName":"new_block_events"},"flags":"--account 0x00...01 --handle 0x1::block::BlockResource --field new_block_events"}
+```
+
+`descriptor` is the library's `handle` descriptor with `creationNumber` as a decimal string: by
+struct and field for a top-level handle, by creation number for one nested in a struct field.
+`flags` is the same descriptor as `tail` flags, with any struct type holding generics or spaces
+single-quoted, so it pastes into `streamd tail`, `query`, `forward` or `store`; a handle is
+followed from its first event, which mainnet may have pruned (see above). `count` is the events
+emitted on the handle so far, and `guid.accountAddress` is as the node reports it.
+
+An address or an Aptos name is taken, resolved once as `balances` does; a malformed value or a
+name that does not resolve exits `1` with the library's message. An account with no handles
+prints nothing and exits `0`. Handles held in a table are not listed. Under `--chain sui` it is
+refused, since Sui has no event handles.
+
+Exit codes: `0` when listed, or when stdout closes; `1` when the read fails or output could not
+be written; `2` for invalid arguments.
+
+### Resolve names
+
+`streamd name <name | address>` resolves either way through [`resolveName`](#aptos-names) and
+`primaryName`: a value starting `0x` is an address, looked up for its primary name, and anything
+else is a name, resolved to its address.
+
+```sh
+streamd name alice.apt
+# {"name":"alice.apt","address":"0x00...4c"}
+streamd name 0x4c...
+# {"name":"alice.apt","address":"0x00...4c"}
+streamd name --chain sui @alice
+```
+
+The line always has `name`, as given for a name, and `address`, in long form. An address with no
+primary name, or whose name no longer points back to it, prints `{"name":null,"address":"0x..."}`
+and exits `0`, so a script can test it with `jq -e .name`. A name that is malformed,
+unregistered, expired or has no target address exits `1` with the library's message, since there
+is no address to print.
+
+On Aptos, names are `alice.apt`, `alice` or `sub.alice.apt`, and resolve on mainnet only: on
+testnet the SDK's router resolves nothing, and the Movement networks have no ANS, so names exit
+`1` there. Under `--chain sui`, names are SuiNS names such as `alice.sui` or `@alice`, served on
+Sui mainnet and testnet; devnet has no SuiNS.
+
+Exit codes: `0` when printed, or when stdout closes; `1` when the lookup is refused or fails, or
+output could not be written; `2` for invalid arguments.
+
 ### Inspect a transaction
 
 `streamd tx <hash>` waits for a transaction to commit and prints its events as JSON lines:
@@ -2794,6 +3140,10 @@ has an end. Failed pages are retried and not recorded, and the file appears only
 query has succeeded. Without `--out` the recording goes to stdout. It exits 0 on success, 1 on
 failure, 130 if interrupted and 2 for bad usage.
 
+With `--cache <file>`, as on [`query`](#query-a-range), settled pages come from the file when it
+has them. The recorder sits above the cache, so the recording holds every call either way and
+replays the same.
+
 ### Compare two nodes
 
 `streamd compare` reads one range from two fullnodes through
@@ -2817,7 +3167,7 @@ The range is required and at most 100,000 versions; `--max-pages` (default 10) c
 `--limit` sets the page size. It exits 0 when the nodes agree, 1 when they disagree, a node fails
 or no window was compared, and 2 for bad usage.
 
-### Generate event types
+### Store events
 
 `streamd store` follows the same descriptors as `tail` into a SQLite file, through
 [`storeEvents`](#store-events-in-sqlite). Run the same command again and it resumes where it
@@ -2837,6 +3187,32 @@ sqlite3 events.db 'SELECT count(*) FROM streamd_events'
 - The file is in WAL mode with a 5 second busy timeout, so it can be queried while written.
 - Exit code 0 on Ctrl-C or SIGTERM, 1 when polling gives up, a write fails, or the file cannot
   be opened.
+
+`--postgres <url>` writes to a Postgres database instead, through
+[`@streamd/store-postgres`](#store-events-in-postgres), with the same cursor names, resume,
+filter and decode flags, and `--chain sui`. Give exactly one of `--db` and `--postgres`.
+
+```sh
+PGPASSWORD="$DB_PASSWORD" streamd store --postgres postgres://streamd@db.example:5432/events \
+  0x1::transaction_fee::FeeStatement
+psql -h db.example -U streamd events -c 'SELECT count(*) FROM streamd_events'
+```
+
+- It uses the runtime's own Postgres client under Bun, `Bun.SQL`. Node has none, so there it
+  loads [`pg`](https://www.npmjs.com/package/pg) if you installed it, and otherwise exits 1 with
+  `--postgres under Node needs pg installed: npm i pg (Bun has its own client)`. `pg` is an
+  optional peer dependency, never installed for you.
+- The URL is passed to the driver as given, so `sslmode` and the driver's other parameters work.
+  The tables are created on first use.
+- The URL is never printed: error lines name it with the password as `***` and no query string,
+  and the password is scrubbed from the driver's messages. A password in the URL is still visible
+  to `ps` and shell history, so leave it out and set `PGPASSWORD`, which both drivers read.
+- Exit code 0 on Ctrl-C or SIGTERM, also while still connecting; 1 when the server cannot be
+  reached or refuses the login (`cannot connect to <url>`), a write fails, or polling gives up.
+  A stop waits up to 5 seconds for a batch already being written, then up to a second for the
+  connection to close.
+
+### Generate event types
 
 `streamd codegen` reads module ABIs from the fullnode and writes a TypeScript file with a type
 and a `defineEvent` descriptor for every `#[event]` struct, plus types for the structs those

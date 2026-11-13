@@ -1,23 +1,32 @@
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
-import { getAptosFullNode } from "@aptos-labs/ts-sdk";
+import { Aptos, getAptosFullNode } from "@aptos-labs/ts-sdk";
+import { listEventHandles } from "@streamd/aptos";
 import { StreamdError } from "@streamd/core";
 import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
 import type {
+  BalancesCommandOptions,
   CheckOptions,
   CodegenOptions,
   CompareOptions,
   Endpoint,
   ForwardOptions,
+  HandlesOptions,
+  NameOptions,
   ParsedCommand,
   QueryOptions,
   RecordOptions,
   StoreOptions,
   TailOptions,
+  TransfersOptions,
   TxOptions,
+  WatchCommandOptions,
 } from "./args.js";
+import { runBalances } from "./balances.js";
+import { openCache } from "./cache.js";
+import type { PageCache } from "./cache.js";
 import { aptosConfig, chainFor } from "./chain.js";
 import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
@@ -27,14 +36,22 @@ import { loadSui } from "./sui.js";
 import type { SuiNetworkPreset } from "@streamd/sui";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
+import { runHandles } from "./handles.js";
+import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
-import { openDatabase, runStore } from "./store.js";
+import { RequestStats, onStatsSignal } from "./stats.js";
+import { connectPostgres, openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
+import { runTransfers } from "./transfers.js";
 import { runTx } from "./tx.js";
+import { runWatch } from "./watch.js";
 
 // The SDK logs notes for custom networks with console.info, which would corrupt JSON lines on stdout.
 console.info = console.error;
+
+/** Set for the whole run when `--stats` is given. */
+let stats: RequestStats | undefined;
 
 function parse(argv: string[]): ParsedCommand | undefined {
   try {
@@ -47,12 +64,12 @@ function parse(argv: string[]): ParsedCommand | undefined {
 }
 
 /** The endpoint's chain, a client over it, and a signal that the first SIGINT or a SIGTERM aborts. */
-async function setup(endpoint: Endpoint) {
+async function setup(endpoint: Endpoint, cache?: PageCache) {
   const controller = new AbortController();
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
   process.once("SIGTERM", () => controller.abort());
-  const chain = await chainFor(endpoint);
+  const chain = await chainFor(endpoint, cache, stats);
   return { chain, client: chain.client(), controller };
 }
 
@@ -76,6 +93,7 @@ async function store(options: StoreOptions): Promise<number> {
     return await runStore(options, {
       client,
       open: openDatabase,
+      connect: connectPostgres,
       error: (message) => process.stderr.write(`${message}\n`),
       signal: controller.signal,
     });
@@ -121,8 +139,25 @@ async function tail(options: TailOptions): Promise<number> {
   }
 }
 
-async function query(options: QueryOptions): Promise<number> {
-  const { client, controller } = await setup(options);
+/** Runs `run` over the `--cache` file when one is given, exiting 1 if it cannot be opened. */
+async function withCache(options: QueryOptions | RecordOptions, run: (cache?: PageCache) => Promise<number>): Promise<number> {
+  if (options.cache === undefined) return run();
+  let cache: PageCache;
+  try {
+    cache = await openCache(options.cache, options, openDatabase, (text) => process.stderr.write(`${text}\n`));
+  } catch (err) {
+    process.stderr.write(`streamd: cannot open ${options.cache}: ${message(err)}\n`);
+    return 1;
+  }
+  try {
+    return await run(cache);
+  } finally {
+    cache.close();
+  }
+}
+
+async function query(options: QueryOptions, cache?: PageCache): Promise<number> {
+  const { client, controller } = await setup(options, cache);
   const out = stdout(controller);
   try {
     const code = await runQuery(options, {
@@ -153,12 +188,87 @@ async function tx(options: TxOptions): Promise<number> {
   }
 }
 
-async function record(options: RecordOptions): Promise<number> {
+async function transfers(options: TransfersOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runTransfers(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function balances(options: BalancesCommandOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runBalances(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function watch(options: WatchCommandOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runWatch(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function handles(options: HandlesOptions): Promise<number> {
+  const controller = new AbortController();
+  const out = stdout(controller);
+  const aptos = new Aptos(aptosConfig(options));
+  const code = await runHandles(options, {
+    list: (address) => listEventHandles(aptos, address),
+    write: out.write,
+    error: (message) => process.stderr.write(`${message}\n`),
+    signal: controller.signal,
+  });
+  return out.exitCode(code);
+}
+
+async function name(options: NameOptions): Promise<number> {
+  const controller = new AbortController();
+  const out = stdout(controller);
+  const chain = await chainFor(options);
+  const code = await runName(options, {
+    resolveName: (value) => chain.resolveName(value),
+    primaryName: (address) => chain.primaryName(address),
+    write: out.write,
+    error: (message) => process.stderr.write(`${message}\n`),
+    signal: controller.signal,
+  });
+  return out.exitCode(code);
+}
+
+async function record(options: RecordOptions, cache?: PageCache): Promise<number> {
   const controller = new AbortController();
   process.once("SIGINT", () => controller.abort());
   process.once("SIGTERM", () => controller.abort());
   return runRecord(options, {
-    adapter: (await chainFor(options)).adapter(),
+    adapter: (await chainFor(options, cache, stats)).adapter(),
     write: (text) =>
       options.out === undefined ? void process.stdout.write(text) : writeAtomically(options.out, text),
     error: (text) => process.stderr.write(`${text}\n`),
@@ -245,6 +355,22 @@ async function codegen(options: CodegenOptions): Promise<number> {
   return write(options, await generateEventTypes(options.modules, load, { list, validators: options.validators === true }));
 }
 
+async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise<number> {
+  if (parsed.command === "codegen") return codegen(parsed.options);
+  if (parsed.command === "compare") return compare(parsed.options);
+  if (parsed.command === "store") return store(parsed.options);
+  if (parsed.command === "check") return check(parsed.options);
+  if (parsed.command === "record") return withCache(parsed.options, (cache) => record(parsed.options, cache));
+  if (parsed.command === "query") return withCache(parsed.options, (cache) => query(parsed.options, cache));
+  if (parsed.command === "tx") return tx(parsed.options);
+  if (parsed.command === "transfers") return transfers(parsed.options);
+  if (parsed.command === "balances") return balances(parsed.options);
+  if (parsed.command === "watch") return watch(parsed.options);
+  if (parsed.command === "handles") return handles(parsed.options);
+  if (parsed.command === "name") return name(parsed.options);
+  return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
+}
+
 async function main(argv: string[]): Promise<number> {
   const parsed = parse(argv);
   if (parsed === undefined) return 2;
@@ -252,14 +378,16 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return 0;
   }
-  if (parsed.command === "codegen") return codegen(parsed.options);
-  if (parsed.command === "compare") return compare(parsed.options);
-  if (parsed.command === "store") return store(parsed.options);
-  if (parsed.command === "check") return check(parsed.options);
-  if (parsed.command === "record") return record(parsed.options);
-  if (parsed.command === "query") return query(parsed.options);
-  if (parsed.command === "tx") return tx(parsed.options);
-  return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
+  if (parsed.options.stats !== true) return run(parsed);
+  const counted = (stats = new RequestStats());
+  const stop = onStatsSignal(() => process.stderr.write(counted.line()));
+  try {
+    return await run(parsed);
+  } finally {
+    stop();
+    // However the command ended; flushed first, since exit() does not wait for stderr.
+    await new Promise((resolve) => process.stderr.write(counted.line(), resolve));
+  }
 }
 
 // Exit explicitly once stdout has flushed, so an in-flight request does not

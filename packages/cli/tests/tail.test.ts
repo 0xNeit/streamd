@@ -299,3 +299,23 @@ describe("runTail --cursor-file", () => {
     expect(errors.join()).toContain("cannot write cursor file");
   });
 });
+
+describe("runTail filter", () => {
+  it("prints only matching events, counting --limit after the filter", async () => {
+    const { lines, io } = harness(new MemoryAdapter([ev(1), ev(2), ev(3), ev(4), ev(5)]));
+    const filter = { senders: [], functions: [], where: [{ path: "amount", op: ">=" as const, value: "30" }] };
+    expect(await runTail(options({ fromVersion: 0n, limit: 2, filter }), io)).toBe(0);
+    expect(lines.map((l) => (JSON.parse(l) as { version: string }).version)).toEqual(["3", "4"]);
+  });
+});
+
+describe("runTail decode", () => {
+  it("reports an event that does not decode, skips it and keeps printing", async () => {
+    const named = (v: number, amount: unknown): StreamdEvent => ({ ...ev(v), data: { amount } });
+    const { lines, errors, io } = harness(new MemoryAdapter([named(1, "10"), named(2, "oops"), named(3, "30")]));
+    expect(await runTail(options({ fromVersion: 0n, limit: 2, decode: ["amount"] }), io)).toBe(0);
+    expect(lines.map((l) => (JSON.parse(l) as { version: string }).version)).toEqual(["1", "3"]);
+    expect(lines[0]).toContain('"data":{"amount":"10"}');
+    expect(errors.join()).toContain('Cannot decode field "amount" of 2:0 as an unsigned integer');
+  });
+});

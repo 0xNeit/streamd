@@ -1,5 +1,6 @@
 import type { EventFilter, StreamdClient } from "@streamd/core";
 import type { QueryOptions } from "./args.js";
+import { filterPredicate } from "./filter.js";
 import { formatEvent, message } from "./format.js";
 
 export interface QueryIO {
@@ -19,7 +20,7 @@ const RETRIES = 5;
  * finished or when the signal aborts, 1 when the query or a write fails.
  */
 export async function runQuery(options: QueryOptions, io: QueryIO): Promise<number> {
-  const { fromVersion, fromTime, toVersion, limit, order } = options;
+  const { fromVersion, fromTime, toVersion, limit, order, filter: narrow, decode } = options;
   const filter: EventFilter = {
     ...(fromVersion !== undefined && { fromVersion }),
     ...(fromTime !== undefined && { fromTime }),
@@ -28,6 +29,8 @@ export async function runQuery(options: QueryOptions, io: QueryIO): Promise<numb
     retries: RETRIES,
     signal: io.signal,
     ...(limit !== undefined && { limit }),
+    ...(decode !== undefined && { decode }),
+    ...(narrow !== undefined && { where: filterPredicate(narrow) }),
   };
   try {
     for await (const event of io.client.iterateEvents(options.descriptor, filter)) {
