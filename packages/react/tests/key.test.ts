@@ -20,6 +20,16 @@ describe("valueKey", () => {
     expect(valueKey({ where: () => true })).not.toBe(valueKey({}));
   });
 
+  it("keys a Map by its entries", () => {
+    expect(valueKey(new Map([["0xa", 1n]]))).toBe(valueKey(new Map([["0xa", 1n]])));
+    expect(valueKey(new Map([["0xa", 1n]]))).not.toBe(valueKey(new Map([["0xa", 2n]])));
+    expect(valueKey(new Map([["0xa", 1n]]))).not.toBe(valueKey(new Map()));
+    expect(valueKey(new Map())).toBe(valueKey(new Map()));
+    expect(valueKey({ m: new Map([["x", new Map([["y", 1n]])]]) })).not.toBe(
+      valueKey({ m: new Map([["x", new Map([["y", 2n]])]]) }),
+    );
+  });
+
   it("treats undefined fields as absent and preserves array order", () => {
     expect(valueKey({ a: undefined, b: [1n, 2n] })).toBe(valueKey({ b: [1n, 2n] }));
     expect(valueKey({ b: [1n, 2n] })).not.toBe(valueKey({ b: [2n, 1n] }));
