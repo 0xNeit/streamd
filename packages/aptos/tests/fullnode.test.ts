@@ -1398,3 +1398,22 @@ describe("FullnodeScanAdapter resource changes", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+describe("FullnodeScanAdapter received account descriptors", () => {
+  it("refuses them before any request", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: [] }));
+    const received = { kind: "account" as const, accountAddress: "0x1", received: true };
+    await expect(new FullnodeScanAdapter(aptos).fetchEvents(received, {})).rejects.toThrow("IndexerAccountAdapter");
+    expect(calls).toHaveLength(0);
+  });
+});
+
+describe("FullnodeScanAdapter object descriptors", () => {
+  it("refuses them before any request", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: {} }));
+    await expect(new FullnodeScanAdapter(aptos).fetchEvents({ kind: "object", objectId: "0x6" }, {})).rejects.toThrow(
+      "resource descriptor",
+    );
+    expect(calls).toHaveLength(0);
+  });
+});

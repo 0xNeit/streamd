@@ -9,7 +9,7 @@ import type {
   StateRequestBuilder,
   StreamdEvent,
   SubscriptionStatus,
-  ViewRequest,
+  StateRequest,
 } from "./types.js";
 import {
   StreamdError,
@@ -56,8 +56,8 @@ export function resolveMaxPollInterval(max: number | undefined): number | undefi
   return max;
 }
 
-/** An event ready to deliver, and the view to read for it, if any. */
-type Prepared = { event: StreamdEvent; request?: ViewRequest };
+/** An event ready to deliver, and the state request to read for it, if any. */
+type Prepared = { event: StreamdEvent; request?: StateRequest };
 
 /**
  * Called once per finished page, empty or not, with its new events that

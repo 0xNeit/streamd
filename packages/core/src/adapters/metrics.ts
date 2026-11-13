@@ -11,6 +11,7 @@ const METHODS = [
   "getTransactionEvents",
   "simulateTransactionEvents",
   "view",
+  "readObjects",
 ] as const satisfies readonly (keyof EventAdapter)[];
 
 // Enough for stable percentiles, and it bounds a process that runs for weeks.

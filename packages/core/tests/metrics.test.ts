@@ -155,3 +155,13 @@ describe("adapterMetrics", () => {
     client.destroy();
   });
 });
+
+describe("adapterMetrics readObjects", () => {
+  it("counts readObjects, only when the adapter has it", async () => {
+    const source = Object.assign(new MemoryAdapter(), { readObjects: async () => ["x"] });
+    const metrics = adapterMetrics(source);
+    expect(await metrics.adapter.readObjects!({ objects: ["0x1"] }, { version: 1n })).toEqual(["x"]);
+    expect(metrics.snapshot().readObjects).toMatchObject({ requests: 1, errors: 0 });
+    expect(adapterMetrics(new MemoryAdapter()).adapter.readObjects).toBeUndefined();
+  });
+});

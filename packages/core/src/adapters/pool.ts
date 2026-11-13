@@ -20,6 +20,7 @@ const OPTIONAL: readonly Optional[] = [
   "getTransactionEvents",
   "simulateTransactionEvents",
   "view",
+  "readObjects",
 ];
 
 const limited = (err: unknown): err is StreamdNetworkError =>
@@ -48,6 +49,7 @@ export class PoolAdapter implements EventAdapter {
   declare getTransactionEvents?: EventAdapter["getTransactionEvents"];
   declare simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
   declare view?: EventAdapter["view"];
+  declare readObjects?: EventAdapter["readObjects"];
 
   constructor(adapters: readonly EventAdapter[], options: PoolAdapterOptions = {}) {
     if (!Array.isArray(adapters) || adapters.length === 0) {

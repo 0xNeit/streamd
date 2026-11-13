@@ -24,6 +24,7 @@ import { runCompare } from "./compare.js";
 import { generateEventTypes } from "./codegen.js";
 import { SUI_DIALECT, suiCodegen } from "./sui-abi.js";
 import { loadSui } from "./sui.js";
+import type { SuiNetworkPreset } from "@streamd/sui";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
 import { runQuery } from "./query.js";
@@ -187,7 +188,7 @@ async function compare(options: CompareOptions): Promise<number> {
 
 async function suiSource(options: CodegenOptions): Promise<string> {
   const [{ SuiGrpcClient }, { networks: suiNetworks }] = await loadSui();
-  const preset = suiNetworks[options.network as keyof typeof suiNetworks];
+  const preset = suiNetworks[options.network as SuiNetworkPreset["network"]];
   const grpc = new SuiGrpcClient({ ...preset, ...(options.nodeUrl !== undefined && { baseUrl: options.nodeUrl }) });
   const { targets, load } = suiCodegen(grpc.movePackageService);
   return generateEventTypes(await targets(options.modules), load, { dialect: SUI_DIALECT, validators: options.validators === true });

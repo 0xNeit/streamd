@@ -422,3 +422,108 @@ describe("withState edge cases", () => {
     });
   }
 });
+
+describe("withState object reads", () => {
+  type ReadCall = { request: unknown; at: { version: bigint; transactionHash?: string }; descriptor: unknown };
+  /** A `MemoryAdapter` whose `readObjects` answers one `id@version` per id, or runs `answer`. */
+  function reading(events: StreamdEvent[], answer?: (call: ReadCall) => unknown) {
+    const calls: ReadCall[] = [];
+    const adapter: EventAdapter = new MemoryAdapter(events);
+    adapter.readObjects = async (request, at, descriptor) => {
+      const call = { request, at, descriptor };
+      calls.push(call);
+      return (answer?.(call) ?? request.objects.map((id) => `${id}@${at.version}`)) as unknown[];
+    };
+    return { adapter, calls };
+  }
+  const hashed = (version: number): StreamdEvent => ({ ...ev(version), transactionHash: `tx${version}` });
+  const objects = () => ({ objects: ["0xa", "0xb"] });
+
+  it("attaches one entry per object, read at the event's transaction", async () => {
+    const { adapter, calls } = reading([hashed(1), hashed(2)]);
+    const events = await new StreamdClient({ adapter }).getEvents(pings, { fromVersion: 0n, withState: objects });
+    expect(events.map((e) => e.state)).toEqual([["0xa@1", "0xb@1"], ["0xa@2", "0xb@2"]]);
+    expect(calls.map((c) => [c.request, c.at.version, c.at.transactionHash, c.descriptor])).toEqual([
+      [{ objects: ["0xa", "0xb"] }, 1n, "tx1", pings],
+      [{ objects: ["0xa", "0xb"] }, 2n, "tx2", pings],
+    ]);
+  });
+
+  it("delivers object state through on", async () => {
+    const { adapter } = reading([hashed(1)]);
+    const seen: unknown[] = [];
+    const sub = new StreamdClient({ adapter }).on(pings, (e) => void seen.push(e.state), {
+      fromVersion: 0n,
+      pollInterval: 5,
+      withState: objects,
+    });
+    await until(() => seen.length === 1);
+    sub.unsubscribe();
+    expect(seen).toEqual([["0xa@1", "0xb@1"]]);
+  });
+
+  it("refuses malformed object requests as builder bugs", async () => {
+    const bad = [
+      { objects: [] },
+      { objects: ["0xa", ""] },
+      { objects: [7] },
+      { objects: "0xa" },
+      { objects: ["0xa"], function: BALANCE },
+    ];
+    for (const request of bad) {
+      const { adapter, calls } = reading([hashed(1)]);
+      const err = await new StreamdClient({ adapter })
+        .getEvents(pings, { fromVersion: 0n, withState: () => request as never })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(calls).toHaveLength(0);
+    }
+    const { adapter } = reading([hashed(1), hashed(2)]);
+    const errors: Error[] = [];
+    const seen: bigint[] = [];
+    const sub = new StreamdClient({ adapter }).on(pings, (e) => void seen.push(e.version), {
+      fromVersion: 0n,
+      pollInterval: 5,
+      onError: (err) => errors.push(err),
+      withState: (e) => (e.version === 1n ? ({ objects: [] } as never) : objects()),
+    });
+    await until(() => seen.length === 1);
+    sub.unsubscribe();
+    expect(seen).toEqual([2n]);
+    expect(errors.map((e) => (e.cause as Error).message)).toEqual(["objects must be a non-empty array of non-empty object ids"]);
+  });
+
+  it("rejects without readObjects, and on a result of the wrong shape", async () => {
+    const plain = new StreamdClient({ adapter: new MemoryAdapter([hashed(1)]) });
+    expect(await plain.getEvents(pings, { fromVersion: 0n, withState: objects }).catch((e: Error) => e.message)).toBe(
+      "withState object reads need an adapter that implements readObjects",
+    );
+    for (const answer of [{ not: "an array" }, ["one"]]) {
+      const { adapter } = reading([hashed(1)], () => answer);
+      const err = await new StreamdClient({ adapter }).getEvents(pings, { fromVersion: 0n, withState: objects }).catch((e: Error) => e);
+      expect((err as Error).message).toBe("readObjects returned no array of 2 for 1:0");
+    }
+  });
+
+  it("goes through maxConcurrentRequests and leaves views as they were", async () => {
+    let inFlight = 0;
+    let most = 0;
+    const { adapter } = reading([hashed(1), hashed(2)], () => undefined);
+    const read = adapter.readObjects!.bind(adapter);
+    adapter.readObjects = async (...args) => {
+      most = Math.max(most, ++inFlight);
+      await new Promise((r) => setTimeout(r, 5));
+      inFlight--;
+      return read(...args);
+    };
+    adapter.view = async (_r, version) => [String(version)];
+    const client = new StreamdClient({ adapter, maxConcurrentRequests: 1 });
+    await Promise.all([
+      client.getEvents(pings, { fromVersion: 0n, withState: objects }),
+      client.getEvents(pings, { fromVersion: 0n, withState: objects }),
+    ]);
+    expect(most).toBe(1);
+    const viewed = await client.getEvents(pings, { fromVersion: 0n, withState: balanceOf });
+    expect(viewed.map((e) => e.state)).toEqual([["1"], ["2"]]);
+  });
+});

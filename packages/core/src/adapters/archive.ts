@@ -36,6 +36,7 @@ export class ArchiveFallbackAdapter implements EventAdapter {
   declare getTransactionEvents?: EventAdapter["getTransactionEvents"];
   declare simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
   declare view?: EventAdapter["view"];
+  declare readObjects?: EventAdapter["readObjects"];
 
   constructor(primary: EventAdapter, archive: EventAdapter) {
     const p = (this.primary = requireAdapter(primary, "ArchiveFallbackAdapter primary"));
@@ -67,6 +68,10 @@ export class ArchiveFallbackAdapter implements EventAdapter {
     if (p.view) {
       this.view = (request, version, d) =>
         orArchive(() => p.view!(request, version, d), a.view && (() => a.view!(request, version, d)));
+    }
+    if (p.readObjects) {
+      this.readObjects = (request, at, d) =>
+        orArchive(() => p.readObjects!(request, at, d), a.readObjects && (() => a.readObjects!(request, at, d)));
     }
   }
 

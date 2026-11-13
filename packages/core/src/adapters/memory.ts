@@ -46,6 +46,8 @@ function descriptorFilter(
       const resourceType = requireResourceType(descriptor.resourceType);
       return (type) => type === resourceType;
     }
+    case "object":
+      throw new StreamdError("MemoryAdapter cannot serve object descriptors: its events name no object");
     default: {
       const unknown: never = descriptor;
       throw new StreamdError(

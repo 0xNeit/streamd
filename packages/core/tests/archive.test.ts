@@ -128,3 +128,19 @@ describe("ArchiveFallbackAdapter", () => {
   });
 
 });
+
+describe("ArchiveFallbackAdapter readObjects", () => {
+  it("sends a read the fullnode refuses as pruned to the archive", async () => {
+    const reader = (name: string, edge: bigint): EventAdapter => ({
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      readObjects: async (_r, at) => {
+        if (at.version < edge) throw new StreamdNetworkError("pruned", 410);
+        return [name];
+      },
+    });
+    const adapter = new ArchiveFallbackAdapter(reader("fullnode", 5n), reader("archive", 0n));
+    expect(await adapter.readObjects!({ objects: ["0x1"] }, { version: 2n }, d)).toEqual(["archive"]);
+    expect(await adapter.readObjects!({ objects: ["0x1"] }, { version: 8n }, d)).toEqual(["fullnode"]);
+    expect(new ArchiveFallbackAdapter(new MemoryAdapter(), reader("archive", 0n)).readObjects).toBeUndefined();
+  });
+});

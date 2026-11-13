@@ -968,6 +968,7 @@ Every call takes an event descriptor:
 | `handle` | A legacy `EventHandle` on an account | `{ kind: "handle", accountAddress, eventHandleStruct, fieldName }` or, by its guid, `{ kind: "handle", accountAddress, creationNumber: 3n }` |
 | `account` | Events from transactions an account **sent** | `{ kind: "account", accountAddress, eventTypes?: [...] }` |
 | `resource` | Every write or delete of one resource, even when no event fires | `{ kind: "resource", accountAddress, resourceType: "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>" }` |
+| `object` | Every change to one Sui object, even when no event fires ([Sui](#sui) only) | `{ kind: "object", objectId: "0x6" }` |
 
 When `module.eventType` is an array of Move types, `FullnodeScanAdapter` serves
 all of them in a single transaction scan per page, delivering matches in
@@ -1280,6 +1281,13 @@ subscription, as an invalid fetch does. Return `undefined` for events whose
 view would abort. The adapter needs `view`, which `FullnodeScanAdapter` implements as
 one JSON `/view` request at the event's version.
 
+`withState` may also return an object read, `{ objects: [id, ...] }`, through the adapter's
+`readObjects`: `event.state` then holds each object as the event's transaction left it, one entry
+per id in order. `SuiAdapter` implements it ([object state on Sui](#sui)); an adapter without it
+rejects the read, and a request that is empty, holds an empty id, or names both `function` and
+`objects` is an invalid request. Every adapter wrapper passes `readObjects` through as it passes
+`view`, and `recordingAdapter` records it by ids, version and transaction hash.
+
 ### Serialise events
 
 JSON has no `bigint`, so `JSON.stringify` throws on a `StreamdEvent`. Use
@@ -1324,7 +1332,8 @@ streamd.on(descriptor, (event) => {
 transaction, so their ids stay unique per handle but are not transaction
 positions. A `resource` change's `eventIndex` is the transaction's event count
 plus the change's position in its write set, so a change never shares an id with
-an event of the same transaction.
+an event of the same transaction; an `object` change's is the event count plus its
+position among the transaction's object changes.
 
 ## Filtering
 
@@ -1741,11 +1750,12 @@ is such options, so `new SuiGrpcClient(networks.testnet)` works too. Pass `adapt
 through something else, such as a `CachingAdapter` over a `SuiAdapter`, and every other
 `StreamdClient` option as usual. Construction without `sui` throws.
 
-| Preset | Network | gRPC endpoint |
-| --- | --- | --- |
-| `networks.mainnet` | `mainnet` | `https://fullnode.mainnet.sui.io:443` |
-| `networks.testnet` | `testnet` | `https://fullnode.testnet.sui.io:443` |
-| `networks.devnet` | `devnet` | `https://fullnode.devnet.sui.io:443` |
+| Preset | Network | gRPC endpoint | `graphqlUrl` |
+| --- | --- | --- | --- |
+| `networks.mainnet` | `mainnet` | `https://fullnode.mainnet.sui.io:443` | `https://graphql.mainnet.sui.io/graphql` |
+| `networks.testnet` | `testnet` | `https://fullnode.testnet.sui.io:443` | `https://graphql.testnet.sui.io/graphql` |
+| `networks.devnet` | `devnet` | `https://fullnode.devnet.sui.io:443` | `https://graphql.devnet.sui.io/graphql` |
+| `networks.mainnetArchive(transport)` | `mainnet` | `archive.mainnet.sui.io:443`, native gRPC only ([below](#sui-history-past-the-fullnode)) | mainnet's |
 
 - **Versions are Sui's global transaction numbers:** the running total before the event's
   checkpoint plus the transaction's index in it, so `fromVersion: -1000n` means 1000 transactions
@@ -1780,9 +1790,70 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   `previewEvents` read the commands in the request they already make. Transfer records carry
   no `entryFunction`, as on Aptos. A structural client without `batchGetTransactions` gets
   events without it.
-- **Descriptors:** `module` (a type or a list, in one request) and `account` (events from
-  transactions the address sent, optionally narrowed by `eventTypes`). Sui has no event handles
-  or account resources, so `handle` and `resource` are refused.
+- **Descriptors:** `module` (a type or a list, in one request), `account` (events from
+  transactions the address sent, optionally narrowed by `eventTypes`, or with `received: true`
+  every transaction that affected it, below) and `object` (below). Sui has no event handles or
+  account resources, so `handle` and `resource` are refused.
+- **Received transactions:** `{ kind: "account", accountAddress, received: true }` delivers the
+  events of every transaction the node lists as affecting the address: the ones it signed, and
+  the ones it only received, such as coins someone else sent it, which the plain `account`
+  descriptor never sees. It walks `ListTransactions` filtered by affected address, reading each
+  transaction's events and commands in the same request, so events are exactly what a `module`
+  walk delivers for them (`version`, `eventIndex`, digest, `timestamp`, `sender` the signer,
+  `entryFunction`), and `eventTypes` narrows them. A transaction that affected the address but
+  emitted no events (a plain coin transfer often emits none) delivers nothing; follow those with
+  `sui.transfers({ account })`. `limit` counts transactions. `received` must be a boolean. It is a
+  core option, so `FullnodeScanAdapter` (Aptos sees received transactions through
+  `IndexerAccountAdapter`, which always includes them), `StoreAdapter`, `PostgresStoreAdapter`,
+  and `eventsOf`/`previewEvents` narrowing refuse it rather than answer with signed transactions
+  only; `received: false` is the same as leaving it out.
+
+  ```ts
+  sui.on({ kind: "account", accountAddress: me, received: true }, (e) => console.log(e.sender, e.type));
+  ```
+- **Object changes:** `{ kind: "object", objectId }` delivers every change to one object, Sui's
+  counterpart of `resource`: created, mutated, transferred, wrapped, unwrapped or deleted, whoever
+  sent the transaction. It walks `ListTransactions` filtered to the transactions whose effects
+  change the object, so the node does the narrowing. Each change is a `StreamdEvent`: `type` the
+  object's type in long form, `data` its contents (JSON, as events have it) once the transaction
+  ran, or `null` when it deleted or wrapped the object, `sequenceNumber` `0n`, `eventIndex` the
+  transaction's event count plus the change's position among its object changes, and the
+  transaction's digest, `timestamp` and `sender`; no `entryFunction`. `data` is the contents only:
+  an owner change with unchanged contents still arrives, with the same `data`. `objectId` may be
+  short (`0x6`). A wrap and an unwrap follow from the effects (`null`, then contents again) but
+  were not seen on mainnet when this was built. An object held inside another changes with its
+  parent and has no change of its own, and a dynamic field changes on its `dynamic_field::Field`
+  object, not the parent. A shared object such as the Clock (`0x6`) changes in nearly every
+  checkpoint, and every page reads the JSON of every object in each transaction, so follow busy
+  objects with care. `eventsOf` and `previewEvents` refuse it, as they refuse `resource`, and so
+  do `MemoryAdapter`, `FullnodeScanAdapter` (follow an Aptos object's resources instead) and
+  `checkDescriptor`; `RoutingAdapter` sends it to its `default`.
+
+  ```ts
+  sui.on({ kind: "object", objectId: pool }, (change) => console.log(change.version, change.data ?? "deleted"));
+  ```
+- **Object state at the event:** no public Sui endpoint runs Move at a past state, so `SuiAdapter`
+  has no `view` and a view request from `withState` rejects. Return an object read instead,
+  `{ objects: [id, ...] }`, and `event.state` holds one entry per id, in order, as the event's own
+  transaction left the object: its contents (JSON, as an `object` change's `data`) after the
+  transaction for an object it created or mutated, as read for a consensus object it read without
+  writing (the Clock, in most DeFi transactions), and `null` for one it deleted or wrapped. The
+  versions come from the transaction's effects, so the state is exact, not the end of its
+  checkpoint. Only objects in the effects have such a state: any other id, an immutable object or
+  a package rejects, and so does an event without a `transactionHash`. Read the field behind a
+  versioned wrapper (a DeepBook pool's `inner`) by its own id when the transaction changed it.
+  Each event costs one `GetTransaction`, counted by `maxConcurrentRequests`; once the fullnode has
+  pruned the transaction (about two weeks) it costs one POST to Sui GraphQL instead, which reaches
+  back to genesis. The GraphQL endpoint is the preset's for the client's `network`
+  (`https://graphql.<network>.sui.io/graphql`, Mysten Labs' service even when `grpc` reads a private
+  node), or `new SuiAdapter(grpc, { graphqlUrl })`; without either, a pruned read rejects. Failures follow the `withState` rules: a GraphQL HTTP failure or
+  error is a `StreamdNetworkError` (429 with `retryAfter`), a refused id a `StreamdError`.
+
+  ```ts
+  sui.on(SwapEvent, (e) => console.log(e.state), {
+    withState: (e) => ({ objects: [(e.data as { pool: string }).pool] }),
+  });
+  ```
 - **Blocks are checkpoints:** `getBlock(descriptor, height)` takes a checkpoint sequence number
   and returns its versions (the previous checkpoint's total up to its own, minus one) and its
   timestamp, and `getBlockHeights()` the node's lowest and latest checkpoints. So `fromTime`
@@ -1923,7 +1994,8 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   sui.on(ItemListed("0x<package id>::nft::Nft"), (e) => console.log(e.data.kiosk), { decode: ItemListedDecode });
   ```
 - **History** reaches back as far as the node keeps checkpoints, about two weeks on public nodes;
-  a version before that fails with `410`. Views are not served yet.
+  a version before that fails with `410`. Object state at the event reads past it, through GraphQL,
+  and the mainnet archive serves the rest ([below](#sui-history-past-the-fullnode)).
 - **Command line and React:** every `streamd` command takes [`--chain sui`](#sui-from-the-command-line),
   and `useTransfers` and `useTransactionEvents` take a `SuiClient` (see [React hooks](#react-hooks)).
 
@@ -2180,6 +2252,48 @@ await next;
 Each pushed event must be above the highest version the adapter holds, since
 a transaction never appears below one already read. Events in one call may
 share a version. Anything else throws a `StreamdError` and adds nothing.
+
+#### Sui history past the fullnode
+
+Mysten Labs' mainnet archive keeps every checkpoint from 0 and answers the same gRPC
+`LedgerService`, with cursors that mean the same as the fullnode's, so the same
+`ArchiveFallbackAdapter` pairs it with the fullnode. It speaks native gRPC only: the gRPC-web
+transport `SuiGrpcClient` uses by default gets `404`, and browsers have nothing else, so this is
+for Node and Bun. `networks.mainnetArchive(transport)` takes a native transport you install and
+build yourself (streamd adds no dependency for it), aimed at `networks.mainnetArchive.host`, and
+returns the options for `new SuiGrpcClient(...)`. It refuses anything that is not a transport, so
+a URL cannot be passed by mistake.
+
+```ts
+// bun add @protobuf-ts/grpc-transport @grpc/grpc-js
+import { ChannelCredentials } from "@grpc/grpc-js";
+import { GrpcTransport } from "@protobuf-ts/grpc-transport";
+import { SuiGrpcClient } from "@mysten/sui/grpc";
+import { ArchiveFallbackAdapter } from "@streamd/core";
+import { SuiAdapter, SuiClient, networks } from "@streamd/sui";
+
+const fullnode = new SuiGrpcClient(networks.mainnet);
+const transport = new GrpcTransport({ host: networks.mainnetArchive.host, channelCredentials: ChannelCredentials.createSsl() });
+const archive = new SuiGrpcClient(networks.mainnetArchive(transport));
+
+const sui = new SuiClient({ sui: fullnode, adapter: new ArchiveFallbackAdapter(new SuiAdapter(fullnode), new SuiAdapter(archive)) });
+await sui.getEvents(StakingRequestEvent, { fromVersion: 2_948_762_402n, limit: 10 }); // a year back, from the archive
+```
+
+- **What moves:** event pages for every descriptor (`received` account walks and `object` changes
+  included), blocks, and `withState` object reads, whenever the fullnode answers `410`. The
+  earliest version (0) and oldest checkpoint come from the archive, in one read; the head and
+  simulations from the fullnode. A start a year back cost about 14 seconds when measured, most of
+  it the bisection that places the version among the archive's checkpoints, read once per version.
+- **Object state:** with a GraphQL endpoint (the default on a preset network) the fullnode's
+  adapter reads a pruned transaction's objects through GraphQL itself; without one it answers
+  `410`, and the archive reads them with `GetTransaction`.
+- **What stays on the fullnode:** `sui.transfers`, `getTransfers` and `balances` read the `sui`
+  client the `SuiClient` was built with, not its `adapter`, so a pruned range fails with `410`;
+  for older transfers build a `SuiClient` over the archive client itself. `eventsOf` waits on the
+  fullnode, which answers a pruned digest and an unknown one alike, as not yet committed.
+- **Not measured:** the archive's rate limits beyond a 40-request burst, and whether Mysten Labs
+  keeps it as a supported public service.
 
 ## Networks
 

@@ -95,6 +95,13 @@ export interface AccountEventDescriptor {
   accountAddress: string;
   /** Restrict to these Move event types; omit for every event. */
   eventTypes?: string[];
+  /**
+   * Every transaction that affected the account, the ones it only received
+   * included, instead of the ones it signed. Served by `SuiAdapter`;
+   * `IndexerAccountAdapter` always serves every transaction touching the
+   * account, and adapters that see only signed transactions refuse it.
+   */
+  received?: boolean;
 }
 
 /**
@@ -115,6 +122,23 @@ export interface ResourceDescriptor {
 }
 
 /**
+ * Every change to one object, read from each transaction's effects: created,
+ * mutated, transferred, wrapped, unwrapped or deleted. Served by `SuiAdapter`;
+ * on Aptos an object's state is its resources, which `resource` follows.
+ *
+ * Each change arrives as a `StreamdEvent`, as a `resource` change does: `type`
+ * is the object's Move type, `data` its contents once the transaction ran, or
+ * `null` when the transaction deleted or wrapped it. `eventIndex` is the
+ * transaction's event count plus the change's position among the
+ * transaction's object changes, so a change never shares an id with an event.
+ */
+export interface ObjectDescriptor {
+  kind: "object";
+  /** The object's id, a 32-byte hex address. */
+  objectId: string;
+}
+
+/**
  * The payload type a descriptor carries, `unknown` for one without; over a
  * union of descriptors, the union of their payloads. What a list of
  * descriptors given to `on`, `onBatch`, `once` or `stream` delivers.
@@ -130,7 +154,8 @@ export type EventDescriptor<TData = unknown> =
   | HandleEventDescriptor<TData>
   | CreationNumberEventDescriptor
   | AccountEventDescriptor
-  | ResourceDescriptor;
+  | ResourceDescriptor
+  | ObjectDescriptor;
 
 // ---- Parsed event ----
 
@@ -184,9 +209,10 @@ export interface StreamdEvent<TData = unknown> {
    */
   guid?: EventGuid;
   /**
-   * What the `withState` view function returned at this event's `version`,
-   * that is, as state stood once the emitting transaction had run. Set only
-   * when `withState` built a request for this event.
+   * What the `withState` request read at this event's `version`, that is,
+   * as state stood once the emitting transaction had run: a view function's
+   * return values, or one entry per object of an object read. Set only when
+   * `withState` built a request for this event.
    */
   state?: unknown[];
   /**
@@ -228,10 +254,22 @@ export interface ViewRequest {
 }
 
 /**
- * Builds the view request whose result becomes `event.state`, or `undefined`
+ * Objects to read as the event's own transaction left them, as `withState`
+ * builds it and `EventAdapter.readObjects` takes it: ids in the chain's
+ * address form. `state` then holds one entry per id, in this order.
+ */
+export interface ObjectRequest {
+  objects: readonly string[];
+}
+
+/** What `withState` builds: a view function call, or an object read. */
+export type StateRequest = ViewRequest | ObjectRequest;
+
+/**
+ * Builds the request whose result becomes `event.state`, or `undefined`
  * to deliver the event without state. Runs after `decode` and `where`.
  */
-export type StateRequestBuilder = (event: StreamdEvent) => ViewRequest | undefined;
+export type StateRequestBuilder = (event: StreamdEvent) => StateRequest | undefined;
 
 /** An `EventHandle`'s on-chain id: the account that created it and its creation number. */
 export interface EventGuid {
@@ -711,7 +749,7 @@ export interface StreamdConfig {
    */
   adapter: EventAdapter;
   /**
-   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, the `simulateTransactionEvents` calls behind `previewEvents`, and the `view` calls behind `withState`) this client has in
+   * Most adapter calls (`fetchEvents`, `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, the `getTransactionEvents` lookups behind `eventsOf`, the `simulateTransactionEvents` calls behind `previewEvents`, and the `view` and `readObjects` calls behind `withState`) this client has in
    * flight at once, across all subscriptions and queries; a positive integer.
    * Further calls wait in order. Omit for no limit. A `withState` view that
    * a pause or unsubscribe abandons frees its slot at once, though the
@@ -1000,6 +1038,18 @@ export interface EventAdapter {
   view?(
     request: ViewRequest,
     ledgerVersion: bigint,
+    descriptor?: EventDescriptor,
+  ): Promise<unknown[]>;
+  /**
+   * Each object `request` names, as the transaction at `at` left it: one
+   * entry per id, in order. `at` is the event `withState` built the request
+   * for; a source that looks transactions up by hash reads
+   * `at.transactionHash`. `descriptor` is for routing only. Optional; an
+   * object read from `withState` needs it.
+   */
+  readObjects?(
+    request: ObjectRequest,
+    at: Pick<StreamdEvent, "version" | "transactionHash">,
     descriptor?: EventDescriptor,
   ): Promise<unknown[]>;
 }

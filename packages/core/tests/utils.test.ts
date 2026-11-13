@@ -166,3 +166,37 @@ describe("descriptorKey for resource descriptors", () => {
     client.destroy();
   });
 });
+
+describe("descriptorKey for received account descriptors", () => {
+  it("keeps the signed-only key unchanged and tells received apart", () => {
+    const signed = descriptorKey({ kind: "account", accountAddress: "0x1" });
+    expect(signed).toBe(JSON.stringify(["account", LONG_0X1, null]));
+    expect(descriptorKey({ kind: "account", accountAddress: "0x1", received: false })).toBe(signed);
+    const received = descriptorKey({ kind: "account", accountAddress: "0x1", received: true });
+    expect(received).toBe(JSON.stringify(["account", LONG_0X1, null, true]));
+    expect(fetchKey({ kind: "account", accountAddress: "0x1", received: true }, {})).not.toBe(fetchKey({ kind: "account", accountAddress: "0x1" }, {}));
+  });
+});
+
+describe("descriptorKey for object descriptors", () => {
+  it("is equal across id spellings and distinct by id", () => {
+    const short = descriptorKey({ kind: "object", objectId: "0x1" });
+    expect(short).toBe(JSON.stringify(["object", LONG_0X1]));
+    expect(descriptorKey({ kind: "object", objectId: LONG_0X1 })).toBe(short);
+    expect(descriptorKey({ kind: "object", objectId: "0x2" })).not.toBe(short);
+    expect(short).not.toBe(descriptorKey({ kind: "account", accountAddress: "0x1" }));
+  });
+
+  it("gives no request key to an object descriptor the adapters refuse", () => {
+    const refused = [{ kind: "object" }, { kind: "object", objectId: "nope" }] as unknown as EventDescriptor[];
+    for (const d of refused) expect(fetchKey(d, { fromVersion: 0n })).toBeUndefined();
+    expect(fetchKey({ kind: "object", objectId: "0x6" }, {})).toBeDefined();
+  });
+
+  it("matches a listener by value", () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter() });
+    client.on({ kind: "object", objectId: "0x1" }, () => {}, { onError: () => {} });
+    expect(client.listenerCount({ kind: "object", objectId: LONG_0X1 })).toBe(1);
+    client.destroy();
+  });
+});

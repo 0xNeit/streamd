@@ -42,8 +42,8 @@ function copy(page: EventPage): EventPage {
  * history skips the source. Every other page, and every failure, passes
  * through unstored. A cached page keeps being served after the source prunes
  * that history. `getHeadVersion`, `getEarliestVersion`, `getBlock`,
- * `getBlockHeights`, `getTransactionEvents`, `simulateTransactionEvents` and
- * `view` pass through uncached, only when the wrapped adapter has them.
+ * `getBlockHeights`, `getTransactionEvents`, `simulateTransactionEvents`,
+ * `view` and `readObjects` pass through uncached, only when the wrapped adapter has them.
  * (A view at a past version never changes, so it could be cached; it is not.)
  *
  * With a `store`, final pages also survive a restart. A `bigint` inside an
@@ -65,6 +65,7 @@ export class CachingAdapter implements EventAdapter {
   getTransactionEvents?: EventAdapter["getTransactionEvents"];
   simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
   view?: EventAdapter["view"];
+  readObjects?: EventAdapter["readObjects"];
 
   constructor(adapter: EventAdapter, options: CachingAdapterOptions = {}) {
     this.source = requireAdapter(adapter, "CachingAdapter");
@@ -105,6 +106,9 @@ export class CachingAdapter implements EventAdapter {
     if (source.view !== undefined) {
       this.view = (request, ledgerVersion, descriptor) =>
         source.view!(request, ledgerVersion, descriptor);
+    }
+    if (source.readObjects !== undefined) {
+      this.readObjects = (request, at, descriptor) => source.readObjects!(request, at, descriptor);
     }
   }
 

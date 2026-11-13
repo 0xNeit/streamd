@@ -44,7 +44,7 @@ function requireHook<K extends keyof AdapterHooks>(
 
 /**
  * Wraps `adapter` so every `fetchEvents` call is reported to `hooks`, to log
- * or time requests. `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, `getTransactionEvents`, `simulateTransactionEvents` and `view` pass through,
+ * or time requests. `getHeadVersion`, `getEarliestVersion`, `getBlock`, `getBlockHeights`, `getTransactionEvents`, `simulateTransactionEvents`, `view` and `readObjects` pass through,
  * unhooked, only when the wrapped adapter has them.
  */
 export function withHooks(
@@ -99,6 +99,9 @@ export function withHooks(
   if (source.view !== undefined) {
     wrapped.view = (request, ledgerVersion, descriptor) =>
       source.view!(request, ledgerVersion, descriptor);
+  }
+  if (source.readObjects !== undefined) {
+    wrapped.readObjects = (request, at, descriptor) => source.readObjects!(request, at, descriptor);
   }
   return wrapped;
 }

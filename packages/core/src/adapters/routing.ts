@@ -45,6 +45,7 @@ export class RoutingAdapter implements EventAdapter {
   declare getTransactionEvents?: EventAdapter["getTransactionEvents"];
   declare simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
   declare view?: EventAdapter["view"];
+  declare readObjects?: EventAdapter["readObjects"];
 
   constructor(routes: RoutingAdapterRoutes) {
     if (typeof routes !== "object" || routes === null) {
@@ -114,6 +115,9 @@ export class RoutingAdapter implements EventAdapter {
     }
     if (served("view")) {
       this.view = (request, ledgerVersion, d) => this.runView(request, ledgerVersion, d);
+    }
+    if (served("readObjects")) {
+      this.readObjects = async (request, at, d) => this.reader(d).readObjects!(request, at, d);
     }
   }
 
@@ -230,6 +234,20 @@ export class RoutingAdapter implements EventAdapter {
     return adapter.view(request, ledgerVersion, descriptor);
   }
 
+  /** The adapter for `descriptor`'s kind, or the `default` adapter without one, refusing one that cannot read objects. */
+  private reader(descriptor?: EventDescriptor): EventAdapter {
+    const adapter = descriptor === undefined ? this.defaultAdapter : this.selectAdapter(descriptor);
+    if (adapter === undefined) throw new StreamdError("RoutingAdapter needs a descriptor or a default adapter to read objects");
+    if (adapter.readObjects === undefined) {
+      throw new StreamdError(
+        descriptor === undefined
+          ? "The default adapter does not read objects"
+          : `The adapter for descriptor kind "${descriptor.kind}" does not read objects`,
+      );
+    }
+    return adapter;
+  }
+
   private selectAdapter(descriptor: EventDescriptor): EventAdapter {
     let target: EventAdapter | undefined;
     switch (descriptor?.kind) {
@@ -244,6 +262,9 @@ export class RoutingAdapter implements EventAdapter {
         break;
       case "resource":
         target = this.resourceAdapter ?? this.defaultAdapter;
+        break;
+      case "object":
+        target = this.defaultAdapter;
         break;
       default: {
         const unknown: never = descriptor;

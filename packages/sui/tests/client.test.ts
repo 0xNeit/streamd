@@ -2,7 +2,7 @@ import { describe, expect, it } from "bun:test";
 import { MemoryAdapter, fromFunction, parseEvent, serializeEvent, StreamdAssertionError, StreamdError, StreamdTimeoutError, StreamdTransactionError } from "@streamd/core";
 import type { MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
-import { SuiClient, networks } from "../src/index.js";
+import { SuiAdapter, SuiClient, networks } from "../src/index.js";
 import type { SuiClientConfig } from "../src/index.js";
 import { LONG, digest, fakeLedger, fakeNames, ptb, withCalls, transactionBytes, withSimulator, withTransfers, type FakeListed, type FakeSimulation, type FakeTransaction } from "./helpers.js";
 
@@ -290,5 +290,87 @@ describe("SuiClient entry functions", () => {
     const found = await sui.getEvents(stakes, { fromVersion: 0n, where: fromFunction("0xa::pool::swap") });
     expect(found.map((e) => e.entryFunction)).toEqual([{ function: `${A}::pool::swap`, typeArguments: [], arguments: ["GasCoin"] }]);
     expect(parseEvent(serializeEvent(found[0]!))).toEqual(found[0]!);
+  });
+});
+
+describe("SuiClient object descriptors", () => {
+  const SIZES = [1, 3, 2];
+  const POOL = LONG("9001");
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const pool = { kind: "object" as const, objectId: "0x9001" };
+
+  it("delivers an object's changes to getEvents and on, and refuses it for eventsOf", async () => {
+    const listed: FakeListed[] = [
+      { cp: 1n, ti: 1n, changes: [], objects: [{ id: POOL, version: 3n, value: "x" }] },
+      { cp: 2n, ti: 0n, changes: [], objects: [{ id: LONG("9002"), version: 1n }] },
+    ];
+    const wired = withTransfers(fakeLedger(SIZES, []).client, SIZES, listed);
+    const sui = new SuiClient({ sui: wired.client as unknown as SuiGrpcClient });
+    expect((await sui.getEvents(pool, { fromVersion: 0n })).map((e) => [e.version, e.data])).toEqual([[2n, { value: "x" }]]);
+    const seen: unknown[] = [];
+    const sub = sui.on(pool, (e) => void seen.push(e.data), { fromVersion: 3n, pollInterval: 5 });
+    expect(sui.listenerCount({ kind: "object", objectId: POOL })).toBe(1);
+    listed.push({ cp: 2n, ti: 1n, changes: [], objects: [{ id: POOL }] });
+    await wait(40);
+    expect(seen).toEqual([null]);
+    sub.unsubscribe();
+    await expect(sui.eventsOf(digest(1), pool)).rejects.toThrow("not object changes");
+  });
+});
+
+describe("SuiClient received account descriptors", () => {
+  const SIZES = [1, 3, 2];
+  const ALICE = LONG("a11ce");
+  const BOB = LONG("b0b");
+  const TYPE = `${LONG("abc")}::pool::Swap`;
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+  const received = { kind: "account" as const, accountAddress: "0xa11ce", received: true };
+
+  it("delivers events of transactions the address received to getEvents and on, keyed apart from the signed walk", async () => {
+    const listed: FakeListed[] = [
+      { cp: 1n, ti: 1n, sender: BOB, typed: [{ type: TYPE }], changes: [[ALICE, TYPE, 1n]] },
+      { cp: 2n, ti: 0n, sender: BOB, typed: [{ type: TYPE }], changes: [[BOB, TYPE, 1n]] },
+    ];
+    const wired = withTransfers(fakeLedger(SIZES, []).client, SIZES, listed);
+    const sui = new SuiClient({ sui: wired.client as unknown as SuiGrpcClient });
+    expect((await sui.getEvents(received, { fromVersion: 0n })).map((e) => [e.version, e.sender])).toEqual([[2n, BOB]]);
+    const seen: bigint[] = [];
+    const sub = sui.on(received, (e) => void seen.push(e.version), { fromVersion: 3n, pollInterval: 5 });
+    expect(sui.listenerCount({ ...received, accountAddress: ALICE })).toBe(1);
+    expect(sui.listenerCount({ kind: "account", accountAddress: ALICE })).toBe(0);
+    listed.push({ cp: 2n, ti: 1n, sender: BOB, typed: [{ type: TYPE }], changes: [[ALICE, TYPE, 2n]] });
+    await wait(40);
+    expect(seen).toEqual([5n]);
+    sub.unsubscribe();
+    await expect(sui.eventsOf(digest(1), received)).rejects.toThrow("received account descriptor");
+  });
+});
+
+describe("SuiClient object state", () => {
+  const POOL = LONG("9001");
+  const json = { kind: { oneofKind: "structValue" as const, structValue: { fields: { value: { kind: { oneofKind: "stringValue" as const, stringValue: "after" } } } } } };
+
+  it("attaches objects as the event's transaction left them, and still refuses views", async () => {
+    const { client } = fakeLedger([1, 2], [{ cp: 1n, ti: 1n, ei: 0, type: STAKE }]);
+    client.ledgerService.getTransaction = async () => ({
+      response: {
+        transaction: {
+          effects: { changedObjects: [{ objectId: POOL, outputState: 2, outputVersion: 4n }] },
+          objects: { objects: [{ objectId: POOL, version: 4n, json }] },
+        } as never,
+      },
+    });
+    const reader = new SuiAdapter(client);
+    const adapter = Object.assign(
+      new MemoryAdapter([{ type: STAKE, data: {}, version: 2n, sequenceNumber: 0n, eventIndex: 0, transactionHash: digest(2) }]),
+      { readObjects: reader.readObjects.bind(reader) },
+    );
+    const sui = new SuiClient({ sui: client as unknown as SuiGrpcClient, adapter });
+    const [event] = await sui.getEvents(stakes, { fromVersion: 0n, withState: () => ({ objects: ["0x9001"] }) });
+    expect(event!.state).toEqual([{ value: "after" }]);
+    const plain = new SuiClient({ sui: client as unknown as SuiGrpcClient });
+    await expect(
+      plain.getEvents(stakes, { fromVersion: 0n, withState: () => ({ function: "0x2::clock::timestamp_ms" }) }),
+    ).rejects.toThrow("withState needs an adapter that implements view");
   });
 });

@@ -426,9 +426,18 @@ export class FullnodeScanAdapter implements EventAdapter {
       case "handle":
         return this.fetchHandleEvents(descriptor, options);
       case "account":
+        if (descriptor.received === true) {
+          throw new StreamdError(
+            "FullnodeScanAdapter sees only transactions an account signed: serve received ones with IndexerAccountAdapter",
+          );
+        }
         return this.fetchAccountEvents(descriptor, options);
       case "resource":
         return this.fetchResourceChanges(descriptor, options);
+      case "object":
+        throw new StreamdError(
+          "FullnodeScanAdapter cannot serve object descriptors: follow an Aptos object's resources with a resource descriptor",
+        );
       default:
         return this.fetchModuleEvents(descriptor, options);
     }

@@ -107,6 +107,10 @@ export class RequestLimiter {
       view.view = (request, ledgerVersion, descriptor) =>
         this.run(() => adapter.view!(request, ledgerVersion, descriptor), drop, signal);
     }
+    if (adapter.readObjects !== undefined) {
+      view.readObjects = (request, at, descriptor) =>
+        this.run(() => adapter.readObjects!(request, at, descriptor), drop, signal);
+    }
     return view;
   }
 

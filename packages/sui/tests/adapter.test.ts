@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { StreamdClient, StreamdError, StreamdNetworkError, checkAdapter, eventId } from "@streamd/core";
+import { ArchiveFallbackAdapter, StreamdClient, StreamdError, StreamdNetworkError, checkAdapter, eventId } from "@streamd/core";
 import type { EventDescriptor, MoveEventType } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiAdapter } from "../src/index.js";
-import { LONG, digest, fakeLedger, ptb, transactionBytes, withCalls, withSimulator, withTransfers, type FakeEvent, type FakeListed, type FakeTransaction } from "./helpers.js";
+import { LONG, digest, fakeLedger, ptb, transactionBytes, withCalls, withSimulator, withTransfers, OBJECT_TYPE, type FakeEvent, type FakeListed, type FakeTransaction } from "./helpers.js";
 
 const STAKE = `${LONG("3")}::validator::StakingRequestEvent` as MoveEventType;
 const SWAP = `${LONG("abc")}::pool::Swap` as MoveEventType;
@@ -71,6 +71,21 @@ describe("SuiAdapter", () => {
     expect(rest.events.map(eventId)).toEqual(["4:0"]);
     expect(rest.hasMore).toBe(false);
     await expect(adapter.fetchEvents(stakes, { cursor: "not base64!" })).rejects.toBeInstanceOf(StreamdError);
+  });
+
+  it("keeps dropping versions below fromVersion after resuming from a page that kept nothing", async () => {
+    // Checkpoint 3 holds versions 6 to 9: a start at 9 scans 6, 7 and 8 first.
+    const early = [0n, 1n, 2n, 3n].map((ti) => ({ cp: 3n, ti, ei: 0, type: STAKE }));
+    const adapter = new SuiAdapter(fakeLedger(SIZES, early).client);
+    const whole = await adapter.fetchEvents(stakes, { fromVersion: 9n, limit: 4 });
+    expect(whole.events.map(eventId)).toEqual(["9:0"]);
+    const first = await adapter.fetchEvents(stakes, { fromVersion: 9n, limit: 1 });
+    expect(first.events).toEqual([]);
+    const rest = await adapter.fetchEvents(stakes, { cursor: first.nextCursor, limit: 3 });
+    expect(rest.events.map(eventId)).toEqual(["9:0"]);
+    const after = await adapter.fetchEvents(stakes, { cursor: rest.nextCursor });
+    expect(after.nextCursor).not.toContain(".");
+    await expect(adapter.fetchEvents(stakes, { cursor: `${first.nextCursor}x` })).rejects.toBeInstanceOf(StreamdError);
   });
 
   it("refuses handle and resource descriptors and bad types, and maps gRPC failures to network errors", async () => {
@@ -537,5 +552,284 @@ describe("SuiAdapter entry functions", () => {
     const preview = await new SuiAdapter(client).simulateTransactionEvents({ transaction: await transactionBytes() });
     expect(preview.events[0]!.entryFunction).toEqual(call);
     expect((requests[0] as { readMask: { paths: string[] } }).readMask.paths).toContain("transaction.transaction.kind.programmable_transaction.commands");
+  });
+});
+
+describe("SuiAdapter received account descriptors", () => {
+  const BOB = LONG("b0b");
+  const SUI = `${LONG("2")}::sui::SUI`;
+  const swap = { package: "0xabc", module: "pool", function: "swap", typeArguments: [], arguments: [{ kind: 1 }] };
+  // Versions: checkpoint 1 starts at 1, 2 at 4, 3 at 6. Alice signs only the last.
+  const LISTED: FakeListed[] = [
+    { cp: 1n, ti: 0n, sender: BOB, typed: [{ type: SWAP, pkg: LONG("abc"), module: "pool" }, { type: STAKE }], ptb: ptb([swap]), changes: [[BOB, SUI, -3n], [ALICE, SUI, 3n]] },
+    { cp: 1n, ti: 2n, sender: BOB, typed: [{ type: SWAP }], changes: [[BOB, SUI, -1n]] },
+    { cp: 2n, ti: 1n, sender: BOB, typed: [{ type: STAKE }], changes: [[ALICE, SUI, 1n]] },
+    { cp: 3n, ti: 3n, sender: ALICE, typed: [{ type: SWAP }], changes: [] },
+  ];
+  const received: EventDescriptor = { kind: "account", accountAddress: "0xa11ce", received: true };
+  const adapter = () => {
+    const wired = withTransfers(fakeLedger(SIZES, EVENTS).client, SIZES, LISTED);
+    return { sui: new SuiAdapter(wired.client), calls: wired.calls };
+  };
+  const ids = (page: { events: { version: bigint; eventIndex: number; type: string }[] }) => page.events.map((e) => [e.version, e.eventIndex, e.type]);
+
+  it("walks every transaction affecting the address, by cursor, with hasMore and throughVersion", async () => {
+    const { sui, calls } = adapter();
+    const first = await sui.fetchEvents(received, { fromVersion: 0n, limit: 1 });
+    expect(ids(first)).toEqual([[1n, 0, SWAP], [1n, 1, STAKE]]);
+    expect(first).toMatchObject({ hasMore: true, throughVersion: 3n });
+    expect(first.events[0]).toEqual({
+      type: SWAP,
+      data: { n: "0" },
+      version: 1n,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+      sender: BOB,
+      entryFunction: { function: `${LONG("abc")}::pool::swap`, typeArguments: [], arguments: ["GasCoin"] },
+      transactionHash: "D1t0",
+      timestamp: 1_700_000_001_000_000n,
+    });
+    expect(first.events[1]!.entryFunction).toBeUndefined();
+    const rest = await sui.fetchEvents(received, { cursor: first.nextCursor, limit: 10 });
+    expect(ids(rest)).toEqual([[5n, 0, STAKE], [9n, 0, SWAP]]);
+    expect(rest).toMatchObject({ hasMore: false, throughVersion: 9n });
+    expect(calls.list[0]!.filter).toEqual({ terms: [{ literals: [{ negated: false, predicate: { oneofKind: "affectedAddress", affectedAddress: { address: ALICE } } }] }] });
+    expect((calls.list[0]!.readMask as { paths: string[] }).paths).toEqual(
+      expect.arrayContaining(["transaction_index", "events.events.json", "transaction.kind.programmable_transaction.commands"]),
+    );
+  });
+
+  it("narrows by eventTypes, honours fromVersion and toVersion, and makes no call for an empty list", async () => {
+    const { sui, calls } = adapter();
+    const stakesOnly = await sui.fetchEvents({ ...received, eventTypes: ["0x3::validator::StakingRequestEvent"] } as EventDescriptor, { fromVersion: 0n });
+    expect(ids(stakesOnly)).toEqual([[1n, 1, STAKE], [5n, 0, STAKE]]);
+    expect(ids(await sui.fetchEvents(received, { fromVersion: 2n, toVersion: 6n }))).toEqual([[5n, 0, STAKE]]);
+    const before = calls.list.length;
+    expect((await sui.fetchEvents({ ...received, eventTypes: [] } as EventDescriptor, { fromVersion: 0n })).events).toEqual([]);
+    expect(calls.list).toHaveLength(before);
+  });
+
+  it("refuses a non-boolean flag and a client without listTransactions, and leaves the signed walk as it was", async () => {
+    const { sui, calls } = adapter();
+    await expect(sui.fetchEvents({ ...received, received: "yes" } as never, { fromVersion: 0n })).rejects.toThrow("received flag");
+    expect(calls.list).toHaveLength(0);
+    await expect(new SuiAdapter(fakeLedger(SIZES, EVENTS).client).fetchEvents(received, {})).rejects.toThrow("listTransactions");
+    const signed = await sui.fetchEvents({ kind: "account", accountAddress: ALICE, received: false }, { fromVersion: 0n });
+    expect(signed.events.map((e) => e.version)).toEqual([0n, 4n, 9n]);
+    expect(calls.list).toHaveLength(0);
+  });
+});
+
+describe("SuiAdapter behind ArchiveFallbackAdapter", () => {
+  // The fullnode keeps checkpoints 2 and up, so versions below 6 are pruned there; the archive keeps all.
+  const nodes = () => {
+    const fullnode = fakeLedger(SIZES, EVENTS, undefined, 2n);
+    const archive = fakeLedger(SIZES, EVENTS);
+    return { fullnode, archive, both: new ArchiveFallbackAdapter(new SuiAdapter(fullnode.client), new SuiAdapter(archive.client)) };
+  };
+
+  it("serves a start below the fullnode's edge from the archive, and one above it from the fullnode", async () => {
+    const { fullnode, archive, both } = nodes();
+    expect((await both.fetchEvents(stakes, { fromVersion: 0n, limit: 10 })).events.map(eventId)).toEqual(["0:0", "3:1", "4:0"]);
+    expect([fullnode.calls.list.length, archive.calls.list.length]).toEqual([0, 1]);
+    expect((await both.fetchEvents({ kind: "module", eventType: [SWAP] }, { fromVersion: 6n, limit: 10 })).events.map(eventId)).toEqual(["9:4"]);
+    expect([fullnode.calls.list.length, archive.calls.list.length]).toEqual([1, 1]);
+  });
+
+  it("takes the earliest version from the archive in one checkpoint read", async () => {
+    const { archive, both } = nodes();
+    expect(await both.getEarliestVersion!(stakes)).toBe(0n);
+    expect(archive.calls.checkpoints).toEqual(["0"]);
+  });
+});
+
+describe("SuiAdapter object descriptors", () => {
+  const POOL = LONG("9001");
+  // Versions: checkpoint 1 starts at 1, 2 at 4, 3 at 6.
+  const LISTED: FakeListed[] = [
+    { cp: 1n, ti: 0n, events: 2, changes: [], objects: [{ id: LONG("9002"), version: 1n }, { id: POOL, version: 1n, value: "a" }] },
+    { cp: 1n, ti: 2n, changes: [], objects: [{ id: LONG("9002"), version: 2n }] },
+    { cp: 2n, ti: 1n, sender: LONG("b0b"), changes: [], objects: [{ id: POOL, version: 2n, value: "b" }] },
+    { cp: 3n, ti: 3n, changes: [], objects: [{ id: POOL }] },
+  ];
+  const pool: EventDescriptor = { kind: "object", objectId: "0x9001" };
+  const adapter = () => {
+    const wired = withTransfers(fakeLedger(SIZES, []).client, SIZES, LISTED);
+    return { sui: new SuiAdapter(wired.client), calls: wired.calls };
+  };
+  const changes = (page: { events: { version: bigint; eventIndex: number; data: unknown }[] }) =>
+    page.events.map((e) => [e.version, e.eventIndex, e.data]);
+
+  it("walks the transactions that changed the object, by cursor, with hasMore and throughVersion", async () => {
+    const { sui, calls } = adapter();
+    const first = await sui.fetchEvents(pool, { fromVersion: 0n, limit: 2 });
+    expect(changes(first)).toEqual([[1n, 3, { value: "a" }], [5n, 0, { value: "b" }]]);
+    expect(first).toMatchObject({ hasMore: true, throughVersion: 5n });
+    expect(first.events[1]).toEqual({
+      type: OBJECT_TYPE,
+      data: { value: "b" },
+      version: 5n,
+      sequenceNumber: 0n,
+      eventIndex: 0,
+      transactionHash: "D2t1",
+      timestamp: 1_700_000_002_000_000n,
+      sender: LONG("b0b"),
+    });
+    const rest = await sui.fetchEvents(pool, { cursor: first.nextCursor, limit: 10 });
+    expect(changes(rest)).toEqual([[9n, 0, null]]);
+    expect(rest).toMatchObject({ hasMore: false, throughVersion: 9n });
+    expect(calls.list[0]!.filter).toEqual({ terms: [{ literals: [{ negated: false, predicate: { oneofKind: "affectedObject", affectedObject: { objectId: POOL } } }] }] });
+    expect((calls.list[0]!.readMask as { paths: string[] }).paths).toEqual(expect.arrayContaining(["effects.changed_objects", "objects.objects.json"]));
+  });
+
+  it("honours fromVersion and toVersion", async () => {
+    const { sui } = adapter();
+    expect(changes(await sui.fetchEvents(pool, { fromVersion: 2n, toVersion: 6n }))).toEqual([[5n, 0, { value: "b" }]]);
+  });
+
+  it("refuses a malformed id before any call, and a client without listTransactions", async () => {
+    const { sui, calls } = adapter();
+    await expect(sui.fetchEvents({ kind: "object", objectId: "nope" }, { fromVersion: 0n })).rejects.toThrow("Sui address");
+    expect(calls.list).toHaveLength(0);
+    await expect(new SuiAdapter(fakeLedger(SIZES, []).client).fetchEvents(pool, {})).rejects.toThrow("listTransactions");
+  });
+});
+
+describe("SuiAdapter object state", () => {
+  const POOL = LONG("9001");
+  const CLOCK = LONG("6");
+  const TX = digest(7);
+  const at = { version: 5n, transactionHash: TX };
+  const json = (value: string) => ({ kind: { oneofKind: "structValue" as const, structValue: { fields: { value: { kind: { oneofKind: "stringValue" as const, stringValue: value } } } } } });
+  const touched = {
+    effects: {
+      changedObjects: [{ objectId: POOL, inputVersion: 3n, outputState: 2, outputVersion: 4n }],
+      unchangedConsensusObjects: [{ kind: 1, objectId: CLOCK, version: 9n }],
+    },
+    objects: { objects: [{ objectId: POOL, version: 3n, json: json("old") }, { objectId: POOL, version: 4n, json: json("new") }, { objectId: CLOCK, version: 9n, json: json("tick") }] },
+  };
+  const graphqlAnswer = {
+    data: {
+      transaction: {
+        effects: {
+          objectChanges: { pageInfo: { hasNextPage: false }, nodes: [{ address: POOL, outputState: { address: POOL, version: 4, asMoveObject: { contents: { json: { value: "new" } } } } }] },
+          unchangedConsensusObjects: { pageInfo: { hasNextPage: false }, nodes: [] },
+        },
+      },
+    },
+  };
+
+  /** A ledger whose `getTransaction` answers `transaction`, or throws it when it is an error. */
+  function stateLedger(transaction: unknown, network?: string) {
+    const { client } = fakeLedger([1], []);
+    const masks: string[][] = [];
+    client.ledgerService.getTransaction = async ({ readMask }) => {
+      masks.push(readMask.paths);
+      if (transaction instanceof Error) throw transaction;
+      return { response: { transaction: transaction as never } };
+    };
+    return { client: network === undefined ? client : { ...client, network }, masks };
+  }
+
+  /** A local Sui GraphQL stand-in answering each POST with the next of `answers`. */
+  async function graphql(answers: (() => Response)[], run: (url: string, bodies: unknown[]) => Promise<void>) {
+    const bodies: unknown[] = [];
+    const server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        bodies.push(await request.json());
+        return answers.shift()!();
+      },
+    });
+    try {
+      await run(`http://localhost:${server.port}/graphql`, bodies);
+    } finally {
+      server.stop(true);
+    }
+  }
+  const pruned = () => Object.assign(new Error(`Transaction ${TX} not found`), { code: "NOT_FOUND" });
+
+  it("reads touched objects from one GetTransaction while the node keeps it", async () => {
+    const { client, masks } = stateLedger(touched);
+    expect(await new SuiAdapter(client).readObjects({ objects: ["0x6", "0x9001"] }, at)).toEqual([{ value: "tick" }, { value: "new" }]);
+    expect(masks).toEqual([
+      ["effects.changed_objects", "effects.unchanged_consensus_objects", "objects.objects.object_id", "objects.objects.version", "objects.objects.json"],
+    ]);
+  });
+
+  it("reads a pruned transaction through GraphQL, the digest sent as a variable", async () => {
+    await graphql([() => Response.json(graphqlAnswer)], async (graphqlUrl, bodies) => {
+      const adapter = new SuiAdapter(stateLedger(pruned()).client, { graphqlUrl });
+      expect(await adapter.readObjects({ objects: [POOL] }, at)).toEqual([{ value: "new" }]);
+      const [body] = bodies as { query: string; variables: unknown }[];
+      expect(body!.variables).toEqual({ digest: TX });
+      expect(body!.query).toContain("transaction(digest: $digest)");
+      // The service's default page of read-only consensus inputs is 20, below what one transaction can read.
+      expect(body!.query).toContain("objectChanges(first: 1024)");
+      expect(body!.query).toContain("unchangedConsensusObjects(first: 50)");
+    });
+  });
+
+  it("sends a pruned read to the archive behind ArchiveFallbackAdapter when the fullnode has no GraphQL endpoint", async () => {
+    const both = new ArchiveFallbackAdapter(new SuiAdapter(stateLedger(pruned(), "localnet").client), new SuiAdapter(stateLedger(touched).client));
+    expect(await both.readObjects!({ objects: [POOL] }, at)).toEqual([{ value: "new" }]);
+  });
+
+  it("maps GraphQL failures", async () => {
+    const answers = [
+      () => new Response("slow down", { status: 429, headers: { "retry-after": "2" } }),
+      () => new Response("boom", { status: 500 }),
+      () => Response.json({ errors: [{ message: "bad query\n\u001b[31m" }] }),
+      () => new Response("not json"),
+      () => Response.json({ data: { transaction: null } }),
+      () => Response.json({ data: { transaction: { effects: { objectChanges: {} } } } }),
+    ];
+    await graphql(answers, async (graphqlUrl) => {
+      const adapter = new SuiAdapter(stateLedger(pruned()).client, { graphqlUrl });
+      const read = () => adapter.readObjects({ objects: [POOL] }, at).then(() => new StreamdError("read"), (e: unknown) => e as StreamdError);
+      const limited = await read();
+      expect(limited).toBeInstanceOf(StreamdNetworkError);
+      expect(limited).toMatchObject({ statusCode: 429, retryAfter: 2000 });
+      expect(await read()).toMatchObject({ name: "StreamdNetworkError", statusCode: 500 });
+      expect(await read()).toMatchObject({ name: "StreamdNetworkError", message: expect.stringContaining('"bad query\\n\\u001b[31m"') });
+      for (const message of ["returned no JSON", "knows no transaction", "unexpected shape"]) {
+        const err = await read();
+        expect(err).not.toBeInstanceOf(StreamdNetworkError);
+        expect(err.message).toContain(message);
+      }
+    });
+  });
+
+  it("defaults the GraphQL URL from the client's network, and rejects a pruned read without one", async () => {
+    let asked: string | undefined;
+    const real = globalThis.fetch;
+    globalThis.fetch = (async (url: string) => ((asked = url), Response.json(graphqlAnswer))) as typeof fetch;
+    try {
+      await new SuiAdapter(stateLedger(pruned(), "testnet").client).readObjects({ objects: [POOL] }, at);
+    } finally {
+      globalThis.fetch = real;
+    }
+    expect(asked).toBe("https://graphql.testnet.sui.io/graphql");
+    const err = await new SuiAdapter(stateLedger(pruned(), "localnet").client).readObjects({ objects: [POOL] }, at).catch((e: unknown) => e);
+    expect((err as Error).message).toContain(`This Sui node no longer has transaction ${TX}; pass graphqlUrl`);
+    expect((err as StreamdNetworkError).statusCode).toBe(410);
+    expect(() => new SuiAdapter(stateLedger(touched).client, { graphqlUrl: "ftp://x" })).toThrow("Not a valid graphqlUrl");
+  });
+
+  it("refuses bad input before any request, and passes other gRPC failures on", async () => {
+    const { client, masks } = stateLedger(touched);
+    const adapter = new SuiAdapter(client);
+    await expect(adapter.readObjects({ objects: ["0xzz"] }, at)).rejects.toThrow("Not a valid Sui address");
+    await expect(adapter.readObjects({ objects: [] }, at)).rejects.toThrow("non-empty array");
+    await expect(adapter.readObjects({ objects: [POOL] }, { version: 5n })).rejects.toThrow("needs the event's transactionHash");
+    await expect(adapter.readObjects({ objects: [POOL] }, { version: 5n, transactionHash: "D1t1" })).rejects.toThrow("Not a valid Sui transaction digest");
+    expect(masks).toHaveLength(0);
+    await expect(adapter.readObjects({ objects: [LONG("9009")] }, at)).rejects.toThrow("did not write or read");
+    const busy = new SuiAdapter(stateLedger(Object.assign(new Error("busy"), { code: "RESOURCE_EXHAUSTED" })).client);
+    await expect(busy.readObjects({ objects: [POOL] }, at)).rejects.toMatchObject({ statusCode: 429 });
+  });
+
+  it("keeps no view", () => {
+    expect((new SuiAdapter(stateLedger(touched).client) as { view?: unknown }).view).toBeUndefined();
   });
 });

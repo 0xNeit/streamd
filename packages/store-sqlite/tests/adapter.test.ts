@@ -108,6 +108,7 @@ describe("StoreAdapter", () => {
       adapter.fetchEvents({ kind: "module", eventType: [] }, {}),
       adapter.fetchEvents({ kind: "module", eventType: "not a type" as never }, {}),
       adapter.fetchEvents({ kind: "account", accountAddress: "nope" }, {}),
+      adapter.fetchEvents({ kind: "account", accountAddress: "0xa", received: true }, {}),
       adapter.fetchEvents(swaps, { limit: -1 }),
       adapter.fetchEvents(swaps, { fromVersion: 2n ** 64n }),
       adapter.fetchEvents({ kind: "bogus" } as never, {}),

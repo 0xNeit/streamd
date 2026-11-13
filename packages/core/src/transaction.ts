@@ -36,6 +36,11 @@ function eventMatcher(descriptor: EventDescriptor): (event: StreamdEvent) => boo
       return (event) => keep(event.type);
     }
     case "account": {
+      if (descriptor.received === true) {
+        throw new StreamdError(
+          "Transaction lookups cannot tell which accounts a transaction affected, so a received account descriptor cannot narrow them",
+        );
+      }
       const account = requireAddress(descriptor.accountAddress);
       const types = descriptor.eventTypes === undefined ? undefined : new Set(descriptor.eventTypes);
       return (event) =>
@@ -62,6 +67,10 @@ function eventMatcher(descriptor: EventDescriptor): (event: StreamdEvent) => boo
     case "resource":
       throw new StreamdError(
         "Transaction lookups carry events, not write sets, so a resource descriptor cannot narrow them",
+      );
+    case "object":
+      throw new StreamdError(
+        "Transaction lookups carry events, not object changes, so an object descriptor cannot narrow them",
       );
     default:
       throw new StreamdError(
