@@ -378,6 +378,8 @@ transfers prints asset transfers as JSON lines: followed live, or with
 --to-version read over a closed range, then exits.
 balances prints a wallet's balance of each asset once, then a JSON line each
 time one changes, read at the head every --poll-interval.
+watch follows the transactions each address sent, one walk per address, and
+prints each event as a JSON line with the watched address as "address".
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 compare reads one range from two nodes and prints what one has that the other
@@ -387,7 +389,7 @@ descriptors for their event structs; a bare address covers all its modules.
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
 Every command takes --chain sui to read Sui instead of Aptos.
-tail, query, forward and store take --sender, --function and --where, which
+tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
 --decode, which checks integer fields before --where runs.
 
@@ -408,7 +410,7 @@ Options:
   --api-key <key>        fullnode API key, sent as a bearer token (or set ${API_KEY_ENV}, used
                          only on mainnet, testnet and devnet without --node-url)
   --from-version <n>     start at this version instead of the chain head
-  --from-time <t>        tail, forward, query: start here, as 2h, 7d or an ISO date (UTC)
+  --from-time <t>        tail, forward, query, watch: start here, as 2h, 7d or an ISO date (UTC)
   --poll-interval <ms>   delay between polls (default: 1000)
   --sender <address>     only events from transactions one of these signed, repeatable
   --function <a::m::f>   only events from a call to one of these entry functions, repeatable
@@ -420,11 +422,12 @@ Options:
                          comma-separated and repeatable, * for every array element
                          (legs.*.amount); output and matches are unchanged, but a present
                          field that is not an unsigned integer is an error: query exits 1,
-                         tail, forward and store report it and skip the event
-  --limit <n>            tail, transfers: exit after printing n; balances: after n changes;
+                         tail, forward, store and watch report it and skip the event
+  --limit <n>            tail, transfers, watch: exit after printing n; balances: after n changes;
                          record, query: stop after n; compare: page size
   --to <url>             forward: webhook URL (http or https, required)
-  --cursor-file <path>   tail, transfers (following): save and resume from here; forward: cursor file
+  --cursor-file <path>   tail, transfers (following): save and resume from here; watch: each
+                         address's position, as one JSON object; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE})
   --format <name>        tail: json, or pretty for aligned lines in UTC (default: json)
   --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
