@@ -60,8 +60,9 @@ export {
   some,
   whereCompare,
   whereField,
+  whereOneOf,
 } from "./filter.js";
-export type { CompareOp } from "./filter.js";
+export type { CompareOp, OneOfValue } from "./filter.js";
 
 // Input checks for adapter authors; the chain packages build their adapters on them.
 export {
