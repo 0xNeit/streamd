@@ -91,6 +91,8 @@ export interface QueryOptions extends Endpoint {
   order: "asc" | "desc";
   filter?: CliFilter;
   decode?: string[];
+  /** `--cache`: a SQLite file of final pages; never set with `chain: "sui"`. */
+  cache?: string;
 }
 
 /** Bounded when `toVersion` is set, through `getTransfers`; otherwise followed, through `transfers`. */
@@ -156,6 +158,8 @@ export interface RecordOptions extends Endpoint {
   limit?: number;
   /** File to write; stdout when unset. */
   out?: string;
+  /** As on `QueryOptions`. */
+  cache?: string;
 }
 
 /** `apiKey` goes to the first node only. */
@@ -290,6 +294,7 @@ const RECORD_OPTIONS = {
   "to-version": { type: "string" },
   limit: { type: "string" },
   out: { type: "string" },
+  cache: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -302,6 +307,7 @@ const QUERY_OPTIONS = {
   "to-version": { type: "string" },
   limit: { type: "string" },
   order: { type: "string" },
+  cache: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -395,7 +401,7 @@ export const USAGE = `Usage:
   streamd handles <address | name>
   streamd name <name | address>
   streamd check <eventType>...
-  streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
+  streamd record --from-version <n> --to-version <n> [--out <file>] [--cache <file>] <eventType>...
   streamd codegen [--out <file>] [--validators] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
 
@@ -489,6 +495,8 @@ Options:
                          transactions per page (default: 25)
   --order <asc|desc>     query, transfers with --to-version: oldest or newest first (default: asc)
   --out <file>           codegen, record: write to this file instead of stdout
+  --cache <file>         query, record: keep settled pages in this SQLite file and read them
+                         from it on the next run of the same range (Aptos only)
   --validators           codegen: also write an is<Type> runtime check per type
   --chain <name>         aptos or sui (default: aptos); with sui, --network is mainnet,
                          testnet or devnet, --node-url and --against are Sui gRPC URLs,
@@ -853,6 +861,13 @@ function isPostgresUrl(value: string): boolean {
   }
 }
 
+function withCache(options: { cache?: string }, cache: string | undefined, sui: boolean): void {
+  if (cache === undefined) return;
+  if (cache === "") throw new UsageError("--cache must not be empty");
+  if (sui) throw new UsageError("--cache does nothing with --chain sui: Sui pages are never marked final");
+  options.cache = cache;
+}
+
 function parseStore(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: STORE_OPTIONS, allowPositionals: true, strict: true }),
@@ -895,6 +910,7 @@ function parseRecord(args: string[]): ParsedCommand {
   withKey(options, values["api-key"]);
   if (limit !== undefined) options.limit = limit;
   if (values.out !== undefined) options.out = values.out;
+  withCache(options, values.cache, sui);
   return { command: "record", options };
 }
 
@@ -960,6 +976,7 @@ function parseQuery(args: string[]): ParsedCommand {
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
   withKey(options, values["api-key"]);
   if (limit !== undefined) options.limit = limit;
+  withCache(options, values.cache, sui);
   return { command: "query", options: withFilter(options, values) };
 }
 

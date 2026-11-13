@@ -1225,3 +1225,25 @@ describe("--archive", () => {
     rejects([...argv, "--archive", "default"], /--archive/);
   });
 });
+
+describe("--cache", () => {
+  const COMMANDS: string[][] = [
+    ["query", "--from-version", "1", TYPE],
+    ["record", "--from-version", "1", "--to-version", "2", TYPE],
+  ];
+  const options = (argv: string[]) => (parseCommand(argv) as unknown as { options: Record<string, unknown> }).options;
+
+  it.each(COMMANDS)("%s takes a file, and leaves it unset without one", (...argv) => {
+    expect(options([...argv, "--cache", "pages.db"]).cache).toBe("pages.db");
+    expect("cache" in options(argv)).toBe(false);
+  });
+
+  it.each(COMMANDS)("%s refuses an empty file and --chain sui", (...argv) => {
+    rejects([...argv, "--cache", ""], /--cache must not be empty/);
+    rejects([...argv, "--chain", "sui", "--cache", "pages.db"], /--cache does nothing with --chain sui: Sui pages are never marked final/);
+  });
+
+  it.each([["tail", TYPE], ["store", "--db", "e.db", TYPE], ["transfers"]] as string[][])("is not an option of %s", (...argv) => {
+    rejects([...argv, "--cache", "pages.db"], /--cache/);
+  });
+});

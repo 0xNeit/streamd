@@ -2828,6 +2828,29 @@ takes the same descriptors as `tail`. Failed pages are retried. It exits 0 when 
 interrupted or piped into something that stops reading, such as `head`, 1 on failure, and 2 for
 bad usage.
 
+`--cache <file>` on `query` and `record` keeps every page the fullnode marks settled in a SQLite
+file, through `CachingAdapter` and `SqlitePageStore`, and the next run
+over the same range reads those pages from the file without asking the node, ahead of any pool or
+archive:
+
+```sh
+streamd query --cache pages.db --from-version 7984000000 --to-version 7984001000 0x1::fungible_asset::Deposit
+```
+
+- **What repeats.** A page is reused only for the same request, so run the same descriptor and
+  range. Pages reaching the head are never settled, so a query to the default head end reads its
+  last page every time, and the head itself, the `--from-time` block search and anything a page
+  does not hold are always read from the node.
+- **Per source.** Pages are kept under the network, plus a SHA-256 of the `--node-url`s and an
+  `--archive` URL when given, since a custom node can serve any chain whatever `--network` says;
+  the URLs themselves, which may carry a provider's key, are not written. The network's own
+  endpoint and the same URL given with `--node-url` therefore keep separate pages. A chain that is
+  reset, such as devnet or a localnet, needs a fresh file.
+- **Failures.** A file that cannot be opened as SQLite exits 1 before any read. A broken entry, or
+  a read or write that fails later, counts as a miss: the page comes from the node, and the first
+  such failure is reported on stderr.
+- **Sui.** `SuiAdapter` never marks a page settled, so `--cache` with `--chain sui` is refused.
+
 ### Follow or query transfers
 
 `streamd transfers` prints [asset transfers](#asset-transfers) as JSON lines, through the chain
@@ -3090,6 +3113,10 @@ command prints them to stderr. `--from-version` and `--to-version` are both requ
 has an end. Failed pages are retried and not recorded, and the file appears only once the whole
 query has succeeded. Without `--out` the recording goes to stdout. It exits 0 on success, 1 on
 failure, 130 if interrupted and 2 for bad usage.
+
+With `--cache <file>`, as on [`query`](#query-a-range), settled pages come from the file when it
+has them. The recorder sits above the cache, so the recording holds every call either way and
+replays the same.
 
 ### Compare two nodes
 
