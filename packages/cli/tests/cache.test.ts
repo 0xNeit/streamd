@@ -88,6 +88,9 @@ describe("cacheNamespace", () => {
     expect(cacheNamespace({ network: "mainnet", nodeUrl: "https://a/v1", archive: "https://archive/v1" }))
       .not.toBe(cacheNamespace({ network: "mainnet", nodeUrl: "https://a/v1" }));
     expect(cacheNamespace({ network: "testnet", nodeUrl: "https://a/v1" })).toStartWith("aptos:testnet ");
+    expect(cacheNamespace({ network: "mainnet", archive: "https://z/v1" })).not.toBe(cacheNamespace({ network: "mainnet", nodeUrl: "https://z/v1" }));
+    expect(cacheNamespace({ network: "mainnet", nodeUrl: "https://a/v1", archive: "https://b/v1" }))
+      .not.toBe(cacheNamespace({ network: "mainnet", nodeUrl: "https://a/v1", extraNodeUrls: ["https://b/v1"] }));
   });
 });
 

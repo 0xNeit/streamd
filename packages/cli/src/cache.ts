@@ -17,10 +17,11 @@ export type PageCache = Required<Pick<CachingAdapterOptions, "store" | "onStoreE
  */
 export function cacheNamespace(endpoint: Pick<Endpoint, "network" | "nodeUrl" | "extraNodeUrls" | "archive">): string {
   const nodes = endpoint.nodeUrl === undefined ? [] : [endpoint.nodeUrl, ...(endpoint.extraNodeUrls ?? [])].sort();
-  const archive = endpoint.archive === undefined || endpoint.archive === "default" ? [] : [endpoint.archive];
-  const urls = [...nodes, ...archive];
+  const archive = endpoint.archive === undefined || endpoint.archive === "default" ? undefined : endpoint.archive;
   const network = `aptos:${endpoint.network}`;
-  return urls.length === 0 ? network : `${network} ${createHash("sha256").update(JSON.stringify(urls)).digest("hex")}`;
+  if (nodes.length === 0 && archive === undefined) return network;
+  // Each URL keeps its role, so one node and one archive never hash like a pool of two.
+  return `${network} ${createHash("sha256").update(JSON.stringify({ nodes, archive })).digest("hex")}`;
 }
 
 /**
