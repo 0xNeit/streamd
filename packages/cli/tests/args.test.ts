@@ -1247,3 +1247,37 @@ describe("--cache", () => {
     rejects([...argv, "--cache", "pages.db"], /--cache/);
   });
 });
+
+describe("--stats", () => {
+  const READS: string[][] = [
+    ["tail", TYPE],
+    ["forward", "--to", "https://hook.example", TYPE],
+    ["store", "--db", "e.db", TYPE],
+    ["query", "--from-version", "1", TYPE],
+    ["record", "--from-version", "1", "--to-version", "2", TYPE],
+    ["transfers"],
+    ["balances", "0x1"],
+    ["watch", "0x1"],
+    ["tx", `0x${"a".repeat(64)}`],
+  ];
+  const options = (argv: string[]) => (parseCommand(argv) as unknown as { options: Record<string, unknown> }).options;
+
+  it.each(READS)("%s takes it, and leaves it unset without it", (...argv) => {
+    expect(options([...argv, "--stats"]).stats).toBe(true);
+    expect("stats" in options(argv)).toBe(false);
+  });
+
+  it.each([
+    ["compare", "--against", "https://b.example/v1", "--from-version", "1", "--to-version", "2", TYPE],
+    ["check", TYPE],
+    ["handles", "0x1"],
+    ["name", "alice.apt"],
+    ["codegen", "0x1::coin"],
+  ] as string[][])("is not an option of %s", (...argv) => {
+    rejects([...argv, "--stats"], /--stats/);
+  });
+
+  it("takes no value", () => {
+    rejects(["tail", TYPE, "--stats=yes"], /--stats/);
+  });
+});
