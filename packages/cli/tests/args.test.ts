@@ -1046,3 +1046,31 @@ describe("parseCommand watch", () => {
     rejects(["watch", ...args], message);
   });
 });
+
+describe("parseCommand handles", () => {
+  const handles = (...argv: string[]) => {
+    const parsed = parseCommand(["handles", ...argv]);
+    if (parsed.command !== "handles") throw new Error("expected a handles command");
+    return parsed.options;
+  };
+
+  it("takes one address or name as given, with the endpoint flags", () => {
+    expect(handles("0x1")).toEqual({ network: "mainnet", address: "0x1" });
+    expect(handles("alice.apt", "--network", "testnet", "--node-url", "https://n.example/v1", "--api-key", "k")).toEqual({
+      network: "testnet",
+      nodeUrl: "https://n.example/v1",
+      apiKey: "k",
+      address: "alice.apt",
+    });
+  });
+
+  it.each([
+    [[], /handles needs one address or name/],
+    [[""], /handles needs one address or name/],
+    [["0x1", "0x2"], /handles needs one address or name/],
+    [["--chain", "sui", "0x1"], /handles is not available with --chain sui: Sui has no event handles/],
+    [["0x1", "--limit", "1"], /Unknown option '--limit'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(["handles", ...args], message);
+  });
+});
