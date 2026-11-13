@@ -2,7 +2,7 @@ import "./dom.js";
 import { describe, expect, it } from "bun:test";
 import { StrictMode, createElement } from "react";
 import { renderToString } from "react-dom/server";
-import { StreamdClient, StreamdNetworkError, type MoveEventType, type Reducer, type StreamdEvent } from "@streamd/core";
+import { StreamdClient, StreamdNetworkError, count, groupBy, type MoveEventType, type Reducer, type StreamdEvent } from "@streamd/core";
 import { StreamdProvider, useReduction, type UseReductionOptions, type UseReductionResult } from "../src/index.js";
 import { TYPE, TestAdapter, ev } from "./fixtures.js";
 import { render, rerender, unmount, waitFor } from "./render.js";
@@ -104,5 +104,37 @@ describe("useReduction", () => {
     const fetches = t.adapter.fetches;
     await new Promise((r) => setTimeout(r, 30));
     expect(t.adapter.fetches).toBe(fetches);
+  });
+});
+
+describe("useReduction with a ready-made reducer", () => {
+  const store = (version: bigint, owner: string): StreamdEvent => ({ ...ev(version), data: { store: owner } });
+
+  it("infers a groupBy value and restarts only for a different saved map", async () => {
+    const adapter = new TestAdapter([store(1n, "0xa"), store(2n, "0xb"), store(3n, "0xa")]);
+    const client = new StreamdClient({ adapter });
+    let starts = 0;
+    const reduce = client.reduce.bind(client);
+    client.reduce = ((...args: Parameters<typeof reduce>) => (starts++, reduce(...args))) as typeof client.reduce;
+    const byStore = groupBy("store", count());
+    const values: Map<string, bigint>[] = [];
+    function Stores({ initial }: { initial: Map<string, bigint> }) {
+      const { value } = useReduction({ kind: "module", eventType: TYPE }, byStore, initial, { ...FAST, client });
+      values.push(value);
+      // @ts-expect-error the counts are bigints
+      const wrong: Map<string, string> = value;
+      void wrong;
+      return null;
+    }
+    const root = await render(createElement(Stores, { initial: new Map() }));
+    await waitFor(() => expect(values.at(-1)).toEqual(new Map([["0xa", 2n], ["0xb", 1n]])));
+    adapter.events.push(store(4n, "0xc"));
+    await waitFor(() => expect(values.at(-1)).toEqual(new Map([["0xa", 2n], ["0xb", 1n], ["0xc", 1n]])));
+    await rerender(root, createElement(Stores, { initial: new Map() }));
+    expect(starts).toBe(1);
+    await rerender(root, createElement(Stores, { initial: new Map([["0xz", 10n]]) }));
+    await waitFor(() => expect(values.at(-1)).toEqual(new Map([["0xz", 10n], ["0xa", 2n], ["0xb", 1n], ["0xc", 1n]])));
+    expect(starts).toBe(2);
+    await unmount(root);
   });
 });

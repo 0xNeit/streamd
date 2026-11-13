@@ -21,6 +21,8 @@ export { RequestLimiter } from "./limiter.js";
 export { UNSIGNED_INTEGER, fieldDecoder } from "./decode.js";
 export { descriptorKey, onAbort, raceAbort, sleep } from "./utils.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
+export { count, groupBy, latest, sum } from "./reducers.js";
+export type { Fold } from "./reducers.js";
 export { WEBHOOK_SIGNATURE_HEADER, verifyWebhook } from "./webhook.js";
 export { formatAmount, startBalances } from "./balances.js";
 export type { BalanceReader, BalancesHost } from "./balances.js";

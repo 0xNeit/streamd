@@ -5,7 +5,7 @@ const HEX_ADDRESS = /^0x[0-9a-fA-F]{1,64}$/;
 const ARRAY_INDEX = /^(0|[1-9]\d*)$/;
 export const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFAULT_MAX_DEPTH = 8;
-const MISSING: unique symbol = Symbol("missing");
+export const MISSING: unique symbol = Symbol("missing");
 const DECIMAL_INTEGER = /^-?\d+$/;
 
 export type FieldPath = string | readonly (string | number)[];
@@ -207,7 +207,7 @@ export function whereCompare(
   };
 }
 
-function toInteger(value: unknown): bigint | undefined {
+export function toInteger(value: unknown): bigint | undefined {
   if (typeof value === "bigint") return value;
   if (typeof value === "number") return Number.isSafeInteger(value) ? BigInt(value) : undefined;
   return typeof value === "string" && DECIMAL_INTEGER.test(value) ? BigInt(value) : undefined;
@@ -324,7 +324,7 @@ function parseModuleId(id: string): string {
   return `${address}::${parts[1]}`;
 }
 
-function parseFieldPath(path: FieldPath): (string | number)[] {
+export function parseFieldPath(path: FieldPath): (string | number)[] {
   if (typeof path === "string") {
     if (path.length === 0) {
       throw new StreamdError("Field path must not be empty");
@@ -370,7 +370,7 @@ function validateFieldValue(value: FieldValue): void {
   }
 }
 
-function readField(
+export function readField(
   data: unknown,
   segments: readonly (string | number)[],
 ): unknown {

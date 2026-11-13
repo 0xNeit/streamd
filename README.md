@@ -482,6 +482,55 @@ gives up. `signal`, `unsubscribe()` and `destroy()` stop it at any stage without
 `onError`. `ready` never surfaces as an unhandled rejection, so ignoring it is safe. Like
 `once()` and `stream()`, a reduction is not counted by `listenerCount()`.
 
+#### Ready-made reducers
+
+`count()`, `sum(path)`, `latest()` and `groupBy(path, inner)` cover the common folds. Each is
+a plain reducer with the value it starts from attached as `.initial`, so it goes in the same
+place as a hand-written one, and the `initial` argument stays yours for a saved value:
+
+```ts
+import { count, groupBy, latest, sum } from "@streamd/core";
+
+const deposits = streamd.reduce(Deposit, count(), 0n, { fromVersion: -10_000n });
+const volume = streamd.reduce(Deposit, sum("amount"), 0n, { fromVersion: -10_000n });
+const newest = streamd.reduce(Deposit, latest(), undefined);
+
+const perStore = groupBy("store", count());
+const byStore = streamd.reduce(Deposit, perStore, perStore.initial, { fromVersion: -10_000n });
+byStore.value.get(store); // a bigint, or undefined for a store not seen yet
+```
+
+- **`count()`** - the number of events folded, a `bigint` from `0n`.
+- **`sum(path)`** - the total of the integer at `path` in `event.data`, a `bigint` from `0n`, at
+  full precision whether the field is a decoded `bigint`, a decimal string or a safe-integer
+  number. `path` is `whereField`'s: `"amount"`, `"inner.amount"`, `"legs.0.amount"` or a key
+  array. A missing or `null` field adds nothing, so a list of descriptors whose types lack it
+  still sums, and a mistyped path sums to `0n`. Any other value that is not an integer throws,
+  which stops the reduction as any reducer throw does, rather than leave the total wrong.
+- **`latest()`** - the most recently folded event, `undefined` before the first.
+- **`groupBy(path, inner)`** - a `Map` from the value at `path` to `inner` folded over that
+  key's events, each new key starting from `inner.initial`. Keys are strings: a string as the
+  source reports it, and a number, `bigint` or boolean through `String`. Addresses are not
+  padded, since `0x0a` and `0x000a` may be different byte strings; on one source an address is
+  always written the same way. A missing or `null` field skips the event, an object or array
+  throws. Every event returns a new `Map`, so the previous value and `initial` are never
+  changed. Groups nest: `groupBy("pool", groupBy("store", sum("amount")))`.
+
+Pass `fold.initial`, or a typed literal such as `new Map<string, bigint>()`, rather than a bare
+`new Map()`, which TypeScript reads as `Map<any, any>`. To resume, save the value in a
+JSON-safe form beside `cursor`: a `bigint` as `value.toString()` and back with `BigInt(...)`, a
+`groupBy` map as its entries, and `latest()`'s event with `serializeEvent` and `parseEvent`.
+
+```ts
+const save = () => storage.set(JSON.stringify({
+  groups: [...byStore.value].map(([key, n]) => [key, n.toString()]),
+  cursor: byStore.cursor,
+}));
+// after a restart
+const { groups, cursor } = JSON.parse(storage.get());
+const resumed = streamd.reduce(Deposit, perStore, new Map(groups.map(([key, n]) => [key, BigInt(n)])), { cursor });
+```
+
 ### Replay history
 
 `replay()` feeds a past range through an `on()` callback, so a handler written for live
@@ -2636,8 +2685,10 @@ function Feed() {
   `{ value, error, status }`. `value` is `initial` until the backfill finishes; `status` is
   `"idle"`, `"loading"`, `"live"`, or `"stopped"` once the backfill fails, the reducer throws or
   polling gives up. It restarts when the descriptor, options or `initial` change by value, and
-  calls the latest `reducer` without restarting. Keep `initial` plain, since it is compared by
-  value and a `Map` or class instance compares as empty.
+  calls the latest `reducer` without restarting. `initial` is compared by value, a `Map` by its
+  entries, so a fresh `new Map()` each render does not restart it; a class instance compares as
+  empty. The ready-made reducers work here as they do with `client.reduce`:
+  `useReduction(Deposit, perStore, perStore.initial)` returns a `Map<string, bigint>`.
 - **`useBalances(address, options?)`** runs `client.balances` and returns
   `{ balances, error, status }`. `balances` is a `ReadonlyMap` of every balance read so far, keyed
   by asset in long form as the client keys it (APT as `0x000...00a`), empty until the first read
