@@ -298,7 +298,8 @@ With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
 Every command takes --chain sui to read Sui instead of Aptos.
 tail, query, forward and store take --sender, --function and --where, which
-filter after fetching, so --limit counts the events that match.
+filter after fetching, so --limit counts the events that match; they also take
+--decode, which checks integer fields before --where runs.
 
 Options:
   --account <address>    events from transactions this account sent
@@ -320,6 +321,11 @@ Options:
                          all must hold: field a dotted path such as legs.0.amount, op
                          ==, !=, <, <=, > or >=; an integer value compares as an integer,
                          any other is matched as text under == or !=
+  --decode <paths>       turn these u64/u128/u256 data fields into integers before --where,
+                         comma-separated and repeatable, * for every array element
+                         (legs.*.amount); output and matches are unchanged, but a present
+                         field that is not an unsigned integer is an error: query exits 1,
+                         tail, forward and store report it and skip the event
   --limit <n>            tail: exit after printing n events; record, query: stop after n;
                          compare: page size
   --to <url>             forward: webhook URL (http or https, required)
