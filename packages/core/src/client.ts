@@ -21,6 +21,8 @@ import type {
   Subscription,
   SubscriptionOptions,
   TransactionCallback,
+  TransactionFilter,
+  TransactionGroup,
   Watch,
   WatchCallback,
   WatchOptions,
@@ -634,6 +636,24 @@ export class StreamdClient {
     filter?: EventFilter,
   ): Promise<EventOf<TData>[]> {
     return this.query.getEvents<TData>(descriptor, filter) as unknown as Promise<EventOf<TData>[]>;
+  }
+
+  /**
+   * A closed range as whole transactions, the query form of `onTransaction()`:
+   * each group holds a transaction's matching events in `eventIndex` order,
+   * its fields taken as `onTransaction()` takes them. `decode` and `where`
+   * apply per event first, so a transaction with no match yields no group.
+   * `limit` counts groups, and the walk reads on until a later version or the
+   * range's end so the last one is whole; `orderBy: "desc"` returns the last
+   * `limit` newest first; `withState` reads only the returned events. A list
+   * of descriptors is merged as `getEvents` merges it, each event once.
+   * `maxPages` caps the work, so a group at the cap may lack events past it.
+   */
+  async getTransactions<TData = unknown>(
+    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+    filter?: TransactionFilter,
+  ): Promise<TransactionGroup<TData>[]> {
+    return this.query.getTransactions<TData>(descriptor, filter);
   }
 
   /**

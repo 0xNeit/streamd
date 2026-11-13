@@ -1,6 +1,8 @@
 import { describe, it, expect } from "bun:test";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { EventQuery } from "../src/query.js";
+import { StreamdClient } from "../src/client.js";
+import { defineEvent } from "../src/define.js";
 import { StreamdError } from "../src/errors.js";
 import { whereField } from "../src/filter.js";
 import type {
@@ -120,5 +122,17 @@ describe("EventQuery.getTransactions", () => {
     await expect(refused({ offset: 1 })).rejects.toThrow(StreamdError);
     await expect(refused({ orderBy: "up" as "asc" })).rejects.toThrow(StreamdError);
     await expect(query.getTransactions([])).rejects.toThrow(StreamdError);
+  });
+});
+
+describe("StreamdClient.getTransactions", () => {
+  it("returns typed groups from the client's adapter", async () => {
+    const typed = defineEvent<{ keep: boolean }>(A);
+    const client = new StreamdClient({ adapter: new MemoryAdapter([ev(10, 0), ev(10, 1), ev(11, 0)]) });
+    const groups = await client.getTransactions(typed, { limit: 1 });
+    const keep: boolean = groups[0]!.events[1]!.data.keep;
+    expect(keep).toBe(true);
+    expect(shape(groups as TransactionGroup[])).toEqual(["10:0,1"]);
+    client.destroy();
   });
 });

@@ -123,6 +123,7 @@ export type {
   Transfer,
   BatchCallback,
   TransactionCallback,
+  TransactionFilter,
   TransactionGroup,
   Watch,
   WatchCallback,
