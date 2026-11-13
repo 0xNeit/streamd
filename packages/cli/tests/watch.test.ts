@@ -93,6 +93,25 @@ describe("runWatch", () => {
     client.destroy();
   });
 
+  it("prints no more than the limit when writes are slow", async () => {
+    const adapter = accounts({ [ALICE]: [ev(1), ev(3)], [BOB]: [ev(2), ev(4)] });
+    const client = new StreamdClient({ adapter });
+    const lines: string[] = [];
+    const io = {
+      client,
+      write: async (l: string) => {
+        await wait(20);
+        lines.push(l);
+      },
+      error: () => {},
+      signal: new AbortController().signal,
+    };
+    expect(await runWatch(options({ limit: 1 }), io)).toBe(0);
+    await wait(60);
+    expect(lines).toHaveLength(1);
+    client.destroy();
+  });
+
   it("applies the filter flags to every walk", async () => {
     const filter = { senders: [], functions: [], where: [{ path: "amount", op: ">=" as const, value: "30" }] };
     const { parsed } = await until(accounts({ [ALICE]: [ev(1), ev(3)], [BOB]: [ev(2), ev(4)] }), { filter }, 2);
@@ -186,7 +205,7 @@ describe("runWatch --cursor-file", () => {
     expect(saved[ALICE]).toBeDefined();
   });
 
-  it.each([["not json"], ["[]"], ['"x"'], ["null"]])("exits 1 on a malformed file %j", async (text) => {
+  it.each([["not json"], ["[]"], ['"x"'], ["null"], [`{"${ALICE}":5}`], [`{"${ALICE}":""}`]])("exits 1 on a malformed file %j", async (text) => {
     const cursorFile = join(dir(), "c");
     writeFileSync(cursorFile, text);
     const { code, errors, lines } = await until(accounts({ [ALICE]: [ev(1)] }), { cursorFile }, 1);
@@ -195,12 +214,42 @@ describe("runWatch --cursor-file", () => {
     expect(lines).toEqual([]);
   });
 
-  it("exits 1 on an entry watch refuses", async () => {
+  it("exits 1 on an address watch refuses", async () => {
     const cursorFile = join(dir(), "c");
-    writeFileSync(cursorFile, JSON.stringify({ [ALICE]: 5 }));
+    writeFileSync(cursorFile, JSON.stringify({ nope: "x" }));
     const { code, errors } = await until(accounts({ [ALICE]: [ev(1)] }), { cursorFile }, 1);
     expect(code).toBe(1);
-    expect(errors[0]).toContain(`Invalid watch position for ${ALICE}`);
+    expect(errors[0]).toContain("Not a valid Aptos address: nope");
+  });
+
+  it("never saves a position past a line the limit held back", async () => {
+    const cursorFile = join(dir(), "c");
+    const events = { [ALICE]: [ev(1)], [BOB]: [ev(2)] };
+    const client = new StreamdClient({ adapter: accounts(events) });
+    const lines: string[] = [];
+    const io = {
+      client,
+      write: async (l: string) => {
+        await wait(30);
+        lines.push(l);
+      },
+      error: () => {},
+      signal: new AbortController().signal,
+    };
+    expect(await runWatch(options({ limit: 1, cursorFile }), io)).toBe(0);
+    client.destroy();
+    const second = await until(accounts(events), { cursorFile }, 2);
+    const seen = tagged([...lines.map((l) => JSON.parse(l)), ...second.parsed]);
+    expect(seen).toContain("a1");
+    expect(seen).toContain("b2");
+  });
+
+  it("leaves a file no walk moved as it was", async () => {
+    const cursorFile = join(dir(), "c");
+    const text = `${JSON.stringify({ [CAROL]: "keep-me" })}\n`;
+    writeFileSync(cursorFile, text);
+    await until(accounts({}), { addresses: [ALICE], cursorFile }, 1);
+    expect(readFileSync(cursorFile, "utf8")).toBe(text);
   });
 
   it("exits 1 when the file cannot be written", async () => {

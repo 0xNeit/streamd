@@ -2919,7 +2919,7 @@ address it came from:
 streamd watch 0x4c... 0x9f...
 # from a version, resuming each address from its own saved position on the next run
 streamd watch 0x4c... 0x9f... --from-version 3000000000 --cursor-file watch.json
-# only withdrawals of at least 1 APT, under --decode
+# only events with an amount of at least 1 APT, under --decode
 streamd watch 0x4c... 0x9f... --decode amount --where "amount>=100000000"
 streamd watch --chain sui 0x7d... 0x2b...
 ```
@@ -2942,10 +2942,11 @@ named fields and ignores `address`, so a saved watch still loads through
 | `--limit <n>` | exit after printing `n` lines across every address |
 
 The cursor file holds `watch.positions`, one JSON object of long-form address to cursor, such as
-`{"0x00...4c":"3000000124"}`, replaced whole by a rename after each line and at exit. A saved
-position wins over `--from-version` and `--from-time` for that address. Positions for addresses
-not on the command line are left in the file untouched, so leaving an address out for one run does
-not lose its place. It is at least once: a restart can reprint part of a page.
+`{"0x00...4c":"3000000124"}`, replaced whole by a rename after a line, and at exit, whenever a
+position has moved. A saved position wins over `--from-version` and `--from-time` for that address.
+Positions for addresses not on the command line are carried through, their keys in long form, so
+leaving an address out for one run does not lose its place. It is at least once: a restart can
+reprint part of a page.
 
 An error on one walk is reported on stderr and retried. A walk that gives up is reported as
 `streamd: stopped following <address>` and the others carry on; its position stays in the cursor

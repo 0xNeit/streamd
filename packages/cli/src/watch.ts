@@ -31,6 +31,9 @@ function readPositions(path: string): Record<string, string> | undefined {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error(`not a JSON object of address to cursor: ${path}`);
   }
+  for (const [address, cursor] of Object.entries(parsed)) {
+    if (typeof cursor !== "string" || cursor === "") throw new Error(`no cursor for ${address}: ${path}`);
+  }
   return parsed as Record<string, string>;
 }
 
@@ -54,7 +57,8 @@ export function runWatch(options: WatchCommandOptions, io: WatchIO): Promise<num
   if (io.signal.aborted) return Promise.resolve(0);
 
   let watch: Watch | undefined;
-  let saved = positions === undefined ? undefined : JSON.stringify(positions);
+  // Set once watch starts, in watch's own key order, so an unmoved file is not rewritten.
+  let saved: string | undefined;
   /** Saves every position if any moved; false when the file cannot be written. */
   const checkpoint = (): boolean => {
     if (cursorFile === undefined || watch === undefined) return true;
@@ -72,26 +76,36 @@ export function runWatch(options: WatchCommandOptions, io: WatchIO): Promise<num
 
   return new Promise<number>((resolve) => {
     let done = false;
+    let release!: () => void;
+    // Held until the end, so a walk with no room under the limit never finishes its page.
+    const ended = new Promise<void>((r) => (release = r));
     const finish = (code: number) => {
       if (done) return;
       done = true;
       io.signal.removeEventListener("abort", aborted);
       watch?.unsubscribe();
+      release();
       resolve(checkpoint() ? code : 1);
     };
     const aborted = () => finish(0);
     io.signal.addEventListener("abort", aborted);
 
     let printed = 0;
+    // Walks write concurrently, so a line's place under the limit is taken before its write.
+    let reserved = 0;
     // The walk awaits each handler, so awaiting the write holds back its next poll.
     const print = async (event: StreamdEvent, address: string) => {
       if (done) return;
+      // Returning would let this walk's position move past an event never printed.
+      if (limit !== undefined && reserved >= limit) return ended;
+      reserved++;
       try {
         await io.write(watchLine(event, address));
       } catch (err) {
-        if (!io.signal.aborted) report(err);
+        if (!done && !io.signal.aborted) report(err);
         return finish(io.signal.aborted ? 0 : 1);
       }
+      if (done) return;
       if (!checkpoint()) return finish(1);
       if (limit !== undefined && ++printed >= limit) finish(0);
     };
@@ -116,6 +130,7 @@ export function runWatch(options: WatchCommandOptions, io: WatchIO): Promise<num
           if (left.size === 0) finish(1);
         },
       });
+      saved = JSON.stringify(watch.positions);
     } catch (err) {
       report(err);
       finish(1);
