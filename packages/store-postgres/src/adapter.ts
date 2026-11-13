@@ -69,7 +69,7 @@ function count(value: number | undefined, label: string, fallback: number): numb
   return value;
 }
 
-/** No start position means the oldest version kept; only asking for pruned history fails. */
+/** Fails a read that asks for pruned history; a read with no start begins at the edge instead. */
 function checkEdge(start: Position, toVersion: bigint | undefined, edge: bigint): void {
   // A cursor at edge - 1 fails too: it cannot show whether that version's later events went.
   if (start.version < edge || (toVersion !== undefined && toVersion < edge)) {
