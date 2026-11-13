@@ -13,8 +13,12 @@ export interface Endpoint {
   chain?: "sui";
   /** With `chain: "sui"`, only mainnet, testnet or devnet. */
   network: Network;
-  /** A fullnode URL, or a gRPC URL for Sui. */
+  /** A fullnode URL, or a gRPC URL for Sui; the first `--node-url`. */
   nodeUrl?: string;
+  /** The other `--node-url`s, pooled with `nodeUrl`; never empty when set. */
+  extraNodeUrls?: string[];
+  /** `--archive`: an archive fullnode URL, or `"default"` for Aptos mainnet's; never set for Sui. */
+  archive?: string;
   /** Sent to the fullnode as the SDK's API key; never printed, and never set for Sui. */
   apiKey?: string;
 }
@@ -219,14 +223,17 @@ const DESCRIPTOR_OPTIONS = {
 const ENDPOINT_OPTIONS = {
   chain: { type: "string" },
   network: { type: "string" },
-  "node-url": { type: "string" },
+  "node-url": { type: "string", multiple: true },
   "api-key": { type: "string" },
 } as const;
+
+/** The endpoint of a command that reads events through the adapter. */
+const READ_OPTIONS = { ...ENDPOINT_OPTIONS, archive: { type: "string" } } as const;
 
 const SOURCE_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
   ...FILTER_OPTIONS,
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   "from-version": { type: "string" },
   "poll-interval": { type: "string" },
   help: { type: "boolean", short: "h" },
@@ -278,7 +285,7 @@ export const MAX_COMPARE_RANGE = 100_000n;
 
 const RECORD_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -290,7 +297,7 @@ const QUERY_OPTIONS = {
   ...FROM_TIME,
   ...FILTER_OPTIONS,
   ...DESCRIPTOR_OPTIONS,
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -299,7 +306,7 @@ const QUERY_OPTIONS = {
 } as const;
 
 const TRANSFERS_OPTIONS = {
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   ...FROM_TIME,
   asset: { type: "string" },
   account: { type: "string" },
@@ -315,7 +322,7 @@ const TRANSFERS_OPTIONS = {
 } as const;
 
 const BALANCES_OPTIONS = {
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   asset: { type: "string", multiple: true },
   limit: { type: "string" },
   "poll-interval": { type: "string" },
@@ -323,7 +330,7 @@ const BALANCES_OPTIONS = {
 } as const;
 
 const WATCH_OPTIONS = {
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   ...FILTER_OPTIONS,
   ...FROM_TIME,
   "from-version": { type: "string" },
@@ -340,7 +347,7 @@ const HANDLES_OPTIONS = {
 } as const;
 
 const TX_OPTIONS = {
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   timeout: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -435,7 +442,12 @@ Options:
   --resource <type>      every change to this resource (with --account)
   --network <name>       mainnet, testnet, devnet, movement-mainnet, or movement-testnet
                          (default: mainnet)
-  --node-url <url>       fullnode URL, overriding the network's default
+  --node-url <url>       fullnode URL, overriding the network's default; repeatable on
+                         commands that read events (not check, codegen, handles, name or
+                         compare), spreading reads across the nodes, the first taking --api-key
+  --archive <url>        those commands: send what the fullnodes refuse as pruned to this
+                         archive node, or with default to Aptos mainnet's (Aptos only), which
+                         gets the API key only when there is no --node-url
   --api-key <key>        fullnode API key, sent as a bearer token (or set ${API_KEY_ENV}, used
                          only on mainnet, testnet and devnet without --node-url)
   --from-version <n>     start at this version instead of the chain head
@@ -519,15 +531,25 @@ function chain(raw: string | undefined): boolean {
 
 interface EndpointFlags {
   network?: string;
-  "node-url"?: string;
+  "node-url"?: string[];
   "api-key"?: string;
+  archive?: string;
 }
 
-/** The chain, network and node URL; the key is `withKey`'s, so each command checks it where it always has. */
-function endpoint(values: EndpointFlags, sui: boolean): Endpoint {
+/**
+ * The chain, network and node URLs; the key is `withKey`'s, so each command
+ * checks it where it always has. `oneNode` names a command that reads outside
+ * the adapter, which takes one node only.
+ */
+function endpoint(values: EndpointFlags, sui: boolean, oneNode?: string): Endpoint {
   const options: Endpoint = { network: network(values.network) };
-  const url = nodeUrl(values["node-url"]);
+  const [url, ...extra] = (values["node-url"] ?? []).map(nodeUrl);
   if (url !== undefined) options.nodeUrl = url;
+  if (extra.length > 0) {
+    if (oneNode !== undefined) throw new UsageError(`--node-url is given once for ${oneNode}: it reads one node`);
+    options.extraNodeUrls = extra;
+  }
+  if (values.archive !== undefined) options.archive = archive(values.archive, options.network, sui);
   if (sui) {
     if (!SUI_NETWORKS.includes(options.network)) {
       throw new UsageError(`--network with --chain sui must be one of ${SUI_NETWORKS.join(", ")}: ${options.network}`);
@@ -604,11 +626,24 @@ function httpUrl(raw: string): URL | undefined {
   return url?.protocol === "http:" || url?.protocol === "https:" ? url : undefined;
 }
 
-function nodeUrl(raw: string | undefined): string | undefined {
-  if (raw === undefined) return undefined;
+function nodeUrl(raw: string): string {
   if (httpUrl(raw) === undefined) {
     throw new UsageError(`--node-url must be an http or https URL: ${raw}`);
   }
+  return raw;
+}
+
+function archive(raw: string, network: Network, sui: boolean): string {
+  if (sui) {
+    throw new UsageError("--archive is not available with --chain sui: Sui's archive needs a native gRPC transport, which the CLI does not include");
+  }
+  if (raw === "default") {
+    if (network !== "mainnet") {
+      throw new UsageError(`--archive default is Aptos mainnet's archive; ${network} has none, so give an archive node's URL`);
+    }
+    return raw;
+  }
+  if (httpUrl(raw) === undefined) throw new UsageError(`--archive must be an http or https URL, or default: ${raw}`);
   return raw;
 }
 
@@ -884,7 +919,7 @@ function parseCompare(args: string[]): ParsedCommand {
   const sui = chain(values.chain);
   const options: CompareOptions = {
     descriptor: descriptor("compare", values, positionals, sui),
-    ...endpoint(values, sui),
+    ...endpoint(values, sui, "compare"),
     against: values.against,
     fromVersion,
     toVersion,
@@ -983,7 +1018,7 @@ function parseHandles(args: string[]): ParsedCommand {
     throw new UsageError("handles needs one address or name");
   }
   if (chain(values.chain)) throw new UsageError("handles is not available with --chain sui: Sui has no event handles");
-  const options: HandlesOptions = { address, ...endpoint(values, false) };
+  const options: HandlesOptions = { address, ...endpoint(values, false, "handles") };
   return { command: "handles", options: withKey(options, values["api-key"]) };
 }
 
@@ -996,7 +1031,7 @@ function parseName(args: string[]): ParsedCommand {
   if (value === undefined || value === "" || rest.length > 0) {
     throw new UsageError("name needs one name or address");
   }
-  const options: NameOptions = { value, ...endpoint(values, chain(values.chain)) };
+  const options: NameOptions = { value, ...endpoint(values, chain(values.chain), "name") };
   return { command: "name", options: withKey(options, values["api-key"]) };
 }
 
@@ -1078,7 +1113,7 @@ function parseCheck(args: string[]): ParsedCommand {
   const sui = chain(values.chain);
   const options: CheckOptions = {
     descriptor: descriptor("check", {}, positionals, sui) as ModuleEventDescriptor,
-    ...endpoint(values, sui),
+    ...endpoint(values, sui, "check"),
   };
   withKey(options, values["api-key"]);
   return { command: "check", options };
@@ -1107,7 +1142,7 @@ function parseCodegen(args: string[]): ParsedCommand {
   const sui = chain(values.chain);
   const options: CodegenOptions = {
     modules: positionals.map((p) => moduleRef(p, sui)),
-    ...endpoint(values, sui),
+    ...endpoint(values, sui, "codegen"),
   };
   withKey(options, values["api-key"]);
   if (values.out !== undefined) {

@@ -1126,3 +1126,102 @@ describe("parseCommand name", () => {
     rejects(["name", ...args], message);
   });
 });
+
+describe("several nodes", () => {
+  const A = "https://a.example/v1";
+  const B = "https://b.example/v1";
+  const C = "http://127.0.0.1:8080/v1";
+  const HASH = `0x${"ab".repeat(32)}`;
+  const READING: string[][] = [
+    ["tail", TYPE],
+    ["forward", "--to", "https://hook.example", TYPE],
+    ["store", "--db", "events.db", TYPE],
+    ["query", "--from-version", "1", TYPE],
+    ["record", "--from-version", "1", "--to-version", "2", TYPE],
+    ["tx", HASH],
+    ["transfers"],
+    ["balances", ADDR],
+    ["watch", ADDR],
+  ];
+  const options = (argv: string[]) => (parseCommand(argv) as unknown as { options: Record<string, unknown> }).options;
+
+  it.each(READING)("%s pools every --node-url after the first, the key going with the first", (...argv) => {
+    const parsed = options([...argv, "--node-url", A, "--node-url", B, "--node-url", C, "--api-key", "k"]);
+    expect(parsed).toMatchObject({ nodeUrl: A, extraNodeUrls: [B, C], apiKey: "k" });
+  });
+
+  it.each(READING)("%s with one --node-url parses as before", (...argv) => {
+    const parsed = options([...argv, "--node-url", A]);
+    expect(parsed.nodeUrl).toBe(A);
+    expect("extraNodeUrls" in parsed).toBe(false);
+  });
+
+  it("pools Sui gRPC URLs too", () => {
+    expect(options(["tail", "--chain", "sui", "--node-url", "https://a.example:443", "--node-url", "https://b.example:443", TYPE]))
+      .toMatchObject({ chain: "sui", nodeUrl: "https://a.example:443", extraNodeUrls: ["https://b.example:443"] });
+  });
+
+  it("checks every URL", () => {
+    rejects(["tail", TYPE, "--node-url", A, "--node-url", "ftp://b.example"], /--node-url must be an http or https URL: ftp:/);
+  });
+
+  it.each([
+    ["check", [TYPE]],
+    ["codegen", ["0x1::coin"]],
+    ["handles", [ADDR]],
+    ["name", ["alice.apt"]],
+    ["compare", ["--against", B, "--from-version", "1", "--to-version", "2", TYPE]],
+  ])("%s refuses a second --node-url", (command, rest) => {
+    rejects([command, ...rest, "--node-url", A, "--node-url", B], new RegExp(`--node-url is given once for ${command}: it reads one node`));
+    expect(options([command, ...rest, "--node-url", A]).nodeUrl).toBe(A);
+  });
+});
+
+describe("--archive", () => {
+  const HASH = `0x${"ab".repeat(32)}`;
+  const READING: string[][] = [
+    ["tail", TYPE],
+    ["forward", "--to", "https://hook.example", TYPE],
+    ["store", "--db", "events.db", TYPE],
+    ["query", "--from-version", "1", TYPE],
+    ["record", "--from-version", "1", "--to-version", "2", TYPE],
+    ["tx", HASH],
+    ["transfers"],
+    ["balances", ADDR],
+    ["watch", ADDR],
+  ];
+  const options = (argv: string[]) => (parseCommand(argv) as unknown as { options: Record<string, unknown> }).options;
+
+  it.each(READING)("%s takes a URL or default on mainnet, beside several nodes", (...argv) => {
+    expect(options([...argv, "--archive", "https://archive.example/v1"]).archive).toBe("https://archive.example/v1");
+    expect(options([...argv, "--archive", "default"]).archive).toBe("default");
+    expect(options([...argv, "--node-url", "https://a.example/v1", "--node-url", "https://b.example/v1", "--archive", "default"]))
+      .toMatchObject({ archive: "default", extraNodeUrls: ["https://b.example/v1"] });
+    expect("archive" in options(argv)).toBe(false);
+  });
+
+  it.each(["testnet", "devnet", "movement-mainnet", "movement-testnet"])("refuses default on %s, but takes a URL", (network) => {
+    rejects(["tail", TYPE, "--network", network, "--archive", "default"], new RegExp(`--archive default is Aptos mainnet's archive; ${network} has none`));
+    expect(options(["tail", TYPE, "--network", network, "--archive", "https://archive.example/v1"]).archive).toBe("https://archive.example/v1");
+  });
+
+  it("refuses a value that is not a URL", () => {
+    rejects(["query", "--from-version", "1", TYPE, "--archive", "archive.example"], /--archive must be an http or https URL, or default: archive.example/);
+    rejects(["query", "--from-version", "1", TYPE, "--archive", "ftp://archive.example"], /--archive must be an http or https URL/);
+  });
+
+  it("is refused with --chain sui", () => {
+    rejects(["tail", "--chain", "sui", TYPE, "--archive", "default"], /--archive is not available with --chain sui: Sui's archive needs a native gRPC transport/);
+  });
+
+  const SINGLE: string[][] = [
+    ["check", TYPE],
+    ["codegen", "0x1::coin"],
+    ["handles", ADDR],
+    ["name", "alice.apt"],
+    ["compare", "--against", "https://b.example/v1", "--from-version", "1", "--to-version", "2", TYPE],
+  ];
+  it.each(SINGLE)("is not an option of %s", (...argv) => {
+    rejects([...argv, "--archive", "default"], /--archive/);
+  });
+});
