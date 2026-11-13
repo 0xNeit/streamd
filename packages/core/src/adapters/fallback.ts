@@ -47,6 +47,7 @@ export class FallbackAdapter implements EventAdapter {
   declare getBlock?: EventAdapter["getBlock"];
   declare getBlockHeights?: EventAdapter["getBlockHeights"];
   declare getTransactionEvents?: EventAdapter["getTransactionEvents"];
+  declare getTransactionEventsByVersion?: EventAdapter["getTransactionEventsByVersion"];
   declare simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
   declare view?: EventAdapter["view"];
   declare readObjects?: EventAdapter["readObjects"];
@@ -83,6 +84,11 @@ export class FallbackAdapter implements EventAdapter {
     if (lookups.length > 0) {
       this.getTransactionEvents = (hash, descriptor) =>
         tryInOrder(lookups, (adapter) => adapter.getTransactionEvents!(hash, descriptor));
+    }
+    const byVersion = this.sources("getTransactionEventsByVersion");
+    if (byVersion.length > 0) {
+      this.getTransactionEventsByVersion = (version, descriptor) =>
+        tryInOrder(byVersion, (adapter) => adapter.getTransactionEventsByVersion!(version, descriptor));
     }
     const simulators = this.sources("simulateTransactionEvents");
     if (simulators.length > 0) {

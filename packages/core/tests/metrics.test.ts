@@ -165,3 +165,13 @@ describe("adapterMetrics readObjects", () => {
     expect(adapterMetrics(new MemoryAdapter()).adapter.readObjects).toBeUndefined();
   });
 });
+
+describe("adapterMetrics lookup by version", () => {
+  it("counts getTransactionEventsByVersion under its own name, only when the adapter has it", async () => {
+    const source = Object.assign(new MemoryAdapter(), { getTransactionEventsByVersion: async () => undefined });
+    const metrics = adapterMetrics(source);
+    expect(await metrics.adapter.getTransactionEventsByVersion!(4n)).toBeUndefined();
+    expect(metrics.snapshot().getTransactionEventsByVersion).toMatchObject({ requests: 1, errors: 0 });
+    expect(adapterMetrics(new MemoryAdapter()).adapter.getTransactionEventsByVersion).toBeUndefined();
+  });
+});

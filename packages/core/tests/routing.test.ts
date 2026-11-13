@@ -486,3 +486,29 @@ describe("RoutingAdapter readObjects", () => {
     );
   });
 });
+
+describe("RoutingAdapter lookup by version", () => {
+  const found = { version: 4n, success: true, vmStatus: "Executed successfully", events: [] };
+  const looking = (label: string): EventAdapter => ({
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    getTransactionEventsByVersion: async () => ({ ...found, vmStatus: label }),
+  });
+  const bare: EventAdapter = { fetchEvents: async () => ({ events: [], hasMore: false }) };
+  const moduleDescriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+
+  it("routes by the descriptor's kind, and to default without a descriptor", async () => {
+    const router = new RoutingAdapter({ module: looking("module"), default: looking("default") });
+    expect((await router.getTransactionEventsByVersion!(4n, moduleDescriptor))!.vmStatus).toBe("module");
+    expect((await router.getTransactionEventsByVersion!(4n))!.vmStatus).toBe("default");
+  });
+
+  it("refuses by name a route that cannot look up by version", async () => {
+    expect(new RoutingAdapter({ module: bare }).getTransactionEventsByVersion).toBeUndefined();
+    const router = new RoutingAdapter({ module: bare, default: looking("default") });
+    const err = await router.getTransactionEventsByVersion!(4n, moduleDescriptor).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect((err as Error).message).toBe('The adapter for descriptor kind "module" does not look up transactions by version');
+    const none = await new RoutingAdapter({ module: looking("module") }).getTransactionEventsByVersion!(4n).catch((e: unknown) => e);
+    expect((none as Error).message).toContain("needs a descriptor or a default adapter");
+  });
+});

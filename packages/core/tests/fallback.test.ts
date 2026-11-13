@@ -478,3 +478,23 @@ describe("FallbackAdapter readObjects", () => {
     expect(new FallbackAdapter([new MemoryAdapter()]).readObjects).toBeUndefined();
   });
 });
+
+describe("FallbackAdapter lookup by version", () => {
+  const found = { version: 4n, success: true, vmStatus: "Executed successfully", events: [] };
+  const bare: EventAdapter = { fetchEvents: async () => ({ events: [], hasMore: false }) };
+
+  it("skips sources without it and falls back past a network failure", async () => {
+    const down: EventAdapter = {
+      ...bare,
+      getTransactionEventsByVersion: vi.fn(async () => {
+        throw new StreamdNetworkError("down", 503);
+      }),
+    };
+    const up: EventAdapter = { ...bare, getTransactionEventsByVersion: vi.fn(async () => found) };
+    const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    expect(await new FallbackAdapter([bare, down, up]).getTransactionEventsByVersion!(4n, descriptor)).toBe(found);
+    expect(down.getTransactionEventsByVersion).toHaveBeenCalledTimes(1);
+    expect(up.getTransactionEventsByVersion).toHaveBeenCalledWith(4n, descriptor);
+    expect(new FallbackAdapter([bare]).getTransactionEventsByVersion).toBeUndefined();
+  });
+});

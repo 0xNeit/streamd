@@ -43,6 +43,7 @@ export class RoutingAdapter implements EventAdapter {
   declare getBlock?: EventAdapter["getBlock"];
   declare getBlockHeights?: EventAdapter["getBlockHeights"];
   declare getTransactionEvents?: EventAdapter["getTransactionEvents"];
+  declare getTransactionEventsByVersion?: EventAdapter["getTransactionEventsByVersion"];
   declare simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
   declare view?: EventAdapter["view"];
   declare readObjects?: EventAdapter["readObjects"];
@@ -108,7 +109,12 @@ export class RoutingAdapter implements EventAdapter {
     if (served("getBlock")) this.getBlock = (d, height) => this.block(d, height);
     if (served("getBlockHeights")) this.getBlockHeights = (d) => this.blockHeights(d);
     if (served("getTransactionEvents")) {
-      this.getTransactionEvents = (hash, d) => this.transactionEvents(hash, d);
+      this.getTransactionEvents = async (hash, d) =>
+        this.lookup(d, "getTransactionEvents").getTransactionEvents!(hash, d);
+    }
+    if (served("getTransactionEventsByVersion")) {
+      this.getTransactionEventsByVersion = async (version, d) =>
+        this.lookup(d, "getTransactionEventsByVersion").getTransactionEventsByVersion!(version, d);
     }
     if (served("simulateTransactionEvents")) {
       this.simulateTransactionEvents = (simulation, d) => this.simulation(simulation, d);
@@ -169,11 +175,11 @@ export class RoutingAdapter implements EventAdapter {
     return adapter.getBlockHeights(descriptor);
   }
 
-  /** From the adapter for `descriptor`'s kind, or the `default` adapter without one. */
-  private async transactionEvents(
-    transactionHash: string,
-    descriptor?: EventDescriptor,
-  ): Promise<TransactionEvents | undefined> {
+  /** The adapter for `descriptor`'s kind, or the `default` adapter without one, that has `method`. */
+  private lookup(
+    descriptor: EventDescriptor | undefined,
+    method: "getTransactionEvents" | "getTransactionEventsByVersion",
+  ): EventAdapter {
     const adapter =
       descriptor === undefined ? this.defaultAdapter : this.selectAdapter(descriptor);
     if (adapter === undefined) {
@@ -181,14 +187,15 @@ export class RoutingAdapter implements EventAdapter {
         "RoutingAdapter needs a descriptor or a default adapter to look up a transaction",
       );
     }
-    if (adapter.getTransactionEvents === undefined) {
+    if (adapter[method] === undefined) {
+      const what = method === "getTransactionEvents" ? "transactions" : "transactions by version";
       throw new StreamdError(
         descriptor === undefined
-          ? "The default adapter does not look up transactions"
-          : `The adapter for descriptor kind "${descriptor.kind}" does not look up transactions`,
+          ? `The default adapter does not look up ${what}`
+          : `The adapter for descriptor kind "${descriptor.kind}" does not look up ${what}`,
       );
     }
-    return adapter.getTransactionEvents(transactionHash, descriptor);
+    return adapter;
   }
 
   /** From the adapter for `descriptor`'s kind, or the `default` adapter without one. */

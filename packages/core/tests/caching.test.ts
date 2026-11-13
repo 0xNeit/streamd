@@ -355,3 +355,21 @@ describe("CachingAdapter readObjects", () => {
     expect(new CachingAdapter(new MemoryAdapter()).readObjects).toBeUndefined();
   });
 });
+
+describe("CachingAdapter lookup by version", () => {
+  it("passes getTransactionEventsByVersion through uncached, only when the source has it", async () => {
+    const found = { version: 4n, success: true, vmStatus: "Executed successfully", events: [] };
+    const seen: unknown[] = [];
+    const descriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+    const cache = new CachingAdapter({
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      getTransactionEventsByVersion: async (...args) => (seen.push(args), found),
+    });
+    expect(await cache.getTransactionEventsByVersion!(4n, descriptor)).toBe(found);
+    expect(await cache.getTransactionEventsByVersion!(4n)).toBe(found);
+    expect(seen).toEqual([[4n, descriptor], [4n, undefined]]);
+    expect(
+      new CachingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).getTransactionEventsByVersion,
+    ).toBeUndefined();
+  });
+});
