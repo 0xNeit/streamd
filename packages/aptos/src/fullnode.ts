@@ -339,6 +339,35 @@ export class FullnodeScanAdapter implements EventAdapter {
   }
 
   /**
+   * Every event of the transaction at `version`, mapped as the hash lookup
+   * maps them; `undefined` when the node has none there yet (404). A pruned
+   * version fails with status 410.
+   */
+  async getTransactionEventsByVersion(version: bigint): Promise<TransactionEvents | undefined> {
+    const ledgerVersion = requireLedgerVersion(version);
+    try {
+      let txn: TransactionWithEvents;
+      try {
+        txn = (await this.aptos.getTransactionByVersion({ ledgerVersion })) as unknown as TransactionWithEvents;
+      } catch (err) {
+        if ((err as { status?: unknown } | null)?.status === 404) return undefined;
+        throw err;
+      }
+      if (String(txn.version) !== String(ledgerVersion) || typeof txn.success !== "boolean") {
+        throw new StreamdError(`Fullnode returned a malformed transaction for version ${ledgerVersion}`);
+      }
+      return {
+        version: ledgerVersion,
+        success: txn.success,
+        vmStatus: String(txn.vm_status ?? ""),
+        events: toStreamdEvents(txn, ledgerVersion, () => true),
+      };
+    } catch (err) {
+      throw toStreamdError(err, `transaction at version ${ledgerVersion}`);
+    }
+  }
+
+  /**
    * Simulates `simulation.transaction` on the fullnode, which executes it
    * against current state and commits nothing. A failure keeps the SDK's
    * message and status but not its `cause`, which holds the request: header
