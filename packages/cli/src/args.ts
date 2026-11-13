@@ -87,6 +87,25 @@ export interface QueryOptions extends Endpoint {
   decode?: string[];
 }
 
+/** Bounded when `toVersion` is set, through `getTransfers`; otherwise followed, through `transfers`. */
+export interface TransfersOptions extends Endpoint {
+  /** An asset as the chain's client takes it; validated there. */
+  asset?: string;
+  /** An address or name; validated and resolved by the chain's client. */
+  account?: string;
+  withAssetInfo?: true;
+  fromVersion?: bigint;
+  fromTime?: bigint;
+  toVersion?: bigint | "head";
+  limit?: number;
+  /** Bounded only. */
+  order?: "asc" | "desc";
+  /** Follow only, as are `batchSize` and `cursorFile`. */
+  pollInterval?: number;
+  batchSize?: number;
+  cursorFile?: string;
+}
+
 export interface RecordOptions extends Endpoint {
   descriptor: EventDescriptor;
   fromVersion: bigint;
@@ -130,6 +149,7 @@ export type ParsedCommand =
   | { command: "record"; options: RecordOptions }
   | { command: "query"; options: QueryOptions }
   | { command: "tx"; options: TxOptions }
+  | { command: "transfers"; options: TransfersOptions }
   | { command: "codegen"; options: CodegenOptions }
   | { command: "compare"; options: CompareOptions };
 
@@ -234,6 +254,22 @@ const QUERY_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const TRANSFERS_OPTIONS = {
+  ...ENDPOINT_OPTIONS,
+  ...FROM_TIME,
+  asset: { type: "string" },
+  account: { type: "string" },
+  "with-asset-info": { type: "boolean" },
+  "from-version": { type: "string" },
+  "to-version": { type: "string" },
+  limit: { type: "string" },
+  order: { type: "string" },
+  "poll-interval": { type: "string" },
+  "batch-size": { type: "string" },
+  "cursor-file": { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const TX_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   timeout: { type: "string" },
@@ -276,6 +312,7 @@ export const USAGE = `Usage:
   streamd store --db <file> --account <address> [...]
   streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
   streamd tx <hash | digest>
+  streamd transfers [--asset <asset>] [--account <address | name>] [--to-version <n | head>] [options]
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
   streamd codegen [--out <file>] [--validators] (<address> | <address>::<module>)...
@@ -288,6 +325,8 @@ store follows matching events into a SQLite file, resuming from the cursor
 saved there when run again.
 query reads a closed range of history as JSON lines, then exits.
 tx waits for a transaction and prints its events, exiting 1 if it failed.
+transfers prints asset transfers as JSON lines: followed live, or with
+--to-version read over a closed range, then exits.
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 compare reads one range from two nodes and prints what one has that the other
@@ -302,7 +341,11 @@ filter after fetching, so --limit counts the events that match; they also take
 --decode, which checks integer fields before --where runs.
 
 Options:
-  --account <address>    events from transactions this account sent
+  --account <address>    events from transactions this account sent; transfers: what this
+                         address or name (ANS, or SuiNS with --chain sui) sent or received
+  --asset <asset>        transfers: only this asset, a fungible-asset or token object address,
+                         a coin type or a legacy token id (a coin type with --chain sui)
+  --with-asset-info      transfers: add each asset's symbol and decimals
   --handle <struct>      legacy event handle struct (with --account and --field)
   --field <name>         event handle field name
   --creation-number <n>  event handle by creation number (with --account)
@@ -326,10 +369,10 @@ Options:
                          (legs.*.amount); output and matches are unchanged, but a present
                          field that is not an unsigned integer is an error: query exits 1,
                          tail, forward and store report it and skip the event
-  --limit <n>            tail: exit after printing n events; record, query: stop after n;
+  --limit <n>            tail, transfers: exit after printing n; record, query: stop after n;
                          compare: page size
   --to <url>             forward: webhook URL (http or https, required)
-  --cursor-file <path>   tail: save and resume from here; forward: cursor file
+  --cursor-file <path>   tail, transfers (following): save and resume from here; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE})
   --format <name>        tail: json, or pretty for aligned lines in UTC (default: json)
   --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
@@ -341,9 +384,11 @@ Options:
   --db <file>            store: SQLite file to write (required)
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
   --to-version <n>       record: end of the range (required); query: default the head;
-                         forward: deliver up to here, then exit 0
-  --batch-size <n>       forward: most events per POST (default: 25)
-  --order <asc|desc>     query: oldest or newest first (default: asc)
+                         forward: deliver up to here, then exit 0; transfers: a version or
+                         head, read the range instead of following (needs a start)
+  --batch-size <n>       forward: most events per POST (default: 25); transfers (following):
+                         transactions per page (default: 25)
+  --order <asc|desc>     query, transfers with --to-version: oldest or newest first (default: asc)
   --out <file>           codegen, record: write to this file instead of stdout
   --validators           codegen: also write an is<Type> runtime check per type
   --chain <name>         aptos or sui (default: aptos); with sui, --network is mainnet,
@@ -779,6 +824,54 @@ function parseQuery(args: string[]): ParsedCommand {
   return { command: "query", options: withFilter(options, values) };
 }
 
+function parseTransfers(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: TRANSFERS_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (positionals.length > 0) throw new UsageError(`transfers takes no event types: ${positionals[0]}`);
+  for (const flag of ["asset", "account", "cursor-file"] as const) {
+    if (values[flag] === "") throw new UsageError(`--${flag} must not be empty`);
+  }
+  const sui = chain(values.chain);
+  const options: TransfersOptions = endpoint(values, sui);
+  withKey(options, values["api-key"]);
+  const fromVersion = version(values["from-version"]);
+  const fromTime = startTime(values);
+  const raw = values["to-version"];
+  const toVersion = raw === "head" ? "head" : version(raw, "to-version");
+  if (toVersion === undefined) {
+    if (values.order !== undefined) throw new UsageError("--order needs --to-version");
+  } else {
+    for (const flag of ["cursor-file", "poll-interval", "batch-size"] as const) {
+      if (values[flag] !== undefined) throw new UsageError(`--${flag} follows live, so it cannot be combined with --to-version`);
+    }
+    if (fromVersion === undefined && fromTime === undefined) {
+      throw new UsageError("--to-version needs --from-version or --from-time, where the range starts");
+    }
+    if (toVersion !== "head" && fromVersion !== undefined && toVersion < fromVersion) {
+      throw new UsageError("--to-version must not be below --from-version");
+    }
+    const order = values.order ?? "asc";
+    if (order !== "asc" && order !== "desc") throw new UsageError(`--order must be asc or desc: ${order}`);
+    options.toVersion = toVersion;
+    options.order = order;
+  }
+  if (values.asset !== undefined) options.asset = values.asset;
+  if (values.account !== undefined) options.account = values.account;
+  if (values["with-asset-info"]) options.withAssetInfo = true;
+  if (fromVersion !== undefined) options.fromVersion = fromVersion;
+  if (fromTime !== undefined) options.fromTime = fromTime;
+  const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  if (limit !== undefined) options.limit = limit;
+  const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
+  if (pollInterval !== undefined) options.pollInterval = pollInterval;
+  const batchSize = integer("batch-size", values["batch-size"], 1, 1000);
+  if (batchSize !== undefined) options.batchSize = batchSize;
+  if (values["cursor-file"] !== undefined) options.cursorFile = values["cursor-file"];
+  return { command: "transfers", options };
+}
+
 const TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/;
 // Base58 of 32 bytes; SuiClient checks the exact length.
 const SUI_DIGEST = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -862,6 +955,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "record") return parseRecord(rest);
   if (command === "query") return parseQuery(rest);
   if (command === "tx") return parseTx(rest);
+  if (command === "transfers") return parseTransfers(rest);
   if (command === "codegen") return parseCodegen(rest);
   if (command === "compare") return parseCompare(rest);
   throw new UsageError(`unknown command: ${command}`);

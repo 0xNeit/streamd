@@ -16,6 +16,7 @@ import type {
   RecordOptions,
   StoreOptions,
   TailOptions,
+  TransfersOptions,
   TxOptions,
 } from "./args.js";
 import { aptosConfig, chainFor } from "./chain.js";
@@ -31,6 +32,7 @@ import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
 import { openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
+import { runTransfers } from "./transfers.js";
 import { runTx } from "./tx.js";
 
 // The SDK logs notes for custom networks with console.info, which would corrupt JSON lines on stdout.
@@ -153,6 +155,22 @@ async function tx(options: TxOptions): Promise<number> {
   }
 }
 
+async function transfers(options: TransfersOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runTransfers(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
 async function record(options: RecordOptions): Promise<number> {
   const controller = new AbortController();
   process.once("SIGINT", () => controller.abort());
@@ -259,6 +277,7 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === "record") return record(parsed.options);
   if (parsed.command === "query") return query(parsed.options);
   if (parsed.command === "tx") return tx(parsed.options);
+  if (parsed.command === "transfers") return transfers(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 
