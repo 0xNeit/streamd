@@ -2491,8 +2491,19 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   It is `text` rather than `jsonb` because `jsonb` cannot hold a NUL character, which on-chain
   strings may carry; the cast fails only on such a row. Saved cursors are in `streamd_cursors`.
 - `PostgresStoreAdapter` serves `module`, `account` (by stored `sender`) and `handle` (by
-  `creationNumber`) descriptors, with the SQLite adapter's cursors, paging and options.
-- No `prune` or `PageStore` yet.
+  `creationNumber`) descriptors, with the SQLite adapter's cursors, paging and options. Head and
+  earliest are the highest and lowest stored versions, never below a pruned edge.
+- **Retention.** `await store.prune({ beforeVersion })` deletes every event below that version
+  and leaves saved cursors, with the SQLite store's rules: a `PostgresStoreAdapter` read whose
+  `fromVersion`, `cursor` or `toVersion` is below the edge fails with a `StreamdNetworkError`
+  (status 410), a follower on a rare event fails once the edge passes its last match, a fetch with
+  no start begins at the oldest version kept, and the edge only rises. The delete and the edge
+  are one statement, and each read takes the edge and its page in one statement, so a prune on
+  another connection of a `Pool` never lands between them. The edge is the row
+  `streamd:pruned-before` in `streamd_cursors`, so a database made before `prune` existed needs no
+  migration, and that cursor name is reserved. Postgres reuses the space after autovacuum; run
+  `VACUUM FULL` yourself to return it to the system.
+- No `PageStore` yet.
 
 ## React hooks
 

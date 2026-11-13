@@ -43,6 +43,9 @@ const SCHEMA = [
 // before pruning existed needs no migration: the row appears on the first prune.
 export const PRUNED_BEFORE = "streamd:pruned-before";
 
+/** The pruned edge as a `numeric` expression: `0` until something is pruned. */
+export const EDGE = `coalesce((SELECT cursor::numeric FROM streamd_cursors WHERE name = '${PRUNED_BEFORE}'), 0)`;
+
 const ready = new WeakMap<PostgresClient, Promise<void>>();
 
 /**
