@@ -818,3 +818,48 @@ describe("--chain sui on every command", () => {
     });
   });
 });
+
+describe("filter flags", () => {
+  const SENDER = `0x${"0".repeat(62)}ab`;
+  const flags = ["--sender", "0xab", "--function", "0x1::coin::transfer", "--where", "amount>=5", "--where", "kind==burn"];
+  const expected = {
+    senders: [SENDER],
+    functions: ["0x1::coin::transfer"],
+    where: [
+      { path: "amount", op: ">=", value: "5" },
+      { path: "kind", op: "==", value: "burn" },
+    ],
+  };
+
+  it.each([
+    ["tail", []],
+    ["forward", ["--to", "https://example.com"]],
+    ["store", ["--db", "x.db"]],
+    ["query", ["--from-version", "1"]],
+  ])("sets filter on %s", (command, extra) => {
+    const parsed = parseCommand([command, ...extra, ...flags, TYPE]);
+    expect((parsed as { options: { filter?: unknown } }).options.filter).toEqual(expected);
+  });
+
+  it("leaves filter unset without the flags", () => {
+    expect("filter" in tail(TYPE)).toBe(false);
+  });
+
+  it("works under --chain sui with a long Sui address", () => {
+    const sui = `0x${"cd".repeat(32)}`;
+    expect(tail("--chain", "sui", "--sender", sui, "0x2::coin::CoinEvent").filter?.senders).toEqual([sui]);
+  });
+
+  it("is refused on commands that do not filter", () => {
+    rejects(["record", "--from-version", "1", "--to-version", "2", "--sender", "0x1", TYPE], /Unknown option '--sender'/);
+  });
+
+  it.each([
+    [["--sender", "nope"], /--sender must be an address/],
+    [["--function", "transfer"], /--function:/],
+    [["--where", "amount~5"], /--where must be <field><op><value>/],
+    [["--where", "amount<x"], /--where amount<x: < needs an integer value/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(["tail", ...args, TYPE], message);
+  });
+});
