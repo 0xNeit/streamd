@@ -2565,7 +2565,8 @@ streamd tail --account 0x1 --handle "0x1::coin::CoinStore<0x1::aptos_coin::Aptos
 | Option | Meaning |
 | --- | --- |
 | `--network <name>` | `mainnet`, `testnet`, or `devnet` (default `mainnet`) |
-| `--node-url <url>` | fullnode URL, overriding the network's default |
+| `--node-url <url>` | fullnode URL, overriding the network's default; repeat it to spread reads |
+| `--archive <url>` | archive node for pruned reads, or `default` for Aptos mainnet's |
 | `--from-version <n>` | start at this version instead of the chain head |
 | `--poll-interval <ms>` | delay between polls (default `1000`) |
 | `--limit <n>` | exit after printing `n` events |
@@ -2593,6 +2594,28 @@ has for long-lived handles, it fails at the start, with `--handle` as well.
 
 `--network` takes `mainnet`, `testnet`, `devnet`, `movement-mainnet` or `movement-testnet`, and
 `--node-url` overrides its fullnode.
+
+Commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`, `transfers`,
+`balances` and `watch`) take `--node-url` more than once, spreading reads across the nodes through
+[`PoolAdapter`](#spreading-load-across-fullnodes): each walk stays on one node, and a node that
+answers `429` is set aside for 30 seconds while the others carry on. `--api-key` goes to the first
+node only. They also take `--archive <url>`, which sends only what the fullnodes refuse as pruned
+(`410`) to that archive node through [`ArchiveFallbackAdapter`](#history-the-fullnode-has-pruned),
+behind the one node or the pool; `--archive default` is Aptos mainnet's archive, refused on other
+networks:
+
+```sh
+streamd query --node-url https://my-node.example/v1 --node-url https://api.mainnet.aptoslabs.com/v1 \
+  --from-time 1h 0x1::transaction_fee::FeeStatement
+streamd query --archive default --from-version 1000 --limit 5 0x1::block::NewBlockEvent
+```
+
+Aptos Labs' archive gets the API key only when there is no `--node-url`, so a key reaches it only
+when it was already going to Aptos Labs' fullnode; an archive URL gets none. The archive allows
+few anonymous requests, so keep archive reads to narrow ranges. `check`, `codegen`, `handles`,
+`name` and `compare` read one node: a second `--node-url` there is refused, as is `--archive`.
+With `--chain sui`, gRPC URLs pool the same way (transfers and balances read the first node), and
+`--archive` is refused, since Sui's archive needs a native gRPC transport the CLI does not include.
 
 Every command takes `--api-key <key>` for a keyed fullnode, sent as `Authorization: Bearer`, the
 SDK's API key. Without the flag, `APTOS_API_KEY` from the environment is used, but only on
