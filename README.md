@@ -2161,7 +2161,8 @@ const streamd = new StreamdClient({
 ```
 
 Pass `store` to keep final pages past a restart. `@streamd/store-sqlite` ships
-one, and anything with `get(key)` and `set(key, page)` over strings, synchronous
+one, `@streamd/store-postgres` another (`PostgresPageStore`, see
+[Store events in Postgres](#store-events-in-postgres)), and anything with `get(key)` and `set(key, page)` over strings, synchronous
 or not, works:
 
 ```ts
@@ -2175,7 +2176,7 @@ const adapter = new CachingAdapter(new FullnodeScanAdapter(aptos), { store });
 Memory is checked first, then the store, then the source. A store that fails or
 holds an unreadable entry counts as a miss and reaches `onStoreError`, so a broken
 cache never fails a read. A page's key names the request and not the network, so
-`namespace` is required: use one per network. `maxEntries` on `SqlitePageStore`
+`namespace` is required: use one per network. `maxEntries` on either store
 drops the oldest written; without it the table grows without limit. A `bigint`
 inside an event's `data` comes back as a decimal string, as `serializeEvent`
 writes it.
@@ -2503,7 +2504,22 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   `streamd:pruned-before` in `streamd_cursors`, so a database made before `prune` existed needs no
   migration, and that cursor name is reserved. Postgres reuses the space after autovacuum; run
   `VACUUM FULL` yourself to return it to the system.
-- No `PageStore` yet.
+- **Page cache.** `PostgresPageStore` is `SqlitePageStore` over the same client, for
+  `CachingAdapter`'s `store`, so a pool of processes shares one cache:
+
+  ```ts
+  import { PostgresPageStore } from "@streamd/store-postgres";
+
+  const store = new PostgresPageStore(pool, { namespace: "mainnet", maxEntries: 100_000 });
+  const adapter = new CachingAdapter(new FullnodeScanAdapter(aptos), { store });
+  ```
+
+  Same `namespace`, keys and `maxEntries` (the oldest written across the table, every namespace
+  together, a rewrite counting as new, no default). Pages are kept in `streamd_pages`, created
+  on first use without the event tables. A write and its eviction are one statement, so two
+  processes writing at once may leave the table a row or two over the bound until the next
+  write, never under it. A namespace holding a NUL character is refused, since `text` cannot
+  store one. `streamd query --cache` still takes a SQLite file.
 
 ## React hooks
 
