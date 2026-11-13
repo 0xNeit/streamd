@@ -258,6 +258,7 @@ const FORWARD_OPTIONS = {
 const STORE_OPTIONS = {
   ...SOURCE_OPTIONS,
   db: { type: "string" },
+  postgres: { type: "string" },
   name: { type: "string" },
 } as const;
 
@@ -802,15 +803,32 @@ function parseForward(args: string[]): ParsedCommand {
   return { command: "forward", options };
 }
 
+/** An empty host is allowed: the driver then reads `PGHOST` or uses localhost. */
+function isPostgresUrl(value: string): boolean {
+  if (!/^postgres(ql)?:\/\//i.test(value)) return false;
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function parseStore(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: STORE_OPTIONS, allowPositionals: true, strict: true }),
   );
   if (values.help) return { command: "help" };
-  if (values.db === undefined) throw new UsageError("store needs --db <file>");
-  if (values.db === "") throw new UsageError("--db must not be empty");
+  const { db, postgres } = values;
+  if (db === undefined && postgres === undefined) throw new UsageError("store needs --db <file> or --postgres <url>");
+  if (db !== undefined && postgres !== undefined) throw new UsageError("--db and --postgres cannot be used together");
+  if (db === "") throw new UsageError("--db must not be empty");
+  // The value may carry a password, so the refusal never repeats it.
+  if (postgres !== undefined && !isPostgresUrl(postgres)) {
+    throw new UsageError("--postgres must be a postgres:// or postgresql:// URL");
+  }
   if (values.name === "") throw new UsageError("--name must not be empty");
-  const options: StoreOptions = { ...source("store", values, positionals), db: values.db };
+  const options: StoreOptions = { ...source("store", values, positionals), ...(db !== undefined ? { db } : { postgres }) };
   if (values.name !== undefined) options.name = values.name;
   return { command: "store", options };
 }
