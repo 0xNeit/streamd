@@ -177,3 +177,97 @@ export function typesOfLists(): void {
   }
   void (useTransactions(X).data[0]!.events[0]!.data.x satisfies string);
 }
+
+describe("useTransactions history", () => {
+  const HISTORY = { ...FAST, history: 2 } satisfies UseTransactionsOptions;
+  const many = () => [1n, 2n, 3n, 4n, 5n].flatMap((v) => [ev(v), ev(v, 1)]);
+
+  it("shows loading, then the last n transactions in one update, then live ones with none repeated", async () => {
+    const t = setup(many());
+    const root = await render(t.el(TYPE, HISTORY));
+    await waitFor(() => expect(t.groups()).toEqual(["4:0,1", "5:0,1"]));
+    expect(t.results.some((r) => r.status === "loading")).toBe(true);
+    // Never a partial history on screen: lengths go 0, then 2.
+    expect([...new Set(t.results.map((r) => r.data.length))]).toEqual([0, 2]);
+    t.chain.memory.push(ev(6n), ev(7n), ev(7n, 1));
+    await waitFor(() => expect(t.groups()).toEqual(["4:0,1", "5:0,1", "6:0", "7:0,1"]));
+    expect(t.last().status).toBe("live");
+    await pause(30);
+    expect(t.groups()).toEqual(["4:0,1", "5:0,1", "6:0", "7:0,1"]);
+    await unmount(root);
+  });
+
+  it("misses nothing committed between the read and following", async () => {
+    const t = setup(many());
+    const read = t.client.getTransactions.bind(t.client);
+    t.client.getTransactions = (async (...args: Parameters<typeof read>) => {
+      const groups = await read(...args);
+      t.chain.memory.push(ev(8n), ev(8n, 1));
+      return groups;
+    }) as typeof t.client.getTransactions;
+    const root = await render(t.el([TYPE, OTHER], { ...HISTORY, history: 1 }));
+    await waitFor(() => expect(t.groups()).toEqual(["5:0,1", "8:0,1"]));
+    await pause(30);
+    expect(t.groups()).toEqual(["5:0,1", "8:0,1"]);
+    await unmount(root);
+  });
+
+  it("applies where to the read and keeps maxTransactions as the ceiling", async () => {
+    const t = setup(many());
+    const root = await render(
+      t.el(TYPE, { ...FAST, history: 10, maxTransactions: 3, where: (e) => e.version % 2n === 1n }),
+    );
+    await waitFor(() => expect(t.groups()).toEqual(["1:0,1", "3:0,1", "5:0,1"]));
+    t.chain.memory.push(ev(6n), ev(7n));
+    await waitFor(() => expect(t.groups()).toEqual(["3:0,1", "5:0,1", "7:0"]));
+    await unmount(root);
+  });
+
+  it("follows from the window's start when nothing in it matched", async () => {
+    const t = setup([ev(1n, 0, OTHER), ev(2n, 0, OTHER)]);
+    const root = await render(t.el(TYPE, HISTORY));
+    await waitFor(() => expect(t.last().status).toBe("live"));
+    expect(t.groups()).toEqual([]);
+    t.chain.memory.push(ev(3n), ev(3n, 1));
+    await waitFor(() => expect(t.groups()).toEqual(["3:0,1"]));
+    await unmount(root);
+  });
+
+  it("stops with the error when the read fails", async () => {
+    const t = setup(many());
+    t.chain.failing = true;
+    const errors: Error[] = [];
+    const root = await render(t.el(TYPE, { ...HISTORY, onError: (e) => errors.push(e) }));
+    await waitFor(() => expect(t.last().status).toBe("stopped"));
+    expect(t.last().error).toBeInstanceOf(StreamdNetworkError);
+    expect(errors).toHaveLength(1);
+    expect(t.subscribes()).toBe(0);
+    await unmount(root);
+  });
+
+  it("refuses history without a start, with a cursor, or not a positive integer", () => {
+    const t = setup();
+    for (const options of [
+      { history: 3 },
+      { fromVersion: 0n, history: 3, cursor: "c" },
+      { fromVersion: 0n, history: 0 },
+      { fromVersion: 0n, history: 1.5 },
+    ]) {
+      expect(() => renderToString(t.el(TYPE, options))).toThrow(StreamdError);
+    }
+  });
+
+  it("leaves nothing running when unmounted during the read", async () => {
+    const t = setup(many());
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const fetch = t.chain.memory.fetchEvents.bind(t.chain.memory);
+    t.chain.memory.fetchEvents = async (d, o) => (await gate, fetch(d, o));
+    const root = await render(t.el(TYPE, HISTORY));
+    expect(t.last().status).toBe("loading");
+    await unmount(root);
+    release();
+    await pause(30);
+    expect(t.subscribes()).toBe(0);
+  });
+});
