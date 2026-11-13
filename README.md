@@ -2504,8 +2504,8 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   `streamd:pruned-before` in `streamd_cursors`, so a database made before `prune` existed needs no
   migration, and that cursor name is reserved. Postgres reuses the space after autovacuum; run
   `VACUUM FULL` yourself to return it to the system.
-- **Page cache.** `PostgresPageStore` is `SqlitePageStore` over the same client, for
-  `CachingAdapter`'s `store`, so a pool of processes shares one cache:
+- **Page cache.** `PostgresPageStore` is the Postgres counterpart of `SqlitePageStore`, over
+  the same client, for `CachingAdapter`'s `store`, so a pool of processes shares one cache:
 
   ```ts
   import { PostgresPageStore } from "@streamd/store-postgres";
@@ -2520,6 +2520,11 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   processes writing at once may leave the table a row or two over the bound until the next
   write, never under it. A namespace holding a NUL character is refused, since `text` cannot
   store one. `streamd query --cache` still takes a SQLite file.
+
+  Because the bound is table-wide, one instance's `maxEntries` evicts every namespace's pages,
+  so give unrelated services their own database or schema. Stored pages are trusted as they
+  are: a final page is served without asking the node again, so grant write access to
+  `streamd_pages` only to the processes doing the caching.
 
 ## React hooks
 

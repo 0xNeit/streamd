@@ -51,15 +51,18 @@ export const EDGE = `coalesce((SELECT cursor::numeric FROM streamd_cursors WHERE
 const ready = new WeakMap<readonly string[], WeakMap<PostgresClient, Promise<void>>>();
 
 /**
- * Creates the tables once per client. A failure is not remembered, so the
- * next call tries again.
+ * Runs `schema`'s statements once per client and schema. A failure is not
+ * remembered, so the next call tries again.
  */
 export function ensureSchema(client: PostgresClient, schema: readonly string[] = SCHEMA): Promise<void> {
   if (typeof client?.query !== "function") {
     throw new StreamdError("Expected a Postgres client with query()");
   }
-  const clients = ready.get(schema) ?? new WeakMap<PostgresClient, Promise<void>>();
-  ready.set(schema, clients);
+  let clients = ready.get(schema);
+  if (clients === undefined) {
+    clients = new WeakMap();
+    ready.set(schema, clients);
+  }
   let pending = clients.get(client);
   if (pending === undefined) {
     pending = (async () => {
