@@ -318,7 +318,8 @@ describe("client.balanceAt", () => {
   it("names an asset whose view aborts, and passes a network error through", async () => {
     const { adapter, state } = chain();
     const client = testClient({ adapter });
-    await expect(client.balanceAt(ALICE, NFT, 1n)).rejects.toThrow("Not a fungible asset or coin type");
+    const aborted = await client.balanceAt(ALICE, NFT, 1n).catch((e) => e);
+    expect(aborted.message).toBe(`Not a fungible asset or coin type, or no balance at version 1: ${NFT}: aborted`);
     state.failViews = new StreamdNetworkError("pruned", 410);
     const err = await client.balanceAt(ALICE, undefined, 1n).catch((e) => e);
     expect(err).toBe(state.failViews);

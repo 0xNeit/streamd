@@ -1646,16 +1646,20 @@ const usdcThen = await streamd.balanceAt("alice.apt", usdc, 8038000000n);
 
 - **Arguments.** `asset` is one asset in any form `balances` takes, or `undefined` for APT.
   `version` is an absolute version, a `bigint`; there is no `"head"` or relative form,
-  since `balances` reads the head. A name resolves at the head, to the
-  address it points to now, not the one it pointed to at `version`.
+  since `balances` reads the head. A name resolves at the head, to the address it points
+  to now, not the one it pointed to at `version`.
 - **One request.** One view call through the client's limiter, so `maxConcurrentRequests`,
   `maxRequestsPerSecond` and `requestTimeout` apply, and no retry.
 - **Errors.** A malformed address, asset or version, a list of assets, a legacy token id, or
-  an adapter without `view` rejects with `StreamdError` before anything is sent, and a token
-  object with "Not a fungible asset or coin type". A version the fullnode has pruned rejects
-  with its `StreamdNetworkError`, status 410; an `ArchiveFallbackAdapter` over
+  an adapter without `view` rejects with `StreamdError` before anything is sent. A view that
+  aborts, as for a token object, rejects with a `StreamdError` naming the asset, the version
+  and the node's reason. A version the fullnode has pruned rejects with its
+  `StreamdNetworkError`, `statusCode` 410; an `ArchiveFallbackAdapter` over
   `networks.aptosMainnetArchive` answers it from the archive instead. A version above the head
-  rejects with status 404.
+  rejects with `statusCode` 404.
+- **Old history.** Before the fungible-asset migration, `coin::balance` aborts for an account
+  with no `CoinStore` for the coin (`ECOIN_STORE_NOT_PUBLISHED`) rather than reading `0`, and in
+  the earliest mainnet history it is not yet a view function at all; both reject as an abort.
 - **Aptos only.** Sui reads a balance only at its latest state, so `SuiClient` has no
   `balanceAt`.
 
