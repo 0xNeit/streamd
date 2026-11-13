@@ -2841,10 +2841,11 @@ streamd query --cache pages.db --from-version 7984000000 --to-version 7984001000
   range. Pages reaching the head are never settled, so a query to the default head end reads its
   last page every time, and the head itself, the `--from-time` block search and anything a page
   does not hold are always read from the node.
-- **Per source.** Pages are kept under the network, plus the `--node-url`s and an `--archive` URL
-  when given, since a custom node can serve any chain whatever `--network` says. The network's
-  own endpoint and the same URL given with `--node-url` therefore keep separate pages. A node that
-  is reset, such as a localnet, needs a fresh file.
+- **Per source.** Pages are kept under the network, plus a SHA-256 of the `--node-url`s and an
+  `--archive` URL when given, since a custom node can serve any chain whatever `--network` says;
+  the URLs themselves, which may carry a provider's key, are not written. The network's own
+  endpoint and the same URL given with `--node-url` therefore keep separate pages. A chain that is
+  reset, such as devnet or a localnet, needs a fresh file.
 - **Failures.** A file that cannot be opened as SQLite exits 1 before any read. A broken entry, or
   a read or write that fails later, counts as a miss: the page comes from the node, and the first
   such failure is reported on stderr.

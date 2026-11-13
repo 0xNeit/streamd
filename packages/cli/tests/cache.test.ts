@@ -77,13 +77,17 @@ async function query(db: Database, range: { fromVersion: bigint; toVersion: bigi
 }
 
 describe("cacheNamespace", () => {
-  it("names the network, then the sorted node URLs, then an archive URL", () => {
+  it("names the network, then a hash of the sorted node URLs and an archive URL", () => {
     expect(cacheNamespace({ network: "mainnet" })).toBe("aptos:mainnet");
     expect(cacheNamespace({ network: "testnet", archive: "default" })).toBe("aptos:testnet");
-    expect(cacheNamespace({ network: "mainnet", nodeUrl: "https://b/v1", extraNodeUrls: ["https://a/v1"] }))
-      .toBe("aptos:mainnet https://a/v1 https://b/v1");
+    const pool = cacheNamespace({ network: "mainnet", nodeUrl: "https://b/SECRET/v1", extraNodeUrls: ["https://a/v1"] });
+    expect(pool).toMatch(/^aptos:mainnet [0-9a-f]{64}$/);
+    expect(pool).not.toContain("SECRET");
+    expect(cacheNamespace({ network: "mainnet", nodeUrl: "https://a/v1", extraNodeUrls: ["https://b/SECRET/v1"] })).toBe(pool);
+    expect(cacheNamespace({ network: "mainnet", nodeUrl: "https://a/v1" })).not.toBe(pool);
     expect(cacheNamespace({ network: "mainnet", nodeUrl: "https://a/v1", archive: "https://archive/v1" }))
-      .toBe("aptos:mainnet https://a/v1 https://archive/v1");
+      .not.toBe(cacheNamespace({ network: "mainnet", nodeUrl: "https://a/v1" }));
+    expect(cacheNamespace({ network: "testnet", nodeUrl: "https://a/v1" })).toStartWith("aptos:testnet ");
   });
 });
 

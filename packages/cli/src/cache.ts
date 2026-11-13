@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CachingAdapterOptions } from "@streamd/core";
 import { SqlitePageStore } from "@streamd/store-sqlite";
 import type { Endpoint } from "./args.js";
@@ -10,13 +11,16 @@ export type PageCache = Required<Pick<CachingAdapterOptions, "store" | "onStoreE
 /**
  * Where a cache file keeps one source's pages. A custom node may serve any
  * chain whatever `--network` says, so its URLs are part of the name, sorted
- * because a pool's order does not change what it serves; Aptos mainnet's
- * preset archive is the network's own, so only an archive URL is named.
+ * because a pool's order does not change what it serves, and hashed because a
+ * URL can carry a provider's key. Aptos mainnet's preset archive is the
+ * network's own, so only an archive URL is named.
  */
 export function cacheNamespace(endpoint: Pick<Endpoint, "network" | "nodeUrl" | "extraNodeUrls" | "archive">): string {
   const nodes = endpoint.nodeUrl === undefined ? [] : [endpoint.nodeUrl, ...(endpoint.extraNodeUrls ?? [])].sort();
   const archive = endpoint.archive === undefined || endpoint.archive === "default" ? [] : [endpoint.archive];
-  return [`aptos:${endpoint.network}`, ...nodes, ...archive].join(" ");
+  const urls = [...nodes, ...archive];
+  const network = `aptos:${endpoint.network}`;
+  return urls.length === 0 ? network : `${network} ${createHash("sha256").update(JSON.stringify(urls)).digest("hex")}`;
 }
 
 /**
