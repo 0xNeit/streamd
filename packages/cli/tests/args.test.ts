@@ -1046,3 +1046,56 @@ describe("parseCommand watch", () => {
     rejects(["watch", ...args], message);
   });
 });
+
+describe("parseCommand handles", () => {
+  const handles = (...argv: string[]) => {
+    const parsed = parseCommand(["handles", ...argv]);
+    if (parsed.command !== "handles") throw new Error("expected a handles command");
+    return parsed.options;
+  };
+
+  it("takes one address or name as given, with the endpoint flags", () => {
+    expect(handles("0x1")).toEqual({ network: "mainnet", address: "0x1" });
+    expect(handles("alice.apt", "--network", "testnet", "--node-url", "https://n.example/v1", "--api-key", "k")).toEqual({
+      network: "testnet",
+      nodeUrl: "https://n.example/v1",
+      apiKey: "k",
+      address: "alice.apt",
+    });
+  });
+
+  it.each([
+    [[], /handles needs one address or name/],
+    [[""], /handles needs one address or name/],
+    [["0x1", "0x2"], /handles needs one address or name/],
+    [["--chain", "sui", "0x1"], /handles is not available with --chain sui: Sui has no event handles/],
+    [["0x1", "--limit", "1"], /Unknown option '--limit'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(["handles", ...args], message);
+  });
+});
+
+describe("parseCommand name", () => {
+  const name = (...argv: string[]) => {
+    const parsed = parseCommand(["name", ...argv]);
+    if (parsed.command !== "name") throw new Error("expected a name command");
+    return parsed.options;
+  };
+
+  it("takes one name or address as given, on either chain", () => {
+    expect(name("alice.apt")).toEqual({ network: "mainnet", value: "alice.apt" });
+    expect(name("0x1", "--api-key", "k")).toEqual({ network: "mainnet", value: "0x1", apiKey: "k" });
+    expect(name("--chain", "sui", "--network", "testnet", "@alice")).toEqual({ network: "testnet", chain: "sui", value: "@alice" });
+  });
+
+  it.each([
+    [[], /name needs one name or address/],
+    [[""], /name needs one name or address/],
+    [["alice.apt", "bob.apt"], /name needs one name or address/],
+    [["--chain", "sui", "--api-key", "k", "alice.sui"], /--api-key is not sent to Sui nodes/],
+    [["--chain", "sui", "--network", "movement-mainnet", "alice.sui"], /--network with --chain sui must be one of/],
+    [["alice.apt", "--limit", "1"], /Unknown option '--limit'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(["name", ...args], message);
+  });
+});

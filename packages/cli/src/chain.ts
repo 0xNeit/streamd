@@ -1,5 +1,5 @@
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { AptosClient, FullnodeScanAdapter, checkDescriptor, networks } from "@streamd/aptos";
+import { AptosClient, FullnodeScanAdapter, checkDescriptor, networks, primaryName, resolveName } from "@streamd/aptos";
 import type { EventAdapter, ModuleEventDescriptor, StreamdClient } from "@streamd/core";
 import type { Endpoint } from "./args.js";
 import type { TypeChecks } from "./check.js";
@@ -11,6 +11,10 @@ export interface Chain {
   /** An adapter over the endpoint's node, or over `nodeUrl`, which gets no API key. */
   adapter(nodeUrl?: string): EventAdapter & { getHeadVersion(): Promise<bigint> };
   check(descriptor: ModuleEventDescriptor): Promise<TypeChecks>;
+  /** The long-form address a name points to; an address comes back in long form with no read. */
+  resolveName(nameOrAddress: string): Promise<string>;
+  /** The address's primary name, checked forward, or `undefined` when it has none. */
+  primaryName(address: string): Promise<string | undefined>;
 }
 
 const NETWORKS = {
@@ -40,6 +44,8 @@ function aptosChain(endpoint: Endpoint): Chain {
     adapter: (nodeUrl) =>
       new FullnodeScanAdapter(new Aptos(nodeUrl === undefined ? config : aptosConfig({ network: endpoint.network, nodeUrl }))),
     check: (descriptor) => checkDescriptor(new Aptos(config), descriptor),
+    resolveName: (value) => resolveName(new Aptos(config), value),
+    primaryName: (address) => primaryName(new Aptos(config), address),
   };
 }
 

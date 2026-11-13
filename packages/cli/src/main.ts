@@ -1,6 +1,7 @@
 import { once } from "node:events";
 import { writeFile } from "node:fs/promises";
-import { getAptosFullNode } from "@aptos-labs/ts-sdk";
+import { Aptos, getAptosFullNode } from "@aptos-labs/ts-sdk";
+import { listEventHandles } from "@streamd/aptos";
 import { StreamdError } from "@streamd/core";
 import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
@@ -12,6 +13,8 @@ import type {
   CompareOptions,
   Endpoint,
   ForwardOptions,
+  HandlesOptions,
+  NameOptions,
   ParsedCommand,
   QueryOptions,
   RecordOptions,
@@ -31,6 +34,8 @@ import { loadSui } from "./sui.js";
 import type { SuiNetworkPreset } from "@streamd/sui";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
+import { runHandles } from "./handles.js";
+import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
 import { openDatabase, runStore } from "./store.js";
@@ -207,6 +212,33 @@ async function watch(options: WatchCommandOptions): Promise<number> {
   }
 }
 
+async function handles(options: HandlesOptions): Promise<number> {
+  const controller = new AbortController();
+  const out = stdout(controller);
+  const aptos = new Aptos(aptosConfig(options));
+  const code = await runHandles(options, {
+    list: (address) => listEventHandles(aptos, address),
+    write: out.write,
+    error: (message) => process.stderr.write(`${message}\n`),
+    signal: controller.signal,
+  });
+  return out.exitCode(code);
+}
+
+async function name(options: NameOptions): Promise<number> {
+  const controller = new AbortController();
+  const out = stdout(controller);
+  const chain = await chainFor(options);
+  const code = await runName(options, {
+    resolveName: (value) => chain.resolveName(value),
+    primaryName: (address) => chain.primaryName(address),
+    write: out.write,
+    error: (message) => process.stderr.write(`${message}\n`),
+    signal: controller.signal,
+  });
+  return out.exitCode(code);
+}
+
 async function record(options: RecordOptions): Promise<number> {
   const controller = new AbortController();
   process.once("SIGINT", () => controller.abort());
@@ -316,6 +348,8 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === "transfers") return transfers(parsed.options);
   if (parsed.command === "balances") return balances(parsed.options);
   if (parsed.command === "watch") return watch(parsed.options);
+  if (parsed.command === "handles") return handles(parsed.options);
+  if (parsed.command === "name") return name(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 

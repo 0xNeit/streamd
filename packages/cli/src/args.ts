@@ -132,6 +132,17 @@ export interface WatchCommandOptions extends Endpoint {
   decode?: string[];
 }
 
+/** Aptos only: Sui has no event handles. */
+export interface HandlesOptions extends Endpoint {
+  /** An address or name; validated and resolved by `listEventHandles`. */
+  address: string;
+}
+
+export interface NameOptions extends Endpoint {
+  /** An address when it starts `0x`, otherwise a name; validated by the chain's library. */
+  value: string;
+}
+
 export interface RecordOptions extends Endpoint {
   descriptor: EventDescriptor;
   fromVersion: bigint;
@@ -178,6 +189,8 @@ export type ParsedCommand =
   | { command: "transfers"; options: TransfersOptions }
   | { command: "balances"; options: BalancesCommandOptions }
   | { command: "watch"; options: WatchCommandOptions }
+  | { command: "handles"; options: HandlesOptions }
+  | { command: "name"; options: NameOptions }
   | { command: "codegen"; options: CodegenOptions }
   | { command: "compare"; options: CompareOptions };
 
@@ -317,6 +330,12 @@ const WATCH_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+/** `handles` and `name`: one positional and the endpoint. */
+const HANDLES_OPTIONS = {
+  ...ENDPOINT_OPTIONS,
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const TX_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   timeout: { type: "string" },
@@ -362,6 +381,8 @@ export const USAGE = `Usage:
   streamd transfers [--asset <asset>] [--account <address | name>] [--to-version <n | head>] [options]
   streamd balances <address | name> [--asset <asset>]... [options]
   streamd watch <address>... [--cursor-file <path>] [options]
+  streamd handles <address | name>
+  streamd name <name | address>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
   streamd codegen [--out <file>] [--validators] (<address> | <address>::<module>)...
@@ -380,6 +401,10 @@ balances prints a wallet's balance of each asset once, then a JSON line each
 time one changes, read at the head every --poll-interval.
 watch follows the transactions each address sent, one walk per address, and
 prints each event as a JSON line with the watched address as "address".
+handles lists every event handle on an Aptos account as a JSON line, with
+its descriptor and the tail flags that follow it.
+name resolves a name to its address, or an address (0x...) to its primary
+name, as one JSON line; name is null when the address has none.
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 compare reads one range from two nodes and prints what one has that the other
@@ -388,7 +413,7 @@ codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
-Every command takes --chain sui to read Sui instead of Aptos.
+Every command but handles takes --chain sui to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
 --decode, which checks integer fields before --where runs.
@@ -924,6 +949,33 @@ function parseWatch(args: string[]): ParsedCommand {
   return { command: "watch", options: withFilter(options, values) };
 }
 
+function parseHandles(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: HANDLES_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const [address, ...rest] = positionals;
+  if (address === undefined || address === "" || rest.length > 0) {
+    throw new UsageError("handles needs one address or name");
+  }
+  if (chain(values.chain)) throw new UsageError("handles is not available with --chain sui: Sui has no event handles");
+  const options: HandlesOptions = { address, ...endpoint(values, false) };
+  return { command: "handles", options: withKey(options, values["api-key"]) };
+}
+
+function parseName(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: HANDLES_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const [value, ...rest] = positionals;
+  if (value === undefined || value === "" || rest.length > 0) {
+    throw new UsageError("name needs one name or address");
+  }
+  const options: NameOptions = { value, ...endpoint(values, chain(values.chain)) };
+  return { command: "name", options: withKey(options, values["api-key"]) };
+}
+
 function parseTransfers(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: TRANSFERS_OPTIONS, allowPositionals: true, strict: true }),
@@ -1058,6 +1110,8 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "transfers") return parseTransfers(rest);
   if (command === "balances") return parseBalances(rest);
   if (command === "watch") return parseWatch(rest);
+  if (command === "handles") return parseHandles(rest);
+  if (command === "name") return parseName(rest);
   if (command === "codegen") return parseCodegen(rest);
   if (command === "compare") return parseCompare(rest);
   throw new UsageError(`unknown command: ${command}`);

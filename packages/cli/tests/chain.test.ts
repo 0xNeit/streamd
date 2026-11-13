@@ -39,6 +39,25 @@ describe("chainFor", () => {
   });
 });
 
+describe("chainFor names", () => {
+  it("puts an address in long form with no read, on both chains", async () => {
+    globalThis.fetch = (async () => {
+      throw new Error("no request expected");
+    }) as unknown as typeof fetch;
+    const long = `0x${"1".padStart(64, "0")}`;
+    expect(await (await chainFor({ network: "mainnet" })).resolveName("0x1")).toBe(long);
+    expect(await (await chainFor({ chain: "sui", network: "mainnet" })).resolveName("0x1")).toBe(long);
+  });
+
+  it("refuses a malformed address before any read", async () => {
+    await expect((await chainFor({ network: "mainnet" })).resolveName("0xzz")).rejects.toThrow();
+    await expect((await chainFor({ network: "mainnet" })).primaryName("0xzz")).rejects.toThrow();
+    await expect((await chainFor({ chain: "sui", network: "mainnet" })).resolveName("nope!")).rejects.toThrow(
+      /Not a valid Sui address or SuiNS name/,
+    );
+  });
+});
+
 describe("isMissingModule", () => {
   it("knows Node's code and Bun's message, and nothing else", () => {
     expect(isMissingModule(Object.assign(new Error("x"), { code: "ERR_MODULE_NOT_FOUND" }))).toBe(true);
