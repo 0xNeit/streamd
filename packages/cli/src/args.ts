@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import { normalizeAddress, requireAddress, requireEventType, requireResourceType } from "@streamd/core";
 import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
 import type { ModuleRef } from "./codegen.js";
-import { FILTER_OPTIONS, parseFilter } from "./filter.js";
+import { FILTER_OPTIONS, parseDecode, parseFilter } from "./filter.js";
 import type { CliFilter, FilterFlags } from "./filter.js";
 
 export type Network = "mainnet" | "testnet" | "devnet" | "movement-mainnet" | "movement-testnet";
@@ -28,6 +28,8 @@ export interface SourceOptions extends Endpoint {
   pollInterval?: number;
   /** Client-side narrowing by `--sender`, `--function` and `--where`. */
   filter?: CliFilter;
+  /** `--decode` paths, applied before `filter`; not part of `store`'s cursor name. */
+  decode?: string[];
 }
 
 export interface TailOptions extends SourceOptions {
@@ -82,6 +84,7 @@ export interface QueryOptions extends Endpoint {
   limit?: number;
   order: "asc" | "desc";
   filter?: CliFilter;
+  decode?: string[];
 }
 
 export interface RecordOptions extends Endpoint {
@@ -572,10 +575,12 @@ function descriptor(
   return { kind: "module", eventType: eventTypes as MoveEventType[] };
 }
 
-/** Sets `filter` on `options` when any filter flag was given. */
-function withFilter<T extends { filter?: CliFilter }>(options: T, flags: FilterFlags): T {
+/** Sets `filter` and `decode` on `options` when their flags were given. */
+function withFilter<T extends { filter?: CliFilter; decode?: string[] }>(options: T, flags: FilterFlags): T {
   const filter = wrap(() => parseFilter(flags));
+  const decode = wrap(() => parseDecode(flags.decode));
   if (filter !== undefined) options.filter = filter;
+  if (decode !== undefined) options.decode = decode;
   return options;
 }
 

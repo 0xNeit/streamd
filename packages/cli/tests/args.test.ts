@@ -863,3 +863,29 @@ describe("filter flags", () => {
     rejects(["tail", ...args, TYPE], message);
   });
 });
+
+describe("decode flag", () => {
+  it.each([
+    ["tail", []],
+    ["forward", ["--to", "https://example.com"]],
+    ["store", ["--db", "x.db"]],
+    ["query", ["--from-version", "1"]],
+  ])("sets decode on %s, beside the filter", (command, extra) => {
+    const parsed = parseCommand([command, ...extra, "--decode", "amount,legs.*.amount", "--decode", "fee", TYPE]);
+    const options = (parsed as { options: { decode?: unknown; filter?: unknown } }).options;
+    expect(options.decode).toEqual(["amount", "legs.*.amount", "fee"]);
+    expect("filter" in options).toBe(false);
+  });
+
+  it("leaves decode unset without the flag", () => {
+    expect("decode" in tail(TYPE)).toBe(false);
+  });
+
+  it("is refused on commands that do not decode", () => {
+    rejects(["record", "--from-version", "1", "--to-version", "2", "--decode", "amount", TYPE], /Unknown option '--decode'/);
+  });
+
+  it.each([[["--decode", "amount,"]], [["--decode", "*.x"]], [["--decode", ""]]])("rejects %j as a usage error", (args) => {
+    rejects(["tail", ...args, TYPE], /--decode: /);
+  });
+});

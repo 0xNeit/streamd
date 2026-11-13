@@ -1,4 +1,4 @@
-import { every, fromFunction, fromSender, normalizeAddress, not, some, whereCompare, whereField } from "@streamd/core";
+import { every, fieldDecoder, fromFunction, fromSender, normalizeAddress, not, some, whereCompare, whereField } from "@streamd/core";
 import type { CompareOp, EventPredicate } from "@streamd/core";
 
 export interface WhereClause {
@@ -21,12 +21,14 @@ export interface FilterFlags {
   sender?: string[];
   function?: string[];
   where?: string[];
+  decode?: string[];
 }
 
 export const FILTER_OPTIONS = {
   sender: { type: "string", multiple: true },
   function: { type: "string", multiple: true },
   where: { type: "string", multiple: true },
+  decode: { type: "string", multiple: true },
 } as const;
 
 // Longest operators first, so `<=` is not read as `<` followed by `=5`.
@@ -81,4 +83,16 @@ export function filterPredicate(filter: CliFilter): EventPredicate {
   if (filter.functions.length > 0) predicates.unshift(fromFunction(...filter.functions));
   if (filter.senders.length > 0) predicates.unshift(some(...filter.senders.map(fromSender)));
   return every(...predicates);
+}
+
+/** The `--decode` paths, comma-separated and repeatable, in order; undefined when none is given. */
+export function parseDecode(raw: string[] | undefined): string[] | undefined {
+  if (raw === undefined || raw.length === 0) return undefined;
+  const paths = raw.flatMap((entry) => entry.split(",").map((path) => path.trim()));
+  try {
+    fieldDecoder(paths);
+  } catch (err) {
+    throw new Error(`--decode: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  return paths;
 }
