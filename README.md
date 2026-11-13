@@ -2860,6 +2860,54 @@ stdout closes; `1` when reading fails (following: once the subscription gives up
 the cursor file could not be read or written; `2` for invalid arguments; `130` on a second
 Ctrl-C while following.
 
+### Follow balances
+
+`streamd balances <address>` follows one wallet's [balances](#live-balances) through the chain
+client's `balances()`: each asset's balance once the first read finishes, then a line each time
+one changes.
+
+```sh
+# APT, the default
+streamd balances alice.apt
+# APT and USDC, read every 5 seconds, exiting after the first change
+streamd balances 0x4c... --asset 0xa \
+  --asset 0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b --poll-interval 5000 --limit 1
+# SUI, the default under --chain sui
+streamd balances --chain sui alice.sui
+```
+
+Every line is JSON with base units as decimal strings and `asset` as the client keys it, in long
+form. The opening line of each asset has no `previous` or `version`; a change line has both:
+
+```json
+{"asset":"0x...a","balance":"150000000"}
+{"asset":"0x...a","balance":"149990000","previous":"150000000","version":"3000000123"}
+```
+
+`version` is the head version the change was read at. On Aptos the balance is read at that
+version, so the change happened after the previous read and at or before it; under `--chain sui`
+balances are read at the latest state, which is no older than `version`. Several moves between
+two reads print as one line with the net balance, and a move that comes back to the same balance
+prints nothing.
+
+| Option | Meaning |
+| --- | --- |
+| `<address>` | an address, an ANS name on Aptos mainnet, or a SuiNS name under `--chain sui`, resolved once |
+| `--asset <asset>` | an asset to follow, repeatable: on Aptos a fungible-asset metadata address (`0xa` for APT) or a coin type, with `0xa` and `0x1::aptos_coin::AptosCoin` one entry; under `--chain sui` a coin type (default: APT, or SUI) |
+| `--poll-interval <ms>` | delay between reads (default `1000`) |
+| `--limit <n>` | exit after printing `n` changes; the opening lines are not counted |
+
+There is no start position or cursor file, since balances are read at the head, and no
+`--with-asset-info`: format a balance with `formatAmount`, or read an asset's symbol and decimals
+with `streamd transfers --with-asset-info`. A malformed `--asset`, a legacy token, or a name that
+does not resolve is the chain client's to judge, so it exits `1` with the client's message rather
+than `2`. A failed read is retried with backoff and reported on stderr; following stops after the
+client's error budget.
+
+Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes; `1` when
+the first read fails, reading gives up, or output could not be written; `2` for invalid
+arguments; `130` on a second Ctrl-C.
+
 ### Inspect a transaction
 
 `streamd tx <hash>` waits for a transaction to commit and prints its events as JSON lines:

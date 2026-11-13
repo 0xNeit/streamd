@@ -6,6 +6,7 @@ import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
 import type {
+  BalancesCommandOptions,
   CheckOptions,
   CodegenOptions,
   CompareOptions,
@@ -19,6 +20,7 @@ import type {
   TransfersOptions,
   TxOptions,
 } from "./args.js";
+import { runBalances } from "./balances.js";
 import { aptosConfig, chainFor } from "./chain.js";
 import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
@@ -171,6 +173,22 @@ async function transfers(options: TransfersOptions): Promise<number> {
   }
 }
 
+async function balances(options: BalancesCommandOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runBalances(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
 async function record(options: RecordOptions): Promise<number> {
   const controller = new AbortController();
   process.once("SIGINT", () => controller.abort());
@@ -278,6 +296,7 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === "query") return query(parsed.options);
   if (parsed.command === "tx") return tx(parsed.options);
   if (parsed.command === "transfers") return transfers(parsed.options);
+  if (parsed.command === "balances") return balances(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 

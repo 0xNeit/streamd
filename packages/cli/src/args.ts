@@ -106,6 +106,17 @@ export interface TransfersOptions extends Endpoint {
   cursorFile?: string;
 }
 
+/** Named apart from core's `BalancesOptions`, which the runner builds from it. */
+export interface BalancesCommandOptions extends Endpoint {
+  /** An address or name; validated and resolved by the chain's client. */
+  address: string;
+  /** Non-empty when set; validated by the chain's client. */
+  asset?: string[];
+  pollInterval?: number;
+  /** Change lines to print before exiting; the opening lines are not counted. */
+  limit?: number;
+}
+
 export interface RecordOptions extends Endpoint {
   descriptor: EventDescriptor;
   fromVersion: bigint;
@@ -150,6 +161,7 @@ export type ParsedCommand =
   | { command: "query"; options: QueryOptions }
   | { command: "tx"; options: TxOptions }
   | { command: "transfers"; options: TransfersOptions }
+  | { command: "balances"; options: BalancesCommandOptions }
   | { command: "codegen"; options: CodegenOptions }
   | { command: "compare"; options: CompareOptions };
 
@@ -270,6 +282,14 @@ const TRANSFERS_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const BALANCES_OPTIONS = {
+  ...ENDPOINT_OPTIONS,
+  asset: { type: "string", multiple: true },
+  limit: { type: "string" },
+  "poll-interval": { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const TX_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   timeout: { type: "string" },
@@ -313,6 +333,7 @@ export const USAGE = `Usage:
   streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
   streamd tx <hash | digest>
   streamd transfers [--asset <asset>] [--account <address | name>] [--to-version <n | head>] [options]
+  streamd balances <address | name> [--asset <asset>]... [options]
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
   streamd codegen [--out <file>] [--validators] (<address> | <address>::<module>)...
@@ -327,6 +348,8 @@ query reads a closed range of history as JSON lines, then exits.
 tx waits for a transaction and prints its events, exiting 1 if it failed.
 transfers prints asset transfers as JSON lines: followed live, or with
 --to-version read over a closed range, then exits.
+balances prints a wallet's balance of each asset once, then a JSON line each
+time one changes, read at the head every --poll-interval.
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 compare reads one range from two nodes and prints what one has that the other
@@ -345,6 +368,7 @@ Options:
                          address or name (ANS, or SuiNS with --chain sui) sent or received
   --asset <asset>        transfers: only this asset, a fungible-asset or token object address,
                          a coin type or a legacy token id (a coin type with --chain sui)
+                         balances: an asset to follow, repeatable (default: APT, or SUI)
   --with-asset-info      transfers: add each asset's symbol and decimals
   --handle <struct>      legacy event handle struct (with --account and --field)
   --field <name>         event handle field name
@@ -369,8 +393,8 @@ Options:
                          (legs.*.amount); output and matches are unchanged, but a present
                          field that is not an unsigned integer is an error: query exits 1,
                          tail, forward and store report it and skip the event
-  --limit <n>            tail, transfers: exit after printing n; record, query: stop after n;
-                         compare: page size
+  --limit <n>            tail, transfers: exit after printing n; balances: after n changes;
+                         record, query: stop after n; compare: page size
   --to <url>             forward: webhook URL (http or https, required)
   --cursor-file <path>   tail, transfers (following): save and resume from here; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE})
@@ -824,6 +848,26 @@ function parseQuery(args: string[]): ParsedCommand {
   return { command: "query", options: withFilter(options, values) };
 }
 
+function parseBalances(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: BALANCES_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const [address, ...rest] = positionals;
+  if (address === undefined || address === "" || rest.length > 0) {
+    throw new UsageError("balances needs one address or name");
+  }
+  if (values.asset?.includes("")) throw new UsageError("--asset must not be empty");
+  const options: BalancesCommandOptions = { address, ...endpoint(values, chain(values.chain)) };
+  withKey(options, values["api-key"]);
+  if (values.asset !== undefined) options.asset = values.asset;
+  const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
+  if (pollInterval !== undefined) options.pollInterval = pollInterval;
+  const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  if (limit !== undefined) options.limit = limit;
+  return { command: "balances", options };
+}
+
 function parseTransfers(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: TRANSFERS_OPTIONS, allowPositionals: true, strict: true }),
@@ -956,6 +1000,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "query") return parseQuery(rest);
   if (command === "tx") return parseTx(rest);
   if (command === "transfers") return parseTransfers(rest);
+  if (command === "balances") return parseBalances(rest);
   if (command === "codegen") return parseCodegen(rest);
   if (command === "compare") return parseCompare(rest);
   throw new UsageError(`unknown command: ${command}`);

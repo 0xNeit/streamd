@@ -952,3 +952,48 @@ describe("parseCommand transfers", () => {
     rejects(["transfers", ...args], message);
   });
 });
+
+describe("parseCommand balances", () => {
+  const balances = (...argv: string[]) => {
+    const parsed = parseCommand(["balances", ...argv]);
+    if (parsed.command !== "balances") throw new Error("expected a balances command");
+    return parsed.options;
+  };
+
+  it("takes one address or name, with only the flags given", () => {
+    expect(balances("alice.apt")).toEqual({ network: "mainnet", address: "alice.apt" });
+    expect(balances("0x1", "--asset", "0xa", "--poll-interval", "200", "--limit", "3")).toEqual({
+      network: "mainnet",
+      address: "0x1",
+      asset: ["0xa"],
+      pollInterval: 200,
+      limit: 3,
+    });
+  });
+
+  it("collects a repeated --asset into a list in order", () => {
+    expect(balances("0x1", "--asset", "0xa", "--asset", "0x1::aptos_coin::AptosCoin").asset).toEqual([
+      "0xa",
+      "0x1::aptos_coin::AptosCoin",
+    ]);
+  });
+
+  it("takes --chain sui with no key, and sends --api-key on Aptos", () => {
+    expect(balances("--chain", "sui", "alice.sui")).toEqual({ network: "mainnet", chain: "sui", address: "alice.sui" });
+    rejects(["balances", "--chain", "sui", "--api-key", "k", "0x1"], /--api-key is not sent to Sui nodes/);
+    expect(balances("0x1", "--api-key", "k").apiKey).toBe("k");
+  });
+
+  it.each([
+    [[], /balances needs one address or name/],
+    [[""], /balances needs one address or name/],
+    [["0x1", "0x2"], /balances needs one address or name/],
+    [["0x1", "--asset", ""], /--asset must not be empty/],
+    [["0x1", "--asset", "0xa", "--asset", ""], /--asset must not be empty/],
+    [["0x1", "--limit", "0"], /--limit must be an integer from 1/],
+    [["0x1", "--poll-interval", "x"], /--poll-interval must be an integer from 0/],
+    [["0x1", "--from-version", "5"], /Unknown option '--from-version'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(["balances", ...args], message);
+  });
+});
