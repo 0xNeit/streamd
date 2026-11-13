@@ -1,7 +1,7 @@
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { AptosClient, FullnodeScanAdapter, checkDescriptor, networks, primaryName, resolveName } from "@streamd/aptos";
-import { ArchiveFallbackAdapter, PoolAdapter } from "@streamd/core";
-import type { EventAdapter, ModuleEventDescriptor, StreamdClient } from "@streamd/core";
+import { ArchiveFallbackAdapter, CachingAdapter, PoolAdapter } from "@streamd/core";
+import type { CachingAdapterOptions, EventAdapter, ModuleEventDescriptor, StreamdClient } from "@streamd/core";
 import type { Endpoint } from "./args.js";
 import type { TypeChecks } from "./check.js";
 import { suiChain } from "./sui.js";
@@ -51,7 +51,7 @@ export function readThrough(first: HeadAdapter, others: readonly HeadAdapter[] =
   return archive === undefined ? fullnode : (new ArchiveFallbackAdapter(fullnode, archive) as unknown as HeadAdapter);
 }
 
-function aptosChain(endpoint: Endpoint): Chain {
+function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions): Chain {
   const config = aptosConfig(endpoint);
   const node = (nodeUrl: string) => new FullnodeScanAdapter(new Aptos(aptosConfig({ network: endpoint.network, nodeUrl })));
   const archive = () => {
@@ -61,7 +61,11 @@ function aptosChain(endpoint: Endpoint): Chain {
     const nodeUrl = networks.aptosMainnetArchive.fullnode;
     return new FullnodeScanAdapter(new Aptos(aptosConfig({ network: "mainnet", nodeUrl, ...(apiKey !== undefined && { apiKey }) })));
   };
-  const reads = (aptos: Aptos) => readThrough(new FullnodeScanAdapter(aptos), endpoint.extraNodeUrls?.map(node), archive());
+  const reads = (aptos: Aptos) => {
+    const adapter = readThrough(new FullnodeScanAdapter(aptos), endpoint.extraNodeUrls?.map(node), archive());
+    // Outermost, so a cached page reaches neither the pool nor the archive; the head passes through.
+    return cache === undefined ? adapter : (new CachingAdapter(adapter, cache) as unknown as HeadAdapter);
+  };
   return {
     client: () => {
       const aptos = new Aptos(config);
@@ -74,7 +78,10 @@ function aptosChain(endpoint: Endpoint): Chain {
   };
 }
 
-/** The chain `endpoint` names; Sui's packages load only here, on `--chain sui`. */
-export async function chainFor(endpoint: Endpoint): Promise<Chain> {
-  return endpoint.chain === "sui" ? suiChain(endpoint) : aptosChain(endpoint);
+/**
+ * The chain `endpoint` names; Sui's packages load only here, on `--chain sui`.
+ * `cache` wraps the endpoint's reads, on Aptos only: Sui pages are never final.
+ */
+export async function chainFor(endpoint: Endpoint, cache?: CachingAdapterOptions): Promise<Chain> {
+  return endpoint.chain === "sui" ? suiChain(endpoint) : aptosChain(endpoint, cache);
 }

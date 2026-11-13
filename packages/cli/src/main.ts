@@ -25,6 +25,8 @@ import type {
   WatchCommandOptions,
 } from "./args.js";
 import { runBalances } from "./balances.js";
+import { openCache } from "./cache.js";
+import type { PageCache } from "./cache.js";
 import { aptosConfig, chainFor } from "./chain.js";
 import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
@@ -58,12 +60,12 @@ function parse(argv: string[]): ParsedCommand | undefined {
 }
 
 /** The endpoint's chain, a client over it, and a signal that the first SIGINT or a SIGTERM aborts. */
-async function setup(endpoint: Endpoint) {
+async function setup(endpoint: Endpoint, cache?: PageCache) {
   const controller = new AbortController();
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
   process.once("SIGTERM", () => controller.abort());
-  const chain = await chainFor(endpoint);
+  const chain = await chainFor(endpoint, cache);
   return { chain, client: chain.client(), controller };
 }
 
@@ -133,8 +135,25 @@ async function tail(options: TailOptions): Promise<number> {
   }
 }
 
-async function query(options: QueryOptions): Promise<number> {
-  const { client, controller } = await setup(options);
+/** Runs `run` over the `--cache` file when one is given, exiting 1 if it cannot be opened. */
+async function withCache(options: QueryOptions | RecordOptions, run: (cache?: PageCache) => Promise<number>): Promise<number> {
+  if (options.cache === undefined) return run();
+  let cache: PageCache;
+  try {
+    cache = await openCache(options.cache, options, openDatabase, (text) => process.stderr.write(`${text}\n`));
+  } catch (err) {
+    process.stderr.write(`streamd: cannot open ${options.cache}: ${message(err)}\n`);
+    return 1;
+  }
+  try {
+    return await run(cache);
+  } finally {
+    cache.close();
+  }
+}
+
+async function query(options: QueryOptions, cache?: PageCache): Promise<number> {
+  const { client, controller } = await setup(options, cache);
   const out = stdout(controller);
   try {
     const code = await runQuery(options, {
@@ -240,12 +259,12 @@ async function name(options: NameOptions): Promise<number> {
   return out.exitCode(code);
 }
 
-async function record(options: RecordOptions): Promise<number> {
+async function record(options: RecordOptions, cache?: PageCache): Promise<number> {
   const controller = new AbortController();
   process.once("SIGINT", () => controller.abort());
   process.once("SIGTERM", () => controller.abort());
   return runRecord(options, {
-    adapter: (await chainFor(options)).adapter(),
+    adapter: (await chainFor(options, cache)).adapter(),
     write: (text) =>
       options.out === undefined ? void process.stdout.write(text) : writeAtomically(options.out, text),
     error: (text) => process.stderr.write(`${text}\n`),
@@ -343,8 +362,8 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === "compare") return compare(parsed.options);
   if (parsed.command === "store") return store(parsed.options);
   if (parsed.command === "check") return check(parsed.options);
-  if (parsed.command === "record") return record(parsed.options);
-  if (parsed.command === "query") return query(parsed.options);
+  if (parsed.command === "record") return withCache(parsed.options, (cache) => record(parsed.options, cache));
+  if (parsed.command === "query") return withCache(parsed.options, (cache) => query(parsed.options, cache));
   if (parsed.command === "tx") return tx(parsed.options);
   if (parsed.command === "transfers") return transfers(parsed.options);
   if (parsed.command === "balances") return balances(parsed.options);
