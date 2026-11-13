@@ -1,5 +1,6 @@
 import { testClient } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
+import { AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { MemoryAdapter } from "@streamd/core";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
 import type { EventAdapter, EventDescriptor, FetchOptions, StreamdEvent, ViewRequest } from "@streamd/core";
@@ -247,5 +248,87 @@ describe("client.balances input and lifetime", () => {
     controller.abort(new StreamdError("cancelled"));
     await expect(wallet.ready).rejects.toThrow("cancelled");
     expect(wallet.active).toBe(false);
+  });
+});
+
+describe("client.balanceAt", () => {
+  it("reads APT at the version given, by coin::balance, however it is named", async () => {
+    const { adapter, state } = chain();
+    const client = testClient({ adapter });
+    for (const asset of [undefined, "0xa", "0x1::aptos_coin::AptosCoin"]) {
+      expect(await client.balanceAt(ALICE, asset, 7n)).toBe(100n);
+    }
+    expect(state.reads).toEqual(
+      Array(3).fill({ fn: COIN_BALANCE, type: "0x1::aptos_coin::AptosCoin", asset: undefined, version: 7n }),
+    );
+  });
+
+  it("reads a fungible asset and a coin type by their views", async () => {
+    const { adapter, state } = chain();
+    const client = testClient({ adapter });
+    expect(await client.balanceAt(ALICE, USDC, 3n)).toBe(200n);
+    expect(await client.balanceAt(ALICE, COIN, 0n)).toBe(300n);
+    expect(state.reads).toEqual([
+      { fn: BALANCE, type: "0x1::fungible_asset::Metadata", asset: USDC, version: 3n },
+      { fn: COIN_BALANCE, type: COIN_KEY, asset: undefined, version: 0n },
+    ]);
+  });
+
+  it("resolves a name once and reads its address", async () => {
+    const { adapter } = chain();
+    const owners: unknown[] = [];
+    const viewed: EventAdapter = {
+      ...adapter,
+      view: (request, version, d) => (owners.push(request.functionArguments![0]), adapter.view!(request, version, d)),
+    };
+    const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig: { http2: false } }));
+    let lookups = 0;
+    aptos.getTargetAddress = async () => (lookups++, AccountAddress.from(ALICE));
+    const client = testClient({ adapter: viewed, aptos });
+    expect(await client.balanceAt("alice.apt", USDC, 5n)).toBe(200n);
+    expect(lookups).toBe(1);
+    expect(owners).toEqual([ALICE]);
+  });
+
+  it("refuses bad input with nothing sent", async () => {
+    const { adapter, state } = chain();
+    const client = testClient({ adapter });
+    const bad: [unknown, unknown, unknown][] = [
+      [undefined, undefined, 1n],
+      ["0xnothex", undefined, 1n],
+      [ALICE, null, 1n],
+      [ALICE, "", 1n],
+      [ALICE, "nope", 1n],
+      [ALICE, [USDC], 1n],
+      [ALICE, `${ALICE}::Apes::Ape::0`, 1n],
+      [ALICE, undefined, -1n],
+      [ALICE, undefined, 1],
+      [ALICE, undefined, "head"],
+      [ALICE, undefined, 2n ** 64n],
+    ];
+    for (const [address, asset, version] of bad) {
+      const err = await client.balanceAt(address as string, asset as string, version as bigint).catch((e) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+    expect(state.reads).toEqual([]);
+    await expect(testClient({ adapter: new MemoryAdapter([]) }).balanceAt(ALICE, undefined, 1n)).rejects.toThrow("view");
+  });
+
+  it("names an asset whose view aborts, and passes a network error through", async () => {
+    const { adapter, state } = chain();
+    const client = testClient({ adapter });
+    await expect(client.balanceAt(ALICE, NFT, 1n)).rejects.toThrow("Not a fungible asset or coin type");
+    state.failViews = new StreamdNetworkError("pruned", 410);
+    const err = await client.balanceAt(ALICE, undefined, 1n).catch((e) => e);
+    expect(err).toBe(state.failViews);
+  });
+
+  it("goes through the client's requestTimeout", async () => {
+    const { adapter } = chain();
+    const client = testClient({ adapter: { ...adapter, view: () => new Promise(() => {}) }, requestTimeout: 5 });
+    const late = new Promise((r) => setTimeout(r, 500, "no timeout"));
+    const err = await Promise.race([client.balanceAt(ALICE, undefined, 1n).catch((e) => e), late]);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
   });
 });
