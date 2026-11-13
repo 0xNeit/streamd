@@ -2,7 +2,7 @@ import { parseArgs } from "node:util";
 import { normalizeAddress, requireAddress, requireEventType, requireResourceType } from "@streamd/core";
 import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
 import type { ModuleRef } from "./codegen.js";
-import { FILTER_OPTIONS, parseFilter } from "./filter.js";
+import { FILTER_OPTIONS, parseDecode, parseFilter } from "./filter.js";
 import type { CliFilter, FilterFlags } from "./filter.js";
 
 export type Network = "mainnet" | "testnet" | "devnet" | "movement-mainnet" | "movement-testnet";
@@ -28,6 +28,8 @@ export interface SourceOptions extends Endpoint {
   pollInterval?: number;
   /** Client-side narrowing by `--sender`, `--function` and `--where`. */
   filter?: CliFilter;
+  /** `--decode` paths, applied before `filter`; not part of `store`'s cursor name. */
+  decode?: string[];
 }
 
 export interface TailOptions extends SourceOptions {
@@ -82,6 +84,7 @@ export interface QueryOptions extends Endpoint {
   limit?: number;
   order: "asc" | "desc";
   filter?: CliFilter;
+  decode?: string[];
 }
 
 export interface RecordOptions extends Endpoint {
@@ -295,7 +298,8 @@ With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
 Every command takes --chain sui to read Sui instead of Aptos.
 tail, query, forward and store take --sender, --function and --where, which
-filter after fetching, so --limit counts the events that match.
+filter after fetching, so --limit counts the events that match; they also take
+--decode, which checks integer fields before --where runs.
 
 Options:
   --account <address>    events from transactions this account sent
@@ -317,6 +321,11 @@ Options:
                          all must hold: field a dotted path such as legs.0.amount, op
                          ==, !=, <, <=, > or >=; an integer value compares as an integer,
                          any other is matched as text under == or !=
+  --decode <paths>       turn these u64/u128/u256 data fields into integers before --where,
+                         comma-separated and repeatable, * for every array element
+                         (legs.*.amount); output and matches are unchanged, but a present
+                         field that is not an unsigned integer is an error: query exits 1,
+                         tail, forward and store report it and skip the event
   --limit <n>            tail: exit after printing n events; record, query: stop after n;
                          compare: page size
   --to <url>             forward: webhook URL (http or https, required)
@@ -572,10 +581,12 @@ function descriptor(
   return { kind: "module", eventType: eventTypes as MoveEventType[] };
 }
 
-/** Sets `filter` on `options` when any filter flag was given. */
-function withFilter<T extends { filter?: CliFilter }>(options: T, flags: FilterFlags): T {
+/** Sets `filter` and `decode` on `options` when their flags were given. */
+function withFilter<T extends { filter?: CliFilter; decode?: string[] }>(options: T, flags: FilterFlags): T {
   const filter = wrap(() => parseFilter(flags));
+  const decode = wrap(() => parseDecode(flags.decode));
   if (filter !== undefined) options.filter = filter;
+  if (decode !== undefined) options.decode = decode;
   return options;
 }
 

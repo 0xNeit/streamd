@@ -20,7 +20,7 @@ const RETRIES = 5;
  * finished or when the signal aborts, 1 when the query or a write fails.
  */
 export async function runQuery(options: QueryOptions, io: QueryIO): Promise<number> {
-  const { fromVersion, fromTime, toVersion, limit, order, filter: narrow } = options;
+  const { fromVersion, fromTime, toVersion, limit, order, filter: narrow, decode } = options;
   const filter: EventFilter = {
     ...(fromVersion !== undefined && { fromVersion }),
     ...(fromTime !== undefined && { fromTime }),
@@ -29,6 +29,7 @@ export async function runQuery(options: QueryOptions, io: QueryIO): Promise<numb
     retries: RETRIES,
     signal: io.signal,
     ...(limit !== undefined && { limit }),
+    ...(decode !== undefined && { decode }),
     ...(narrow !== undefined && { where: filterPredicate(narrow) }),
   };
   try {

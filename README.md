@@ -2676,6 +2676,26 @@ matching a JSON boolean; `!=` there also matches events without the field. A mal
 expression, an unknown operator, or a text value under `<`, `<=`, `>` or `>=` exits `2`, naming
 the flag.
 
+`--decode <paths>` names `data` fields to read as unsigned integers before `--where` runs,
+through `fieldDecoder` (the [`decode`](#decode-integers) option): a comma-separated list, repeatable,
+with `*` for every element of an array.
+
+```sh
+streamd query --from-time 1h --decode amount --where "amount>=100000000" 0x1::fungible_asset::Deposit
+streamd tail --decode "legs.*.amount,fee" 0x9f...::pool::Swap
+```
+
+It does not change what is printed or what matches: JSON lines and `--format pretty` print the
+decoded bigints as the same decimal strings, `store` writes the same rows, and `--where` already
+compares integer strings at full precision. What it adds is a check. A named field that is
+missing is skipped, but one that is present and not an unsigned decimal string (a text value, a
+JSON number such as a `u8`, an object, or a non-array under `*`) is an error naming the field and
+the event's `version:eventIndex`: `query` exits `1`, and `tail`, `forward` and `store` print it to
+stderr, skip the event and carry on. Paths take `*`, not array positions, so `legs.0.amount` fails
+on an array; an empty entry or segment, or a leading `*`, exits `2`. The paths are not part of
+`store`'s default cursor name. The flag works the same under `--chain sui`, which also writes
+`u64` and wider as strings.
+
 `--limit` counts matches, so a rare match keeps `query` and `tail` reading until it fills.
 `store`'s default cursor name carries the filter, so a filtered and an unfiltered run into one
 database keep separate positions. A `--cursor-file` does not: give each filter its own. The flags

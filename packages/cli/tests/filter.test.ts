@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { StreamdEvent } from "@streamd/core";
-import { filterPredicate, parseFilter } from "../src/filter.js";
+import { filterPredicate, parseDecode, parseFilter } from "../src/filter.js";
 import type { FilterFlags } from "../src/filter.js";
 
 const LONG_ONE = `0x${"0".repeat(63)}1`;
@@ -82,5 +82,25 @@ describe("filterPredicate", () => {
     expect(matches({ sender: ["0x2"], function: ["0x1::aptos_account::transfer"], where: ["amount>5", "amount<20"] }, event)).toBe(true);
     expect(matches({ sender: ["0x2"], where: ["amount>5", "amount<9"] }, event)).toBe(false);
     expect(matches({ sender: ["0x2"] }, ev({}))).toBe(false);
+  });
+});
+
+describe("parseDecode", () => {
+  it("is undefined without the flag", () => {
+    expect(parseDecode(undefined)).toBeUndefined();
+    expect(parseDecode([])).toBeUndefined();
+  });
+
+  it("collects comma lists and repeats in order, trimming spaces", () => {
+    expect(parseDecode(["amount, legs.*.amount", "fee"])).toEqual(["amount", "legs.*.amount", "fee"]);
+  });
+
+  it.each([
+    [["amount,"], /--decode: decode must be an array of non-empty field names/],
+    [["a,,b"], /--decode: decode must be an array of non-empty field names/],
+    [["a..b"], /--decode: decode path "a\.\.b" needs a field first and no empty segments/],
+    [["*.amount"], /--decode: decode path "\*\.amount" needs a field first/],
+  ])("rejects %j", (raw, message) => {
+    expect(() => parseDecode(raw)).toThrow(message);
   });
 });

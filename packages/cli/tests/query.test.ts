@@ -151,3 +151,26 @@ describe("runQuery filter", () => {
     expect(versions).toEqual(["1", "4"]);
   });
 });
+
+describe("runQuery decode", () => {
+  const named = (v: number, n: string): StreamdEvent => ({ ...ev(v), data: { n } });
+
+  it("decodes before --where, printing the same lines", async () => {
+    const filter = { senders: [], functions: [], where: [{ path: "n", op: ">=" as const, value: "3" }] };
+    const plain = await run(new MemoryAdapter([ev(2), ev(3), ev(4)]), options({ filter }));
+    const decoded = await run(new MemoryAdapter([ev(2), ev(3), ev(4)]), options({ filter, decode: ["n"] }));
+    expect(decoded.code).toBe(0);
+    expect(decoded.lines).toEqual(plain.lines);
+    expect(decoded.versions).toEqual(["3", "4"]);
+  });
+
+  it("exits 1 naming the field when a value is not an unsigned integer", async () => {
+    const filter = { senders: [], functions: [], where: [{ path: "n", op: "==" as const, value: "x" }] };
+    // Without decode the text value simply matches.
+    expect((await run(new MemoryAdapter([named(3, "x")]), options({ filter }))).versions).toEqual(["3"]);
+    const { code, errors, lines } = await run(new MemoryAdapter([ev(2), named(3, "x")]), options({ filter, decode: ["n"] }));
+    expect(code).toBe(1);
+    expect(lines).toEqual([]);
+    expect(errors).toEqual(['streamd: Cannot decode field "n" of 3:0 as an unsigned integer']);
+  });
+});

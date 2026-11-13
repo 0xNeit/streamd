@@ -59,7 +59,7 @@ export async function runStore(options: StoreOptions, io: StoreIO): Promise<numb
     const onAbort = () => finish(0);
     io.signal.addEventListener("abort", onAbort, { once: true });
 
-    const { fromVersion, pollInterval, filter } = options;
+    const { fromVersion, pollInterval, filter, decode } = options;
     const descriptorName = JSON.stringify(options.descriptor, (_key, v: unknown) =>
       typeof v === "bigint" ? v.toString() : v,
     );
@@ -73,6 +73,7 @@ export async function runStore(options: StoreOptions, io: StoreIO): Promise<numb
       // Only seeds the first run: the poller prefers the saved cursor storeEvents loads.
       ...(fromVersion !== undefined && { fromVersion }),
       ...(pollInterval !== undefined && { pollInterval }),
+      ...(decode !== undefined && { decode }),
       ...(filter !== undefined && { where: filterPredicate(filter) }),
       onError: (err) => {
         io.error(`streamd: ${message(err)}`);
