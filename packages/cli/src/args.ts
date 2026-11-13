@@ -138,6 +138,11 @@ export interface HandlesOptions extends Endpoint {
   address: string;
 }
 
+export interface NameOptions extends Endpoint {
+  /** An address when it starts `0x`, otherwise a name; validated by the chain's library. */
+  value: string;
+}
+
 export interface RecordOptions extends Endpoint {
   descriptor: EventDescriptor;
   fromVersion: bigint;
@@ -185,6 +190,7 @@ export type ParsedCommand =
   | { command: "balances"; options: BalancesCommandOptions }
   | { command: "watch"; options: WatchCommandOptions }
   | { command: "handles"; options: HandlesOptions }
+  | { command: "name"; options: NameOptions }
   | { command: "codegen"; options: CodegenOptions }
   | { command: "compare"; options: CompareOptions };
 
@@ -324,6 +330,7 @@ const WATCH_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+/** `handles` and `name`: one positional and the endpoint. */
 const HANDLES_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   help: { type: "boolean", short: "h" },
@@ -375,6 +382,7 @@ export const USAGE = `Usage:
   streamd balances <address | name> [--asset <asset>]... [options]
   streamd watch <address>... [--cursor-file <path>] [options]
   streamd handles <address | name>
+  streamd name <name | address>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
   streamd codegen [--out <file>] [--validators] (<address> | <address>::<module>)...
@@ -951,6 +959,19 @@ function parseHandles(args: string[]): ParsedCommand {
   return { command: "handles", options: withKey(options, values["api-key"]) };
 }
 
+function parseName(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: HANDLES_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const [value, ...rest] = positionals;
+  if (value === undefined || value === "" || rest.length > 0) {
+    throw new UsageError("name needs one name or address");
+  }
+  const options: NameOptions = { value, ...endpoint(values, chain(values.chain)) };
+  return { command: "name", options: withKey(options, values["api-key"]) };
+}
+
 function parseTransfers(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: TRANSFERS_OPTIONS, allowPositionals: true, strict: true }),
@@ -1086,6 +1107,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "balances") return parseBalances(rest);
   if (command === "watch") return parseWatch(rest);
   if (command === "handles") return parseHandles(rest);
+  if (command === "name") return parseName(rest);
   if (command === "codegen") return parseCodegen(rest);
   if (command === "compare") return parseCompare(rest);
   throw new UsageError(`unknown command: ${command}`);

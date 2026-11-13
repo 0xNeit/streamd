@@ -14,6 +14,7 @@ import type {
   Endpoint,
   ForwardOptions,
   HandlesOptions,
+  NameOptions,
   ParsedCommand,
   QueryOptions,
   RecordOptions,
@@ -34,6 +35,7 @@ import type { SuiNetworkPreset } from "@streamd/sui";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
 import { runHandles } from "./handles.js";
+import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
 import { openDatabase, runStore } from "./store.js";
@@ -223,6 +225,20 @@ async function handles(options: HandlesOptions): Promise<number> {
   return out.exitCode(code);
 }
 
+async function name(options: NameOptions): Promise<number> {
+  const controller = new AbortController();
+  const out = stdout(controller);
+  const chain = await chainFor(options);
+  const code = await runName(options, {
+    resolveName: (value) => chain.resolveName(value),
+    primaryName: (address) => chain.primaryName(address),
+    write: out.write,
+    error: (message) => process.stderr.write(`${message}\n`),
+    signal: controller.signal,
+  });
+  return out.exitCode(code);
+}
+
 async function record(options: RecordOptions): Promise<number> {
   const controller = new AbortController();
   process.once("SIGINT", () => controller.abort());
@@ -333,6 +349,7 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === "balances") return balances(parsed.options);
   if (parsed.command === "watch") return watch(parsed.options);
   if (parsed.command === "handles") return handles(parsed.options);
+  if (parsed.command === "name") return name(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 

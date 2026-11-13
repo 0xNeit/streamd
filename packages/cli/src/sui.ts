@@ -30,5 +30,7 @@ export async function suiChain(endpoint: Endpoint): Promise<Chain> {
     client: () => new sui.SuiClient({ sui: node }),
     adapter: (nodeUrl) => new sui.SuiAdapter(nodeUrl === undefined ? node : grpc(nodeUrl)),
     check: (descriptor) => sui.checkDescriptor(node, descriptor),
+    resolveName: (value) => sui.resolveName(node, value),
+    primaryName: (address) => sui.primaryName(node, address),
   };
 }
