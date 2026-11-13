@@ -21,6 +21,8 @@ export interface Endpoint {
   archive?: string;
   /** Sent to the fullnode as the SDK's API key; never printed, and never set for Sui. */
   apiKey?: string;
+  /** `--stats`: print request counts per source to stderr; only on commands that read through the adapter. */
+  stats?: true;
 }
 
 /** Where events come from: shared by `tail` and `forward`. */
@@ -232,7 +234,7 @@ const ENDPOINT_OPTIONS = {
 } as const;
 
 /** The endpoint of a command that reads events through the adapter. */
-const READ_OPTIONS = { ...ENDPOINT_OPTIONS, archive: { type: "string" } } as const;
+const READ_OPTIONS = { ...ENDPOINT_OPTIONS, archive: { type: "string" }, stats: { type: "boolean" } } as const;
 
 const SOURCE_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
@@ -497,6 +499,10 @@ Options:
   --out <file>           codegen, record: write to this file instead of stdout
   --cache <file>         query, record: keep settled pages in this SQLite file and read them
                          from it on the next run of the same range (Aptos only)
+  --stats                commands that read events (not check, codegen, handles, name or
+                         compare): print each node's request counts and latencies to stderr
+                         as one JSON line {"stats":...} on exit and on SIGUSR1 (not Windows);
+                         reads made outside the adapter, such as name lookups, are not counted
   --validators           codegen: also write an is<Type> runtime check per type
   --chain <name>         aptos or sui (default: aptos); with sui, --network is mainnet,
                          testnet or devnet, --node-url and --against are Sui gRPC URLs,
@@ -542,6 +548,7 @@ interface EndpointFlags {
   "node-url"?: string[];
   "api-key"?: string;
   archive?: string;
+  stats?: boolean;
 }
 
 /**
@@ -558,6 +565,7 @@ function endpoint(values: EndpointFlags, sui: boolean, oneNode?: string): Endpoi
     options.extraNodeUrls = extra;
   }
   if (values.archive !== undefined) options.archive = archive(values.archive, options.network, sui);
+  if (values.stats === true) options.stats = true;
   if (sui) {
     if (!SUI_NETWORKS.includes(options.network)) {
       throw new UsageError(`--network with --chain sui must be one of ${SUI_NETWORKS.join(", ")}: ${options.network}`);

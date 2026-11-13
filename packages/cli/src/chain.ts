@@ -4,6 +4,7 @@ import { ArchiveFallbackAdapter, CachingAdapter, PoolAdapter } from "@streamd/co
 import type { CachingAdapterOptions, EventAdapter, ModuleEventDescriptor, StreamdClient } from "@streamd/core";
 import type { Endpoint } from "./args.js";
 import type { TypeChecks } from "./check.js";
+import type { RequestStats } from "./stats.js";
 import { suiChain } from "./sui.js";
 
 /** What the commands read through, so each is written once for both chains. */
@@ -51,7 +52,7 @@ export function readThrough(first: HeadAdapter, others: readonly HeadAdapter[] =
   return archive === undefined ? fullnode : (new ArchiveFallbackAdapter(fullnode, archive) as unknown as HeadAdapter);
 }
 
-function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions): Chain {
+function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: RequestStats): Chain {
   const config = aptosConfig(endpoint);
   const node = (nodeUrl: string) => new FullnodeScanAdapter(new Aptos(aptosConfig({ network: endpoint.network, nodeUrl })));
   const archive = () => {
@@ -61,17 +62,20 @@ function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions): Chain {
     const nodeUrl = networks.aptosMainnetArchive.fullnode;
     return new FullnodeScanAdapter(new Aptos(aptosConfig({ network: "mainnet", nodeUrl, ...(apiKey !== undefined && { apiKey }) })));
   };
-  const reads = (aptos: Aptos) => {
-    const adapter = readThrough(new FullnodeScanAdapter(aptos), endpoint.extraNodeUrls?.map(node), archive());
+  let shared: HeadAdapter | undefined;
+  // Built once, so every client and adapter() share each node's counts.
+  const reads = () => {
+    if (shared !== undefined) return shared;
+    const nodes = [new FullnodeScanAdapter(new Aptos(config)), ...(endpoint.extraNodeUrls?.map(node) ?? [])];
+    const [first, ...others] = stats === undefined ? nodes : nodes.map((n) => stats.track(n, "node"));
+    const pruned = archive();
+    const adapter = readThrough(first!, others, pruned && stats ? stats.track(pruned, "archive") : pruned);
     // Outermost, so a cached page reaches neither the pool nor the archive; the head passes through.
-    return cache === undefined ? adapter : (new CachingAdapter(adapter, cache) as unknown as HeadAdapter);
+    return (shared = cache === undefined ? adapter : (new CachingAdapter(adapter, cache) as unknown as HeadAdapter));
   };
   return {
-    client: () => {
-      const aptos = new Aptos(config);
-      return new AptosClient({ aptos, adapter: reads(aptos) });
-    },
-    adapter: (nodeUrl) => (nodeUrl === undefined ? reads(new Aptos(config)) : node(nodeUrl)),
+    client: () => new AptosClient({ aptos: new Aptos(config), adapter: reads() }),
+    adapter: (nodeUrl) => (nodeUrl === undefined ? reads() : node(nodeUrl)),
     check: (descriptor) => checkDescriptor(new Aptos(config), descriptor),
     resolveName: (value) => resolveName(new Aptos(config), value),
     primaryName: (address) => primaryName(new Aptos(config), address),
@@ -81,7 +85,8 @@ function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions): Chain {
 /**
  * The chain `endpoint` names; Sui's packages load only here, on `--chain sui`.
  * `cache` wraps the endpoint's reads, on Aptos only: Sui pages are never final.
+ * `stats` counts each node and archive behind those reads.
  */
-export async function chainFor(endpoint: Endpoint, cache?: CachingAdapterOptions): Promise<Chain> {
-  return endpoint.chain === "sui" ? suiChain(endpoint) : aptosChain(endpoint, cache);
+export async function chainFor(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: RequestStats): Promise<Chain> {
+  return endpoint.chain === "sui" ? suiChain(endpoint, stats) : aptosChain(endpoint, cache, stats);
 }

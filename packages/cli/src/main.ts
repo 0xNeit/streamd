@@ -40,6 +40,7 @@ import { runHandles } from "./handles.js";
 import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
+import { RequestStats, onStatsSignal } from "./stats.js";
 import { connectPostgres, openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
 import { runTransfers } from "./transfers.js";
@@ -48,6 +49,9 @@ import { runWatch } from "./watch.js";
 
 // The SDK logs notes for custom networks with console.info, which would corrupt JSON lines on stdout.
 console.info = console.error;
+
+/** Set for the whole run when `--stats` is given. */
+let stats: RequestStats | undefined;
 
 function parse(argv: string[]): ParsedCommand | undefined {
   try {
@@ -65,7 +69,7 @@ async function setup(endpoint: Endpoint, cache?: PageCache) {
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
   process.once("SIGTERM", () => controller.abort());
-  const chain = await chainFor(endpoint, cache);
+  const chain = await chainFor(endpoint, cache, stats);
   return { chain, client: chain.client(), controller };
 }
 
@@ -264,7 +268,7 @@ async function record(options: RecordOptions, cache?: PageCache): Promise<number
   process.once("SIGINT", () => controller.abort());
   process.once("SIGTERM", () => controller.abort());
   return runRecord(options, {
-    adapter: (await chainFor(options, cache)).adapter(),
+    adapter: (await chainFor(options, cache, stats)).adapter(),
     write: (text) =>
       options.out === undefined ? void process.stdout.write(text) : writeAtomically(options.out, text),
     error: (text) => process.stderr.write(`${text}\n`),
@@ -351,13 +355,7 @@ async function codegen(options: CodegenOptions): Promise<number> {
   return write(options, await generateEventTypes(options.modules, load, { list, validators: options.validators === true }));
 }
 
-async function main(argv: string[]): Promise<number> {
-  const parsed = parse(argv);
-  if (parsed === undefined) return 2;
-  if (parsed.command === "help") {
-    process.stdout.write(USAGE);
-    return 0;
-  }
+async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise<number> {
   if (parsed.command === "codegen") return codegen(parsed.options);
   if (parsed.command === "compare") return compare(parsed.options);
   if (parsed.command === "store") return store(parsed.options);
@@ -371,6 +369,25 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === "handles") return handles(parsed.options);
   if (parsed.command === "name") return name(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
+}
+
+async function main(argv: string[]): Promise<number> {
+  const parsed = parse(argv);
+  if (parsed === undefined) return 2;
+  if (parsed.command === "help") {
+    process.stdout.write(USAGE);
+    return 0;
+  }
+  if (parsed.options.stats !== true) return run(parsed);
+  const counted = (stats = new RequestStats());
+  const stop = onStatsSignal(() => process.stderr.write(counted.line()));
+  try {
+    return await run(parsed);
+  } finally {
+    stop();
+    // However the command ended; flushed first, since exit() does not wait for stderr.
+    await new Promise((resolve) => process.stderr.write(counted.line(), resolve));
+  }
 }
 
 // Exit explicitly once stdout has flushed, so an in-flight request does not
