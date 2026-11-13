@@ -2,6 +2,8 @@ import { describe, it, expect } from "bun:test";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { recordingAdapter, replayAdapter, type Recording } from "../src/adapters/recording.js";
 import { StreamdClient } from "../src/client.js";
+import { RequestLimiter } from "../src/limiter.js";
+import { eventsAt } from "../src/transaction.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import type { EventAdapter, EventDescriptor, StreamdEvent, TransactionSimulation } from "../src/types.js";
 
@@ -423,6 +425,57 @@ describe("recording transaction lookups", () => {
       undefined,
     ]) {
       expect(() => replayAdapter(bad(result))).toThrow("Invalid recording");
+    }
+  });
+});
+
+describe("recording lookups by version", () => {
+  const seeded: StreamdEvent = {
+    type: PING,
+    data: { amount: "5" },
+    version: 2n ** 63n,
+    sequenceNumber: 0n,
+    eventIndex: 0,
+    transactionHash: `0x${"ef".repeat(32)}`,
+    timestamp: 1700000000000000n,
+  };
+  const found = { version: 2n ** 63n, success: true, vmStatus: "Executed successfully", events: [seeded] };
+
+  it("replays found and not-found lookups keyed by version, bigints included, through eventsAt", async () => {
+    const seen: unknown[] = [];
+    const recorder = recordingAdapter({
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      getTransactionEventsByVersion: async (...args) => (seen.push(args), args[0] === found.version ? found : undefined),
+    });
+    expect(await recorder.getTransactionEventsByVersion!(found.version, moduleDesc)).toBe(found);
+    expect(seen[0]).toEqual([found.version, moduleDesc]);
+    expect(await recorder.getTransactionEventsByVersion!(3n)).toBeUndefined();
+    expect(recorder.toJSON().calls.map((c) => [c.method, c.key])).toEqual([
+      ["getTransactionEventsByVersion", String(2n ** 63n)],
+      ["getTransactionEventsByVersion", "3"],
+    ]);
+
+    const replay = replayAdapter(JSON.stringify(recorder));
+    expect(await replay.getTransactionEventsByVersion!(found.version)).toEqual(found);
+    expect(await replay.getTransactionEventsByVersion!(3n)).toBeUndefined();
+    expect(await eventsAt(replay, new RequestLimiter(), found.version, moduleDesc, {})).toEqual([seeded]);
+    await expect(replay.getTransactionEventsByVersion!(4n)).rejects.toBeInstanceOf(StreamdError);
+  });
+
+  it("has no getTransactionEventsByVersion when the source or the recording lacks it", () => {
+    expect(recordingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).getTransactionEventsByVersion)
+      .toBeUndefined();
+    expect(replayAdapter({ format: "streamd-recording", version: 1, calls: [] }).getTransactionEventsByVersion).toBeUndefined();
+  });
+
+  it("refuses a malformed recorded lookup", () => {
+    for (const result of [{ version: "1", success: "yes", vmStatus: "", events: [] }, undefined]) {
+      const bad: Recording = {
+        format: "streamd-recording",
+        version: 1,
+        calls: [{ method: "getTransactionEventsByVersion", key: "1", result }],
+      };
+      expect(() => replayAdapter(bad)).toThrow("Invalid recording");
     }
   });
 });
