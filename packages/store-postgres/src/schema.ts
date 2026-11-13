@@ -39,6 +39,10 @@ const SCHEMA = [
   "CREATE TABLE IF NOT EXISTS streamd_cursors (name text PRIMARY KEY, cursor text NOT NULL)",
 ];
 
+// Kept among the cursors, as the SQLite store does, so a database created
+// before pruning existed needs no migration: the row appears on the first prune.
+export const PRUNED_BEFORE = "streamd:pruned-before";
+
 const ready = new WeakMap<PostgresClient, Promise<void>>();
 
 /**

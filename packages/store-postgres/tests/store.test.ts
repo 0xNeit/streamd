@@ -140,3 +140,97 @@ describe("PostgresEventStore", () => {
     expect((await rows(db)).length).toBe(1);
   });
 });
+
+describe("PostgresEventStore.prune", () => {
+  const versions = async (db: PGlite) => (await rows(db)).map((e) => e.version);
+  const edge = async (db: PGlite) =>
+    (await db.query<{ cursor: string }>("SELECT cursor FROM streamd_cursors WHERE name = 'streamd:pruned-before'"))
+      .rows[0]?.cursor;
+
+  it("deletes below the version and keeps the rest", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.write([ev(1n), ev(2n), ev(2n, 1), ev(3n)]);
+    expect(await store.prune({ beforeVersion: 2n })).toBeUndefined();
+    expect(await versions(db)).toEqual([2n, 2n, 3n]);
+  });
+
+  it("leaves saved cursors", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.write([ev(1n)], { name: "swaps", cursor: "c" });
+    await store.prune({ beforeVersion: 5n });
+    expect(await versions(db)).toEqual([]);
+    expect(await store.readCursor("swaps")).toBe("c");
+  });
+
+  it("prunes a store that was never written to", async () => {
+    const db = new PGlite();
+    await new PostgresEventStore(db).prune({ beforeVersion: U64_MAX });
+    expect(await edge(db)).toBe(U64_MAX.toString());
+  });
+
+  it("rejects an invalid version and changes nothing", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.write([ev(1n)]);
+    for (const bad of [{ beforeVersion: -1n }, { beforeVersion: U64_MAX + 1n }, { beforeVersion: 2 }, undefined]) {
+      await expect(store.prune(bad as { beforeVersion: bigint })).rejects.toBeInstanceOf(StreamdError);
+    }
+    expect(await versions(db)).toEqual([1n]);
+    expect(await edge(db)).toBeUndefined();
+  });
+
+  it("rolls the delete back when recording the edge fails", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.write([ev(1n)]);
+    await db.exec(`
+      CREATE FUNCTION boom() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'boom'; END $$;
+      CREATE TRIGGER boom BEFORE INSERT OR UPDATE ON streamd_cursors FOR EACH ROW EXECUTE FUNCTION boom();
+    `);
+    await expect(store.prune({ beforeVersion: 5n })).rejects.toThrow("boom");
+    expect(await versions(db)).toEqual([1n]);
+  });
+
+  it("only raises the edge, comparing versions across digit counts", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.prune({ beforeVersion: 10n });
+    await store.prune({ beforeVersion: 9n });
+    expect(await edge(db)).toBe("10");
+    await store.prune({ beforeVersion: 100n });
+    expect(await edge(db)).toBe("100");
+  });
+
+  it("still deletes below a lower version, as rows written late below the edge", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.prune({ beforeVersion: 10n });
+    await store.write([ev(2n), ev(5n)]);
+    await store.prune({ beforeVersion: 3n });
+    expect(await versions(db)).toEqual([5n]);
+    expect(await edge(db)).toBe("10");
+  });
+
+  it("keeps the name holding the edge away from callers", async () => {
+    const store = new PostgresEventStore(new PGlite());
+    const name = "streamd:pruned-before";
+    await expect(store.write([], { name, cursor: "x" })).rejects.toThrow("reserved");
+    await expect(store.readCursor(name)).rejects.toThrow("reserved");
+  });
+
+  it("lands a prune and a write sent together, each whole", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.write([ev(1n), ev(2n)]);
+    await Promise.all([
+      store.prune({ beforeVersion: 5n }),
+      store.write([ev(6n), ev(7n)], { name: "s", cursor: "c" }),
+      store.prune({ beforeVersion: 3n }),
+    ]);
+    expect(await versions(db)).toEqual([6n, 7n]);
+    expect(await store.readCursor("s")).toBe("c");
+    expect(await edge(db)).toBe("5");
+  });
+});
