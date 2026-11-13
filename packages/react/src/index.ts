@@ -6,6 +6,7 @@ export { useReduction } from "./use-reduction.js";
 export { useTransactionEvents } from "./use-transaction-events.js";
 export { useTransactions } from "./use-transactions.js";
 export { useTransfers } from "./use-transfers.js";
+export { useWatch } from "./use-watch.js";
 
 export type { StreamdProviderProps } from "./context.js";
 export type { BalancesClient, UseBalancesOptions, UseBalancesResult, UseBalancesStatus } from "./use-balances.js";
@@ -15,3 +16,4 @@ export type { UseReductionOptions, UseReductionResult, UseReductionStatus } from
 export type { TransactionEventsClient, UseTransactionEventsOptions, UseTransactionEventsResult } from "./use-transaction-events.js";
 export type { UseTransactionsOptions, UseTransactionsResult } from "./use-transactions.js";
 export type { TransfersClient, UseTransfersOptions } from "./use-transfers.js";
+export type { UseWatchOptions, UseWatchResult, WatchedEvent } from "./use-watch.js";

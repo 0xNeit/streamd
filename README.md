@@ -2601,6 +2601,23 @@ function Feed() {
   since the read walks the whole window, but the live walk re-examines the versions between that
   transaction and the head once, so keep the window to what a rare type needs. With no match in
   the window it follows from the window's start, and `history` refuses `cursor`.
+- **`useWatch(addresses, options?)`** follows a list of addresses with `client.watch` and
+  returns `{ data, error, status, addresses }`: `data` is the most recent `maxEvents` deliveries
+  (default 100), oldest first, each `{ event, address }` with the watched address as the list
+  first spelled it; `addresses` is what is being watched now, in the order added. A different
+  list does not restart anything: addresses that left are removed from the running watch and
+  new ones added, and the list is compared by canonical address, so reordering, `0x1` against
+  its long form, case and duplicates change nothing. An added address starts where
+  `watch.add()` starts it (the account's next transaction on the fullnode and Indexer
+  adapters), not at `fromVersion` or `fromTime`, which apply only to the addresses listed when
+  the watch started. A walk that gives up after `maxErrors` sets `error` and leaves
+  `addresses` while the others carry on, and it is not re-added while the list still names it:
+  take the address out of the list and put it back, or change an option, to try again. A
+  changed option or client restarts the watch over the current list with `data` empty. `[]`
+  runs a watch with nothing in it, so the first address added later starts no new watch; `null`
+  waits. `status` is `"idle"` or `"live"`, since a watch does not stop on its own. Options are
+  `watch()`'s, without `signal`, `positions` included to resume a saved run; a malformed address
+  throws while rendering, so check addresses a user types before listing them.
 - **`useLogs(descriptor, options?)`** runs `client.getEvents` and returns
   `{ data, error, loading }`. `data` is the last successful result and stays through refetches
   and errors. Options are `getEvents`'s, without `signal`; it takes a list of descriptors too.
