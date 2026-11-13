@@ -18,8 +18,8 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `balances`, `eventsOf`, `expectEvents`, `previewEvents` and
-`expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
+`transfers`, `getTransfers`, `balances`, `balanceAt`, `eventsOf`, `expectEvents`, `previewEvents`
+and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
 adapter.
@@ -1633,6 +1633,35 @@ wallet.unsubscribe();
 - **Failures.** `ready` rejects if the first read fails. A later failed read retries
   with backoff, and `maxErrors` stops it; a view that aborts stops it at once. A balances handle is not a listener for
   `off()` or `listenerCount()`.
+
+### A balance at a past version
+
+`balanceAt(address, asset, version)` reads one balance as it stood at a ledger version, by
+the same view `balances` reads at the head, and resolves the amount in base units:
+
+```ts
+const before = await streamd.balanceAt("0x4c...", undefined, 8038000000n); // APT
+const usdcThen = await streamd.balanceAt("alice.apt", usdc, 8038000000n);
+```
+
+- **Arguments.** `asset` is one asset in any form `balances` takes, or `undefined` for APT.
+  `version` is an absolute version, a `bigint`; there is no `"head"` or relative form,
+  since `balances` reads the head. A name resolves at the head, to the address it points
+  to now, not the one it pointed to at `version`.
+- **One request.** One view call through the client's limiter, so `maxConcurrentRequests`,
+  `maxRequestsPerSecond` and `requestTimeout` apply, and no retry.
+- **Errors.** A malformed address, asset or version, a list of assets, a legacy token id, or
+  an adapter without `view` rejects with `StreamdError` before anything is sent. A view that
+  aborts, as for a token object, rejects with a `StreamdError` naming the asset, the version
+  and the node's reason. A version the fullnode has pruned rejects with its
+  `StreamdNetworkError`, `statusCode` 410; an `ArchiveFallbackAdapter` over
+  `networks.aptosMainnetArchive` answers it from the archive instead. A version above the head
+  rejects with `statusCode` 404.
+- **Old history.** Before the fungible-asset migration, `coin::balance` aborts for an account
+  with no `CoinStore` for the coin (`ECOIN_STORE_NOT_PUBLISHED`) rather than reading `0`, and in
+  the earliest mainnet history it is not yet a view function at all; both reject as an abort.
+- **Aptos only.** Sui reads a balance only at its latest state, so `SuiClient` has no
+  `balanceAt`.
 
 ## Data sources and their limits
 

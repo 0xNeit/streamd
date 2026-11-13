@@ -1,5 +1,5 @@
 import { Aptos, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, expectEvents, requireTransactionHash, startBalances } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -99,6 +99,27 @@ export class AptosClient extends StreamdClient {
       APTOS_BALANCES,
       options,
     );
+  }
+
+  /**
+   * One wallet's balance of one asset as it stood at `version`, by the view
+   * `balances()` reads; `asset` `undefined` reads APT. A name resolves at the
+   * head, so it reads the address the name points to now. Goes through the
+   * client's limiter and `requestTimeout`. A pruned version rejects with the
+   * adapter's 410 `StreamdNetworkError`, and one above the head with the
+   * fullnode's 404.
+   */
+  async balanceAt(address: string, asset: string | undefined, version: bigint): Promise<bigint> {
+    if (address === undefined) throw new StreamdError("balanceAt needs an address or Aptos name");
+    if (asset !== undefined && typeof asset !== "string") {
+      throw new StreamdError("balanceAt reads one asset: a fungible-asset metadata address or a coin type");
+    }
+    const [key] = APTOS_BALANCES.assets(asset);
+    requireLedgerVersion(version);
+    const adapter = this.limiter.wrap(this.adapter);
+    if (typeof adapter.view !== "function") throw new StreamdError("balanceAt needs an adapter that implements view");
+    const owner = this.accountOf(address)!;
+    return APTOS_BALANCES.read(adapter, await owner(), key!, version);
   }
 
   /**
