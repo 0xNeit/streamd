@@ -1,6 +1,7 @@
 import type { StreamdClient, Subscription } from "@streamd/core";
 import { SqliteEventStore, storeEvents, type SqliteDatabase } from "@streamd/store-sqlite";
 import type { StoreOptions } from "./args.js";
+import { filterPredicate } from "./filter.js";
 import { message } from "./format.js";
 
 export type OpenDatabase = SqliteDatabase & { close?: () => void };
@@ -58,18 +59,21 @@ export async function runStore(options: StoreOptions, io: StoreIO): Promise<numb
     const onAbort = () => finish(0);
     io.signal.addEventListener("abort", onAbort, { once: true });
 
+    const { fromVersion, pollInterval, filter } = options;
     const descriptorName = JSON.stringify(options.descriptor, (_key, v: unknown) =>
       typeof v === "bigint" ? v.toString() : v,
     );
+    // A filtered run gets its own cursor, so it never resumes from one that skipped events it wants.
+    const filterName = filter === undefined ? "" : `:${JSON.stringify(filter)}`;
     // Prefixed for Sui, so a database shared by both chains never resumes from the other's cursor.
     const network = options.chain === "sui" ? `sui:${options.network}` : options.network;
-    const name = options.name ?? `${network}:${descriptorName}`;
-    const { fromVersion, pollInterval } = options;
+    const name = options.name ?? `${network}:${descriptorName}${filterName}`;
     sub = storeEvents(io.client, store, options.descriptor, {
       name,
       // Only seeds the first run: the poller prefers the saved cursor storeEvents loads.
       ...(fromVersion !== undefined && { fromVersion }),
       ...(pollInterval !== undefined && { pollInterval }),
+      ...(filter !== undefined && { where: filterPredicate(filter) }),
       onError: (err) => {
         io.error(`streamd: ${message(err)}`);
         // A failed write ends the subscription on a microtask, after this runs.

@@ -2,6 +2,8 @@ import { parseArgs } from "node:util";
 import { normalizeAddress, requireAddress, requireEventType, requireResourceType } from "@streamd/core";
 import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
 import type { ModuleRef } from "./codegen.js";
+import { FILTER_OPTIONS, parseFilter } from "./filter.js";
+import type { CliFilter, FilterFlags } from "./filter.js";
 
 export type Network = "mainnet" | "testnet" | "devnet" | "movement-mainnet" | "movement-testnet";
 
@@ -24,6 +26,8 @@ export interface SourceOptions extends Endpoint {
   /** Microseconds since the epoch; never set with `fromVersion`. */
   fromTime?: bigint;
   pollInterval?: number;
+  /** Client-side narrowing by `--sender`, `--function` and `--where`. */
+  filter?: CliFilter;
 }
 
 export interface TailOptions extends SourceOptions {
@@ -74,8 +78,10 @@ export interface QueryOptions extends Endpoint {
   fromVersion?: bigint;
   fromTime?: bigint;
   toVersion: bigint | "head";
+  /** Counted after `filter`. */
   limit?: number;
   order: "asc" | "desc";
+  filter?: CliFilter;
 }
 
 export interface RecordOptions extends Endpoint {
@@ -153,6 +159,7 @@ const ENDPOINT_OPTIONS = {
 
 const SOURCE_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
+  ...FILTER_OPTIONS,
   ...ENDPOINT_OPTIONS,
   "from-version": { type: "string" },
   "poll-interval": { type: "string" },
@@ -214,6 +221,7 @@ const RECORD_OPTIONS = {
 
 const QUERY_OPTIONS = {
   ...FROM_TIME,
+  ...FILTER_OPTIONS,
   ...DESCRIPTOR_OPTIONS,
   ...ENDPOINT_OPTIONS,
   "from-version": { type: "string" },
@@ -286,6 +294,8 @@ descriptors for their event structs; a bare address covers all its modules.
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
 Every command takes --chain sui to read Sui instead of Aptos.
+tail, query, forward and store take --sender, --function and --where, which
+filter after fetching, so --limit counts the events that match.
 
 Options:
   --account <address>    events from transactions this account sent
@@ -301,6 +311,12 @@ Options:
   --from-version <n>     start at this version instead of the chain head
   --from-time <t>        tail, forward, query: start here, as 2h, 7d or an ISO date (UTC)
   --poll-interval <ms>   delay between polls (default: 1000)
+  --sender <address>     only events from transactions one of these signed, repeatable
+  --function <a::m::f>   only events from a call to one of these entry functions, repeatable
+  --where <expr>         only events whose data matches <field><op><value>, repeatable,
+                         all must hold: field a dotted path such as legs.0.amount, op
+                         ==, !=, <, <=, > or >=; an integer value compares as an integer,
+                         any other is matched as text under == or !=
   --limit <n>            tail: exit after printing n events; record, query: stop after n;
                          compare: page size
   --to <url>             forward: webhook URL (http or https, required)
@@ -556,7 +572,14 @@ function descriptor(
   return { kind: "module", eventType: eventTypes as MoveEventType[] };
 }
 
-interface SourceFlags extends DescriptorFlags, EndpointFlags {
+/** Sets `filter` on `options` when any filter flag was given. */
+function withFilter<T extends { filter?: CliFilter }>(options: T, flags: FilterFlags): T {
+  const filter = wrap(() => parseFilter(flags));
+  if (filter !== undefined) options.filter = filter;
+  return options;
+}
+
+interface SourceFlags extends DescriptorFlags, EndpointFlags, FilterFlags {
   chain?: string;
   "from-time"?: string;
   "from-version"?: string;
@@ -582,7 +605,7 @@ function source(command: string, values: SourceFlags, positionals: string[]): So
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
   if (fromTime !== undefined) options.fromTime = fromTime;
   if (pollInterval !== undefined) options.pollInterval = pollInterval;
-  return options;
+  return withFilter(options, values);
 }
 
 function parseTail(args: string[]): ParsedCommand {
@@ -742,7 +765,7 @@ function parseQuery(args: string[]): ParsedCommand {
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
   withKey(options, values["api-key"]);
   if (limit !== undefined) options.limit = limit;
-  return { command: "query", options };
+  return { command: "query", options: withFilter(options, values) };
 }
 
 const TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/;

@@ -4,6 +4,7 @@ import { parseRetryAfter, serializeEvent } from "@streamd/core";
 import type { StreamdClient, Subscription } from "@streamd/core";
 import { SIGNATURE_HEADER, type ForwardOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
+import { filterPredicate } from "./filter.js";
 import { message } from "./format.js";
 
 export interface ForwardIO {
@@ -153,7 +154,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     const onAbort = () => finish(0);
     io.signal.addEventListener("abort", onAbort, { once: true });
 
-    const { fromVersion, fromTime, pollInterval, batchSize } = options;
+    const { fromVersion, fromTime, pollInterval, batchSize, filter } = options;
     sub = io.client.onBatch(
       options.descriptor,
       async (all) => {
@@ -190,6 +191,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
         ...(fromTime !== undefined && { fromTime }),
         ...(pollInterval !== undefined && { pollInterval }),
         ...(batchSize !== undefined && { batchSize }),
+        ...(filter !== undefined && { where: filterPredicate(filter) }),
         ...(toVersion !== undefined && { onCaughtUp: () => finish(0) }),
         onError: (err) => {
           io.error(`streamd: ${message(err)}`);

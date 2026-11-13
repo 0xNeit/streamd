@@ -299,3 +299,12 @@ describe("runTail --cursor-file", () => {
     expect(errors.join()).toContain("cannot write cursor file");
   });
 });
+
+describe("runTail filter", () => {
+  it("prints only matching events, counting --limit after the filter", async () => {
+    const { lines, io } = harness(new MemoryAdapter([ev(1), ev(2), ev(3), ev(4), ev(5)]));
+    const filter = { senders: [], functions: [], where: [{ path: "amount", op: ">=" as const, value: "30" }] };
+    expect(await runTail(options({ fromVersion: 0n, limit: 2, filter }), io)).toBe(0);
+    expect(lines.map((l) => (JSON.parse(l) as { version: string }).version)).toEqual(["3", "4"]);
+  });
+});
