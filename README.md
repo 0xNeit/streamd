@@ -2802,16 +2802,31 @@ existing cursor file wins over `--from-version`, and only works with the descrip
 node that wrote it.
 
 With a secret, each POST carries `x-streamd-signature: sha256=<hex>`, an HMAC-SHA256 of the
-exact request body. Verify it against the raw bytes before parsing them, with a constant-time
-comparison:
+exact request body. Check it with `verifyWebhook` from `@streamd/core`, on the raw bytes before
+parsing them, since re-serialised JSON will not match:
 
 ```ts
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { WEBHOOK_SIGNATURE_HEADER, verifyWebhook } from "@streamd/core";
 
-const expected = Buffer.from(`sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`);
-const given = Buffer.from(request.headers.get("x-streamd-signature") ?? "");
-const valid = given.length === expected.length && timingSafeEqual(given, expected);
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const body = new Uint8Array(await request.arrayBuffer());
+    const signature = request.headers.get(WEBHOOK_SIGNATURE_HEADER);
+    if (!(await verifyWebhook(body, signature, process.env.STREAMD_WEBHOOK_SECRET!))) {
+      return new Response("bad signature", { status: 401 });
+    }
+    const events = JSON.parse(new TextDecoder().decode(body));
+    // ...
+    return new Response("ok");
+  },
+};
 ```
+
+It runs wherever Web Crypto does (browsers, edge workers, Bun, Deno, Node 19+) and compares in
+constant time through `crypto.subtle.verify`. A string body is read as UTF-8. A missing or
+malformed header, a changed body or another secret gives `false`; the hex may be either case.
+An empty secret, a body that is neither a string nor a `Uint8Array`, or a runtime without
+`crypto.subtle` throws a `StreamdError`.
 
 The signature has no timestamp, so it proves origin and integrity but not freshness: a captured
 request can be replayed. Deduplicate on each event's `version` and `eventIndex`, which delivery
