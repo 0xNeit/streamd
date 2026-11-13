@@ -2643,7 +2643,7 @@ streamd check --chain sui 0x3::validator::StakingRequestEvent
 
 ### Filter events
 
-`tail`, `query`, `forward` and `store` narrow what they print, send or store with three
+`tail`, `query`, `forward`, `store` and `watch` narrow what they print, send or store with three
 repeatable flags, which run after fetching, through the [filters](#filtering) of the same names:
 
 ```sh
@@ -2907,6 +2907,58 @@ client's error budget.
 Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes; `1` when
 the first read fails, reading gives up, or output could not be written; `2` for invalid
 arguments; `130` on a second Ctrl-C.
+
+### Watch several accounts
+
+`streamd watch <address>...` follows the transactions each address sent, with one
+[`watch`](#watch-lists) walk per address, and prints each event as a JSON line led by the watched
+address it came from:
+
+```sh
+# two accounts from the head, until Ctrl-C
+streamd watch 0x4c... 0x9f...
+# from a version, resuming each address from its own saved position on the next run
+streamd watch 0x4c... 0x9f... --from-version 3000000000 --cursor-file watch.json
+# only events with an amount of at least 1 APT, under --decode
+streamd watch 0x4c... 0x9f... --decode amount --where "amount>=100000000"
+streamd watch --chain sui 0x7d... 0x2b...
+```
+
+```json
+{"address":"0x00...4c","type":"0x1::coin::CoinWithdraw","data":{"amount":"150000000"},"version":"3000000123","sequenceNumber":"0","eventIndex":0,"sender":"0x4c..."}
+```
+
+A line is the `tail` line with a leading `address`, in long form. `parseEvent` reads events from
+named fields and ignores `address`, so a saved watch still loads through
+`MemoryAdapter.fromJsonLines`.
+
+| Option | Meaning |
+| --- | --- |
+| `<address>...` | one or more addresses (no names), each followed once |
+| `--from-version <n>`, `--from-time <t>` | where an address with no saved position starts (default: the head) |
+| `--cursor-file <path>` | read each address's position from here, and save them as they move |
+| `--sender`, `--function`, `--where`, `--decode` | narrow every walk, as on `tail` |
+| `--poll-interval <ms>` | delay between each walk's polls (default `1000`) |
+| `--limit <n>` | exit after printing `n` lines across every address |
+
+The cursor file holds `watch.positions`, one JSON object of long-form address to cursor, such as
+`{"0x00...4c":"3000000124"}`, replaced whole by a rename after a line, and at exit, whenever a
+position has moved. A saved position wins over `--from-version` and `--from-time` for that address.
+Positions for addresses not on the command line are carried through, their keys in long form, so
+leaving an address out for one run does not lose its place. It is at least once: a restart can
+reprint part of a page.
+
+An error on one walk is reported on stderr and retried. A walk that gives up is reported as
+`streamd: stopped following <address>` and the others carry on; its position stays in the cursor
+file, so the next run resumes it. When every walk has given up, the command exits `1`.
+
+There is no event-type narrowing and no `received` under `--chain sui`: `watch` builds each walk
+as `{ kind: "account", accountAddress }` itself. Narrow by data with `--where`, or follow one
+account with `streamd tail --account <address> <eventType>...`.
+
+Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes; `1` when
+the cursor file cannot be read or written, every walk gave up, or output could not be written; `2`
+for invalid arguments; `130` on a second Ctrl-C.
 
 ### Inspect a transaction
 

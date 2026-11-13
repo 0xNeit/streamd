@@ -104,7 +104,7 @@ describe("parseCommand options", () => {
 
 describe("parseCommand rejects", () => {
   it.each([
-    [["watch"], /unknown command: watch/],
+    [["follow"], /unknown command: follow/],
     [["tail", TYPE, "--bogus"], /bogus/],
     [["tail", TYPE, "--cursor", "1"], /cursor/],
     [["tail"], /at least one event type/],
@@ -995,5 +995,54 @@ describe("parseCommand balances", () => {
     [["0x1", "--from-version", "5"], /Unknown option '--from-version'/],
   ])("rejects %j as a usage error", (args, message) => {
     rejects(["balances", ...args], message);
+  });
+});
+
+describe("parseCommand watch", () => {
+  const ALICE = `0x${"a".padStart(64, "0")}`;
+  const BOB = `0x${"b".padStart(64, "0")}`;
+  const watch = (...argv: string[]) => {
+    const parsed = parseCommand(["watch", ...argv]);
+    if (parsed.command !== "watch") throw new Error("expected a watch command");
+    return parsed.options;
+  };
+
+  it("takes one or more addresses in long form, with only the flags given", () => {
+    expect(watch("0xa")).toEqual({ network: "mainnet", addresses: [ALICE] });
+    expect(watch("0xa", "0xB", "0xa")).toEqual({ network: "mainnet", addresses: [ALICE, BOB, ALICE] });
+    expect(
+      watch("0xa", "--from-version", "5", "--poll-interval", "200", "--limit", "3", "--cursor-file", "w.json"),
+    ).toEqual({ network: "mainnet", addresses: [ALICE], fromVersion: 5n, pollInterval: 200, limit: 3, cursorFile: "w.json" });
+  });
+
+  it("takes --from-time and the filter flags", () => {
+    expect(watch("0xa", "--from-time", "2026-01-01T00:00:00Z").fromTime).toBe(1767225600000000n);
+    const options = watch("0xa", "--sender", "0xb", "--function", "0x1::coin::transfer", "--where", "amount>=5", "--decode", "amount");
+    expect(options.filter).toEqual({
+      senders: [BOB],
+      functions: ["0x1::coin::transfer"],
+      where: [{ path: "amount", op: ">=", value: "5" }],
+    });
+    expect(options.decode).toEqual(["amount"]);
+  });
+
+  it("takes --chain sui with no key, and sends --api-key on Aptos", () => {
+    expect(watch("--chain", "sui", "0xa")).toEqual({ network: "mainnet", chain: "sui", addresses: [ALICE] });
+    rejects(["watch", "--chain", "sui", "--api-key", "k", "0xa"], /--api-key is not sent to Sui nodes/);
+    expect(watch("0xa", "--api-key", "k").apiKey).toBe("k");
+  });
+
+  it.each([
+    [[], /watch needs at least one address/],
+    [[""], /Not a valid Aptos address/],
+    [["0xa", "alice.apt"], /Not a valid Aptos address: alice.apt/],
+    [["--chain", "sui", "nope"], /Not a valid Sui address: nope/],
+    [["0xa", "--from-version", "1", "--from-time", "1h"], /set --from-time or --from-version, not both/],
+    [["0xa", "--cursor-file", ""], /--cursor-file must not be empty/],
+    [["0xa", "--limit", "0"], /--limit must be an integer from 1/],
+    [["0xa", "--where", "amount"], /--where must be/],
+    [["0xa", "--resource", "0x1::a::B"], /Unknown option '--resource'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(["watch", ...args], message);
   });
 });

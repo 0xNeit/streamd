@@ -117,6 +117,21 @@ export interface BalancesCommandOptions extends Endpoint {
   limit?: number;
 }
 
+/** Several `account` walks through `watch`; each address is in long form. */
+export interface WatchCommandOptions extends Endpoint {
+  /** Non-empty. */
+  addresses: string[];
+  fromVersion?: bigint;
+  fromTime?: bigint;
+  pollInterval?: number;
+  /** Lines to print across every address before exiting. */
+  limit?: number;
+  /** Holds `Watch.positions` as one JSON object. */
+  cursorFile?: string;
+  filter?: CliFilter;
+  decode?: string[];
+}
+
 export interface RecordOptions extends Endpoint {
   descriptor: EventDescriptor;
   fromVersion: bigint;
@@ -162,6 +177,7 @@ export type ParsedCommand =
   | { command: "tx"; options: TxOptions }
   | { command: "transfers"; options: TransfersOptions }
   | { command: "balances"; options: BalancesCommandOptions }
+  | { command: "watch"; options: WatchCommandOptions }
   | { command: "codegen"; options: CodegenOptions }
   | { command: "compare"; options: CompareOptions };
 
@@ -290,6 +306,17 @@ const BALANCES_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const WATCH_OPTIONS = {
+  ...ENDPOINT_OPTIONS,
+  ...FILTER_OPTIONS,
+  ...FROM_TIME,
+  "from-version": { type: "string" },
+  "poll-interval": { type: "string" },
+  limit: { type: "string" },
+  "cursor-file": { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const TX_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   timeout: { type: "string" },
@@ -334,6 +361,7 @@ export const USAGE = `Usage:
   streamd tx <hash | digest>
   streamd transfers [--asset <asset>] [--account <address | name>] [--to-version <n | head>] [options]
   streamd balances <address | name> [--asset <asset>]... [options]
+  streamd watch <address>... [--cursor-file <path>] [options]
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] <eventType>...
   streamd codegen [--out <file>] [--validators] (<address> | <address>::<module>)...
@@ -350,6 +378,8 @@ transfers prints asset transfers as JSON lines: followed live, or with
 --to-version read over a closed range, then exits.
 balances prints a wallet's balance of each asset once, then a JSON line each
 time one changes, read at the head every --poll-interval.
+watch follows the transactions each address sent, one walk per address, and
+prints each event as a JSON line with the watched address as "address".
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 compare reads one range from two nodes and prints what one has that the other
@@ -359,7 +389,7 @@ descriptors for their event structs; a bare address covers all its modules.
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
 Every command takes --chain sui to read Sui instead of Aptos.
-tail, query, forward and store take --sender, --function and --where, which
+tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
 --decode, which checks integer fields before --where runs.
 
@@ -380,7 +410,7 @@ Options:
   --api-key <key>        fullnode API key, sent as a bearer token (or set ${API_KEY_ENV}, used
                          only on mainnet, testnet and devnet without --node-url)
   --from-version <n>     start at this version instead of the chain head
-  --from-time <t>        tail, forward, query: start here, as 2h, 7d or an ISO date (UTC)
+  --from-time <t>        tail, forward, query, watch: start here, as 2h, 7d or an ISO date (UTC)
   --poll-interval <ms>   delay between polls (default: 1000)
   --sender <address>     only events from transactions one of these signed, repeatable
   --function <a::m::f>   only events from a call to one of these entry functions, repeatable
@@ -392,11 +422,12 @@ Options:
                          comma-separated and repeatable, * for every array element
                          (legs.*.amount); output and matches are unchanged, but a present
                          field that is not an unsigned integer is an error: query exits 1,
-                         tail, forward and store report it and skip the event
-  --limit <n>            tail, transfers: exit after printing n; balances: after n changes;
+                         tail, forward, store and watch report it and skip the event
+  --limit <n>            tail, transfers, watch: exit after printing n; balances: after n changes;
                          record, query: stop after n; compare: page size
   --to <url>             forward: webhook URL (http or https, required)
-  --cursor-file <path>   tail, transfers (following): save and resume from here; forward: cursor file
+  --cursor-file <path>   tail, transfers (following): save and resume from here; watch: each
+                         address's position, as one JSON object; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE})
   --format <name>        tail: json, or pretty for aligned lines in UTC (default: json)
   --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
@@ -868,6 +899,31 @@ function parseBalances(args: string[]): ParsedCommand {
   return { command: "balances", options };
 }
 
+function parseWatch(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: WATCH_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (positionals.length === 0) throw new UsageError("watch needs at least one address");
+  const sui = chain(values.chain);
+  const options: WatchCommandOptions = {
+    addresses: positionals.map((raw) => checkedAddress(raw, sui)),
+    ...endpoint(values, sui),
+  };
+  withKey(options, values["api-key"]);
+  const fromVersion = version(values["from-version"]);
+  const fromTime = startTime(values);
+  if (fromVersion !== undefined) options.fromVersion = fromVersion;
+  if (fromTime !== undefined) options.fromTime = fromTime;
+  const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
+  if (pollInterval !== undefined) options.pollInterval = pollInterval;
+  const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  if (limit !== undefined) options.limit = limit;
+  if (values["cursor-file"] === "") throw new UsageError("--cursor-file must not be empty");
+  if (values["cursor-file"] !== undefined) options.cursorFile = values["cursor-file"];
+  return { command: "watch", options: withFilter(options, values) };
+}
+
 function parseTransfers(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: TRANSFERS_OPTIONS, allowPositionals: true, strict: true }),
@@ -1001,6 +1057,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "tx") return parseTx(rest);
   if (command === "transfers") return parseTransfers(rest);
   if (command === "balances") return parseBalances(rest);
+  if (command === "watch") return parseWatch(rest);
   if (command === "codegen") return parseCodegen(rest);
   if (command === "compare") return parseCompare(rest);
   throw new UsageError(`unknown command: ${command}`);

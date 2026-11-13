@@ -19,6 +19,7 @@ import type {
   TailOptions,
   TransfersOptions,
   TxOptions,
+  WatchCommandOptions,
 } from "./args.js";
 import { runBalances } from "./balances.js";
 import { aptosConfig, chainFor } from "./chain.js";
@@ -36,6 +37,7 @@ import { openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
 import { runTransfers } from "./transfers.js";
 import { runTx } from "./tx.js";
+import { runWatch } from "./watch.js";
 
 // The SDK logs notes for custom networks with console.info, which would corrupt JSON lines on stdout.
 console.info = console.error;
@@ -189,6 +191,22 @@ async function balances(options: BalancesCommandOptions): Promise<number> {
   }
 }
 
+async function watch(options: WatchCommandOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runWatch(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
 async function record(options: RecordOptions): Promise<number> {
   const controller = new AbortController();
   process.once("SIGINT", () => controller.abort());
@@ -297,6 +315,7 @@ async function main(argv: string[]): Promise<number> {
   if (parsed.command === "tx") return tx(parsed.options);
   if (parsed.command === "transfers") return transfers(parsed.options);
   if (parsed.command === "balances") return balances(parsed.options);
+  if (parsed.command === "watch") return watch(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
 }
 
