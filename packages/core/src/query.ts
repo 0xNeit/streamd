@@ -3,7 +3,10 @@ import type {
   EventAdapter,
   EventDescriptor,
   EventFilter,
+  StateRequestBuilder,
   StreamdEvent,
+  TransactionFilter,
+  TransactionGroup,
 } from "./types.js";
 import { isAbsoluteVersion, raceAbort, resolveFromVersion, sleep } from "./utils.js";
 import { RequestLimiter } from "./limiter.js";
@@ -14,6 +17,7 @@ import { mergeEvents, validateMerge } from "./merge.js";
 import { filterEvents } from "./filter.js";
 import { requireBlock, requireVersion } from "./adapters/validate.js";
 import { buildStateRequest, readState, validateWithState } from "./state.js";
+import { groupOf } from "./grouping.js";
 
 const DEFAULT_PAGE_SIZE = 25;
 const RETRY_BASE_DELAY = 1000;
@@ -46,6 +50,12 @@ function validateBlockRange(filter: EventFilter): void {
   }
   if (fromBlock !== undefined && toBlock !== undefined && fromBlock > toBlock) {
     throw new StreamdError(`fromBlock ${fromBlock} is after toBlock ${toBlock}`);
+  }
+}
+
+function validateOrderBy(orderBy: unknown): void {
+  if (orderBy !== undefined && orderBy !== "asc" && orderBy !== "desc") {
+    throw new StreamdError('orderBy must be "asc" or "desc"');
   }
 }
 
@@ -177,24 +187,87 @@ export class EventQuery {
     validateWithState(withState);
     const pages = this.pages<TData>(descriptor, rest, pageSize);
     if (withState === undefined) return yield* pages;
+    for await (const page of pages) {
+      yield (await this.attachState(descriptor, page, withState, retries, signal)) as StreamdEvent<TData>[];
+    }
+  }
+
+  /** `events` with `withState`'s view read at each one's version, through the first descriptor. */
+  private async attachState(
+    descriptor: Descriptors,
+    events: readonly StreamdEvent[],
+    withState: StateRequestBuilder,
+    retries: number,
+    signal: AbortSignal | undefined,
+  ): Promise<StreamdEvent[]> {
     const adapter = this.limiter.wrap(this.source, signal);
     const first = Array.isArray(descriptor)
       ? (descriptor as readonly EventDescriptor[])[0]!
       : (descriptor as EventDescriptor);
-    for await (const page of pages) {
-      const withStates: StreamdEvent[] = [];
-      for (const event of page as StreamdEvent[]) {
-        if (signal?.aborted) throw signal.reason;
-        // Built outside the retries: a throw from the caller's builder is not worth retrying.
-        const request = buildStateRequest(withState, event);
-        withStates.push(
-          request === undefined
-            ? event
-            : await withRetries(() => readState(adapter, first, event, request), retries, signal),
-        );
-      }
-      yield withStates as StreamdEvent<TData>[];
+    const withStates: StreamdEvent[] = [];
+    for (const event of events) {
+      if (signal?.aborted) throw signal.reason;
+      // Built outside the retries: a throw from the caller's builder is not worth retrying.
+      const request = buildStateRequest(withState, event);
+      withStates.push(
+        request === undefined
+          ? event
+          : await withRetries(() => readState(adapter, first, event, request), retries, signal),
+      );
     }
+    return withStates;
+  }
+
+  /**
+   * The range as whole transactions: the ascending, filtered (and for a list,
+   * merged) events cut wherever `version` changes. `limit` counts groups, and
+   * the walk reads past the last one until a later version or the range's end,
+   * so no group is cut short. `withState` runs on the returned groups only.
+   */
+  async getTransactions<TData = unknown>(
+    descriptor: Descriptors,
+    filter: TransactionFilter = {},
+    pageSize = DEFAULT_PAGE_SIZE,
+  ): Promise<TransactionGroup<TData>[]> {
+    const { withState, limit, orderBy, ...rest } = filter as EventFilter;
+    if (rest.onCursor !== undefined) {
+      throw new StreamdError("getTransactions does not take onCursor: a limit stops the walk partway");
+    }
+    if (rest.offset !== undefined) {
+      throw new StreamdError("getTransactions does not take offset, which counts events");
+    }
+    validateWithState(withState);
+    validateOrderBy(orderBy);
+    if (limit !== undefined && limit <= 0) return [];
+    const desc = orderBy === "desc";
+    // Ascending stops once `limit` groups are whole; descending keeps the last `limit`.
+    const enough = desc || limit === undefined ? Infinity : limit;
+    let groups: TransactionGroup[] = [];
+    let open: StreamdEvent[] = [];
+    const close = () => {
+      if (open.length === 0) return;
+      groups.push(groupOf(open[0]!.version, open.sort((a, b) => a.eventIndex - b.eventIndex)));
+      open = [];
+    };
+    walk: for await (const page of this.pages(descriptor, rest, pageSize)) {
+      for (const event of page) {
+        if (open.length > 0 && event.version !== open[0]!.version) {
+          close();
+          if (groups.length >= enough) break walk;
+        }
+        open.push(event);
+      }
+      if (desc && limit !== undefined && groups.length > limit) groups = groups.slice(-limit);
+    }
+    if (groups.length < enough) close();
+    if (desc) groups = (limit === undefined ? groups : groups.slice(-limit)).reverse();
+    if (withState !== undefined) {
+      const { retries = 0, signal } = rest;
+      for (const group of groups) {
+        group.events = await this.attachState(descriptor, group.events, withState, retries, signal);
+      }
+    }
+    return groups as TransactionGroup<TData>[];
   }
 
   private async *pages<TData>(
@@ -203,9 +276,7 @@ export class EventQuery {
     pageSize: number,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
     const { orderBy, onCursor, ...rest } = filter;
-    if (orderBy !== undefined && orderBy !== "asc" && orderBy !== "desc") {
-      throw new StreamdError('orderBy must be "asc" or "desc"');
-    }
+    validateOrderBy(orderBy);
     validateRetries(rest.retries);
     validateToVersion(rest.toVersion);
     validateBlockRange(rest);

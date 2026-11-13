@@ -18,8 +18,8 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `balances`, `eventsOf`, `expectEvents`, `previewEvents` and
-`expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
+`transfers`, `getTransfers`, `balances`, `balanceAt`, `eventsOf`, `expectEvents`, `previewEvents`
+and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
 adapter.
@@ -268,6 +268,25 @@ option is refused. `pause()` holds the remaining transactions until `resume()`; 
 that gives up ends the others; `onCaughtUp` fires once every walk has caught up. Like
 `reduce()`, it is not counted by `listenerCount()` or stopped by `off()`.
 
+For a past range, `getTransactions` returns the same groups at once:
+
+```ts
+const txs = await streamd.getTransactions([swaps, deposits], {
+  fromVersion: 3_000_000_000n,
+  toVersion: 3_000_010_000n,
+  limit: 50, // transactions, not events
+});
+```
+
+It takes `getEvents`'s options and reads the range as `getEvents` does, a list merged with
+each event once, then cuts it wherever the version changes. `decode` and `where` apply per
+event first, so a transaction with no match yields no group. `limit` counts groups and never
+cuts one: the walk reads on until a later version or the end of the range, so the last
+group is whole even when its events span two pages. `orderBy: "desc"` returns the last
+`limit` transactions newest first (events inside each stay in `eventIndex` order), and
+`withState` reads only the events returned. `onCursor` and `offset` are refused. `maxPages`
+caps the work, so a transaction cut off by the cap may be missing its later events.
+
 ### Watch lists
 
 ```ts
@@ -462,6 +481,55 @@ Live polling errors behave as they do for `on()`, and `active` turns `false` onc
 gives up. `signal`, `unsubscribe()` and `destroy()` stop it at any stage without calling
 `onError`. `ready` never surfaces as an unhandled rejection, so ignoring it is safe. Like
 `once()` and `stream()`, a reduction is not counted by `listenerCount()`.
+
+#### Ready-made reducers
+
+`count()`, `sum(path)`, `latest()` and `groupBy(path, inner)` cover the common folds. Each is
+a plain reducer with the value it starts from attached as `.initial`, so it goes in the same
+place as a hand-written one, and the `initial` argument stays yours for a saved value:
+
+```ts
+import { count, groupBy, latest, sum } from "@streamd/core";
+
+const deposits = streamd.reduce(Deposit, count(), 0n, { fromVersion: -10_000n });
+const volume = streamd.reduce(Deposit, sum("amount"), 0n, { fromVersion: -10_000n });
+const newest = streamd.reduce(Deposit, latest(), undefined);
+
+const perStore = groupBy("store", count());
+const byStore = streamd.reduce(Deposit, perStore, perStore.initial, { fromVersion: -10_000n });
+byStore.value.get(store); // a bigint, or undefined for a store not seen yet
+```
+
+- **`count()`** - the number of events folded, a `bigint` from `0n`.
+- **`sum(path)`** - the total of the integer at `path` in `event.data`, a `bigint` from `0n`, at
+  full precision whether the field is a decoded `bigint`, a decimal string or a safe-integer
+  number. `path` is `whereField`'s: `"amount"`, `"inner.amount"`, `"legs.0.amount"` or a key
+  array. A missing or `null` field adds nothing, so a list of descriptors whose types lack it
+  still sums, and a mistyped path sums to `0n`. Any other value that is not an integer throws,
+  which stops the reduction as any reducer throw does, rather than leave the total wrong.
+- **`latest()`** - the most recently folded event, `undefined` before the first.
+- **`groupBy(path, inner)`** - a `Map` from the value at `path` to `inner` folded over that
+  key's events, each new key starting from `inner.initial`. Keys are strings: a string as the
+  source reports it, and a number, `bigint` or boolean through `String`. Addresses are not
+  padded, since `0x0a` and `0x000a` may be different byte strings; on one source an address is
+  always written the same way. A missing or `null` field skips the event, an object or array
+  throws. Every event returns a new `Map`, so the previous value and `initial` are never
+  changed. Groups nest: `groupBy("pool", groupBy("store", sum("amount")))`.
+
+Pass `fold.initial`, or a typed literal such as `new Map<string, bigint>()`, rather than a bare
+`new Map()`, which TypeScript reads as `Map<any, any>`. To resume, save the value in a
+JSON-safe form beside `cursor`: a `bigint` as `value.toString()` and back with `BigInt(...)`, a
+`groupBy` map as its entries, and `latest()`'s event with `serializeEvent` and `parseEvent`.
+
+```ts
+const save = () => storage.set(JSON.stringify({
+  groups: [...byStore.value].map(([key, n]) => [key, n.toString()]),
+  cursor: byStore.cursor,
+}));
+// after a restart
+const { groups, cursor } = JSON.parse(storage.get());
+const resumed = streamd.reduce(Deposit, perStore, new Map(groups.map(([key, n]) => [key, BigInt(n)])), { cursor });
+```
 
 ### Replay history
 
@@ -1341,7 +1409,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, whereCompare, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
+import { involvesAddress, whereField, whereOneOf, whereCompare, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -1354,6 +1422,19 @@ streamd.on(
   (a dot-separated string such as `"store.owner"` or `"holders.0.owner"`, or an
   array of keys and indices such as `["store", "owner"]` or `["key.with.dots"]`).
   When `value` is an address, `0x1` and `0x000...01` count as the same address.
+- `whereOneOf(path, values)` matches events whose `data` holds any one of
+  `values` at `path`, an array, a `Set` or any iterable of strings, numbers,
+  bigints and booleans (`whereOneOf("store", myStores)`). Each value compares
+  as `whereField` compares it: a string that is an address (`0x` and 1 to 64
+  hex digits) matches that address in any spelling, any other string matches
+  exactly, and a number, bigint or boolean matches only a field of the same
+  type, so `5n` matches a `decode`d field but not `"5"`. The values become a
+  set when the filter is made, so a long list costs one lookup per event. An
+  `Object<T>` field arrives as `{ inner: "0x..." }`; name the inner field
+  (`"metadata.inner"`). Empty `values` matches nothing, and a malformed path
+  or value throws when the filter is made. Addresses compare in
+  canonical form here, so `0x0a` and `0x000a` match each other, unlike
+  `groupBy`'s keys, which keep the value as reported.
 - `whereCompare(path, op, value)` compares an integer in `data` using `==`,
   `!=`, `<`, `<=`, `>` or `>=` (`whereCompare("amount", ">", 1_000_000n)`). The
   field can be a decimal string, a number or a bigint, so `decode` is not
@@ -1614,6 +1695,35 @@ wallet.unsubscribe();
 - **Failures.** `ready` rejects if the first read fails. A later failed read retries
   with backoff, and `maxErrors` stops it; a view that aborts stops it at once. A balances handle is not a listener for
   `off()` or `listenerCount()`.
+
+### A balance at a past version
+
+`balanceAt(address, asset, version)` reads one balance as it stood at a ledger version, by
+the same view `balances` reads at the head, and resolves the amount in base units:
+
+```ts
+const before = await streamd.balanceAt("0x4c...", undefined, 8038000000n); // APT
+const usdcThen = await streamd.balanceAt("alice.apt", usdc, 8038000000n);
+```
+
+- **Arguments.** `asset` is one asset in any form `balances` takes, or `undefined` for APT.
+  `version` is an absolute version, a `bigint`; there is no `"head"` or relative form,
+  since `balances` reads the head. A name resolves at the head, to the address it points
+  to now, not the one it pointed to at `version`.
+- **One request.** One view call through the client's limiter, so `maxConcurrentRequests`,
+  `maxRequestsPerSecond` and `requestTimeout` apply, and no retry.
+- **Errors.** A malformed address, asset or version, a list of assets, a legacy token id, or
+  an adapter without `view` rejects with `StreamdError` before anything is sent. A view that
+  aborts, as for a token object, rejects with a `StreamdError` naming the asset, the version
+  and the node's reason. A version the fullnode has pruned rejects with its
+  `StreamdNetworkError`, `statusCode` 410; an `ArchiveFallbackAdapter` over
+  `networks.aptosMainnetArchive` answers it from the archive instead. A version above the head
+  rejects with `statusCode` 404.
+- **Old history.** Before the fungible-asset migration, `coin::balance` aborts for an account
+  with no `CoinStore` for the coin (`ECOIN_STORE_NOT_PUBLISHED`) rather than reading `0`, and in
+  the earliest mainnet history it is not yet a view function at all; both reject as an abort.
+- **Aptos only.** Sui reads a balance only at its latest state, so `SuiClient` has no
+  `balanceAt`.
 
 ## Data sources and their limits
 
@@ -2142,7 +2252,8 @@ const streamd = new StreamdClient({
 ```
 
 Pass `store` to keep final pages past a restart. `@streamd/store-sqlite` ships
-one, and anything with `get(key)` and `set(key, page)` over strings, synchronous
+one, `@streamd/store-postgres` another (`PostgresPageStore`, see
+[Store events in Postgres](#store-events-in-postgres)), and anything with `get(key)` and `set(key, page)` over strings, synchronous
 or not, works:
 
 ```ts
@@ -2156,7 +2267,7 @@ const adapter = new CachingAdapter(new FullnodeScanAdapter(aptos), { store });
 Memory is checked first, then the store, then the source. A store that fails or
 holds an unreadable entry counts as a miss and reaches `onStoreError`, so a broken
 cache never fails a read. A page's key names the request and not the network, so
-`namespace` is required: use one per network. `maxEntries` on `SqlitePageStore`
+`namespace` is required: use one per network. `maxEntries` on either store
 drops the oldest written; without it the table grows without limit. A `bigint`
 inside an event's `data` comes back as a decimal string, as `serializeEvent`
 writes it.
@@ -2472,8 +2583,39 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   It is `text` rather than `jsonb` because `jsonb` cannot hold a NUL character, which on-chain
   strings may carry; the cast fails only on such a row. Saved cursors are in `streamd_cursors`.
 - `PostgresStoreAdapter` serves `module`, `account` (by stored `sender`) and `handle` (by
-  `creationNumber`) descriptors, with the SQLite adapter's cursors, paging and options.
-- No `prune` or `PageStore` yet.
+  `creationNumber`) descriptors, with the SQLite adapter's cursors, paging and options. Head and
+  earliest are the highest and lowest stored versions, never below a pruned edge.
+- **Retention.** `await store.prune({ beforeVersion })` deletes every event below that version
+  and leaves saved cursors, with the SQLite store's rules: a `PostgresStoreAdapter` read whose
+  `fromVersion`, `cursor` or `toVersion` is below the edge fails with a `StreamdNetworkError`
+  (status 410), a follower on a rare event fails once the edge passes its last match, a fetch with
+  no start begins at the oldest version kept, and the edge only rises. The delete and the edge
+  are one statement, and each read takes the edge and its page in one statement, so a prune on
+  another connection of a `Pool` never lands between them. The edge is the row
+  `streamd:pruned-before` in `streamd_cursors`, so a database made before `prune` existed needs no
+  migration, and that cursor name is reserved. Postgres reuses the space after autovacuum; run
+  `VACUUM FULL` yourself to return it to the system.
+- **Page cache.** `PostgresPageStore` is the Postgres counterpart of `SqlitePageStore`, over
+  the same client, for `CachingAdapter`'s `store`, so a pool of processes shares one cache:
+
+  ```ts
+  import { PostgresPageStore } from "@streamd/store-postgres";
+
+  const store = new PostgresPageStore(pool, { namespace: "mainnet", maxEntries: 100_000 });
+  const adapter = new CachingAdapter(new FullnodeScanAdapter(aptos), { store });
+  ```
+
+  Same `namespace`, keys and `maxEntries` (the oldest written across the table, every namespace
+  together, a rewrite counting as new, no default). Pages are kept in `streamd_pages`, created
+  on first use without the event tables. A write and its eviction are one statement, so two
+  processes writing at once may leave the table a row or two over the bound until the next
+  write, never under it. A namespace holding a NUL character is refused, since `text` cannot
+  store one. `streamd query --cache` still takes a SQLite file.
+
+  Because the bound is table-wide, one instance's `maxEntries` evicts every namespace's pages,
+  so give unrelated services their own database or schema. Stored pages are trusted as they
+  are: a final page is served without asking the node again, so grant write access to
+  `streamd_pages` only to the processes doing the caching.
 
 ## React hooks
 
@@ -2509,6 +2651,35 @@ function Feed() {
   ended, so a feed opens full rather than filling page by page:
   `useEvents(Swap, { fromVersion: -100_000n, history: 20 })`. A failed read stops the hook with
   its error.
+- **`useTransactions(descriptor | descriptors, options?)`** follows one descriptor, or a list
+  merged into one stream, with `client.onTransaction` and returns `{ data, error, status }`:
+  `data` is the most recent `maxTransactions` transactions (default 100), oldest first, each a
+  `TransactionGroup` holding all of that transaction's matching events; `error` and `status` are
+  `useEvents`'s. A typed list infers the union of its payloads, as `on()` does. Options are
+  `onTransaction`'s, without `signal`; an empty list, and `cursor` with several descriptors, throw
+  while rendering. With `history: n` and a `fromVersion` or `fromTime`, it first reads the `n`
+  most recent matching transactions through `getTransactions` and shows them in one update, then
+  follows from the version after the newest of them. That hand-off misses and repeats nothing,
+  since the read walks the whole window, but the live walk re-examines the versions between that
+  transaction and the head once, so keep the window to what a rare type needs. With no match in
+  the window it follows from the window's start, and `history` refuses `cursor`.
+- **`useWatch(addresses, options?)`** follows a list of addresses with `client.watch` and
+  returns `{ data, error, status, addresses }`: `data` is the most recent `maxEvents` deliveries
+  (default 100), oldest first, each `{ event, address }` with the watched address as the list
+  first spelled it; `addresses` is what is being watched now, in the order added. A different
+  list does not restart anything: addresses that left are removed from the running watch and
+  new ones added, and the list is compared by canonical address, so reordering, `0x1` against
+  its long form, case and duplicates change nothing. An added address starts where
+  `watch.add()` starts it (the account's next transaction on the fullnode and Indexer
+  adapters), not at `fromVersion` or `fromTime`, which apply only to the addresses listed when
+  the watch started. A walk that gives up after `maxErrors` sets `error` and leaves
+  `addresses` while the others carry on, and it is not re-added while the list still names it:
+  take the address out of the list and put it back, or change an option, to try again. A
+  changed option or client restarts the watch over the current list with `data` empty. `[]`
+  runs a watch with nothing in it, so the first address added later starts no new watch; `null`
+  waits. `status` is `"idle"` or `"live"`, since a watch does not stop on its own. Options are
+  `watch()`'s, without `signal`, `positions` included to resume a saved run; a malformed address
+  throws while rendering, so check addresses a user types before listing them.
 - **`useLogs(descriptor, options?)`** runs `client.getEvents` and returns
   `{ data, error, loading }`. `data` is the last successful result and stays through refetches
   and errors. Options are `getEvents`'s, without `signal`; it takes a list of descriptors too.
@@ -2522,13 +2693,25 @@ function Feed() {
   `{ events, error, status }` as `useEvents`, with each event's `data` a `Transfer`. It takes
   `asset`, `account` and `maxEvents`; pass `null` to wait. It needs a client with `transfers`
   (`TransfersClient`): an `AptosClient`, or a `SuiClient`, whose `asset` is a coin type.
-  Either hook given another client throws a `StreamdError` naming the method.
+  Any of these hooks given another client throws a `StreamdError` naming the method.
 - **`useReduction(descriptor, reducer, initial, options?)`** runs `client.reduce` and returns
   `{ value, error, status }`. `value` is `initial` until the backfill finishes; `status` is
   `"idle"`, `"loading"`, `"live"`, or `"stopped"` once the backfill fails, the reducer throws or
   polling gives up. It restarts when the descriptor, options or `initial` change by value, and
-  calls the latest `reducer` without restarting. Keep `initial` plain, since it is compared by
-  value and a `Map` or class instance compares as empty.
+  calls the latest `reducer` without restarting. `initial` is compared by value, a `Map` by its
+  entries, so a fresh `new Map()` each render does not restart it; a class instance compares as
+  empty. The ready-made reducers work here as they do with `client.reduce`:
+  `useReduction(Deposit, perStore, perStore.initial)` returns a `Map<string, bigint>`.
+- **`useBalances(address, options?)`** runs `client.balances` and returns
+  `{ balances, error, status }`. `balances` is a `ReadonlyMap` of every balance read so far, keyed
+  by asset in long form as the client keys it (APT as `0x000...00a`), empty until the first read
+  finishes; `status` is `"idle"` (no address), `"loading"`, `"live"` once the first read is in,
+  or `"stopped"` once that read fails, polling gives up, or the address or `asset` is malformed,
+  which shows as `error` rather than throwing. It re-renders only when a balance changes, not on
+  every poll, and restarts, emptying `balances`, when the address or `asset` change by value. It
+  takes `balances`' options, without `signal`; `onChange` is called in its latest form. A
+  `null`, `undefined` or empty address waits. It needs a client with `balances`
+  (`BalancesClient`): an `AptosClient`, or a `SuiClient`, keyed by coin type.
 - **Keyed by value.** Inline descriptors and options are compared by value (bigints
   included), so a re-render with an equal one keeps the subscription or result. A different
   one resubscribes, starting `events` empty, or refetches, aborting the request it replaces.
@@ -2542,7 +2725,7 @@ function Feed() {
   the hook's result. In a browser every visitor shares one anonymous rate limit per IP, and a
   rate-limited fullnode response can surface as a `StreamdNetworkError` without `retryAfter`,
   so give the `Aptos` client an API key.
-- `client` in either hook's options overrides the provider's.
+- `client` in any hook's options overrides the provider's.
 
 ## Command line
 
@@ -2783,16 +2966,31 @@ existing cursor file wins over `--from-version`, and only works with the descrip
 node that wrote it.
 
 With a secret, each POST carries `x-streamd-signature: sha256=<hex>`, an HMAC-SHA256 of the
-exact request body. Verify it against the raw bytes before parsing them, with a constant-time
-comparison:
+exact request body. Check it with `verifyWebhook` from `@streamd/core`, on the raw bytes before
+parsing them, since re-serialised JSON will not match:
 
 ```ts
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { WEBHOOK_SIGNATURE_HEADER, verifyWebhook } from "@streamd/core";
 
-const expected = Buffer.from(`sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`);
-const given = Buffer.from(request.headers.get("x-streamd-signature") ?? "");
-const valid = given.length === expected.length && timingSafeEqual(given, expected);
+export default {
+  async fetch(request: Request): Promise<Response> {
+    const body = new Uint8Array(await request.arrayBuffer());
+    const signature = request.headers.get(WEBHOOK_SIGNATURE_HEADER);
+    if (!(await verifyWebhook(body, signature, process.env.STREAMD_WEBHOOK_SECRET!))) {
+      return new Response("bad signature", { status: 401 });
+    }
+    const events = JSON.parse(new TextDecoder().decode(body));
+    // ...
+    return new Response("ok");
+  },
+};
 ```
+
+It runs wherever Web Crypto does (browsers, edge workers, Bun, Deno, Node 19+) and compares in
+constant time through `crypto.subtle.verify`. A string body is read as UTF-8. A missing or
+malformed header, a changed body or another secret gives `false`; the hex may be either case.
+An empty secret, a body that is neither a string nor a `Uint8Array`, or a runtime without
+`crypto.subtle` throws a `StreamdError`.
 
 The signature has no timestamp, so it proves origin and integrity but not freshness: a captured
 request can be replayed. Deduplicate on each event's `version` and `eventIndex`, which delivery

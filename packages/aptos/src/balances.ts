@@ -28,7 +28,11 @@ function balanceRequest(owner: string, asset: string): ViewRequest {
   };
 }
 
-/** Rejects with a non-network error, which stops a poller, when the view aborts, as for a token object. */
+/**
+ * Rejects with a non-network error, which stops a poller, when the view aborts:
+ * for a token object, or in old history for an account with no `CoinStore`
+ * or before the function was a view. The node's reason is kept in the message.
+ */
 async function requireBalance(
   adapter: EventAdapter,
   owner: string,
@@ -41,7 +45,7 @@ async function requireBalance(
     result = await adapter.view!(request, version, TRANSFER_DESCRIPTOR);
   } catch (err) {
     if (err instanceof StreamdError && !(err instanceof StreamdNetworkError)) {
-      throw new StreamdError(`Not a fungible asset or coin type: ${asset}`, err);
+      throw new StreamdError(`Not a fungible asset or coin type, or no balance at version ${version}: ${asset}: ${err.message}`, err);
     }
     throw err;
   }

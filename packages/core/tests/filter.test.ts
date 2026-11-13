@@ -1,4 +1,6 @@
 import { describe, it, expect } from "bun:test";
+import { MemoryAdapter } from "../src/adapters/memory.js";
+import { StreamdClient } from "../src/client.js";
 import { StreamdError } from "../src/errors.js";
 import {
   every,
@@ -13,6 +15,7 @@ import {
   some,
   whereCompare,
   whereField,
+  whereOneOf,
 } from "../src/filter.js";
 import type { EventPredicate, StreamdEvent, SyncEventPredicate } from "../src/types.js";
 
@@ -269,6 +272,129 @@ describe("whereField", () => {
     ]) {
       expect(() => whereField("owner", badValue)).toThrow(StreamdError);
     }
+  });
+});
+
+describe("whereOneOf", () => {
+  it("matches any one of several values, and nothing else", () => {
+    const where = whereOneOf("kind", ["mint", "burn"]);
+    expect(where(ev({ kind: "mint" }))).toBe(true);
+    expect(where(ev({ kind: "burn" }))).toBe(true);
+    expect(where(ev({ kind: "swap" }))).toBe(false);
+  });
+
+  it("compares addresses in canonical form, whatever the spelling or case", () => {
+    const where = whereOneOf("store", ["0xa", LONG_ONE]);
+    expect(where(ev({ store: "0x000a" }))).toBe(true);
+    expect(where(ev({ store: "0xA" }))).toBe(true);
+    expect(where(ev({ store: `0x${"0".repeat(63)}a` }))).toBe(true);
+    expect(where(ev({ store: "0x1" }))).toBe(true);
+    expect(where(ev({ store: "0xb" }))).toBe(false);
+    expect(whereOneOf("store", ["0XA"])(ev({ store: "0xa" }))).toBe(false);
+  });
+
+  it("compares strings that are not addresses exactly", () => {
+    const where = whereOneOf("name", ["Alice", "0xzz"]);
+    expect(where(ev({ name: "Alice" }))).toBe(true);
+    expect(where(ev({ name: "alice" }))).toBe(false);
+    expect(where(ev({ name: "0xzz" }))).toBe(true);
+    expect(where(ev({ name: "0xZZ" }))).toBe(false);
+  });
+
+  it("keeps each type apart, as whereField does", () => {
+    const where = whereOneOf("v", [5, 7n, true]);
+    expect(where(ev({ v: 5 }))).toBe(true);
+    expect(where(ev({ v: 7n }))).toBe(true);
+    expect(where(ev({ v: true }))).toBe(true);
+    expect(where(ev({ v: "5" }))).toBe(false);
+    expect(where(ev({ v: 5n }))).toBe(false);
+    expect(where(ev({ v: "7" }))).toBe(false);
+    expect(where(ev({ v: 7 }))).toBe(false);
+    expect(where(ev({ v: "true" }))).toBe(false);
+    expect(where(ev({ v: false }))).toBe(false);
+    expect(whereOneOf("v", ["5"])(ev({ v: 5 }))).toBe(false);
+  });
+
+  it("matches a decoded bigint against a bigint value, not a string one", () => {
+    expect(whereOneOf("amount", [100n])(ev({ amount: 100n }))).toBe(true);
+    expect(whereOneOf("amount", ["100"])(ev({ amount: 100n }))).toBe(false);
+    expect(whereOneOf("amount", ["100"])(ev({ amount: "100" }))).toBe(true);
+  });
+
+  it("agrees with some(whereField) on every value", () => {
+    const values = ["0xa", "Alice", 5, 7n, true, false, 0];
+    const fields = ["0x000a", "0xA", "alice", "Alice", 5, "5", 7n, 7, true, false, -0, null, {}, [5]];
+    const oneOf = whereOneOf("v", values);
+    const chain = some(...values.map((v) => whereField("v", v)));
+    for (const v of fields) expect(oneOf(ev({ v }))).toBe(chain(ev({ v })));
+  });
+
+  it("never matches a missing field, null, an object or an array", () => {
+    const where = whereOneOf("store.inner", ["0xa"]);
+    expect(where(ev({ store: { inner: "0xa" } }))).toBe(true);
+    expect(where(ev({ store: "0xa" }))).toBe(false);
+    expect(where(ev({}))).toBe(false);
+    expect(where(ev(null))).toBe(false);
+    expect(whereOneOf("store", ["0xa"])(ev({ store: { inner: "0xa" } }))).toBe(false);
+    expect(whereOneOf("store", ["0xa"])(ev({ store: null }))).toBe(false);
+    expect(whereOneOf("store", ["0xa"])(ev({ store: ["0xa"] }))).toBe(false);
+  });
+
+  it("reads nested and indexed paths, as a string or segments", () => {
+    const data = { legs: [{ to: "0x1" }], "a.b": "x" };
+    expect(whereOneOf("legs.0.to", [LONG_ONE])(ev(data))).toBe(true);
+    expect(whereOneOf(["legs", 0, "to"], ["0x1"])(ev(data))).toBe(true);
+    expect(whereOneOf(["a.b"], ["x"])(ev(data))).toBe(true);
+  });
+
+  it("takes any iterable, read once", () => {
+    expect(whereOneOf("v", new Set(["a", "b"]))(ev({ v: "b" }))).toBe(true);
+    function* gen() {
+      yield "a";
+      yield "b";
+    }
+    const where = whereOneOf("v", gen());
+    expect(where(ev({ v: "b" }))).toBe(true);
+    expect(where(ev({ v: "a" }))).toBe(true);
+  });
+
+  it("matches nothing for empty values, so not() of it matches everything", () => {
+    expect(whereOneOf("v", [])(ev({ v: "a" }))).toBe(false);
+    expect(not(whereOneOf("v", []))(ev({ v: "a" }))).toBe(true);
+  });
+
+  it("stays synchronous under every and not", () => {
+    const where = every(ofType("0x1::test::Event"), not(whereOneOf("v", ["a"])));
+    expect(where(ev({ v: "b" }))).toBe(true);
+    expect(where(ev({ v: "a" }))).toBe(false);
+    expect(where(ev({ v: "b" }, "0x1::other::Event"))).toBe(false);
+  });
+
+  it("throws StreamdError up front on a bad path or values", () => {
+    expect(() => whereOneOf("", ["a"])).toThrow(StreamdError);
+    expect(() => whereOneOf("a..b", ["a"])).toThrow(StreamdError);
+    expect(() => whereOneOf([], ["a"])).toThrow(StreamdError);
+    expect(() => whereOneOf("v", "0x1" as never)).toThrow(StreamdError);
+    expect(() => whereOneOf("v", undefined as never)).toThrow(StreamdError);
+    expect(() => whereOneOf("v", 5 as never)).toThrow(StreamdError);
+    expect(() => whereOneOf("v", [null] as never)).toThrow(StreamdError);
+    expect(() => whereOneOf("v", [undefined] as never)).toThrow(StreamdError);
+    expect(() => whereOneOf("v", [{}] as never)).toThrow(StreamdError);
+    expect(() => whereOneOf("v", [Number.NaN])).toThrow(StreamdError);
+    expect(() => whereOneOf("v", [Infinity])).toThrow(StreamdError);
+  });
+
+  it("narrows getEvents over MemoryAdapter", async () => {
+    const at = (version: bigint, store: string) => ({ ...ev({ store }), version });
+    const client = new StreamdClient({
+      adapter: new MemoryAdapter([at(1n, "0xa"), at(2n, "0xb"), at(3n, "0x000c"), at(4n, "0xd")]),
+    });
+    const events = await client.getEvents(
+      { kind: "module", eventType: "0x1::test::Event" },
+      { fromVersion: 0n, where: whereOneOf("store", ["0xA", `0x${"0".repeat(63)}c`]) },
+    );
+    expect(events.map((e) => e.version)).toEqual([1n, 3n]);
+    client.destroy();
   });
 });
 

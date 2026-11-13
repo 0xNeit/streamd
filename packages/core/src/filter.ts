@@ -5,7 +5,7 @@ const HEX_ADDRESS = /^0x[0-9a-fA-F]{1,64}$/;
 const ARRAY_INDEX = /^(0|[1-9]\d*)$/;
 export const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const DEFAULT_MAX_DEPTH = 8;
-const MISSING: unique symbol = Symbol("missing");
+export const MISSING: unique symbol = Symbol("missing");
 const DECIMAL_INTEGER = /^-?\d+$/;
 
 export type FieldPath = string | readonly (string | number)[];
@@ -169,7 +169,57 @@ export function whereField(
   };
 }
 
-export type CompareOp = "==" | "!=" | "<" | "<=" | ">" | ">=";
+export type OneOfValue = string | number | bigint | boolean;
+
+/**
+ * Matches events whose payload has any one of `values` at `path`, each
+ * compared as `whereField` compares it (addresses in canonical long form), at
+ * one set lookup per event. Empty `values` matches nothing.
+ */
+export function whereOneOf(
+  path: FieldPath,
+  values: Iterable<OneOfValue>,
+): SyncEventPredicate {
+  const segments = parseFieldPath(path);
+  // A string is iterable too, and would silently become the set of its characters.
+  if (typeof values === "string" || typeof values?.[Symbol.iterator] !== "function") {
+    throw new StreamdError("whereOneOf values must be an array or other iterable of values");
+  }
+  const keys = new Set<string>();
+  for (const value of values) {
+    const key = oneOfKey(value);
+    if (key === undefined || (typeof value === "number" && !Number.isFinite(value))) {
+      throw new StreamdError(
+        `whereOneOf value must be a string, finite number, bigint or boolean: ${String(value)}`,
+      );
+    }
+    keys.add(key);
+  }
+  return (event) => {
+    const key = oneOfKey(readField(event.data, segments));
+    return key !== undefined && keys.has(key);
+  };
+}
+
+/** A type-tagged key, so `5`, `5n` and `"5"` stay apart; addresses in long form. */
+function oneOfKey(value: unknown): string | undefined {
+  switch (typeof value) {
+    case "string": {
+      const address = normalizeAddress(value);
+      return address === undefined ? `s:${value}` : `a:${address}`;
+    }
+    case "number":
+      return `n:${value}`;
+    case "bigint":
+      return `b:${value}`;
+    case "boolean":
+      return `t:${value}`;
+    default:
+      return undefined;
+  }
+}
+
+export type CompareOp ="==" | "!=" | "<" | "<=" | ">" | ">=";
 
 const COMPARISONS: Record<CompareOp, (actual: bigint, target: bigint) => boolean> = {
   "==": (a, b) => a === b,
@@ -207,7 +257,7 @@ export function whereCompare(
   };
 }
 
-function toInteger(value: unknown): bigint | undefined {
+export function toInteger(value: unknown): bigint | undefined {
   if (typeof value === "bigint") return value;
   if (typeof value === "number") return Number.isSafeInteger(value) ? BigInt(value) : undefined;
   return typeof value === "string" && DECIMAL_INTEGER.test(value) ? BigInt(value) : undefined;
@@ -324,7 +374,7 @@ function parseModuleId(id: string): string {
   return `${address}::${parts[1]}`;
 }
 
-function parseFieldPath(path: FieldPath): (string | number)[] {
+export function parseFieldPath(path: FieldPath): (string | number)[] {
   if (typeof path === "string") {
     if (path.length === 0) {
       throw new StreamdError("Field path must not be empty");
@@ -370,7 +420,7 @@ function validateFieldValue(value: FieldValue): void {
   }
 }
 
-function readField(
+export function readField(
   data: unknown,
   segments: readonly (string | number)[],
 ): unknown {

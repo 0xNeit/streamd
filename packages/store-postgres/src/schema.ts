@@ -39,24 +39,38 @@ const SCHEMA = [
   "CREATE TABLE IF NOT EXISTS streamd_cursors (name text PRIMARY KEY, cursor text NOT NULL)",
 ];
 
-const ready = new WeakMap<PostgresClient, Promise<void>>();
+// Kept among the cursors, as the SQLite store does, so a database created
+// before pruning existed needs no migration: the row appears on the first prune.
+export const PRUNED_BEFORE = "streamd:pruned-before";
+
+/** The pruned edge as a `numeric` expression: `0` until something is pruned. */
+export const EDGE = `coalesce((SELECT cursor::numeric FROM streamd_cursors WHERE name = '${PRUNED_BEFORE}'), 0)`;
+
+// Per schema, then per client, so the event and page tables are each created
+// only by what uses them.
+const ready = new WeakMap<readonly string[], WeakMap<PostgresClient, Promise<void>>>();
 
 /**
- * Creates the tables once per client. A failure is not remembered, so the
- * next call tries again.
+ * Runs `schema`'s statements once per client and schema. A failure is not
+ * remembered, so the next call tries again.
  */
-export function ensureSchema(client: PostgresClient): Promise<void> {
+export function ensureSchema(client: PostgresClient, schema: readonly string[] = SCHEMA): Promise<void> {
   if (typeof client?.query !== "function") {
     throw new StreamdError("Expected a Postgres client with query()");
   }
-  let pending = ready.get(client);
+  let clients = ready.get(schema);
+  if (clients === undefined) {
+    clients = new WeakMap();
+    ready.set(schema, clients);
+  }
+  let pending = clients.get(client);
   if (pending === undefined) {
     pending = (async () => {
       // One statement per query: drivers using the extended protocol refuse several.
-      for (const statement of SCHEMA) await client.query(statement);
+      for (const statement of schema) await client.query(statement);
     })();
-    pending.catch(() => ready.delete(client));
-    ready.set(client, pending);
+    pending.catch(() => clients.delete(client));
+    clients.set(client, pending);
   }
   return pending;
 }

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { runForward } from "../src/forward.js";
 import type { ForwardIO } from "../src/forward.js";
 import type { ForwardOptions } from "../src/args.js";
-import { MemoryAdapter, StreamdClient, StreamdError } from "@streamd/core";
+import { MemoryAdapter, StreamdClient, StreamdError, verifyWebhook } from "@streamd/core";
 import type { EventAdapter, StreamdEvent } from "@streamd/core";
 
 const TYPE = "0x1::coin::DepositEvent";
@@ -113,6 +113,17 @@ describe("runForward signing", () => {
     expect(raw).toContain("caf\u00e9");
     expect(headers.get("x-streamd-signature")).toBe(signature(raw, "key"));
     expect(headers.get("x-streamd-signature")).toMatch(/^sha256=[0-9a-f]{64}$/);
+  });
+
+  it("signs what verifyWebhook accepts, and only for that body and secret", async () => {
+    const event = { ...ev(1), data: { memo: "caf\u00e9 \ud83d\ude80" } };
+    await forward([event], { secret: "key" }, () => existsSync(cursorFile()));
+    const { raw, headers } = received[0]!;
+    const header = headers.get("x-streamd-signature");
+    expect(await verifyWebhook(raw, header, "key")).toBe(true);
+    expect(await verifyWebhook(new TextEncoder().encode(raw), header, "key")).toBe(true);
+    expect(await verifyWebhook(raw, header, "other")).toBe(false);
+    expect(await verifyWebhook(raw.replace("caf", "cab"), header, "key")).toBe(false);
   });
 
   it("sends the same signature on a retry", async () => {

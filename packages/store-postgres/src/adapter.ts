@@ -1,6 +1,6 @@
-import { StreamdError, parseEvent, requireAddress, requireEventType } from "@streamd/core";
+import { StreamdError, StreamdNetworkError, parseEvent, requireAddress, requireEventType } from "@streamd/core";
 import type { EventAdapter, EventDescriptor, EventPage, FetchOptions } from "@streamd/core";
-import { ensureSchema, versionParam } from "./schema.js";
+import { EDGE, ensureSchema, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 
 const DEFAULT_LIMIT = 25;
@@ -69,6 +69,13 @@ function count(value: number | undefined, label: string, fallback: number): numb
   return value;
 }
 
+/** Fails a read that asks for pruned history; a read with no start begins at the edge instead. */
+function checkEdge(start: Position, toVersion: bigint | undefined, edge: bigint): void {
+  // A cursor at edge - 1 fails too: it cannot show whether that version's later events went.
+  if (start.version < edge || (toVersion !== undefined && toVersion < edge)) {
+    throw new StreamdNetworkError(`Version pruned from this store; the oldest kept is ${edge}`, 410);
+  }
+}
 
 /**
  * Serves events a `PostgresEventStore` wrote, as an `EventAdapter`. It
@@ -84,43 +91,52 @@ export class PostgresStoreAdapter implements EventAdapter {
     this.client = client;
   }
 
-  /** The highest stored version; `0n` for an empty store. */
+  /** The highest stored version, never below the pruned edge; `0n` for a new store. */
   async getHeadVersion(): Promise<bigint> {
     return this.bound("max");
   }
 
-  /** The lowest stored version; `0n` for an empty store. */
+  /** The lowest readable version: the lowest stored, or the pruned edge if that is higher. */
   async getEarliestVersion(): Promise<bigint> {
     return this.bound("min");
   }
 
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
     const where = descriptorWhere(descriptor);
-    const start =
-      options.cursor !== undefined
-        ? parseCursor(options.cursor)
-        : { version: options.fromVersion ?? 0n, eventIndex: -1 };
+    const cursor = options.cursor === undefined ? undefined : parseCursor(options.cursor);
     const limit = count(options.limit, "limit", DEFAULT_LIMIT);
-    const offset = options.cursor === undefined ? count(options.offset, "offset", 0) : 0;
-    const startCursor = `${start.version}:${start.eventIndex}`;
-    if (limit === 0) return { events: [], nextCursor: startCursor, hasMore: false };
+    const offset = cursor === undefined ? count(options.offset, "offset", 0) : 0;
+    const fromVersion = cursor?.version ?? options.fromVersion;
 
     const params: unknown[] = [];
     const bind = (value: unknown) => "$" + params.push(value);
-    const after = `(${bind(versionParam(start.version))}::numeric, ${bind(start.eventIndex)}::integer)`;
-    let sql = `SELECT event FROM streamd_events WHERE ${where(bind)} AND (version, event_index) > ${after}`;
-    if (options.toVersion !== undefined) sql += ` AND version <= ${bind(versionParam(options.toVersion))}::numeric`;
+    const from = bind(fromVersion === undefined ? null : versionParam(fromVersion));
+    const after = `(coalesce(${from}::numeric, edge.v), ${bind(cursor?.eventIndex ?? -1)}::integer)`;
+    let read = `SELECT version, event_index, event FROM streamd_events
+      WHERE ${where(bind)} AND (version, event_index) > ${after}`;
+    if (options.toVersion !== undefined) read += ` AND version <= ${bind(versionParam(options.toVersion))}::numeric`;
     // One row past the page says whether another is waiting.
-    sql += ` ORDER BY version, event_index LIMIT ${bind(limit + 1)} OFFSET ${bind(offset)}`;
+    read += ` ORDER BY version, event_index LIMIT ${bind(limit + 1)} OFFSET ${bind(offset)}`;
+    // The edge is read in the same statement as the page, so a prune on another
+    // connection cannot land between the check and the read.
+    const sql = `WITH edge AS (SELECT ${EDGE} AS v)
+      SELECT edge.v::text AS edge, page.event FROM edge LEFT JOIN LATERAL (${read}) page ON true
+      ORDER BY page.version, page.event_index`;
 
     await ensureSchema(this.client);
     const { rows } = await this.client.query(sql, params);
-    const events = rows.slice(0, limit).map((r) => parseEvent(String(r.event)));
+    const edge = BigInt(String(rows[0]!.edge));
+    const start = cursor ?? { version: fromVersion ?? edge, eventIndex: -1 };
+    checkEdge(start, options.toVersion, edge);
+    const startCursor = `${start.version}:${start.eventIndex}`;
+    if (limit === 0) return { events: [], nextCursor: startCursor, hasMore: false };
+    const found = rows.filter((r) => r.event != null);
+    const events = found.slice(0, limit).map((r) => parseEvent(String(r.event)));
     const last = events.at(-1);
     const page: EventPage = {
       events,
       nextCursor: last === undefined ? startCursor : `${last.version}:${last.eventIndex}`,
-      hasMore: rows.length > limit,
+      hasMore: found.length > limit,
     };
     // No throughVersion: another writer may still add rows below the cursor.
     if (options.orderBy === "desc") events.reverse();
@@ -129,8 +145,9 @@ export class PostgresStoreAdapter implements EventAdapter {
 
   private async bound(fn: "max" | "min"): Promise<bigint> {
     await ensureSchema(this.client);
-    const { rows } = await this.client.query(`SELECT ${fn}(version)::text AS v FROM streamd_events`);
-    const v = rows[0]?.v;
-    return typeof v === "string" ? BigInt(v) : 0n;
+    const { rows } = await this.client.query(
+      `SELECT GREATEST(coalesce(${fn}(version), 0), ${EDGE})::text AS v FROM streamd_events`,
+    );
+    return BigInt(String(rows[0]!.v));
   }
 }

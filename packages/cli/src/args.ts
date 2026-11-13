@@ -1,5 +1,5 @@
 import { parseArgs } from "node:util";
-import { normalizeAddress, requireAddress, requireEventType, requireResourceType } from "@streamd/core";
+import { WEBHOOK_SIGNATURE_HEADER, normalizeAddress, requireAddress, requireEventType, requireResourceType } from "@streamd/core";
 import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
 import type { ModuleRef } from "./codegen.js";
 import { FILTER_OPTIONS, parseDecode, parseFilter } from "./filter.js";
@@ -44,7 +44,7 @@ export interface TailOptions extends SourceOptions {
   format?: "json" | "pretty";
 }
 
-export const SIGNATURE_HEADER = "x-streamd-signature";
+export const SIGNATURE_HEADER = WEBHOOK_SIGNATURE_HEADER;
 export const SECRET_ENV = "STREAMD_WEBHOOK_SECRET";
 export const API_KEY_ENV = "APTOS_API_KEY";
 
