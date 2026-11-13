@@ -3133,7 +3133,8 @@ psql -h db.example -U streamd events -c 'SELECT count(*) FROM streamd_events'
   to `ps` and shell history, so leave it out and set `PGPASSWORD`, which both drivers read.
 - Exit code 0 on Ctrl-C or SIGTERM, also while still connecting; 1 when the server cannot be
   reached or refuses the login (`cannot connect to <url>`), a write fails, or polling gives up.
-  A stop waits up to 5 seconds for a batch already being written, then closes the connection.
+  A stop waits up to 5 seconds for a batch already being written, then up to a second for the
+  connection to close.
 
 ### Generate event types
 

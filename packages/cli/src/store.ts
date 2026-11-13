@@ -21,6 +21,8 @@ export interface StoreIO {
 
 /** How long a stop waits for a batch already being written. */
 const CLOSE_TIMEOUT = 5_000;
+/** How long it then waits for the connection to close: one still being made can hold it for the driver's whole connect timeout. */
+const DISCONNECT_TIMEOUT = 1_000;
 
 /** Opens `path` with the runtime's own SQLite, which is why neither is a dependency. */
 export async function openDatabase(path: string): Promise<OpenDatabase> {
@@ -208,6 +210,6 @@ export async function runStore(options: StoreOptions, io: StoreIO): Promise<numb
   io.signal.removeEventListener("abort", onAbort);
   // Stops the subscription and lets a batch already being written finish before the connection goes.
   await io.client.close({ timeout: CLOSE_TIMEOUT });
-  await backend.close();
+  await Promise.race([backend.close(), new Promise((resolve) => setTimeout(resolve, DISCONNECT_TIMEOUT).unref())]);
   return code;
 }

@@ -294,9 +294,10 @@ describe("runStore --postgres", () => {
     ]);
   });
 
-  it("exits 0 when aborted while still connecting, and closes the connection", async () => {
+  it("exits 0 when aborted while still connecting, not waiting for a close that hangs", async () => {
     let closed = 0;
-    const connection: PostgresConnection = { query: () => new Promise(() => {}), close: () => void closed++ };
+    const hang = () => new Promise<never>(() => {});
+    const connection: PostgresConnection = { query: hang, close: () => (closed++, hang()) };
     const controller = new AbortController();
     const client = new StreamdClient({ adapter: new MemoryAdapter([ev(1)]) });
     const running = runStore(pgOptions(), { client, open: refuse, connect: () => connection, error: () => {}, signal: controller.signal });
