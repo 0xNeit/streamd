@@ -1176,3 +1176,52 @@ describe("several nodes", () => {
     expect(options([command, ...rest, "--node-url", A]).nodeUrl).toBe(A);
   });
 });
+
+describe("--archive", () => {
+  const HASH = `0x${"ab".repeat(32)}`;
+  const READING: string[][] = [
+    ["tail", TYPE],
+    ["forward", "--to", "https://hook.example", TYPE],
+    ["store", "--db", "events.db", TYPE],
+    ["query", "--from-version", "1", TYPE],
+    ["record", "--from-version", "1", "--to-version", "2", TYPE],
+    ["tx", HASH],
+    ["transfers"],
+    ["balances", ADDR],
+    ["watch", ADDR],
+  ];
+  const options = (argv: string[]) => (parseCommand(argv) as unknown as { options: Record<string, unknown> }).options;
+
+  it.each(READING)("%s takes a URL or default on mainnet, beside several nodes", (...argv) => {
+    expect(options([...argv, "--archive", "https://archive.example/v1"]).archive).toBe("https://archive.example/v1");
+    expect(options([...argv, "--archive", "default"]).archive).toBe("default");
+    expect(options([...argv, "--node-url", "https://a.example/v1", "--node-url", "https://b.example/v1", "--archive", "default"]))
+      .toMatchObject({ archive: "default", extraNodeUrls: ["https://b.example/v1"] });
+    expect("archive" in options(argv)).toBe(false);
+  });
+
+  it.each(["testnet", "devnet", "movement-mainnet", "movement-testnet"])("refuses default on %s, but takes a URL", (network) => {
+    rejects(["tail", TYPE, "--network", network, "--archive", "default"], new RegExp(`--archive default is Aptos mainnet's archive; ${network} has none`));
+    expect(options(["tail", TYPE, "--network", network, "--archive", "https://archive.example/v1"]).archive).toBe("https://archive.example/v1");
+  });
+
+  it("refuses a value that is not a URL", () => {
+    rejects(["query", "--from-version", "1", TYPE, "--archive", "archive.example"], /--archive must be an http or https URL, or default: archive.example/);
+    rejects(["query", "--from-version", "1", TYPE, "--archive", "ftp://archive.example"], /--archive must be an http or https URL/);
+  });
+
+  it("is refused with --chain sui", () => {
+    rejects(["tail", "--chain", "sui", TYPE, "--archive", "default"], /--archive is not available with --chain sui: Sui's archive needs a native gRPC transport/);
+  });
+
+  const SINGLE: string[][] = [
+    ["check", TYPE],
+    ["codegen", "0x1::coin"],
+    ["handles", ADDR],
+    ["name", "alice.apt"],
+    ["compare", "--against", "https://b.example/v1", "--from-version", "1", "--to-version", "2", TYPE],
+  ];
+  it.each(SINGLE)("is not an option of %s", (...argv) => {
+    rejects([...argv, "--archive", "default"], /--archive/);
+  });
+});

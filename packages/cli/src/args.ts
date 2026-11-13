@@ -17,6 +17,8 @@ export interface Endpoint {
   nodeUrl?: string;
   /** The other `--node-url`s, pooled with `nodeUrl`; never empty when set. */
   extraNodeUrls?: string[];
+  /** `--archive`: an archive fullnode URL, or `"default"` for Aptos mainnet's; never set for Sui. */
+  archive?: string;
   /** Sent to the fullnode as the SDK's API key; never printed, and never set for Sui. */
   apiKey?: string;
 }
@@ -225,10 +227,13 @@ const ENDPOINT_OPTIONS = {
   "api-key": { type: "string" },
 } as const;
 
+/** The endpoint of a command that reads events through the adapter. */
+const READ_OPTIONS = { ...ENDPOINT_OPTIONS, archive: { type: "string" } } as const;
+
 const SOURCE_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
   ...FILTER_OPTIONS,
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   "from-version": { type: "string" },
   "poll-interval": { type: "string" },
   help: { type: "boolean", short: "h" },
@@ -280,7 +285,7 @@ export const MAX_COMPARE_RANGE = 100_000n;
 
 const RECORD_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -292,7 +297,7 @@ const QUERY_OPTIONS = {
   ...FROM_TIME,
   ...FILTER_OPTIONS,
   ...DESCRIPTOR_OPTIONS,
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -301,7 +306,7 @@ const QUERY_OPTIONS = {
 } as const;
 
 const TRANSFERS_OPTIONS = {
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   ...FROM_TIME,
   asset: { type: "string" },
   account: { type: "string" },
@@ -317,7 +322,7 @@ const TRANSFERS_OPTIONS = {
 } as const;
 
 const BALANCES_OPTIONS = {
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   asset: { type: "string", multiple: true },
   limit: { type: "string" },
   "poll-interval": { type: "string" },
@@ -325,7 +330,7 @@ const BALANCES_OPTIONS = {
 } as const;
 
 const WATCH_OPTIONS = {
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   ...FILTER_OPTIONS,
   ...FROM_TIME,
   "from-version": { type: "string" },
@@ -342,7 +347,7 @@ const HANDLES_OPTIONS = {
 } as const;
 
 const TX_OPTIONS = {
-  ...ENDPOINT_OPTIONS,
+  ...READ_OPTIONS,
   timeout: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -440,6 +445,9 @@ Options:
   --node-url <url>       fullnode URL, overriding the network's default; repeatable on
                          commands that read events (not check, codegen, handles, name or
                          compare), spreading reads across the nodes, the first taking --api-key
+  --archive <url>        those commands: send what the fullnodes refuse as pruned to this
+                         archive node, or with default to Aptos mainnet's (Aptos only), which
+                         gets the API key only when there is no --node-url
   --api-key <key>        fullnode API key, sent as a bearer token (or set ${API_KEY_ENV}, used
                          only on mainnet, testnet and devnet without --node-url)
   --from-version <n>     start at this version instead of the chain head
@@ -525,6 +533,7 @@ interface EndpointFlags {
   network?: string;
   "node-url"?: string[];
   "api-key"?: string;
+  archive?: string;
 }
 
 /**
@@ -540,6 +549,7 @@ function endpoint(values: EndpointFlags, sui: boolean, oneNode?: string): Endpoi
     if (oneNode !== undefined) throw new UsageError(`--node-url is given once for ${oneNode}: it reads one node`);
     options.extraNodeUrls = extra;
   }
+  if (values.archive !== undefined) options.archive = archive(values.archive, options.network, sui);
   if (sui) {
     if (!SUI_NETWORKS.includes(options.network)) {
       throw new UsageError(`--network with --chain sui must be one of ${SUI_NETWORKS.join(", ")}: ${options.network}`);
@@ -620,6 +630,20 @@ function nodeUrl(raw: string): string {
   if (httpUrl(raw) === undefined) {
     throw new UsageError(`--node-url must be an http or https URL: ${raw}`);
   }
+  return raw;
+}
+
+function archive(raw: string, network: Network, sui: boolean): string {
+  if (sui) {
+    throw new UsageError("--archive is not available with --chain sui: Sui's archive needs a native gRPC transport, which the CLI does not include");
+  }
+  if (raw === "default") {
+    if (network !== "mainnet") {
+      throw new UsageError(`--archive default is Aptos mainnet's archive; ${network} has none, so give an archive node's URL`);
+    }
+    return raw;
+  }
+  if (httpUrl(raw) === undefined) throw new UsageError(`--archive must be an http or https URL, or default: ${raw}`);
   return raw;
 }
 

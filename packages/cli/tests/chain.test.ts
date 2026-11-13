@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { AptosClient, FullnodeScanAdapter } from "@streamd/aptos";
 import { SuiAdapter, SuiClient } from "@streamd/sui";
-import { PoolAdapter } from "@streamd/core";
+import { ArchiveFallbackAdapter, PoolAdapter, StreamdNetworkError } from "@streamd/core";
 import type { EventPage } from "@streamd/core";
 import { chainFor, readThrough } from "../src/chain.js";
 import { isMissingModule } from "../src/sui.js";
@@ -55,8 +55,12 @@ function fakeNode(name: string) {
 }
 
 /** The fullnode URL behind an Aptos adapter, or behind each node of a pool, read from their configs. */
-type Node = { nodes?: Node[]; aptos?: { config: { fullnode?: string; clientConfig?: { API_KEY?: string } } } };
-const nodesOf = (adapter: unknown): Node[] => (adapter as Node).nodes ?? [adapter as Node];
+type Node = { nodes?: Node[]; primary?: Node; archive?: Node; aptos?: { config: { fullnode?: string; clientConfig?: { API_KEY?: string } } } };
+const nodesOf = (adapter: unknown): Node[] => {
+  const { nodes, primary, archive } = adapter as Node;
+  if (primary !== undefined) return [...nodesOf(primary), ...nodesOf(archive)];
+  return nodes ?? [adapter as Node];
+};
 const fullnodes = (adapter: unknown) => nodesOf(adapter).map((n) => n.aptos?.config.fullnode);
 const keys = (adapter: unknown) => nodesOf(adapter).map((n) => n.aptos?.config.clientConfig?.API_KEY);
 
@@ -79,6 +83,61 @@ describe("readThrough", () => {
     await pool.fetchEvents(TYPE, { cursor: second.nextCursor });
     expect(b.seen).toEqual([undefined, "b-1"]);
     expect(await pool.getHeadVersion()).toBe(1n);
+  });
+});
+
+/** A node whose every read fails with `status`. */
+function failing(status: number) {
+  return {
+    async fetchEvents(): Promise<EventPage> {
+      throw new StreamdNetworkError(`HTTP ${status}`, status);
+    },
+    getHeadVersion: async () => 7n,
+  };
+}
+
+describe("readThrough with an archive", () => {
+  it("sends what the fullnode side refuses as pruned to the archive", async () => {
+    const archive = fakeNode("archive");
+    const reads = readThrough(failing(410), [], archive);
+    expect(reads).toBeInstanceOf(ArchiveFallbackAdapter);
+    expect((await reads.fetchEvents(TYPE, {})).nextCursor).toBe("archive-1");
+    expect(await reads.getHeadVersion()).toBe(7n);
+  });
+
+  it("keeps a pool as the fullnode side and moves nothing but a 410", async () => {
+    const archive = fakeNode("archive");
+    const pruned = readThrough(failing(410), [failing(410)], archive);
+    expect((await pruned.fetchEvents(TYPE, {})).nextCursor).toBe("archive-1");
+    const limited = readThrough(failing(500), [failing(500)], archive);
+    await expect(limited.fetchEvents(TYPE, {})).rejects.toThrow("HTTP 500");
+    expect(archive.seen).toHaveLength(1);
+  });
+});
+
+describe("chainFor with an archive", () => {
+  const ARCHIVE = "https://archive.mainnet.aptoslabs.com/v1";
+
+  it("reads Aptos mainnet's archive for default, with the key only without --node-url", async () => {
+    const plain = await chainFor({ network: "mainnet", archive: "default", apiKey: "k" });
+    expect(plain.adapter()).toBeInstanceOf(ArchiveFallbackAdapter);
+    expect(fullnodes(plain.adapter())).toEqual([undefined, ARCHIVE]);
+    expect(keys(plain.adapter())).toEqual(["k", "k"]);
+    const custom = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1", archive: "default", apiKey: "k" });
+    expect(keys(custom.adapter())).toEqual(["k", undefined]);
+    expect(fullnodes((custom.client() as unknown as { adapter: unknown }).adapter)).toEqual(["https://a.example/v1", ARCHIVE]);
+  });
+
+  it("reads an archive URL with no key, behind a pool", async () => {
+    const chain = await chainFor({
+      network: "testnet",
+      nodeUrl: "https://a.example/v1",
+      extraNodeUrls: ["https://b.example/v1"],
+      archive: "https://archive.example/v1",
+      apiKey: "k",
+    });
+    expect(fullnodes(chain.adapter())).toEqual(["https://a.example/v1", "https://b.example/v1", "https://archive.example/v1"]);
+    expect(keys(chain.adapter())).toEqual(["k", undefined, undefined]);
   });
 });
 
