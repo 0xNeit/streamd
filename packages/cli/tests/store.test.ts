@@ -170,3 +170,14 @@ describe("runStore filter", () => {
     expect(cursors(db)).toEqual([`mainnet:${JSON.stringify(options().descriptor)}:${JSON.stringify(filter)}`]);
   });
 });
+
+describe("runStore decode", () => {
+  it("stores rows as they arrive, under the undecoded cursor name", async () => {
+    const db = new Database(":memory:");
+    await run(new MemoryAdapter([ev(1), ev(2)]), db, options({ decode: ["n"] }), () => stored(db).length === 2);
+    expect(stored(db)).toEqual([1, 2]);
+    expect(cursors(db)).toEqual([`mainnet:${JSON.stringify(options().descriptor)}`]);
+    const data = (db.query("SELECT * FROM streamd_events ORDER BY version").all() as Record<string, unknown>[]).map((r) => JSON.stringify(r));
+    expect(data.join()).toContain('\\"n\\":\\"1\\"');
+  });
+});

@@ -492,3 +492,13 @@ describe("runForward filter", () => {
     expect(received.flatMap(versions)).toEqual(["2", "3"]);
   });
 });
+
+describe("runForward decode", () => {
+  it("reports an event that does not decode and posts the rest", async () => {
+    const odd: StreamdEvent = { ...ev(2), data: { amount: { nested: true } } };
+    const h = harness(new MemoryAdapter([ev(1), odd, ev(3)]));
+    expect(await runForward(options({ fromVersion: 0n, toVersion: 3n, decode: ["amount"] }), h.io)).toBe(0);
+    expect(received.flatMap(versions)).toEqual(["1", "3"]);
+    expect(h.errors.join()).toContain('Cannot decode field "amount" of 2:0');
+  });
+});

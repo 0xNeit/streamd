@@ -154,7 +154,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     const onAbort = () => finish(0);
     io.signal.addEventListener("abort", onAbort, { once: true });
 
-    const { fromVersion, fromTime, pollInterval, batchSize, filter } = options;
+    const { fromVersion, fromTime, pollInterval, batchSize, filter, decode } = options;
     sub = io.client.onBatch(
       options.descriptor,
       async (all) => {
@@ -191,6 +191,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
         ...(fromTime !== undefined && { fromTime }),
         ...(pollInterval !== undefined && { pollInterval }),
         ...(batchSize !== undefined && { batchSize }),
+        ...(decode !== undefined && { decode }),
         ...(filter !== undefined && { where: filterPredicate(filter) }),
         ...(toVersion !== undefined && { onCaughtUp: () => finish(0) }),
         onError: (err) => {
