@@ -294,6 +294,8 @@ descriptors for their event structs; a bare address covers all its modules.
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
 Every command takes --chain sui to read Sui instead of Aptos.
+tail, query, forward and store take --sender, --function and --where, which
+filter after fetching, so --limit counts the events that match.
 
 Options:
   --account <address>    events from transactions this account sent
@@ -309,6 +311,12 @@ Options:
   --from-version <n>     start at this version instead of the chain head
   --from-time <t>        tail, forward, query: start here, as 2h, 7d or an ISO date (UTC)
   --poll-interval <ms>   delay between polls (default: 1000)
+  --sender <address>     only events from transactions one of these signed, repeatable
+  --function <a::m::f>   only events from a call to one of these entry functions, repeatable
+  --where <expr>         only events whose data matches <field><op><value>, repeatable,
+                         all must hold: field a dotted path such as legs.0.amount, op
+                         ==, !=, <, <=, > or >=; an integer value compares as an integer,
+                         any other is matched as text under == or !=
   --limit <n>            tail: exit after printing n events; record, query: stop after n;
                          compare: page size
   --to <url>             forward: webhook URL (http or https, required)

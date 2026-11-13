@@ -2641,6 +2641,46 @@ streamd check --chain sui 0x3::validator::StakingRequestEvent
 - `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`; without `@mysten/sui`
   installed, it exits 1 with `--chain sui needs @mysten/sui installed`.
 
+### Filter events
+
+`tail`, `query`, `forward` and `store` narrow what they print, send or store with three
+repeatable flags, which run after fetching, through the [filters](#filtering) of the same names:
+
+```sh
+# deposits of at least 1 APT from one wallet's own transactions
+streamd tail --sender 0x9f... --where "amount>=100000000" 0x1::coin::CoinDeposit
+
+# events from either entry function, with a nested field equal to an address
+streamd query --from-time 1h --function 0x1::aptos_account::transfer \
+  --function 0x1::coin::transfer --where "store.owner==0x9f..." 0x1::fungible_asset::Deposit
+```
+
+| Flag | Matches |
+| --- | --- |
+| `--sender <address>` | the transaction was signed by one of the addresses (`fromSender`) |
+| `--function <address::module::function>` | the event came from a call to one of the functions (`fromFunction`) |
+| `--where <field><op><value>` | every clause holds on the event's `data` |
+
+The kinds combine: an event must pass every `--where` and, when given, one of the `--sender`
+addresses and one of the `--function` names. Addresses compare in long form, so `0x1` matches
+`0x000...01`. Events with no `sender` or `entryFunction`, such as handle events, never match those
+flags.
+
+In `--where`, the field is a dotted path into `data`, with numbers for array positions
+(`legs.0.amount`), and the operator is `==` (or `=`), `!=`, `<`, `<=`, `>` or `>=`; spaces around
+the field and value are ignored, so quote the expression. An integer value compares as an integer
+at full precision (`whereCompare`), whether the field is a decimal string or a number; a field
+that is missing or not an integer never matches, under `!=` too. Any other value is matched as
+text under `==` or `!=` (`whereField`), addresses in long form, with `true` and `false` also
+matching a JSON boolean; `!=` there also matches events without the field. A malformed
+expression, an unknown operator, or a text value under `<`, `<=`, `>` or `>=` exits `2`, naming
+the flag.
+
+`--limit` counts matches, so a rare match keeps `query` and `tail` reading until it fills.
+`store`'s default cursor name carries the filter, so a filtered and an unfiltered run into one
+database keep separate positions. A `--cursor-file` does not: give each filter its own. The flags
+work the same under `--chain sui`, where `sender` and `entryFunction` come from the transaction.
+
 ### Forward events to a webhook
 
 `streamd forward` follows the same descriptors as `tail` and POSTs each batch of matching
