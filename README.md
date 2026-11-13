@@ -1409,7 +1409,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, whereCompare, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
+import { involvesAddress, whereField, whereOneOf, whereCompare, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -1422,6 +1422,19 @@ streamd.on(
   (a dot-separated string such as `"store.owner"` or `"holders.0.owner"`, or an
   array of keys and indices such as `["store", "owner"]` or `["key.with.dots"]`).
   When `value` is an address, `0x1` and `0x000...01` count as the same address.
+- `whereOneOf(path, values)` matches events whose `data` holds any one of
+  `values` at `path`, an array, a `Set` or any iterable of strings, numbers,
+  bigints and booleans (`whereOneOf("store", myStores)`). Each value compares
+  as `whereField` compares it: a string that is an address (`0x` and 1 to 64
+  hex digits) matches that address in any spelling, any other string matches
+  exactly, and a number, bigint or boolean matches only a field of the same
+  type, so `5n` matches a `decode`d field but not `"5"`. The values become a
+  set when the filter is made, so a long list costs one lookup per event. An
+  `Object<T>` field arrives as `{ inner: "0x..." }`; name the inner field
+  (`"metadata.inner"`). Empty `values` matches nothing, and a malformed path
+  or value throws when the filter is made. Addresses compare in
+  canonical form here, so `0x0a` and `0x000a` match each other, unlike
+  `groupBy`'s keys, which keep the value as reported.
 - `whereCompare(path, op, value)` compares an integer in `data` using `==`,
   `!=`, `<`, `<=`, `>` or `>=` (`whereCompare("amount", ">", 1_000_000n)`). The
   field can be a decimal string, a number or a bigint, so `decode` is not

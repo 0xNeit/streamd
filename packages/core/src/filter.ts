@@ -169,7 +169,57 @@ export function whereField(
   };
 }
 
-export type CompareOp = "==" | "!=" | "<" | "<=" | ">" | ">=";
+export type OneOfValue = string | number | bigint | boolean;
+
+/**
+ * Matches events whose payload has any one of `values` at `path`, each
+ * compared as `whereField` compares it (addresses in canonical long form), at
+ * one set lookup per event. Empty `values` matches nothing.
+ */
+export function whereOneOf(
+  path: FieldPath,
+  values: Iterable<OneOfValue>,
+): SyncEventPredicate {
+  const segments = parseFieldPath(path);
+  // A string is iterable too, and would silently become the set of its characters.
+  if (typeof values === "string" || typeof values?.[Symbol.iterator] !== "function") {
+    throw new StreamdError("whereOneOf values must be an array or other iterable of values");
+  }
+  const keys = new Set<string>();
+  for (const value of values) {
+    const key = oneOfKey(value);
+    if (key === undefined || (typeof value === "number" && !Number.isFinite(value))) {
+      throw new StreamdError(
+        `whereOneOf value must be a string, finite number, bigint or boolean: ${String(value)}`,
+      );
+    }
+    keys.add(key);
+  }
+  return (event) => {
+    const key = oneOfKey(readField(event.data, segments));
+    return key !== undefined && keys.has(key);
+  };
+}
+
+/** A type-tagged key, so `5`, `5n` and `"5"` stay apart; addresses in long form. */
+function oneOfKey(value: unknown): string | undefined {
+  switch (typeof value) {
+    case "string": {
+      const address = normalizeAddress(value);
+      return address === undefined ? `s:${value}` : `a:${address}`;
+    }
+    case "number":
+      return `n:${value}`;
+    case "bigint":
+      return `b:${value}`;
+    case "boolean":
+      return `t:${value}`;
+    default:
+      return undefined;
+  }
+}
+
+export type CompareOp ="==" | "!=" | "<" | "<=" | ">" | ">=";
 
 const COMPARISONS: Record<CompareOp, (actual: bigint, target: bigint) => boolean> = {
   "==": (a, b) => a === b,
