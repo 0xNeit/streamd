@@ -2589,6 +2589,18 @@ function Feed() {
   ended, so a feed opens full rather than filling page by page:
   `useEvents(Swap, { fromVersion: -100_000n, history: 20 })`. A failed read stops the hook with
   its error.
+- **`useTransactions(descriptor | descriptors, options?)`** follows one descriptor, or a list
+  merged into one stream, with `client.onTransaction` and returns `{ data, error, status }`:
+  `data` is the most recent `maxTransactions` transactions (default 100), oldest first, each a
+  `TransactionGroup` holding all of that transaction's matching events; `error` and `status` are
+  `useEvents`'s. A typed list infers the union of its payloads, as `on()` does. Options are
+  `onTransaction`'s, without `signal`; an empty list, and `cursor` with several descriptors, throw
+  while rendering. With `history: n` and a `fromVersion` or `fromTime`, it first reads the `n`
+  most recent matching transactions through `getTransactions` and shows them in one update, then
+  follows from the version after the newest of them. That hand-off misses and repeats nothing,
+  since the read walks the whole window, but the live walk re-examines the versions between that
+  transaction and the head once, so keep the window to what a rare type needs. With no match in
+  the window it follows from the window's start, and `history` refuses `cursor`.
 - **`useLogs(descriptor, options?)`** runs `client.getEvents` and returns
   `{ data, error, loading }`. `data` is the last successful result and stays through refetches
   and errors. Options are `getEvents`'s, without `signal`; it takes a list of descriptors too.
