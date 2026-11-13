@@ -2458,6 +2458,7 @@ const local = new StreamdClient({ adapter: new PostgresStoreAdapter(pool) });
 ```
 
 With `Bun.sql`, wrap it: `{ query: async (text, params = []) => ({ rows: await sql.unsafe(text, params) }) }`.
+From the terminal, [`streamd store --postgres <url>`](#store-events) does this for you.
 
 - **One statement per write.** A batch and its cursor are written by a single `INSERT` whose
   parts are data-modifying CTEs, so they land together without a transaction, and a `Pool`
@@ -3090,7 +3091,7 @@ The range is required and at most 100,000 versions; `--max-pages` (default 10) c
 `--limit` sets the page size. It exits 0 when the nodes agree, 1 when they disagree, a node fails
 or no window was compared, and 2 for bad usage.
 
-### Generate event types
+### Store events
 
 `streamd store` follows the same descriptors as `tail` into a SQLite file, through
 [`storeEvents`](#store-events-in-sqlite). Run the same command again and it resumes where it
@@ -3110,6 +3111,32 @@ sqlite3 events.db 'SELECT count(*) FROM streamd_events'
 - The file is in WAL mode with a 5 second busy timeout, so it can be queried while written.
 - Exit code 0 on Ctrl-C or SIGTERM, 1 when polling gives up, a write fails, or the file cannot
   be opened.
+
+`--postgres <url>` writes to a Postgres database instead, through
+[`@streamd/store-postgres`](#store-events-in-postgres), with the same cursor names, resume,
+filter and decode flags, and `--chain sui`. Give exactly one of `--db` and `--postgres`.
+
+```sh
+PGPASSWORD="$DB_PASSWORD" streamd store --postgres postgres://streamd@db.example:5432/events \
+  0x1::transaction_fee::FeeStatement
+psql -h db.example -U streamd events -c 'SELECT count(*) FROM streamd_events'
+```
+
+- It uses the runtime's own Postgres client under Bun, `Bun.SQL`. Node has none, so there it
+  loads [`pg`](https://www.npmjs.com/package/pg) if you installed it, and otherwise exits 1 with
+  `--postgres under Node needs pg installed: npm i pg (Bun has its own client)`. `pg` is an
+  optional peer dependency, never installed for you.
+- The URL is passed to the driver as given, so `sslmode` and the driver's other parameters work.
+  The tables are created on first use.
+- The URL is never printed: error lines name it with the password as `***` and no query string,
+  and the password is scrubbed from the driver's messages. A password in the URL is still visible
+  to `ps` and shell history, so leave it out and set `PGPASSWORD`, which both drivers read.
+- Exit code 0 on Ctrl-C or SIGTERM, also while still connecting; 1 when the server cannot be
+  reached or refuses the login (`cannot connect to <url>`), a write fails, or polling gives up.
+  A stop waits up to 5 seconds for a batch already being written, then up to a second for the
+  connection to close.
+
+### Generate event types
 
 `streamd codegen` reads module ABIs from the fullnode and writes a TypeScript file with a type
 and a `defineEvent` descriptor for every `#[event]` struct, plus types for the structs those

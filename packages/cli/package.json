@@ -18,20 +18,26 @@
   "dependencies": {
     "@streamd/aptos": "workspace:*",
     "@streamd/core": "workspace:*",
+    "@streamd/store-postgres": "workspace:*",
     "@streamd/store-sqlite": "workspace:*",
     "@streamd/sui": "workspace:*"
   },
   "peerDependencies": {
     "@aptos-labs/ts-sdk": ">=1.0.0",
-    "@mysten/sui": "2.39.1"
+    "@mysten/sui": "2.39.1",
+    "pg": ">=8"
   },
   "peerDependenciesMeta": {
     "@mysten/sui": {
+      "optional": true
+    },
+    "pg": {
       "optional": true
     }
   },
   "devDependencies": {
     "@aptos-labs/ts-sdk": "^6.3.1",
+    "@electric-sql/pglite": "^0.5.16",
     "@mysten/sui": "2.39.1"
   },
   "license": "MIT"

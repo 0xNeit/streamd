@@ -61,8 +61,10 @@ export interface ForwardOptions extends SourceOptions {
 }
 
 export interface StoreOptions extends SourceOptions {
-  /** SQLite file to write. */
-  db: string;
+  /** SQLite file to write; the parser sets exactly one of this and `postgres`. */
+  db?: string;
+  /** Postgres URL to write to; may carry a password, so never printed as given. */
+  postgres?: string;
   /** Name its cursor is saved under; derived from the network and descriptor when unset. */
   name?: string;
 }
@@ -256,6 +258,7 @@ const FORWARD_OPTIONS = {
 const STORE_OPTIONS = {
   ...SOURCE_OPTIONS,
   db: { type: "string" },
+  postgres: { type: "string" },
   name: { type: "string" },
 } as const;
 
@@ -376,6 +379,7 @@ export const USAGE = `Usage:
   streamd forward --to <url> --account <address> [...]
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
+  streamd store --postgres <url> [options] <eventType>...
   streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
   streamd tx <hash | digest>
   streamd transfers [--asset <asset>] [--account <address | name>] [--to-version <n | head>] [options]
@@ -391,8 +395,8 @@ export const USAGE = `Usage:
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array,
 saving its position to a cursor file once the webhook acknowledges it.
-store follows matching events into a SQLite file, resuming from the cursor
-saved there when run again.
+store follows matching events into a SQLite file, or a Postgres database
+with --postgres, resuming from the cursor saved there when run again.
 query reads a closed range of history as JSON lines, then exits.
 tx waits for a transaction and prints its events, exiting 1 if it failed.
 transfers prints asset transfers as JSON lines: followed live, or with
@@ -461,7 +465,10 @@ Options:
   --header <h>           forward: request header 'Name: value', repeatable
   --secret <s>           forward: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER}
                          (or set ${SECRET_ENV}, which keeps it out of ps)
-  --db <file>            store: SQLite file to write (required)
+  --db <file>            store: SQLite file to write (this or --postgres)
+  --postgres <url>       store: Postgres database to write, postgres://user@host/db; Bun.SQL
+                         under Bun, pg under Node (npm i pg); the URL is never printed, and
+                         PGPASSWORD keeps the password out of it and out of ps
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
   --to-version <n>       record: end of the range (required); query: default the head;
                          forward: deliver up to here, then exit 0; transfers: a version or
@@ -800,15 +807,32 @@ function parseForward(args: string[]): ParsedCommand {
   return { command: "forward", options };
 }
 
+/** An empty host is allowed: the driver then reads `PGHOST` or uses localhost. */
+function isPostgresUrl(value: string): boolean {
+  if (!/^postgres(ql)?:\/\//i.test(value)) return false;
+  try {
+    new URL(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function parseStore(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: STORE_OPTIONS, allowPositionals: true, strict: true }),
   );
   if (values.help) return { command: "help" };
-  if (values.db === undefined) throw new UsageError("store needs --db <file>");
-  if (values.db === "") throw new UsageError("--db must not be empty");
+  const { db, postgres } = values;
+  if (db === undefined && postgres === undefined) throw new UsageError("store needs --db <file> or --postgres <url>");
+  if (db !== undefined && postgres !== undefined) throw new UsageError("--db and --postgres cannot be used together");
+  if (db === "") throw new UsageError("--db must not be empty");
+  // The value may carry a password, so the refusal never repeats it.
+  if (postgres !== undefined && !isPostgresUrl(postgres)) {
+    throw new UsageError("--postgres must be a postgres:// or postgresql:// URL");
+  }
   if (values.name === "") throw new UsageError("--name must not be empty");
-  const options: StoreOptions = { ...source("store", values, positionals), db: values.db };
+  const options: StoreOptions = { ...source("store", values, positionals), ...(db !== undefined ? { db } : { postgres }) };
   if (values.name !== undefined) options.name = values.name;
   return { command: "store", options };
 }

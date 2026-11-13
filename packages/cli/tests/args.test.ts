@@ -345,8 +345,35 @@ describe("parseCommand store", () => {
     expect(parseCommand(["store", "--help"])).toEqual({ command: "help" });
   });
 
+  it("takes a Postgres URL in place of a file, with every other store flag", () => {
+    const url = "postgres://me:pw@db.example:5432/events?sslmode=require";
+    const options = store("--postgres", url, "--name", "swaps", "--sender", ADDR, "--decode", "amount", TYPE);
+    expect(options).toMatchObject({ postgres: url, name: "swaps", decode: ["amount"], filter: { senders: [LONG_ADDR] } });
+    expect("db" in options).toBe(false);
+    expect(store("--postgres", "postgresql:///events", TYPE).postgres).toBe("postgresql:///events");
+    expect(store("--chain", "sui", "--postgres", url, "0x2::coin::CoinEvent")).toMatchObject({ chain: "sui", postgres: url });
+  });
+
   it.each([
-    [["store", TYPE], /store needs --db/],
+    ["postgres://me:hunter2@:::bad"],
+    ["mysql://me:hunter2@db/events"],
+    ["postgres:hunter2"],
+    ["hunter2"],
+    [""],
+  ])("refuses --postgres %j without repeating it", (url) => {
+    let thrown: unknown;
+    try {
+      parseCommand(["store", "--postgres", url, TYPE]);
+    } catch (err) {
+      thrown = err;
+    }
+    expect(String(thrown)).toContain("--postgres must be a postgres:// or postgresql:// URL");
+    expect(String(thrown)).not.toContain("hunter2");
+  });
+
+  it.each([
+    [["store", TYPE], /store needs --db <file> or --postgres <url>/],
+    [["store", "--db", "e.db", "--postgres", "postgres://h/db", TYPE], /--db and --postgres cannot be used together/],
     [["store", "--db", "", TYPE], /--db must not be empty/],
     [["store", "--db", "e.db"], /store needs at least one event type/],
     [["store", "--db", "e.db", "--name", "", TYPE], /--name must not be empty/],
