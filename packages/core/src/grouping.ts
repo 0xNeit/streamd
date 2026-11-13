@@ -83,7 +83,8 @@ function stamped(source: EventAdapter, onFetch: () => void): EventAdapter {
   });
 }
 
-function groupOf(version: bigint, events: StreamdEvent[]): TransactionGroup {
+/** One transaction's events, already in `eventIndex` order, as a `TransactionGroup`. */
+export function groupOf(version: bigint, events: StreamdEvent[]): TransactionGroup {
   const group: TransactionGroup = { version, events };
   for (const key of ["transactionHash", "sender", "timestamp", "entryFunction"] as const) {
     const from = events.find((e) => e[key] !== undefined);

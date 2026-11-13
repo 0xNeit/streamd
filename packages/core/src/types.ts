@@ -921,6 +921,14 @@ export type TransactionCallback<TData = unknown> = (
 ) => void;
 
 /**
+ * `getTransactions()`'s options: `getEvents`'s, with `limit` counting
+ * transactions rather than events. `onCursor` is left out, since a `limit`
+ * stops the walk partway, and so is `offset`, which counts events and could
+ * start inside a transaction.
+ */
+export type TransactionFilter = Omit<EventFilter, "onCursor" | "offset">;
+
+/**
  * Called once per event a watched address's walk delivers, with that address
  * as the caller passed it. Otherwise as `EventCallback`.
  */

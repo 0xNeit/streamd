@@ -268,6 +268,25 @@ option is refused. `pause()` holds the remaining transactions until `resume()`; 
 that gives up ends the others; `onCaughtUp` fires once every walk has caught up. Like
 `reduce()`, it is not counted by `listenerCount()` or stopped by `off()`.
 
+For a past range, `getTransactions` returns the same groups at once:
+
+```ts
+const txs = await streamd.getTransactions([swaps, deposits], {
+  fromVersion: 3_000_000_000n,
+  toVersion: 3_000_010_000n,
+  limit: 50, // transactions, not events
+});
+```
+
+It takes `getEvents`'s options and reads the range as `getEvents` does, a list merged with
+each event once, then cuts it wherever the version changes. `decode` and `where` apply per
+event first, so a transaction with no match yields no group. `limit` counts groups and never
+cuts one: the walk reads on until a later version or the end of the range, so the last
+group is whole even when its events span two pages. `orderBy: "desc"` returns the last
+`limit` transactions newest first (events inside each stay in `eventIndex` order), and
+`withState` reads only the events returned. `onCursor` and `offset` are refused. `maxPages`
+caps the work, so a transaction cut off by the cap may be missing its later events.
+
 ### Watch lists
 
 ```ts
