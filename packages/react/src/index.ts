@@ -4,6 +4,7 @@ export { useEvents } from "./use-events.js";
 export { useLogs } from "./use-logs.js";
 export { useReduction } from "./use-reduction.js";
 export { useTransactionEvents } from "./use-transaction-events.js";
+export { useTransactions } from "./use-transactions.js";
 export { useTransfers } from "./use-transfers.js";
 
 export type { StreamdProviderProps } from "./context.js";
@@ -12,4 +13,5 @@ export type { UseEventsOptions, UseEventsResult, UseEventsStatus } from "./use-e
 export type { UseLogsOptions, UseLogsResult } from "./use-logs.js";
 export type { UseReductionOptions, UseReductionResult, UseReductionStatus } from "./use-reduction.js";
 export type { TransactionEventsClient, UseTransactionEventsOptions, UseTransactionEventsResult } from "./use-transaction-events.js";
+export type { UseTransactionsOptions, UseTransactionsResult } from "./use-transactions.js";
 export type { TransfersClient, UseTransfersOptions } from "./use-transfers.js";
