@@ -889,3 +889,66 @@ describe("decode flag", () => {
     rejects(["tail", ...args, TYPE], /--decode: /);
   });
 });
+
+describe("parseCommand transfers", () => {
+  const transfers = (...argv: string[]) => {
+    const parsed = parseCommand(["transfers", ...argv]);
+    if (parsed.command !== "transfers") throw new Error("expected a transfers command");
+    return parsed.options;
+  };
+
+  it("follows by default, with only the flags given", () => {
+    expect(transfers()).toEqual({ network: "mainnet" });
+    expect(
+      transfers("--asset", "0xa", "--account", "alice.apt", "--with-asset-info", "--from-version", "5", "--limit", "3",
+        "--poll-interval", "200", "--batch-size", "500", "--cursor-file", "t.cursor"),
+    ).toEqual({
+      network: "mainnet",
+      asset: "0xa",
+      account: "alice.apt",
+      withAssetInfo: true,
+      fromVersion: 5n,
+      limit: 3,
+      pollInterval: 200,
+      batchSize: 500,
+      cursorFile: "t.cursor",
+    });
+  });
+
+  it("reads a range with --to-version, a version or head, ascending by default", () => {
+    expect(transfers("--from-version", "5", "--to-version", "9")).toEqual({ network: "mainnet", fromVersion: 5n, toVersion: 9n, order: "asc" });
+    const head = transfers("--from-time", "1h", "--to-version", "head", "--order", "desc");
+    expect(head.toVersion).toBe("head");
+    expect(head.order).toBe("desc");
+    expect(typeof head.fromTime).toBe("bigint");
+  });
+
+  it("takes --chain sui with no key", () => {
+    expect(transfers("--chain", "sui", "--asset", "0x2::sui::SUI")).toEqual({ network: "mainnet", chain: "sui", asset: "0x2::sui::SUI" });
+    rejects(["transfers", "--chain", "sui", "--api-key", "k"], /--api-key is not sent to Sui nodes/);
+  });
+
+  it("sends --api-key on Aptos", () => {
+    expect(transfers("--api-key", "k").apiKey).toBe("k");
+  });
+
+  it.each([
+    [["0x1::coin::CoinDeposit"], /transfers takes no event types/],
+    [["--asset", ""], /--asset must not be empty/],
+    [["--account", ""], /--account must not be empty/],
+    [["--cursor-file", ""], /--cursor-file must not be empty/],
+    [["--order", "desc"], /--order needs --to-version/],
+    [["--to-version", "9"], /--to-version needs --from-version or --from-time/],
+    [["--from-version", "9", "--to-version", "5"], /--to-version must not be below --from-version/],
+    [["--from-version", "1", "--to-version", "x"], /--to-version must be a non-negative integer/],
+    [["--from-version", "1", "--to-version", "head", "--order", "up"], /--order must be asc or desc/],
+    [["--from-version", "1", "--to-version", "head", "--cursor-file", "c"], /--cursor-file follows live/],
+    [["--from-version", "1", "--to-version", "head", "--poll-interval", "5"], /--poll-interval follows live/],
+    [["--from-version", "1", "--to-version", "head", "--batch-size", "5"], /--batch-size follows live/],
+    [["--from-version", "1", "--from-time", "1h"], /set --from-time or --from-version, not both/],
+    [["--batch-size", "0"], /--batch-size must be an integer from 1 to 1000/],
+    [["--sender", "0x1"], /Unknown option '--sender'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(["transfers", ...args], message);
+  });
+});
