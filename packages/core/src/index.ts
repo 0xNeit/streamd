@@ -63,6 +63,7 @@ export {
   whereOneOf,
 } from "./filter.js";
 export type { CompareOp, OneOfValue } from "./filter.js";
+export { changesOnly } from "./changes.js";
 
 // Input checks for adapter authors; the chain packages build their adapters on them.
 export {

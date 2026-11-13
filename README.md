@@ -1409,7 +1409,7 @@ Chain APIs can't filter on what's inside an event. `where` filters on your
 side, after fetching:
 
 ```ts
-import { involvesAddress, whereField, whereOneOf, whereCompare, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
+import { involvesAddress, whereField, whereOneOf, whereCompare, changesOnly, ofType, ofModule, fromSender, fromFunction, every, some, not } from "@streamd/core";
 
 streamd.on(
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
@@ -1440,6 +1440,25 @@ streamd.on(
   field can be a decimal string, a number or a bigint, so `decode` is not
   needed, and it compares at full precision. A field that is missing or not an
   integer never matches, under `!=` too.
+- `changesOnly(path?)` drops a `resource` or `object` change whose value
+  deep-equals the previous change's (`changesOnly()`), or whose value at `path`
+  does (`changesOnly("coin.value")`, `whereField`'s path syntax), so a busy
+  resource delivers only the writes that changed what you watch. Objects
+  compare with keys in any order and bigints by value; a missing value at
+  `path` compares as `undefined`; a delete (`data: null`) is a change from any
+  write, and a second delete in a row is not. The first change always passes.
+  It keeps state, per `event.type`, since a change names no address: one
+  descriptor follows one resource, but a list of descriptors following the
+  same resource type at several addresses would share it, so give each its own
+  subscription. Each call is a fresh state, so call it once per subscription
+  or query and never share one (in React, make it once, not inline in a
+  render). It cannot tell a change from an event, so on events it drops one
+  whose payload repeats the previous one of its type. An event tested again,
+  as a listener does after a failed poll, gets its first answer. It compares
+  against the previous change it was asked about: put it first in `every`,
+  since a predicate before it that rejects a write keeps that write from it,
+  and inside `some` a write a predicate before it accepts never reaches it.
+  `not(changesOnly())` keeps only the repeats.
 - `involvesAddress(address, { fields?, maxDepth? })` matches events whose
   payload mentions the address anywhere. `0x1` and `0x000…01` count as the
   same address.
