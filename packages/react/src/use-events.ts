@@ -6,7 +6,7 @@ import {
   type SubscriptionOptions,
 } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
-import { DEFAULT_MAX_EVENTS, useFollowing, type Following, type UseEventsResult } from "./follow.js";
+import { DEFAULT_MAX_EVENTS, readThenFollow, useFollowing, type Following, type UseEventsResult } from "./follow.js";
 import { valueKey } from "./key.js";
 
 export type { UseEventsResult, UseEventsStatus } from "./follow.js";
@@ -35,53 +35,31 @@ function withHistory<TData>(
   deliver: (events: EventOf<TData>[]) => void,
   options: Listener,
 ): Following {
-  const { fromVersion, fromTime, where, decode, withState, onError } = options;
-  const read = new AbortController();
-  let live: Following | undefined;
-  let failed = false;
-  let ended = false;
+  const { fromVersion, fromTime, ...following } = options;
+  const { where, decode, withState, onError } = following;
   let cursor: string | undefined;
-  const fail = (err: unknown) => {
-    if (ended) return;
-    failed = true;
-    onError?.(err instanceof Error ? err : new StreamdError("History read failed", err));
-  };
-  client
-    .getEvents<TData>(descriptor, {
-      ...(fromVersion !== undefined && { fromVersion }),
-      ...(fromTime !== undefined && { fromTime }),
-      ...(where !== undefined && { where }),
-      ...(decode !== undefined && { decode }),
-      ...(withState !== undefined && { withState }),
-      orderBy: "desc",
-      limit,
-      signal: read.signal,
-      // A descending read walks the whole window, so its end cursor is exact.
-      onCursor: (c) => (cursor = c),
-    })
-    .then((events) => {
-      // A read can settle in the same tick as an unmount, before its abort lands.
-      if (ended) return;
-      if (cursor === undefined) {
-        return fail(new StreamdError("The history read gave no cursor to follow from"));
-      }
-      deliver(events.reverse());
-      const { fromVersion: _v, fromTime: _t, ...rest } = options;
-      live = client.onBatch<TData>(descriptor, deliver, { ...rest, cursor });
-    }, fail);
-  return {
-    unsubscribe() {
-      ended = true;
-      read.abort(new StreamdError("useEvents history read abandoned"));
-      live?.unsubscribe();
+  return readThenFollow(
+    "useEvents",
+    (signal) =>
+      client.getEvents<TData>(descriptor, {
+        ...(fromVersion !== undefined && { fromVersion }),
+        ...(fromTime !== undefined && { fromTime }),
+        ...(where !== undefined && { where }),
+        ...(decode !== undefined && { decode }),
+        ...(withState !== undefined && { withState }),
+        orderBy: "desc",
+        limit,
+        signal,
+        // A descending read walks the whole window, so its end cursor is exact.
+        onCursor: (c) => (cursor = c),
+      }).then((events) => events.reverse()),
+    () => {
+      if (cursor === undefined) throw new StreamdError("The history read gave no cursor to follow from");
+      return client.onBatch<TData>(descriptor, deliver, { ...following, cursor });
     },
-    get active() {
-      return !ended && !failed && (live?.active ?? true);
-    },
-    get paused() {
-      return live?.paused ?? false;
-    },
-  };
+    deliver,
+    onError,
+  );
 }
 
 /**
@@ -104,7 +82,7 @@ export function useEvents<TData = unknown>(
     }
   }
   const client = useStreamdClient(explicit);
-  return useFollowing<TData, typeof listener>(
+  return useFollowing<EventOf<TData>, typeof listener>(
     descriptor != null,
     valueKey([descriptor, listener, history ?? null]),
     client,

@@ -1,4 +1,4 @@
-import type { EventCallback, StreamdClient, Subscription, Transfer } from "@streamd/core";
+import type { EventCallback, EventOf, StreamdClient, Subscription, Transfer } from "@streamd/core";
 import type { TransferListenerOptions } from "@streamd/aptos";
 import { useClientWith } from "./context.js";
 import { DEFAULT_MAX_EVENTS, useFollowing, type UseEventsResult } from "./follow.js";
@@ -24,7 +24,7 @@ export interface UseTransfersOptions extends Omit<TransferListenerOptions, "sign
 export function useTransfers(options: UseTransfersOptions | null = {}): UseEventsResult<Transfer> {
   const { client: explicit, maxEvents = DEFAULT_MAX_EVENTS, ...listener } = options ?? {};
   const client = useClientWith<TransfersClient>("transfers", explicit);
-  return useFollowing<Transfer, typeof listener>(
+  return useFollowing<EventOf<Transfer>, typeof listener>(
     options !== null,
     valueKey(listener),
     client,
