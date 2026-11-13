@@ -4,6 +4,7 @@ import type {
   EventExpectation,
   EventOf,
   EventPredicate,
+  EventsAtOptions,
   EventsOfOptions,
   ExpectEventsOptions,
   StreamdEvent,
@@ -15,7 +16,7 @@ import { StreamdAssertionError, StreamdError, StreamdTimeoutError, StreamdTransa
 import { filterEvents, normalizeAddress } from "./filter.js";
 import { fieldDecoder } from "./decode.js";
 import { descriptorKey, onAbort, raceAbort, sleep } from "./utils.js";
-import { handlePath, moduleTypeFilter, requireAddress } from "./adapters/validate.js";
+import { handlePath, moduleTypeFilter, requireAddress, requireLedgerVersion } from "./adapters/validate.js";
 
 /** Matches the Aptos SDK's own `waitForTransaction` default. */
 const DEFAULT_TRANSACTION_TIMEOUT = 20_000;
@@ -115,6 +116,40 @@ export async function eventsOf(
   const narrow = narrower(descriptor, options);
   const events = await committedEvents(adapter, limiter, pollInterval, transactionHash, descriptor, options);
   return raceAbort(Promise.resolve(narrow(events)), options.signal);
+}
+
+/**
+ * The events of the transaction committed at `version`, narrowed by
+ * `descriptor`, `decode` and `where`, from one lookup through the limiter.
+ * Input is refused before the lookup. Rejects with `StreamdTransactionError`
+ * for a failed transaction, as `eventsOf` does, and with a `StreamdError`
+ * when the source has no transaction at `version`.
+ */
+export async function eventsAt(
+  adapter: EventAdapter,
+  limiter: RequestLimiter,
+  version: bigint,
+  descriptor: EventDescriptor | undefined,
+  options: EventsAtOptions,
+): Promise<StreamdEvent[]> {
+  requireLedgerVersion(version);
+  const narrow = narrower(descriptor, options);
+  if (adapter.getTransactionEventsByVersion === undefined) {
+    throw new StreamdError("eventsAt needs an adapter that implements getTransactionEventsByVersion");
+  }
+  const signal = options.signal;
+  if (signal?.aborted) throw signal.reason;
+  const found = await limiter.run(() => adapter.getTransactionEventsByVersion!(version, descriptor), signal, signal);
+  if (found === undefined) throw new StreamdError(`No transaction at version ${version}`);
+  if (!found.success) {
+    throw new StreamdTransactionError(
+      `Transaction at version ${found.version} failed: ${found.vmStatus}`,
+      found.events[0]?.transactionHash,
+      found.version,
+      found.vmStatus,
+    );
+  }
+  return raceAbort(Promise.resolve(narrow(found.events)), signal);
 }
 
 /**
