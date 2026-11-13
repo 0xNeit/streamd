@@ -1,6 +1,6 @@
 import { StreamdError, eventId, normalizeAddress, parseEvent, serializeEvent } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
-import { ensureSchema, versionParam } from "./schema.js";
+import { PRUNED_BEFORE, ensureSchema, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 
 /** A source cursor to save under `name` alongside a write. */
@@ -36,6 +36,7 @@ function requireName(name: unknown): string {
   if (typeof name !== "string" || name === "") {
     throw new StreamdError("A checkpoint name must be a non-empty string");
   }
+  if (name === PRUNED_BEFORE) throw new StreamdError(`"${name}" is reserved for the store`);
   return name;
 }
 
@@ -58,6 +59,13 @@ WITH incoming AS (
 INSERT INTO streamd_cursors (name, cursor)
 SELECT $2::text, $3::text WHERE $2::text IS NOT NULL AND $3::text IS NOT NULL
 ON CONFLICT (name) DO UPDATE SET cursor = excluded.cursor`;
+
+// One statement, so the delete and the edge land together on any connection.
+// The edge only rises: it is compared as numeric, since it is stored as text.
+const PRUNE = `
+WITH deleted AS (DELETE FROM streamd_events WHERE version < $1::numeric)
+INSERT INTO streamd_cursors (name, cursor) VALUES ('${PRUNED_BEFORE}', $1::text)
+ON CONFLICT (name) DO UPDATE SET cursor = GREATEST(streamd_cursors.cursor::numeric, excluded.cursor::numeric)::text`;
 
 /**
  * Persists events to a Postgres database through a client the caller
@@ -88,6 +96,17 @@ export class PostgresEventStore {
     }
     await ensureSchema(this.client);
     await this.client.query(WRITE, [JSON.stringify(rows), name, cursor ?? null]);
+  }
+
+  /**
+   * Deletes every event below `beforeVersion` and records that edge, so a
+   * `PostgresStoreAdapter` read below it fails instead of returning a short
+   * history. Saved cursors stay. A lower edge than one already set stays put.
+   */
+  async prune(options: { beforeVersion: bigint }): Promise<void> {
+    const edge = versionParam(options?.beforeVersion);
+    await ensureSchema(this.client);
+    await this.client.query(PRUNE, [edge]);
   }
 
   /** The cursor last saved under `name`, or `undefined` when none was. */
