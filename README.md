@@ -2602,13 +2602,23 @@ function Feed() {
   `{ events, error, status }` as `useEvents`, with each event's `data` a `Transfer`. It takes
   `asset`, `account` and `maxEvents`; pass `null` to wait. It needs a client with `transfers`
   (`TransfersClient`): an `AptosClient`, or a `SuiClient`, whose `asset` is a coin type.
-  Either hook given another client throws a `StreamdError` naming the method.
+  Any of these hooks given another client throws a `StreamdError` naming the method.
 - **`useReduction(descriptor, reducer, initial, options?)`** runs `client.reduce` and returns
   `{ value, error, status }`. `value` is `initial` until the backfill finishes; `status` is
   `"idle"`, `"loading"`, `"live"`, or `"stopped"` once the backfill fails, the reducer throws or
   polling gives up. It restarts when the descriptor, options or `initial` change by value, and
   calls the latest `reducer` without restarting. Keep `initial` plain, since it is compared by
   value and a `Map` or class instance compares as empty.
+- **`useBalances(address, options?)`** runs `client.balances` and returns
+  `{ balances, error, status }`. `balances` is a `ReadonlyMap` of every balance read so far, keyed
+  by asset in long form as the client keys it (APT as `0x000...00a`), empty until the first read
+  finishes; `status` is `"idle"` (no address), `"loading"`, `"live"` once the first read is in,
+  or `"stopped"` once that read fails, polling gives up, or the address or `asset` is malformed,
+  which shows as `error` rather than throwing. It re-renders only when a balance changes, not on
+  every poll, and restarts, emptying `balances`, when the address or `asset` change by value. It
+  takes `balances`' options, without `signal`; `onChange` is called in its latest form. A
+  `null`, `undefined` or empty address waits. It needs a client with `balances`
+  (`BalancesClient`): an `AptosClient`, or a `SuiClient`, keyed by coin type.
 - **Keyed by value.** Inline descriptors and options are compared by value (bigints
   included), so a re-render with an equal one keeps the subscription or result. A different
   one resubscribes, starting `events` empty, or refetches, aborting the request it replaces.
@@ -2622,7 +2632,7 @@ function Feed() {
   the hook's result. In a browser every visitor shares one anonymous rate limit per IP, and a
   rate-limited fullnode response can surface as a `StreamdNetworkError` without `retryAfter`,
   so give the `Aptos` client an API key.
-- `client` in either hook's options overrides the provider's.
+- `client` in any hook's options overrides the provider's.
 
 ## Command line
 

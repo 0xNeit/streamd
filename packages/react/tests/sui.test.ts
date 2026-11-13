@@ -5,8 +5,8 @@ import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { MemoryAdapter, StreamdClient, StreamdError, StreamdTransactionError, type MoveEventType, type Transfer } from "@streamd/core";
 import { SuiClient } from "@streamd/sui";
 import { LONG, digest, fakeLedger, withTransfers, type FakeListed } from "../../sui/tests/helpers.js";
-import { StreamdProvider, useTransactionEvents, useTransfers } from "../src/index.js";
-import type { UseEventsResult, UseTransactionEventsResult } from "../src/index.js";
+import { StreamdProvider, useBalances, useTransactionEvents, useTransfers } from "../src/index.js";
+import type { UseBalancesResult, UseEventsResult, UseTransactionEventsResult } from "../src/index.js";
 import { render, unmount, waitFor } from "./render.js";
 
 const SUI = `${LONG("2")}::sui::SUI`;
@@ -15,7 +15,7 @@ const STAKE = "0x3::validator::StakingRequestEvent" as MoveEventType;
 const [OK, FAILED] = [digest(1), digest(2)];
 
 /** A `SuiClient` over the fake ledger: two SUI payments, and two looked-up transactions. */
-function suiClient(): SuiClient {
+function suiClient(balances?: Map<string, bigint>): SuiClient {
   const sizes = [1, 2];
   const listed: FakeListed[] = [
     { cp: 1n, ti: 0n, changes: [[ALICE, SUI, -10n], [BOB, SUI, 10n]] },
@@ -25,7 +25,7 @@ function suiClient(): SuiClient {
     { digest: OK, cp: 1n, ti: 0n, events: [{ type: STAKE, sender: "0xa11ce", amount: "5" }] },
     { digest: FAILED, cp: 1n, ti: 1n, error: "MoveAbort(m::z, 101) in command 1", events: [] },
   ]);
-  const wired = withTransfers(ledger.client, sizes, listed);
+  const wired = withTransfers(ledger.client, sizes, listed, balances);
   return new SuiClient({ sui: wired.client as unknown as SuiGrpcClient, defaults: { pollInterval: 5 } });
 }
 
@@ -65,6 +65,19 @@ describe("hooks over a SuiClient", () => {
     expect(results.at(-1)!.error).toBeInstanceOf(StreamdTransactionError);
     expect(results.at(-1)!.vmStatus).toBe("MoveAbort(m::z, 101) in command 1");
     await unmount(failed);
+    client.destroy();
+  });
+
+  it("useBalances follows a Sui address's SUI balance", async () => {
+    const client = suiClient(new Map([[`${ALICE}:${SUI}`, 42n]]));
+    const results: UseBalancesResult[] = [];
+    function Wallet() {
+      results.push(useBalances(ALICE));
+      return null;
+    }
+    const root = await render(createElement(StreamdProvider, { client }, createElement(Wallet)));
+    await waitFor(() => expect(results.at(-1)!).toEqual({ balances: new Map([[SUI, 42n]]), error: undefined, status: "live" }));
+    await unmount(root);
     client.destroy();
   });
 
