@@ -1,5 +1,6 @@
 import { StreamdError } from "@streamd/core";
 import type { Endpoint } from "./args.js";
+import { readThrough } from "./chain.js";
 import type { Chain } from "./chain.js";
 import type { SuiNetworkPreset } from "@streamd/sui";
 
@@ -26,9 +27,11 @@ export async function suiChain(endpoint: Endpoint): Promise<Chain> {
   const preset = sui.networks[endpoint.network as SuiNetworkPreset["network"]];
   const grpc = (baseUrl = endpoint.nodeUrl) => new SuiGrpcClient({ ...preset, ...(baseUrl !== undefined && { baseUrl }) });
   const node = grpc();
+  // Transfers and balances read a SuiAdapter directly, so with several nodes they read the first.
+  const reads = () => readThrough(new sui.SuiAdapter(node), endpoint.extraNodeUrls?.map((url) => new sui.SuiAdapter(grpc(url))));
   return {
-    client: () => new sui.SuiClient({ sui: node }),
-    adapter: (nodeUrl) => new sui.SuiAdapter(nodeUrl === undefined ? node : grpc(nodeUrl)),
+    client: () => new sui.SuiClient({ sui: node, adapter: reads() }),
+    adapter: (nodeUrl) => (nodeUrl === undefined ? reads() : new sui.SuiAdapter(grpc(nodeUrl))),
     check: (descriptor) => sui.checkDescriptor(node, descriptor),
     resolveName: (value) => sui.resolveName(node, value),
     primaryName: (address) => sui.primaryName(node, address),

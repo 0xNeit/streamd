@@ -1126,3 +1126,53 @@ describe("parseCommand name", () => {
     rejects(["name", ...args], message);
   });
 });
+
+describe("several nodes", () => {
+  const A = "https://a.example/v1";
+  const B = "https://b.example/v1";
+  const C = "http://127.0.0.1:8080/v1";
+  const HASH = `0x${"ab".repeat(32)}`;
+  const READING: string[][] = [
+    ["tail", TYPE],
+    ["forward", "--to", "https://hook.example", TYPE],
+    ["store", "--db", "events.db", TYPE],
+    ["query", "--from-version", "1", TYPE],
+    ["record", "--from-version", "1", "--to-version", "2", TYPE],
+    ["tx", HASH],
+    ["transfers"],
+    ["balances", ADDR],
+    ["watch", ADDR],
+  ];
+  const options = (argv: string[]) => (parseCommand(argv) as unknown as { options: Record<string, unknown> }).options;
+
+  it.each(READING)("%s pools every --node-url after the first, the key going with the first", (...argv) => {
+    const parsed = options([...argv, "--node-url", A, "--node-url", B, "--node-url", C, "--api-key", "k"]);
+    expect(parsed).toMatchObject({ nodeUrl: A, extraNodeUrls: [B, C], apiKey: "k" });
+  });
+
+  it.each(READING)("%s with one --node-url parses as before", (...argv) => {
+    const parsed = options([...argv, "--node-url", A]);
+    expect(parsed.nodeUrl).toBe(A);
+    expect("extraNodeUrls" in parsed).toBe(false);
+  });
+
+  it("pools Sui gRPC URLs too", () => {
+    expect(options(["tail", "--chain", "sui", "--node-url", "https://a.example:443", "--node-url", "https://b.example:443", TYPE]))
+      .toMatchObject({ chain: "sui", nodeUrl: "https://a.example:443", extraNodeUrls: ["https://b.example:443"] });
+  });
+
+  it("checks every URL", () => {
+    rejects(["tail", TYPE, "--node-url", A, "--node-url", "ftp://b.example"], /--node-url must be an http or https URL: ftp:/);
+  });
+
+  it.each([
+    ["check", [TYPE]],
+    ["codegen", ["0x1::coin"]],
+    ["handles", [ADDR]],
+    ["name", ["alice.apt"]],
+    ["compare", ["--against", B, "--from-version", "1", "--to-version", "2", TYPE]],
+  ])("%s refuses a second --node-url", (command, rest) => {
+    rejects([command, ...rest, "--node-url", A, "--node-url", B], new RegExp(`--node-url is given once for ${command}: it reads one node`));
+    expect(options([command, ...rest, "--node-url", A]).nodeUrl).toBe(A);
+  });
+});

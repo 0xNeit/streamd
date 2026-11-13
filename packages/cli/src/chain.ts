@@ -1,5 +1,6 @@
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { AptosClient, FullnodeScanAdapter, checkDescriptor, networks, primaryName, resolveName } from "@streamd/aptos";
+import { PoolAdapter } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, StreamdClient } from "@streamd/core";
 import type { Endpoint } from "./args.js";
 import type { TypeChecks } from "./check.js";
@@ -8,8 +9,8 @@ import { suiChain } from "./sui.js";
 /** What the commands read through, so each is written once for both chains. */
 export interface Chain {
   client(): StreamdClient & Pick<AptosClient, "eventsOf" | "transfers" | "getTransfers" | "balances">;
-  /** An adapter over the endpoint's node, or over `nodeUrl`, which gets no API key. */
-  adapter(nodeUrl?: string): EventAdapter & { getHeadVersion(): Promise<bigint> };
+  /** An adapter over the endpoint's nodes, or over `nodeUrl` alone, which gets no API key. */
+  adapter(nodeUrl?: string): HeadAdapter;
   check(descriptor: ModuleEventDescriptor): Promise<TypeChecks>;
   /** The long-form address a name points to; an address comes back in long form with no read. */
   resolveName(nameOrAddress: string): Promise<string>;
@@ -37,12 +38,24 @@ export function aptosConfig(options: Pick<Endpoint, "network" | "nodeUrl" | "api
   });
 }
 
+type HeadAdapter = EventAdapter & { getHeadVersion(): Promise<bigint> };
+
+/** `first` itself, or reads spread over it and `others` through `PoolAdapter`. */
+export function readThrough(first: HeadAdapter, others: readonly HeadAdapter[] = []): HeadAdapter {
+  // Every node has getHeadVersion, so the pool has it too, passing its arguments through.
+  return others.length === 0 ? first : (new PoolAdapter([first, ...others]) as unknown as HeadAdapter);
+}
+
 function aptosChain(endpoint: Endpoint): Chain {
   const config = aptosConfig(endpoint);
+  const node = (nodeUrl: string) => new FullnodeScanAdapter(new Aptos(aptosConfig({ network: endpoint.network, nodeUrl })));
+  const reads = (aptos: Aptos) => readThrough(new FullnodeScanAdapter(aptos), endpoint.extraNodeUrls?.map(node));
   return {
-    client: () => new AptosClient({ aptos: new Aptos(config) }),
-    adapter: (nodeUrl) =>
-      new FullnodeScanAdapter(new Aptos(nodeUrl === undefined ? config : aptosConfig({ network: endpoint.network, nodeUrl }))),
+    client: () => {
+      const aptos = new Aptos(config);
+      return new AptosClient({ aptos, adapter: reads(aptos) });
+    },
+    adapter: (nodeUrl) => (nodeUrl === undefined ? reads(new Aptos(config)) : node(nodeUrl)),
     check: (descriptor) => checkDescriptor(new Aptos(config), descriptor),
     resolveName: (value) => resolveName(new Aptos(config), value),
     primaryName: (address) => primaryName(new Aptos(config), address),
