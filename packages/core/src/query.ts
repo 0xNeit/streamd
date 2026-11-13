@@ -248,7 +248,6 @@ export class EventQuery {
       if (open.length === 0) return;
       groups.push(groupOf(open[0]!.version, open.sort((a, b) => a.eventIndex - b.eventIndex)));
       open = [];
-      if (desc && limit !== undefined && groups.length > limit) groups = groups.slice(-limit);
     };
     walk: for await (const page of this.pages(descriptor, rest, pageSize)) {
       for (const event of page) {
@@ -258,9 +257,10 @@ export class EventQuery {
         }
         open.push(event);
       }
+      if (desc && limit !== undefined && groups.length > limit) groups = groups.slice(-limit);
     }
     if (groups.length < enough) close();
-    if (desc) groups.reverse();
+    if (desc) groups = (limit === undefined ? groups : groups.slice(-limit)).reverse();
     if (withState !== undefined) {
       const { retries = 0, signal } = rest;
       for (const group of groups) {
