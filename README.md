@@ -2804,6 +2804,62 @@ takes the same descriptors as `tail`. Failed pages are retried. It exits 0 when 
 interrupted or piped into something that stops reading, such as `head`, 1 on failure, and 2 for
 bad usage.
 
+### Follow or query transfers
+
+`streamd transfers` prints [asset transfers](#asset-transfers) as JSON lines, through the chain
+client's `transfers()` or `getTransfers()`:
+
+```sh
+# APT transfers as they land
+streamd transfers --asset 0xa
+# what one account sent or received in a closed range, with symbols and decimals
+streamd transfers --account alice.apt --with-asset-info --from-version 8033637000 --to-version 8033638000
+# the latest 20 USDC transfers in a range, newest first
+streamd transfers --asset 0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b \
+  --from-version 8033637000 --to-version 8033638000 --order desc --limit 20
+```
+
+Each line is a record event as `tail` prints events, its `data` a `Transfer`, with `amount` in
+base units as a decimal string and `from` or `to` left out when that side is unknown:
+
+```json
+{"type":"0x1::fungible_asset::Deposit","data":{"asset":"0x...a","amount":"150000000","from":"0x9f...","to":"0x4c..."},"version":"3000000123","sequenceNumber":"0","eventIndex":2,"transactionHash":"0x5c...","timestamp":"1730000000000000","sender":"0x9f..."}
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--asset <asset>` | only this asset: on Aptos a fungible-asset metadata or token object address (`0xa` for APT), a coin type or a legacy token id; under `--chain sui` a coin type |
+| `--account <address or name>` | only what this account sent or received: an address, an ANS name on Aptos mainnet, or a SuiNS name under `--chain sui`, resolved once |
+| `--with-asset-info` | add `symbol` and `decimals` to each record, read once per asset |
+| `--to-version <n \| head>` | read the range up to this version, or the head read once, then exit; needs `--from-version` or `--from-time` |
+| `--order <asc \| desc>` | with `--to-version`: oldest or newest first (default `asc`) |
+| `--limit <n>` | exit after printing `n` records |
+| `--cursor-file <path>` | following: save and resume from here, as for `tail` |
+| `--batch-size <n>` | following: transactions per page (default `25`) |
+
+Without `--to-version` it follows from the head, `--from-version` or `--from-time`, as `tail`
+does, with `--poll-interval` and the same at-least-once `--cursor-file`. With it, the whole range
+is read before anything is printed, since `getTransfers` returns it at once, and failed pages are
+retried; `--cursor-file`, `--poll-interval` and `--batch-size` are refused there, and `--order`
+is refused without it. On Aptos each fungible-asset store in the range costs view reads, so
+a range without `--asset` is slow, about a minute per thousand mainnet versions with `--asset`
+and longer without, and `--order desc` walks all of it before printing. Aptos Labs' public
+endpoints rate-limit each IP; pass an `--api-key` for long ranges, since a refused read exits
+`1`. Every Aptos asset filter, the `account` filter's cost and the pairing
+rules are as described under [Asset transfers](#asset-transfers). Under `--chain sui`, records
+come from balance changes, `--account` narrows the walk on the node, and an unnarrowed follow
+reads every transaction on the chain, so give mainnet a `--batch-size` near `500`.
+
+`--sender`, `--function`, `--where` and `--decode` are not taken: `--asset` and `--account` are
+the narrowing, and `amount` is already an integer. A malformed `--asset` or `--account`, or a
+name that does not resolve, is the chain client's to judge, so it exits `1` with the client's
+message rather than `2`.
+
+Exit codes: `0` when the limit is reached, the range is printed, on Ctrl-C or `SIGTERM`, or when
+stdout closes; `1` when reading fails (following: once the subscription gives up), or output or
+the cursor file could not be read or written; `2` for invalid arguments; `130` on a second
+Ctrl-C while following.
+
 ### Inspect a transaction
 
 `streamd tx <hash>` waits for a transaction to commit and prints its events as JSON lines:
