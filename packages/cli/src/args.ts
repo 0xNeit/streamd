@@ -61,8 +61,10 @@ export interface ForwardOptions extends SourceOptions {
 }
 
 export interface StoreOptions extends SourceOptions {
-  /** SQLite file to write. */
-  db: string;
+  /** SQLite file to write; the parser sets exactly one of this and `postgres`. */
+  db?: string;
+  /** Postgres URL to write to; may carry a password, so never printed as given. */
+  postgres?: string;
   /** Name its cursor is saved under; derived from the network and descriptor when unset. */
   name?: string;
 }

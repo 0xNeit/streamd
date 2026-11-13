@@ -38,7 +38,7 @@ import { runHandles } from "./handles.js";
 import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
-import { openDatabase, runStore } from "./store.js";
+import { connectPostgres, openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
 import { runTransfers } from "./transfers.js";
 import { runTx } from "./tx.js";
@@ -87,6 +87,7 @@ async function store(options: StoreOptions): Promise<number> {
     return await runStore(options, {
       client,
       open: openDatabase,
+      connect: connectPostgres,
       error: (message) => process.stderr.write(`${message}\n`),
       signal: controller.signal,
     });
