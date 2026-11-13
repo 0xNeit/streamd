@@ -401,6 +401,10 @@ balances prints a wallet's balance of each asset once, then a JSON line each
 time one changes, read at the head every --poll-interval.
 watch follows the transactions each address sent, one walk per address, and
 prints each event as a JSON line with the watched address as "address".
+handles lists every event handle on an Aptos account as a JSON line, with
+its descriptor and the tail flags that follow it.
+name resolves a name to its address, or an address (0x...) to its primary
+name, as one JSON line; name is null when the address has none.
 check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 compare reads one range from two nodes and prints what one has that the other
@@ -409,7 +413,7 @@ codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
-Every command takes --chain sui to read Sui instead of Aptos.
+Every command but handles takes --chain sui to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
 --decode, which checks integer fields before --where runs.

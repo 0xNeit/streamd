@@ -2616,7 +2616,7 @@ cursor file could not be written; `2` for invalid arguments; `130` on a second C
 
 ### Sui from the command line
 
-Every command takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
+Every command but `handles` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
 with the same output and exit codes:
 
 ```sh
@@ -2959,6 +2959,63 @@ account with `streamd tail --account <address> <eventType>...`.
 Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes; `1` when
 the cursor file cannot be read or written, every walk gave up, or output could not be written; `2`
 for invalid arguments; `130` on a second Ctrl-C.
+
+### List event handles
+
+`streamd handles <address | name>` lists every `EventHandle` on an Aptos account through
+[`listEventHandles`](#discover-event-handles), one JSON line per handle, ready to follow:
+
+```sh
+streamd handles 0x1
+streamd handles alice.apt
+```
+
+```json
+{"resourceType":"0x1::block::BlockResource","path":["new_block_events"],"count":"1165098930","guid":{"creationNumber":"3","accountAddress":"0x1"},"descriptor":{"kind":"handle","accountAddress":"0x00...01","eventHandleStruct":"0x1::block::BlockResource","fieldName":"new_block_events"},"flags":"--account 0x00...01 --handle 0x1::block::BlockResource --field new_block_events"}
+```
+
+`descriptor` is the library's `handle` descriptor with `creationNumber` as a decimal string: by
+struct and field for a top-level handle, by creation number for one nested in a struct field.
+`flags` is the same descriptor as `tail` flags, with any struct type holding generics or spaces
+single-quoted, so it pastes into `streamd tail`, `query`, `forward` or `store`; a handle is
+followed from its first event, which mainnet may have pruned (see above). `count` is the events
+emitted on the handle so far, and `guid.accountAddress` is as the node reports it.
+
+An address or an Aptos name is taken, resolved once as `balances` does; a malformed value or a
+name that does not resolve exits `1` with the library's message. An account with no handles
+prints nothing and exits `0`. Handles held in a table are not listed. Under `--chain sui` it is
+refused, since Sui has no event handles.
+
+Exit codes: `0` when listed, or when stdout closes; `1` when the read fails or output could not
+be written; `2` for invalid arguments.
+
+### Resolve names
+
+`streamd name <name | address>` resolves either way through [`resolveName`](#aptos-names) and
+`primaryName`: a value starting `0x` is an address, looked up for its primary name, and anything
+else is a name, resolved to its address.
+
+```sh
+streamd name alice.apt
+# {"name":"alice.apt","address":"0x00...4c"}
+streamd name 0x4c...
+# {"name":"alice.apt","address":"0x00...4c"}
+streamd name --chain sui @alice
+```
+
+The line always has `name`, as given for a name, and `address`, in long form. An address with no
+primary name, or whose name no longer points back to it, prints `{"name":null,"address":"0x..."}`
+and exits `0`, so a script can test it with `jq -e .name`. A name that is malformed,
+unregistered, expired or has no target address exits `1` with the library's message, since there
+is no address to print.
+
+On Aptos, names are `alice.apt`, `alice` or `sub.alice.apt`, and resolve on mainnet only: on
+testnet the SDK's router resolves nothing, and the Movement networks have no ANS, so names exit
+`1` there. Under `--chain sui`, names are SuiNS names such as `alice.sui` or `@alice`, served on
+Sui mainnet and testnet; devnet has no SuiNS.
+
+Exit codes: `0` when printed, or when stdout closes; `1` when the lookup is refused or fails, or
+output could not be written; `2` for invalid arguments.
 
 ### Inspect a transaction
 
