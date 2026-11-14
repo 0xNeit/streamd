@@ -2,7 +2,9 @@ import type { MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos
 import type {
   EventFilter,
   EventPredicate,
+  StreamdEvent,
   SubscriptionOptions,
+  Transfer,
   TransactionSimulation,
 } from "@streamd/core";
 
@@ -62,6 +64,49 @@ export type TransferListenerOptions = SubscriptionOptions & TransferOptions;
 
 /** Filter for `StreamdClient.getTransfers`. */
 export type TransferFilter = EventFilter & TransferOptions;
+
+/** One asset's net movement in or out of an account within one transaction, in base units. */
+export interface BalanceDelta {
+  /** In `Transfer.asset`'s form. */
+  asset: string;
+  /** Positive when the account gained. */
+  delta: bigint;
+}
+
+/**
+ * One transaction that affected an account, the `data` of the records
+ * `activity` and `getActivity` deliver; the record's envelope carries the
+ * transaction's hash, sender, timestamp and entry function.
+ */
+export interface Activity {
+  /** `sent` when the account is the transaction's sender; anything else that affected it is `received`. */
+  direction: "sent" | "received";
+  /** The transaction's transfers whose `from` or `to` is the account, paired as `transfers()` pairs them. */
+  transfers: Transfer[];
+  /**
+   * Net per asset over `transfers`, in order of first appearance, zero nets
+   * left out. Gas is not in it: the fee is burned without a withdraw event.
+   */
+  balanceChanges: BalanceDelta[];
+  /** Every event the transaction emitted, in `eventIndex` order. */
+  events: StreamdEvent[];
+  /**
+   * Under `withNames`, the primary name (`null` for none) of the account, the
+   * sender and every `from` and `to` in `transfers`, keyed by long-form address.
+   */
+  names?: Record<string, string | null>;
+}
+
+export interface ActivityOptions {
+  /** Adds `symbol` and `decimals` to the records in `transfers`, as `TransferOptions.withAssetInfo`. */
+  withAssetInfo?: boolean;
+}
+
+/** Options for `AptosClient.activity`. */
+export type ActivityListenerOptions = SubscriptionOptions & ActivityOptions;
+
+/** Filter for `AptosClient.getActivity`. */
+export type ActivityFilter = EventFilter & ActivityOptions;
 
 /** A DEX whose swap events `swaps` and `getSwaps` read. */
 export type SwapProtocol =
