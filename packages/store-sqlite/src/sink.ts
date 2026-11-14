@@ -40,7 +40,8 @@ type Subscribe = (deliver: (events: StreamdEvent[]) => void, options: Subscripti
  * it. The cursor is also saved on first catching up, which fixes a relative or
  * head start before any event matches. A failed write reaches `onError` and
  * ends the subscription before its cursor moves past the batch; start it again
- * to retry.
+ * to retry. A `resource` descriptor's changes are stored with its address, so
+ * a `StoreAdapter` can serve the descriptor back.
  */
 export function storeEvents(
   client: StreamdClient,
@@ -49,11 +50,13 @@ export function storeEvents(
   options: StoreEventsOptions,
 ): Subscription {
   const { name, ...listener } = options;
+  // A resource change carries only its type, so the address comes from the descriptor.
+  const written = descriptor?.kind === "resource" ? { accountAddress: descriptor.accountAddress } : undefined;
   return sink(
     store,
     name,
     listener,
-    (events, checkpoint) => store.write(events, checkpoint),
+    (events, checkpoint) => store.write(events, checkpoint, written),
     (deliver, resolved) => client.onBatch(descriptor, deliver, resolved),
   );
 }
