@@ -14,7 +14,12 @@ export type { AptosClientConfig } from "./client.js";
 export { primaryName, resolveName } from "./names.js";
 export { formatAmount } from "./transfers.js";
 export type {
+  Activity,
+  ActivityFilter,
+  ActivityListenerOptions,
+  ActivityOptions,
   AptosTransactionSimulation,
+  BalanceDelta,
   BalanceChange,
   Balances,
   BalancesOptions,
