@@ -9,6 +9,7 @@ import type {
   StreamdEvent,
   Subscription,
 } from "@streamd/core";
+import { activityDescriptor, activitySource } from "./activity.js";
 import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
@@ -17,7 +18,7 @@ import { eventsOf, previewEvents } from "./transaction.js";
 import { saleDescriptor, saleSource } from "./sales.js";
 import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import type { Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Sale, SaleFilter, SaleListenerOptions, Swap, SwapFilter, SwapListenerOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Sale, SaleFilter, SaleListenerOptions, Swap, SwapFilter, SwapListenerOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -85,6 +86,50 @@ export class AptosClient extends StreamdClient {
       rest.id,
       (source) => transferSource(source, asset, who, withAssetInfo, this.requestTimeout),
     );
+  }
+
+  /**
+   * Follow every transaction `address` sent or received as it lands, one
+   * record per transaction whose `data` is an `Activity`: its direction, the
+   * transfers the address took part in, its net balance change per asset and
+   * every event, the envelope carrying the transaction's hash, sender,
+   * timestamp and entry function. Reads an `account` descriptor with
+   * `received: true`, which the client's adapter must serve
+   * (`IndexerAccountAdapter`, routed beside a fullnode for `view`); transfers
+   * are built and paired as `transfers()` builds them. `address` may be an
+   * Aptos name, resolved once. Under `withNames`, `names` holds the primary
+   * name of the address, the sender and every counterparty. Like
+   * `transfers()`, it is not a listener for `off()` or `listenerCount()`.
+   */
+  activity(
+    address: string,
+    callback: EventCallback<Activity>,
+    options: ActivityListenerOptions = {},
+  ): Subscription {
+    const { withAssetInfo, ...rest } = options;
+    const [descriptor, who, name] = this.activityOf(address, rest.withNames);
+    return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, (source) =>
+      activitySource(source, who, withAssetInfo, this.requestTimeout, name),
+    );
+  }
+
+  /**
+   * Past activity of `address`, built as `activity()` builds it, over the
+   * range and options `getEvents` takes; `where` and `limit` apply to the records.
+   */
+  async getActivity(address: string, filter: ActivityFilter = {}): Promise<StreamdEvent<Activity>[]> {
+    const { withAssetInfo, ...rest } = filter;
+    const [descriptor, who, name] = this.activityOf(address, rest.withNames);
+    const source = activitySource(this.adapter, who, withAssetInfo, this.requestTimeout, name);
+    return new EventQuery(source, this.limiter, this.names).getEvents<Activity>(descriptor, rest);
+  }
+
+  /** The descriptor, lazy address and name lookup an activity call reads with, refusing bad input at the call. */
+  private activityOf(address: string, withNames: unknown) {
+    if (typeof address !== "string") throw new StreamdError("activity needs an address or Aptos name");
+    const ttl = this.names.ttl(withNames);
+    const name = ttl === undefined ? undefined : (a: string) => this.names.name(a, ttl);
+    return [activityDescriptor(addressOrName(address) ?? address), this.accountOf(address)!, name] as const;
   }
 
   /**

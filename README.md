@@ -18,8 +18,8 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `swaps`, `getSwaps`, `sales`, `getSales`, `balances`, `balanceAt`, `eventsOf`, `eventsAt`,
-`expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
+`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `balances`, `balanceAt`,
+`eventsOf`, `eventsAt`, `expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
 adapter.
@@ -1667,7 +1667,8 @@ for (const e of deposits) console.log(e.senderName ?? e.sender);
   and an `onTransaction` group carries its events' name.
 - **Where.** Every call that takes `withState` takes it: `getEvents`, `getEventPages`,
   `iterateEvents`, `getTransactions`, `replay`, `on`, `onBatch`, `once`, `stream`,
-  `onTransaction`, `watch`, `transfers`, `getTransfers`, `swaps`, `getSwaps`, `sales` and `getSales`. Not `reduce`, `balances`, or the
+  `onTransaction`, `watch`, `transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales` and
+  `getSales` (where `activity` also names every counterparty, below). Not `reduce`, `balances`, or the
   one-shot transaction calls (`eventsOf`, `eventsAt`, `previewEvents` and the assertions).
 - **After `where`.** It runs after `decode`, `where` and `withState`, and for queries after
   `limit` and `orderBy`, so only the events you get back cost a lookup.
@@ -1763,6 +1764,65 @@ const mine = await streamd.getTransfers({ fromVersion: -10_000n, account: "alice
   they do not appear. A legacy token offer and its claim land in different
   transactions and come out as a lone withdraw and a lone deposit. A transfers subscription is not a
   listener for `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+
+## Account activity
+
+`activity(address, callback, options?)` follows every transaction an address sent or
+received as one readable entry, and `getActivity(address, filter?)` returns them for a past
+range. Each arrives as an event whose `data` is an `Activity`, and whose envelope is the
+transaction's: `version`, `transactionHash`, `timestamp`, `sender` and `entryFunction`.
+
+```ts
+import { RoutingAdapter } from "@streamd/core";
+import { AptosClient, FullnodeScanAdapter, IndexerAccountAdapter } from "@streamd/aptos";
+
+const streamd = new AptosClient({
+  aptos,
+  adapter: new RoutingAdapter({
+    account: new IndexerAccountAdapter(aptos, { apiKey: process.env.APTOS_API_KEY }),
+    default: new FullnodeScanAdapter(aptos),
+  }),
+});
+
+const history = await streamd.getActivity("alice.apt", { fromVersion: -100_000n, withNames: true });
+for (const { version, entryFunction, data } of history) {
+  console.log(version, data.direction, entryFunction?.function, data.balanceChanges);
+}
+
+const sub = streamd.activity("0x1234...", ({ data }) => console.log(data.transfers), { withAssetInfo: true });
+```
+
+- **The entry.** `direction` is `"sent"` when the address is the transaction's sender and
+  `"received"` for anything else that affected it: a payment in, a sponsored transaction it
+  only paid gas for, a system transaction. `transfers` are the transaction's `Transfer`
+  records whose `from` or `to` is the address, built and paired exactly as `transfers()`
+  builds them (`withAssetInfo` adds `symbol` and `decimals`). `balanceChanges` is the net
+  `{ asset, delta }` per asset over those transfers, positive for a gain, in order of first
+  appearance, with zero nets (a transfer to itself) left out. `events` is every event the
+  transaction emitted, in `eventIndex` order.
+- **Gas.** The fee is burned without a withdraw event, so `balanceChanges` leaves it out:
+  for a sent transaction, the APT balance also fell by `gas_used * gas_unit_price` less any
+  storage refund. The transaction's `0x1::transaction_fee::FeeStatement` is in `events`.
+- **Direct owners.** As with `transfers()`, `from` and `to` are the stores' direct owners,
+  so a store the address holds through an object does not count toward its deltas, and APT
+  moved as a coin (`0x1::aptos_coin::AptosCoin`) and as the fungible asset `0xa` are
+  separate assets.
+- **Names.** `address` may be an Aptos name, resolved once on the first page. Under
+  `withNames`, `senderName` is set as on any event, and `names` maps the long-form address,
+  the sender and every `from` and `to` in `transfers` to a primary name or `null`, through
+  the client's name cache. These lookups run while the page is built, before `where`.
+- **Source.** It reads an `account` descriptor with `received: true`, which the client's
+  adapter must serve: `IndexerAccountAdapter`, routed beside a fullnode for the `view`
+  reads that resolve fungible stores, as above. An adapter without `view` is refused at
+  the call; `FullnodeScanAdapter` alone refuses `received` and says so, a query rejecting
+  and a subscription reporting it. Reads stop at the Indexer's processed version and
+  start no earlier than the fullnode's oldest version, as for `IndexerAccountAdapter`.
+- **Identity.** An entry keeps its transaction's first event's `(version, eventIndex)`, so
+  cursors, dedup, `eventId`, `where`, `limit` and `onCursor` work as for any event. A
+  transaction that emitted no events gives no entry; every user transaction emits its
+  fee statement.
+- **Not here.** Whether the transaction succeeded is not on the entry. An activity subscription is not a listener for `off()` or
+  `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 
 ## DEX swaps
 
