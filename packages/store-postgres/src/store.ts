@@ -10,6 +10,12 @@ export interface StoreCheckpoint {
   cursor: string | undefined;
 }
 
+/** A cursor saved under a name, as `cursors()` lists it. */
+export interface SavedCursor {
+  name: string;
+  cursor: string;
+}
+
 type Row = [string, number, string, string | null, string | null, string | null, string];
 
 function rowOf(event: StreamdEvent): Row {
@@ -116,5 +122,29 @@ export class PostgresEventStore {
     const { rows } = await this.client.query("SELECT cursor FROM streamd_cursors WHERE name = $1", [key]);
     const cursor = rows[0]?.cursor;
     return typeof cursor === "string" ? cursor : undefined;
+  }
+
+  /**
+   * Every saved cursor, sorted by name in byte order whatever the database's
+   * collation, as the SQLite store sorts. The pruned edge is not one.
+   */
+  async cursors(): Promise<SavedCursor[]> {
+    await ensureSchema(this.client);
+    const { rows } = await this.client.query(
+      `SELECT name, cursor FROM streamd_cursors WHERE name <> $1 ORDER BY name COLLATE "C"`,
+      [PRUNED_BEFORE],
+    );
+    return rows.map((row) => ({ name: String(row.name), cursor: String(row.cursor) }));
+  }
+
+  /**
+   * Removes the cursor saved under `name`, leaving every event, and reports
+   * whether there was one. A subscription still saving under `name` writes it again.
+   */
+  async deleteCursor(name: string): Promise<boolean> {
+    const key = requireName(name);
+    await ensureSchema(this.client);
+    const { rows } = await this.client.query("DELETE FROM streamd_cursors WHERE name = $1 RETURNING name", [key]);
+    return rows.length > 0;
   }
 }

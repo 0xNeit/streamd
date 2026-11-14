@@ -10,6 +10,12 @@ export interface StoreCheckpoint {
   cursor: string | undefined;
 }
 
+/** A cursor saved under a name, as `cursors()` lists it. */
+export interface SavedCursor {
+  name: string;
+  cursor: string;
+}
+
 function rowOf(event: StreamdEvent): unknown[] {
   if (!Number.isSafeInteger(event.eventIndex) || event.eventIndex < 0) {
     throw new StreamdError(`Not a valid eventIndex: ${String(event.eventIndex)}`);
@@ -48,6 +54,8 @@ export class SqliteEventStore {
   private readonly upsert: SqliteStatement;
   private readonly saveCursor: SqliteStatement;
   private readonly loadCursor: SqliteStatement;
+  private readonly listCursors: SqliteStatement;
+  private readonly dropCursor: SqliteStatement;
 
   constructor(db: SqliteDatabase) {
     ensureSchema(db);
@@ -64,6 +72,8 @@ export class SqliteEventStore {
        ON CONFLICT (name) DO UPDATE SET cursor = excluded.cursor`,
     );
     this.loadCursor = db.prepare("SELECT cursor FROM streamd_cursors WHERE name = ?");
+    this.listCursors = db.prepare("SELECT name, cursor FROM streamd_cursors WHERE name <> ? ORDER BY name");
+    this.dropCursor = db.prepare("DELETE FROM streamd_cursors WHERE name = ?");
   }
 
   /**
@@ -101,5 +111,19 @@ export class SqliteEventStore {
   readCursor(name: string): string | undefined {
     const row = this.loadCursor.get(requireName(name)) as { cursor: string } | null | undefined;
     return row?.cursor ?? undefined;
+  }
+
+  /** Every saved cursor, sorted by name in the database encoding's byte order. The pruned edge is not one. */
+  cursors(): SavedCursor[] {
+    return (this.listCursors.all(PRUNED_BEFORE) as SavedCursor[]).map(({ name, cursor }) => ({ name, cursor }));
+  }
+
+  /**
+   * Removes the cursor saved under `name`, leaving every event, and reports
+   * whether there was one. A subscription still saving under `name` writes it again.
+   */
+  deleteCursor(name: string): boolean {
+    const { changes } = this.dropCursor.run(requireName(name)) as { changes: number | bigint };
+    return Number(changes) > 0;
   }
 }

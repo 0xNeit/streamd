@@ -3,6 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { StreamdError, parseEvent } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
 import { SqliteEventStore } from "../src/index.js";
+import { versionKey } from "../src/schema.js";
 
 const U64_MAX = 2n ** 64n - 1n;
 
@@ -159,5 +160,48 @@ describe("SqliteEventStore.prune", () => {
     const name = "streamd:pruned-before";
     expect(() => store.write([], { name, cursor: "x" })).toThrow("reserved");
     expect(() => store.readCursor(name)).toThrow("reserved");
+  });
+});
+
+describe("SqliteEventStore cursors", () => {
+  function populated() {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.write([ev(1n), ev(5n)], { name: "swaps", cursor: "c-swaps" });
+    store.write([ev(6n)], { name: "Bids", cursor: "c-bids" });
+    store.write([], { name: "bids", cursor: "c-lower" });
+    store.prune({ beforeVersion: 2n });
+    return { db, store };
+  }
+  const edge = (db: Database) =>
+    (db.query("SELECT cursor FROM streamd_cursors WHERE name = 'streamd:pruned-before'").get() as { cursor: string })
+      .cursor;
+
+  it("lists saved cursors by name in byte order, without the pruned edge", () => {
+    expect(new SqliteEventStore(new Database(":memory:")).cursors()).toEqual([]);
+    const { store } = populated();
+    expect(store.cursors()).toEqual([
+      { name: "Bids", cursor: "c-bids" },
+      { name: "bids", cursor: "c-lower" },
+      { name: "swaps", cursor: "c-swaps" },
+    ]);
+  });
+
+  it("deletes one cursor, reports whether it existed, and leaves the events", () => {
+    const { db, store } = populated();
+    expect(store.deleteCursor("swaps")).toBe(true);
+    expect(store.deleteCursor("swaps")).toBe(false);
+    expect(store.readCursor("swaps")).toBeUndefined();
+    expect(store.cursors().map((c) => c.name)).toEqual(["Bids", "bids"]);
+    expect(rows(db).map((e) => e.version)).toEqual([5n, 6n]);
+    expect(edge(db)).toBe(versionKey(2n));
+  });
+
+  it("refuses the reserved name and invalid names, leaving the edge", () => {
+    const { db, store } = populated();
+    for (const bad of ["streamd:pruned-before", "", 7]) {
+      expect(() => store.deleteCursor(bad as string)).toThrow(StreamdError);
+    }
+    expect(edge(db)).toBe(versionKey(2n));
   });
 });

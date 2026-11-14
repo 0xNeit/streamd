@@ -234,3 +234,40 @@ describe("PostgresEventStore.prune", () => {
     expect(await edge(db)).toBe("5");
   });
 });
+
+describe("PostgresEventStore cursors", () => {
+  async function populated() {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.write([ev(1n), ev(5n)], { name: "swaps", cursor: "c-swaps" });
+    await store.write([ev(6n)], { name: "Bids", cursor: "c-bids" });
+    await store.write([], { name: "bids", cursor: "c-lower" });
+    await store.prune({ beforeVersion: 2n });
+    return { db, store };
+  }
+  const edge = async (db: PGlite) =>
+    (await db.query<{ cursor: string }>("SELECT cursor FROM streamd_cursors WHERE name = 'streamd:pruned-before'"))
+      .rows[0]?.cursor;
+
+  it("lists saved cursors by name in byte order, without the pruned edge", async () => {
+    expect(await new PostgresEventStore(new PGlite()).cursors()).toEqual([]);
+    const { store } = await populated();
+    expect(await store.cursors()).toEqual([
+      { name: "Bids", cursor: "c-bids" },
+      { name: "bids", cursor: "c-lower" },
+      { name: "swaps", cursor: "c-swaps" },
+    ]);
+  });
+
+  it("deletes one cursor in one statement, reports whether it existed, and leaves the events", async () => {
+    const { db, store } = await populated();
+    expect(await store.deleteCursor("swaps")).toBe(true);
+    expect(await store.deleteCursor("swaps")).toBe(false);
+    expect((await store.cursors()).map((c) => c.name)).toEqual(["Bids", "bids"]);
+    expect((await rows(db)).map((e) => e.version)).toEqual([5n, 6n]);
+    for (const bad of ["streamd:pruned-before", "", 7]) {
+      await expect(store.deleteCursor(bad as string)).rejects.toBeInstanceOf(StreamdError);
+    }
+    expect(await edge(db)).toBe("2");
+  });
+});
