@@ -64,7 +64,15 @@ export type TransferListenerOptions = SubscriptionOptions & TransferOptions;
 export type TransferFilter = EventFilter & TransferOptions;
 
 /** A DEX whose swap events `swaps` and `getSwaps` read. */
-export type SwapProtocol = "hyperion" | "thala-clamm" | "thala-v2" | "cellana";
+export type SwapProtocol =
+  | "hyperion"
+  | "thala-clamm"
+  | "thala-v2"
+  | "cellana"
+  | "tapp"
+  | "liquidswap"
+  | "pancakeswap"
+  | "thala-v1";
 
 /**
  * One swap through one pool, the `data` of the records `swaps` and
