@@ -403,6 +403,30 @@ describe("RequestLimiter.wrap transaction lookups", () => {
   });
 });
 
+describe("RequestLimiter.wrap lookups by version", () => {
+  it("runs getTransactionEventsByVersion through the cap, only when the adapter has it", async () => {
+    let active = 0;
+    let peak = 0;
+    const seen: unknown[] = [];
+    const inner: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async getTransactionEventsByVersion(...args) {
+        seen.push(args);
+        peak = Math.max(peak, ++active);
+        await Bun.sleep(2);
+        active--;
+        return undefined;
+      },
+    };
+    const view = new RequestLimiter(1).wrap(inner);
+    const descriptor = { kind: "module", eventType: "0x1::t::A" } as const;
+    await Promise.all([view.getTransactionEventsByVersion!(3n, descriptor), view.getTransactionEventsByVersion!(4n)]);
+    expect(peak).toBe(1);
+    expect(seen[0]).toEqual([3n, descriptor]);
+    expect(new RequestLimiter(1).wrap({ fetchEvents: inner.fetchEvents }).getTransactionEventsByVersion).toBeUndefined();
+  });
+});
+
 describe("RequestLimiter.wrap simulations", () => {
   it("runs simulateTransactionEvents through the cap, only when the adapter has it", async () => {
     const simulation = { transaction: { rawTransaction: {} } } as unknown as TransactionSimulation;

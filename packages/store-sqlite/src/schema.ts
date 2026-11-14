@@ -52,6 +52,28 @@ CREATE TABLE IF NOT EXISTS streamd_cursors (
 );
 `;
 
+// Its own schema, created only by what writes transfers: a read-only
+// connection to a database made before it existed must still open.
+export const TRANSFER_SCHEMA = `
+CREATE TABLE IF NOT EXISTS streamd_transfers (
+  version TEXT NOT NULL,
+  event_index INTEGER NOT NULL,
+  asset TEXT NOT NULL,
+  amount TEXT NOT NULL,
+  from_address TEXT,
+  to_address TEXT,
+  symbol TEXT,
+  decimals INTEGER,
+  transfer TEXT NOT NULL,
+  PRIMARY KEY (version, event_index)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS streamd_transfers_asset ON streamd_transfers (asset, version, event_index);
+CREATE INDEX IF NOT EXISTS streamd_transfers_from ON streamd_transfers (from_address, version, event_index)
+  WHERE from_address IS NOT NULL;
+CREATE INDEX IF NOT EXISTS streamd_transfers_to ON streamd_transfers (to_address, version, event_index)
+  WHERE to_address IS NOT NULL;
+`;
+
 // Kept among the cursors so that a database written before pruning existed
 // needs no new table, and stays readable on a read-only connection.
 export const PRUNED_BEFORE = "streamd:pruned-before";

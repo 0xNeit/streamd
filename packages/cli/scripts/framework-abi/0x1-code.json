@@ -1,0 +1,209 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "code",
+  "structs": [
+   {
+    "name": "AllowedDep",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account",
+      "type": "address"
+     },
+     {
+      "name": "module_name",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CodePublishingPermission",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ModuleMetadata",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "name",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "source",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "source_map",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "extension",
+      "type": "0x1::option::Option<0x1::copyable_any::Any>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PackageDep",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account",
+      "type": "address"
+     },
+     {
+      "name": "package_name",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PackageMetadata",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "name",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "upgrade_policy",
+      "type": "0x1::code::UpgradePolicy"
+     },
+     {
+      "name": "upgrade_number",
+      "type": "u64"
+     },
+     {
+      "name": "source_digest",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "manifest",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "modules",
+      "type": "vector<0x1::code::ModuleMetadata>"
+     },
+     {
+      "name": "deps",
+      "type": "vector<0x1::code::PackageDep>"
+     },
+     {
+      "name": "extension",
+      "type": "0x1::option::Option<0x1::copyable_any::Any>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PackageRegistry",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "packages",
+      "type": "vector<0x1::code::PackageMetadata>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PublishPackage",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "code_address",
+      "type": "address"
+     },
+     {
+      "name": "is_upgrade",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UpgradePolicy",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "policy",
+      "type": "u8"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

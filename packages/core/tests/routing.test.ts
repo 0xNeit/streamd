@@ -486,3 +486,257 @@ describe("RoutingAdapter readObjects", () => {
     );
   });
 });
+
+describe("RoutingAdapter lookup by version", () => {
+  const found = { version: 4n, success: true, vmStatus: "Executed successfully", events: [] };
+  const looking = (label: string): EventAdapter => ({
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    getTransactionEventsByVersion: async () => ({ ...found, vmStatus: label }),
+  });
+  const bare: EventAdapter = { fetchEvents: async () => ({ events: [], hasMore: false }) };
+  const moduleDescriptor: EventDescriptor = { kind: "module", eventType: "0x1::t::A" };
+
+  it("routes by the descriptor's kind, and to default without a descriptor", async () => {
+    const router = new RoutingAdapter({ module: looking("module"), default: looking("default") });
+    expect((await router.getTransactionEventsByVersion!(4n, moduleDescriptor))!.vmStatus).toBe("module");
+    expect((await router.getTransactionEventsByVersion!(4n))!.vmStatus).toBe("default");
+  });
+
+  it("refuses by name a route that cannot look up by version", async () => {
+    expect(new RoutingAdapter({ module: bare }).getTransactionEventsByVersion).toBeUndefined();
+    const router = new RoutingAdapter({ module: bare, default: looking("default") });
+    const err = await router.getTransactionEventsByVersion!(4n, moduleDescriptor).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect((err as Error).message).toBe('The adapter for descriptor kind "module" does not look up transactions by version');
+    const none = await new RoutingAdapter({ module: looking("module") }).getTransactionEventsByVersion!(4n).catch((e: unknown) => e);
+    expect((none as Error).message).toContain("needs a descriptor or a default adapter");
+  });
+});
+
+describe("RoutingAdapter type and module routes", () => {
+  const LONG_ONE = `0x${"0".repeat(63)}1`;
+  const DEPOSIT = "0x1::fungible_asset::Deposit";
+  const WITHDRAW = "0x1::fungible_asset::Withdraw";
+  const COIN_DEPOSIT = "0x1::coin::CoinDeposit";
+  const OTHER = "0xabc::pool::Swap";
+  const mod = (eventType: string | string[]) => ({ kind: "module", eventType }) as EventDescriptor;
+
+  function source(label: string, extra: Partial<EventAdapter> = {}): EventAdapter {
+    return {
+      fetchEvents: vi.fn(async () => ({ events: [], nextCursor: label, hasMore: false })),
+      ...extra,
+    };
+  }
+  const via = async (router: RoutingAdapter, descriptor: EventDescriptor) =>
+    (await router.fetchEvents(descriptor)).nextCursor;
+
+  it("takes an exact type, then its module, then the module kind, then the default", async () => {
+    const router = new RoutingAdapter({
+      types: { [DEPOSIT]: source("type") },
+      modules: { "0x1::fungible_asset": source("module-id") },
+      module: source("kind"),
+      default: source("default"),
+    });
+    expect(await via(router, mod(DEPOSIT))).toBe("type");
+    expect(await via(router, mod(WITHDRAW))).toBe("module-id");
+    expect(await via(router, mod(COIN_DEPOSIT))).toBe("kind");
+    const noKind = new RoutingAdapter({ types: { [DEPOSIT]: source("type") }, default: source("default") });
+    expect(await via(noKind, mod(COIN_DEPOSIT))).toBe("default");
+  });
+
+  it("forwards the descriptor and options unchanged to the routed adapter", async () => {
+    const routed = source("type");
+    const router = new RoutingAdapter({ types: { [DEPOSIT]: routed }, default: source("default") });
+    const descriptor = mod(DEPOSIT);
+    await router.fetchEvents(descriptor, { fromVersion: 5n, cursor: "c" });
+    expect(routed.fetchEvents).toHaveBeenCalledWith(descriptor, { fromVersion: 5n, cursor: "c" });
+  });
+
+  it("compares addresses in long form, in keys, descriptors and type arguments", async () => {
+    const router = new RoutingAdapter({
+      types: { [`${LONG_ONE}::fungible_asset::Deposit`]: source("type") },
+      modules: { "0x00ABC::pool": source("pool") },
+      default: source("default"),
+    });
+    expect(await via(router, mod(DEPOSIT))).toBe("type");
+    expect(await via(router, mod(`${LONG_ONE}::fungible_asset::Deposit`))).toBe("type");
+    expect(await via(router, mod(OTHER))).toBe("pool");
+    expect(await via(router, mod(`0x${"0".repeat(61)}abc::pool::Swap`))).toBe("pool");
+
+    const generic = new RoutingAdapter({
+      types: { "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>": source("apt") },
+      default: source("default"),
+    });
+    expect(await via(generic, mod(`0x1::coin::CoinStore<${LONG_ONE}::aptos_coin::AptosCoin>`))).toBe("apt");
+    expect(await via(generic, mod("0x1::coin::CoinStore< 0x1::aptos_coin::AptosCoin >"))).toBe("apt");
+  });
+
+  it("serves a generic type from its base type's key unless an exact generic key exists", async () => {
+    const router = new RoutingAdapter({
+      types: {
+        "0x1::coin::CoinStore": source("base"),
+        "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>": source("apt"),
+        "0x1::pair::Swap<0x1::a::A, 0x1::b::B>": source("pair"),
+      },
+      modules: { "0x1::coin": source("module-id") },
+      default: source("default"),
+    });
+    expect(await via(router, mod("0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>"))).toBe("apt");
+    expect(await via(router, mod("0x1::coin::CoinStore<0xf::usdc::USDC>"))).toBe("base");
+    expect(await via(router, mod("0x1::coin::CoinStore"))).toBe("base");
+    expect(await via(router, mod("0x1::coin::CoinInfo<0xf::usdc::USDC>"))).toBe("module-id");
+    expect(await via(router, mod("0x1::pair::Swap<0x1::a::A,0x1::b::B>"))).toBe("pair");
+    expect(await via(router, mod("0x1::pair::Swap<0x1::a::A, 0x1::c::C>"))).toBe("default");
+  });
+
+  it("routes a list whose types all resolve to one adapter, through one or several routes", async () => {
+    const shared = source("shared");
+    const router = new RoutingAdapter({
+      types: { [DEPOSIT]: shared, [COIN_DEPOSIT]: shared },
+      modules: { "0xabc::pool": shared },
+      default: source("default"),
+    });
+    expect(await via(router, mod([DEPOSIT, COIN_DEPOSIT]))).toBe("shared");
+    expect(await via(router, mod([DEPOSIT, OTHER]))).toBe("shared");
+    expect(await via(router, mod([WITHDRAW, "0x2::x::Y"]))).toBe("default");
+  });
+
+  it("refuses a list spanning routes, naming every type and its route, calling no adapter", async () => {
+    const memory = source("memory");
+    const fallback = source("default");
+    const router = new RoutingAdapter({
+      types: { [DEPOSIT]: memory },
+      modules: { "0xabc::pool": source("pool") },
+      default: fallback,
+    });
+    const err = await router.fetchEvents(mod([DEPOSIT, WITHDRAW, OTHER])).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toBe(
+      "A module descriptor's event types span routes: " +
+        `${DEPOSIT} (types["${LONG_ONE}::fungible_asset::Deposit"]), ` +
+        `${WITHDRAW} (default), ` +
+        `${OTHER} (modules["0x${"0".repeat(61)}abc::pool"]); ` +
+        "use one descriptor per route, or a list of descriptors",
+    );
+    expect(memory.fetchEvents).not.toHaveBeenCalled();
+    expect(fallback.fetchEvents).not.toHaveBeenCalled();
+
+    const noDefault = new RoutingAdapter({ types: { [DEPOSIT]: memory } });
+    await expect(noDefault.fetchEvents(mod([DEPOSIT, WITHDRAW]))).rejects.toThrow(
+      `${WITHDRAW} (no route)`,
+    );
+    await expect(noDefault.fetchEvents(mod(WITHDRAW))).rejects.toThrow(
+      'No adapter configured for descriptor kind "module"',
+    );
+  });
+
+  it("sends a type that is not a Move type to the kind route, so its adapter refuses it", async () => {
+    const fallback = source("default");
+    const router = new RoutingAdapter({ types: { [DEPOSIT]: source("type") }, default: fallback });
+    for (const bad of ["not a type", "0x1::m", 7, ""]) {
+      expect(await via(router, { kind: "module", eventType: bad } as unknown as EventDescriptor)).toBe("default");
+    }
+    expect(await via(router, mod([]))).toBe("default");
+  });
+
+  it("leaves handle, account and resource descriptors on their kind routes", async () => {
+    const router = new RoutingAdapter({
+      types: { [DEPOSIT]: source("type"), [PONG]: source("type") },
+      modules: { "0x1::test": source("module-id") },
+      default: source("default"),
+    });
+    expect(await via(router, handleDesc)).toBe("default");
+    expect(await via(router, { kind: "account", accountAddress: "0x1", eventTypes: [DEPOSIT] })).toBe("default");
+    expect(await via(router, { kind: "resource", accountAddress: "0x1", resourceType: PONG })).toBe("default");
+  });
+
+  it("routes optional methods by the descriptor's types, and to default without one", async () => {
+    const found = { version: 4n, success: true, vmStatus: "", events: [] };
+    const typed = source("type", {
+      getHeadVersion: async () => 11n,
+      view: vi.fn(async () => ["type"]),
+      getTransactionEventsByVersion: async () => ({ ...found, vmStatus: "type" }),
+    });
+    const fallback = source("default", {
+      getHeadVersion: async () => 22n,
+      view: async () => ["default"],
+      getTransactionEventsByVersion: async () => ({ ...found, vmStatus: "default" }),
+    });
+    const router = new RoutingAdapter({ types: { [DEPOSIT]: typed }, default: fallback });
+    expect(await router.getHeadVersion!(mod(DEPOSIT))).toBe(11n);
+    expect(await router.getHeadVersion!(mod(WITHDRAW))).toBe(22n);
+    const request = { function: "0x1::m::f" as const };
+    expect(await router.view!(request, 3n, mod(DEPOSIT))).toEqual(["type"]);
+    expect(typed.view).toHaveBeenCalledWith(request, 3n, mod(DEPOSIT));
+    expect(await router.view!(request, 3n)).toEqual(["default"]);
+    expect((await router.getTransactionEventsByVersion!(4n, mod(DEPOSIT)))!.vmStatus).toBe("type");
+    expect((await router.getTransactionEventsByVersion!(4n))!.vmStatus).toBe("default");
+    await expect(router.getHeadVersion!(mod([DEPOSIT, WITHDRAW]))).rejects.toThrow("span routes");
+  });
+
+  it("exposes a method only a type route has, and names that route when it is missing", async () => {
+    const router = new RoutingAdapter({
+      types: { [DEPOSIT]: source("type", { getBlockHeights: async () => ({ oldest: 0n, newest: 9n }) }) },
+      modules: { "0x1::coin": source("coin") },
+      default: source("default"),
+    });
+    expect(await router.getBlockHeights!(mod(DEPOSIT))).toEqual({ oldest: 0n, newest: 9n });
+    await expect(router.getBlockHeights!(mod(COIN_DEPOSIT))).rejects.toThrow(
+      `The adapter for route modules["${LONG_ONE}::coin"] does not report block heights`,
+    );
+    await expect(router.getBlockHeights!(mod(WITHDRAW))).rejects.toThrow(
+      'The adapter for descriptor kind "module" does not report block heights',
+    );
+  });
+
+  it("accepts type or module routes alone", async () => {
+    expect(await via(new RoutingAdapter({ types: { [DEPOSIT]: source("type") } }), mod(DEPOSIT))).toBe("type");
+    expect(await via(new RoutingAdapter({ modules: { "0x1::coin": source("coin") } }), mod(COIN_DEPOSIT))).toBe("coin");
+  });
+
+  it("refuses malformed keys, canonical duplicates, non-object maps and non-adapters at construction", () => {
+    const ok = source("ok");
+    const refuse = (routes: RoutingAdapterRoutes, message: string | RegExp) => {
+      let caught: unknown;
+      try {
+        new RoutingAdapter(routes);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(StreamdError);
+      expect((caught as Error).message).toMatch(message);
+    };
+    for (const key of ["0x1::coin", "coin::CoinDeposit", "0xzz::m::S", "0x1::m::S<>", "0x1::1m::S", "0x1::m::S::T"]) {
+      refuse({ types: { [key]: ok } }, `RoutingAdapter.types key must be written address::module::Struct: ${JSON.stringify(key)}`);
+    }
+    for (const key of ["0x1::coin::CoinDeposit", "0x1", "0x1::", "aptos::coin"]) {
+      refuse({ modules: { [key]: ok } }, `RoutingAdapter.modules key must be written address::module: ${JSON.stringify(key)}`);
+    }
+    refuse(
+      { types: { [DEPOSIT]: ok, [`${LONG_ONE}::fungible_asset::Deposit`]: ok } },
+      `RoutingAdapter.types key "${LONG_ONE}::fungible_asset::Deposit" names ${LONG_ONE}::fungible_asset::Deposit again`,
+    );
+    refuse({ modules: { "0x1::coin": ok, "0x01::coin": ok } }, /RoutingAdapter\.modules key "0x01::coin" names .* again/);
+    refuse({ types: null as unknown as RoutingAdapterRoutes["types"] }, "RoutingAdapter.types must be an object of adapters by key");
+    refuse({ modules: [ok] as unknown as RoutingAdapterRoutes["modules"] }, "RoutingAdapter.modules must be an object of adapters by key");
+    refuse({ types: { [DEPOSIT]: {} as EventAdapter } }, `RoutingAdapter.types["${DEPOSIT}"] requires a valid EventAdapter`);
+    refuse({ types: {}, modules: {} }, "RoutingAdapter requires at least one route or a default adapter");
+  });
+
+  it("copies the route maps, so later changes to them have no effect", async () => {
+    const types: Record<string, EventAdapter> = { [DEPOSIT]: source("type") };
+    const router = new RoutingAdapter({ types, default: source("default") });
+    types[DEPOSIT] = source("replaced");
+    types[WITHDRAW] = source("added");
+    expect(await via(router, mod(DEPOSIT))).toBe("type");
+    expect(await via(router, mod(WITHDRAW))).toBe("default");
+  });
+
+  it("serves events from a MemoryAdapter on a type route", async () => {
+    const memory = new MemoryAdapter([ev(3, DEPOSIT), ev(4, WITHDRAW)]);
+    const router = new RoutingAdapter({ types: { [`${LONG_ONE}::fungible_asset::Deposit`]: memory }, default: new MemoryAdapter() });
+    const page = await router.fetchEvents(mod(DEPOSIT), { fromVersion: 0n });
+    expect(page.events.map((e) => e.version)).toEqual([3n]);
+  });
+});

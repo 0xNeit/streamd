@@ -26,6 +26,7 @@ describe("serializeEvent / parseEvent", () => {
       transactionHash: "0xabc",
       timestamp: 1_700_000_000_000_000n,
       sender: "0x1",
+      senderName: "alice.apt",
       guid: { creationNumber: 2n ** 64n - 1n, accountAddress: "0x1" },
       entryFunction: { function: "0x1::coin::transfer", typeArguments: ["0x1::aptos_coin::AptosCoin"], arguments: ["0xa", "5"] },
     });
@@ -41,8 +42,15 @@ describe("serializeEvent / parseEvent", () => {
     expect(Object.keys(parsed)).not.toContain("timestamp");
     expect(Object.keys(parsed)).not.toContain("transactionHash");
     expect(Object.keys(parsed)).not.toContain("sender");
+    expect(Object.keys(parsed)).not.toContain("senderName");
     expect(Object.keys(parsed)).not.toContain("guid");
     expect(Object.keys(parsed)).not.toContain("entryFunction");
+  });
+
+  it("round-trips a senderName of null, meaning looked up and none", () => {
+    const text = serializeEvent(ev({ sender: "0x1", senderName: null }));
+    expect(text).toContain('"sender":"0x1","senderName":null');
+    expect(parseEvent(text).senderName).toBeNull();
   });
 
   it("writes entryFunction last", () => {
@@ -91,6 +99,7 @@ describe("serializeEvent / parseEvent", () => {
     ["a numeric transactionHash", line({ transactionHash: 1 }), '"transactionHash"'],
     ["a hex timestamp", line({ timestamp: "0x10" }), '"timestamp"'],
     ["a numeric sender", line({ sender: 1 }), '"sender"'],
+    ["a numeric senderName", line({ senderName: 1 }), '"senderName"'],
     ["a string guid", line({ guid: "0x1" }), '"guid"'],
     ["a null guid", line({ guid: null }), '"guid"'],
     ["a guid without accountAddress", line({ guid: { creationNumber: "1" } }), '"guid"'],

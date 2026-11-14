@@ -957,6 +957,83 @@ describe("FullnodeScanAdapter transaction lookup", () => {
   });
 });
 
+describe("FullnodeScanAdapter transaction lookup by version", () => {
+  const HASH = `0x${"ab".repeat(32)}`;
+  const SENDER = "0xcafe";
+  const payload = { type: "entry_function_payload", function: "0x1::test::ping", type_arguments: [], arguments: ["1"] };
+  const committed = {
+    type: "user_transaction",
+    version: "77",
+    hash: HASH,
+    sender: SENDER,
+    timestamp: "1700000000000000",
+    success: true,
+    vm_status: "Executed successfully",
+    payload,
+    events: [
+      { type: TYPE, data: { n: "1" }, sequence_number: "0", guid: { creation_number: "0", account_address: "0x0" } },
+      { type: OTHER, data: { n: "2" }, sequence_number: "4", guid: { creation_number: "3", account_address: SENDER } },
+    ],
+  };
+
+  it("maps the transaction's events as the hash lookup does", async () => {
+    const byVersion = fakeNode(() => ({ data: committed }));
+    const found = await new FullnodeScanAdapter(byVersion.aptos).getTransactionEventsByVersion(77n);
+    expect(byVersion.calls[0]!.path).toBe("transactions/by_version/77");
+    const byHash = fakeNode(() => ({ data: committed }));
+    expect(found).toEqual((await new FullnodeScanAdapter(byHash.aptos).getTransactionEvents(HASH))!);
+    expect(found!.events[1]).toMatchObject({
+      transactionHash: HASH,
+      sender: SENDER,
+      timestamp: 1700000000000000n,
+      guid: { creationNumber: 3n, accountAddress: SENDER },
+      entryFunction: { function: "0x1::test::ping", typeArguments: [], arguments: ["1"] },
+    });
+  });
+
+  it("reports a failed transaction with its vm status, and a system transaction as it is", async () => {
+    const failed = fakeNode(() => ({ data: { ...committed, success: false, vm_status: "Move abort: 0x1", events: [] } }));
+    expect(await new FullnodeScanAdapter(failed.aptos).getTransactionEventsByVersion(77n)).toEqual({
+      version: 77n,
+      success: false,
+      vmStatus: "Move abort: 0x1",
+      events: [],
+    });
+    const checkpoint = fakeNode(() => ({
+      data: { type: "state_checkpoint_transaction", version: "77", hash: HASH, success: true, vm_status: "Executed successfully" },
+    }));
+    expect((await new FullnodeScanAdapter(checkpoint.aptos).getTransactionEventsByVersion(77n))!.events).toEqual([]);
+  });
+
+  it("gives undefined above the head, and rejects a pruned version or a server error with its status", async () => {
+    const ahead = fakeNode(() => ({ status: 404, data: { error_code: "transaction_not_found", message: "not found" } }));
+    expect(await new FullnodeScanAdapter(ahead.aptos).getTransactionEventsByVersion(10n ** 15n)).toBeUndefined();
+    for (const status of [410, 500]) {
+      const node = fakeNode(() => ({ status, data: { message: "nope" } }));
+      const err = await new FullnodeScanAdapter(node.aptos).getTransactionEventsByVersion(77n).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdNetworkError);
+      expect((err as StreamdNetworkError).statusCode).toBe(status);
+    }
+  });
+
+  it("refuses a bad version before any request, and a mismatched or malformed reply", async () => {
+    const { aptos, calls } = fakeNode(() => ({ data: committed }));
+    const adapter = new FullnodeScanAdapter(aptos);
+    for (const bad of [-1n, 77, "77", 2n ** 64n, undefined]) {
+      const err = await adapter.getTransactionEventsByVersion(bad as bigint).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+    expect(calls).toHaveLength(0);
+    for (const reply of [{ ...committed, version: "78" }, { ...committed, success: "yes" }, { ...committed, version: undefined }]) {
+      const odd = fakeNode(() => ({ data: reply }));
+      const err = await new FullnodeScanAdapter(odd.aptos).getTransactionEventsByVersion(77n).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    }
+  });
+});
+
 /** A transfer built offline: explicit ABI and options mean the build makes no request. */
 function buildTransfer(aptos: Aptos) {
   const sender = Account.generate();

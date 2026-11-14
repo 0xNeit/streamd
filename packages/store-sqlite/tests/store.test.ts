@@ -1,8 +1,12 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { StreamdError, parseEvent } from "@streamd/core";
-import type { StreamdEvent } from "@streamd/core";
-import { SqliteEventStore } from "../src/index.js";
+import type { StreamdEvent, Transfer } from "@streamd/core";
+import { SqliteEventStore, StoreAdapter } from "../src/index.js";
+import { versionKey } from "../src/schema.js";
 
 const U64_MAX = 2n ** 64n - 1n;
 
@@ -159,5 +163,142 @@ describe("SqliteEventStore.prune", () => {
     const name = "streamd:pruned-before";
     expect(() => store.write([], { name, cursor: "x" })).toThrow("reserved");
     expect(() => store.readCursor(name)).toThrow("reserved");
+  });
+});
+
+describe("SqliteEventStore cursors", () => {
+  function populated() {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.write([ev(1n), ev(5n)], { name: "swaps", cursor: "c-swaps" });
+    store.write([ev(6n)], { name: "Bids", cursor: "c-bids" });
+    store.write([], { name: "bids", cursor: "c-lower" });
+    store.prune({ beforeVersion: 2n });
+    return { db, store };
+  }
+  const edge = (db: Database) =>
+    (db.query("SELECT cursor FROM streamd_cursors WHERE name = 'streamd:pruned-before'").get() as { cursor: string })
+      .cursor;
+
+  it("lists saved cursors by name in byte order, without the pruned edge", () => {
+    expect(new SqliteEventStore(new Database(":memory:")).cursors()).toEqual([]);
+    const { store } = populated();
+    expect(store.cursors()).toEqual([
+      { name: "Bids", cursor: "c-bids" },
+      { name: "bids", cursor: "c-lower" },
+      { name: "swaps", cursor: "c-swaps" },
+    ]);
+  });
+
+  it("deletes one cursor, reports whether it existed, and leaves the events", () => {
+    const { db, store } = populated();
+    expect(store.deleteCursor("swaps")).toBe(true);
+    expect(store.deleteCursor("swaps")).toBe(false);
+    expect(store.readCursor("swaps")).toBeUndefined();
+    expect(store.cursors().map((c) => c.name)).toEqual(["Bids", "bids"]);
+    expect(rows(db).map((e) => e.version)).toEqual([5n, 6n]);
+    expect(edge(db)).toBe(versionKey(2n));
+  });
+
+  it("refuses the reserved name and invalid names, leaving the edge", () => {
+    const { db, store } = populated();
+    for (const bad of ["streamd:pruned-before", "", 7]) {
+      expect(() => store.deleteCursor(bad as string)).toThrow(StreamdError);
+    }
+    expect(edge(db)).toBe(versionKey(2n));
+  });
+});
+
+function tr(version: bigint, eventIndex: number, data: Partial<Transfer> = {}): StreamdEvent<Transfer> {
+  return {
+    type: "0x1::fungible_asset::Deposit",
+    data: { asset: "0xa", amount: 5n, ...data },
+    version,
+    sequenceNumber: 0n,
+    eventIndex,
+  };
+}
+
+function transferRows(db: Database): Record<string, unknown>[] {
+  return db.query("SELECT * FROM streamd_transfers ORDER BY version, event_index").all() as Record<string, unknown>[];
+}
+
+describe("SqliteEventStore transfers", () => {
+  const U256_MAX = 2n ** 256n - 1n;
+
+  it("stores each record's fields in columns and the record as JSON, the later write winning", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.writeTransfers([tr(1n, 2, { amount: U256_MAX, from: "0xf", to: "0xt", symbol: "APT", decimals: 8 }), tr(2n, 0)], {
+      name: "transfers:t",
+      cursor: "c1",
+    });
+    store.writeTransfers([tr(2n, 0, { amount: 9n, to: "0xt" })]);
+    const [first, second] = transferRows(db);
+    expect(first).toEqual({
+      version: versionKey(1n),
+      event_index: 2,
+      asset: "0xa",
+      amount: U256_MAX.toString(),
+      from_address: "0xf",
+      to_address: "0xt",
+      symbol: "APT",
+      decimals: 8,
+      transfer: expect.any(String),
+    });
+    expect(parseEvent(first!.transfer as string).data).toEqual({
+      asset: "0xa",
+      amount: U256_MAX.toString(),
+      from: "0xf",
+      to: "0xt",
+      symbol: "APT",
+      decimals: 8,
+    });
+    expect(second).toMatchObject({ amount: "9", from_address: null, to_address: "0xt", symbol: null, decimals: null });
+    expect(transferRows(db)).toHaveLength(2);
+    expect(store.readCursor("transfers:t")).toBe("c1");
+  });
+
+  it("refuses a malformed record and writes nothing from that call", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    const bad: Partial<Transfer>[] = [
+      { amount: -1n },
+      { amount: U256_MAX + 1n },
+      { amount: 5 as unknown as bigint },
+      { asset: "" },
+      { to: 7 as unknown as string },
+      { decimals: 1.5 },
+    ];
+    for (const data of bad) {
+      expect(() => store.writeTransfers([tr(1n, 0), tr(2n, 0, data)], { name: "t", cursor: "c" })).toThrow(StreamdError);
+    }
+    expect(() => store.writeTransfers([{ ...tr(1n, 0), data: null as unknown as Transfer }])).toThrow(StreamdError);
+    store.writeTransfers([]);
+    expect(transferRows(db)).toEqual([]);
+    expect(store.readCursor("t")).toBeUndefined();
+  });
+
+  it("prunes transfers below the edge with the events", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.writeTransfers([tr(1n, 0), tr(2n, 0), tr(3n, 0)]);
+    store.write([ev(1n), ev(3n)]);
+    store.prune({ beforeVersion: 3n });
+    expect(transferRows(db).map((r) => r.version)).toEqual([versionKey(3n)]);
+    expect(rows(db).map((e) => e.version)).toEqual([3n]);
+  });
+
+  it("leaves the table out of the event schema, so an older database still opens read-only", () => {
+    const dir = mkdtempSync(join(tmpdir(), "streamd-"));
+    const path = join(dir, "events.db");
+    try {
+      new SqliteEventStore(new Database(path)).write([ev(1n)]);
+      const readonly = new Database(path, { readonly: true });
+      expect(() => new StoreAdapter(readonly)).not.toThrow();
+      readonly.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

@@ -160,3 +160,60 @@ describe("transfers through the client", () => {
     });
   });
 });
+
+describe("withNames", () => {
+  const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
+  const [ALICE, BOB] = [long("a11ce"), long("b0b")];
+  const TYPE = "0x1::a::B";
+  const at = (version: number, sender?: string): StreamdEvent => ({
+    type: TYPE,
+    data: {},
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 0,
+    ...(sender !== undefined && { sender }),
+  });
+  const HISTORY = [at(1, ALICE), at(2, BOB), at(3), at(4, "0xa11ce")];
+
+  /** An `AptosClient` on `network` whose SDK answers ANS reads from a fixed table, counting them. */
+  const named = (network: Network) => {
+    const aptos = new Aptos(new AptosConfig({ network, clientConfig: { http2: false } }));
+    const reads: string[] = [];
+    aptos.getPrimaryName = async ({ address }) => {
+      reads.push(`primary ${address.toString()}`);
+      return address.toString() === ALICE ? "alice" : undefined;
+    };
+    aptos.getTargetAddress = async ({ name }) => {
+      reads.push(`target ${name}`);
+      return name === "alice.apt" ? AccountAddress.from(ALICE) : undefined;
+    };
+    return { client: testClient({ adapter: new MemoryAdapter(HISTORY), aptos }), reads };
+  };
+
+  it("attaches each sender's primary name on mainnet, one lookup per sender", async () => {
+    const { client, reads } = named(Network.MAINNET);
+    const events = await client.getEvents({ kind: "module", eventType: TYPE }, { withNames: true });
+    expect(events.map((e) => e.senderName)).toEqual(["alice.apt", null, undefined, "alice.apt"]);
+    expect(reads).toEqual([`primary ${ALICE}`, "target alice.apt", `primary ${BOB}`]);
+  });
+
+  it("names a live subscription's events", async () => {
+    const { client } = named(Network.LOCAL);
+    const seen = await client.once({ kind: "module", eventType: TYPE }, { fromVersion: 0n, withNames: true });
+    expect(seen.senderName).toBe("alice.apt");
+    client.destroy();
+  });
+
+  it("is refused at the call on networks without Aptos names, which still work without it", async () => {
+    for (const network of [Network.TESTNET, Network.DEVNET, Network.CUSTOM]) {
+      const aptos = new Aptos(new AptosConfig({ network, clientConfig: { http2: false }, ...(network === Network.CUSTOM && { fullnode: "http://127.0.0.1:1/v1" }) }));
+      const client = testClient({ adapter: new MemoryAdapter(HISTORY), aptos });
+      expect(() => client.on({ kind: "module", eventType: TYPE }, () => {}, { withNames: true })).toThrow(
+        `withNames needs Aptos names, which network ${network} does not serve`,
+      );
+      await expect(client.getEvents({ kind: "module", eventType: TYPE }, { withNames: true })).rejects.toThrow(StreamdError);
+      expect(await client.getEvents({ kind: "module", eventType: TYPE })).toHaveLength(4);
+      client.destroy();
+    }
+  });
+});

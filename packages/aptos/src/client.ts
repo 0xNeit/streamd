@@ -1,5 +1,5 @@
-import { Aptos, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances } from "@streamd/core";
+import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -12,10 +12,10 @@ import type {
 import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
-import { addressOrName, resolveName } from "./names.js";
+import { addressOrName, primaryName, resolveName } from "./names.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import type { Balances, BalancesOptions, EventExpectation, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -26,7 +26,9 @@ export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
 /**
  * A `StreamdClient` for Aptos: everything the chain-neutral client does, plus
  * asset transfers and balances, transaction lookups, simulations and the
- * assertions on them, and Aptos names wherever an account is taken.
+ * assertions on them, and Aptos names wherever an account is taken. On
+ * mainnet and a localnet, `withNames` attaches each sender's primary name
+ * through `primaryName`; elsewhere it is refused at the call.
  */
 export class AptosClient extends StreamdClient {
   protected readonly aptos: Aptos;
@@ -37,6 +39,13 @@ export class AptosClient extends StreamdClient {
     const { aptos: _given, ...rest } = config;
     super({ ...rest, adapter: config.adapter ?? new FullnodeScanAdapter(aptos) });
     this.aptos = aptos;
+    // Testnet's ANS router is gone, so only mainnet and a localnet can answer.
+    const network = aptos.config?.network;
+    this.names.serve(
+      network === Network.MAINNET || network === Network.LOCAL
+        ? (address) => primaryName(aptos, address)
+        : `withNames needs Aptos names, which network ${network} does not serve`,
+    );
   }
 
   /**
@@ -152,7 +161,7 @@ export class AptosClient extends StreamdClient {
       withAssetInfo,
       this.requestTimeout,
     );
-    const query = new EventQuery(source, this.limiter);
+    const query = new EventQuery(source, this.limiter, this.names);
     return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
@@ -184,6 +193,28 @@ export class AptosClient extends StreamdClient {
       descriptor,
       options,
     );
+    return events as unknown as EventOf<TData>[];
+  }
+
+  /**
+   * Resolve with the events of the transaction committed at `version`, in
+   * transaction order, narrowed as `eventsOf` narrows them. One lookup through
+   * `EventAdapter.getTransactionEventsByVersion` and the client's limiter, with
+   * no waiting.
+   *
+   * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
+   * transaction failed, as `eventsOf` does; with a `StreamdError` when there is
+   * no transaction at `version` yet; with the adapter's 410
+   * `StreamdNetworkError` for a pruned version (`ArchiveFallbackAdapter`
+   * answers it from an archive); with `signal.reason` on abort; and at once
+   * with any lookup error. Bad input is refused before the lookup.
+   */
+  async eventsAt<TData = unknown>(
+    version: bigint,
+    descriptor?: EventDescriptor<TData>,
+    options: EventsAtOptions = {},
+  ): Promise<EventOf<TData>[]> {
+    const events = await eventsAt(this.adapter, this.limiter, version, descriptor, options);
     return events as unknown as EventOf<TData>[];
   }
 

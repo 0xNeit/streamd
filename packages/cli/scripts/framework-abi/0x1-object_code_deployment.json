@@ -1,0 +1,79 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "object_code_deployment",
+  "structs": [
+   {
+    "name": "Freeze",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "object_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ManagingRefs",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "extend_ref",
+      "type": "0x1::object::ExtendRef"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Publish",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "object_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Upgrade",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "object_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

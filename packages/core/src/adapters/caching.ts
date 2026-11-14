@@ -42,7 +42,8 @@ function copy(page: EventPage): EventPage {
  * history skips the source. Every other page, and every failure, passes
  * through unstored. A cached page keeps being served after the source prunes
  * that history. `getHeadVersion`, `getEarliestVersion`, `getBlock`,
- * `getBlockHeights`, `getTransactionEvents`, `simulateTransactionEvents`,
+ * `getBlockHeights`, `getTransactionEvents`, `getTransactionEventsByVersion`,
+ * `simulateTransactionEvents`,
  * `view` and `readObjects` pass through uncached, only when the wrapped adapter has them.
  * (A view at a past version never changes, so it could be cached; it is not.)
  *
@@ -63,6 +64,7 @@ export class CachingAdapter implements EventAdapter {
   getBlock?: EventAdapter["getBlock"];
   getBlockHeights?: EventAdapter["getBlockHeights"];
   getTransactionEvents?: EventAdapter["getTransactionEvents"];
+  getTransactionEventsByVersion?: EventAdapter["getTransactionEventsByVersion"];
   simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
   view?: EventAdapter["view"];
   readObjects?: EventAdapter["readObjects"];
@@ -98,6 +100,10 @@ export class CachingAdapter implements EventAdapter {
     if (source.getTransactionEvents !== undefined) {
       this.getTransactionEvents = (hash, descriptor) =>
         source.getTransactionEvents!(hash, descriptor);
+    }
+    if (source.getTransactionEventsByVersion !== undefined) {
+      this.getTransactionEventsByVersion = (version, descriptor) =>
+        source.getTransactionEventsByVersion!(version, descriptor);
     }
     if (source.simulateTransactionEvents !== undefined) {
       this.simulateTransactionEvents = (simulation, descriptor) =>

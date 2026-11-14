@@ -28,6 +28,7 @@ export { formatAmount, startBalances } from "./balances.js";
 export type { BalanceReader, BalancesHost } from "./balances.js";
 export {
   committedEvents,
+  eventsAt,
   eventsOf,
   expectEvents,
   expectPreview,
@@ -63,6 +64,7 @@ export {
   whereOneOf,
 } from "./filter.js";
 export type { CompareOp, OneOfValue } from "./filter.js";
+export { changesOnly } from "./changes.js";
 
 // Input checks for adapter authors; the chain packages build their adapters on them.
 export {
@@ -146,6 +148,7 @@ export type {
   SyncEventPredicate,
   EventStream,
   EventExpectation,
+  EventsAtOptions,
   EventsOfOptions,
   ExpectEventsOptions,
   FetchOptions,
@@ -173,6 +176,7 @@ export type {
   ObjectRequest,
   StateRequest,
   StateRequestBuilder,
+  NameOptions,
   SubscriptionStatus,
   TransactionEvents,
   TransactionSimulation,

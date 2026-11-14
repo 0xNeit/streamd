@@ -29,6 +29,7 @@ const QUERY_KEYS = [
   "where",
   "decode",
   "withState",
+  "withNames",
   "maxPages",
   "retries",
   "onCursor",

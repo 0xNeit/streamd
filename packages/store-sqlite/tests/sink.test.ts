@@ -1,8 +1,9 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, it } from "bun:test";
 import { MemoryAdapter, StreamdClient, eventId } from "@streamd/core";
-import type { EventDescriptor, StreamdEvent, Subscription } from "@streamd/core";
-import { SqliteEventStore, StoreAdapter, storeEvents } from "../src/index.js";
+import type { EventCallback, EventDescriptor, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
+import { SqliteEventStore, StoreAdapter, storeEvents, storeTransfers } from "../src/index.js";
+import type { TransferClient } from "../src/index.js";
 
 const SWAP = "0x1::dex::Swap";
 const swaps: EventDescriptor = { kind: "module", eventType: SWAP };
@@ -157,5 +158,146 @@ describe("storeEvents", () => {
     sub.unsubscribe();
     restarted.destroy();
     expect(await stored(db)).toEqual(history(6).map(eventId));
+  });
+});
+
+const DEPOSIT = "0x1::fungible_asset::Deposit";
+
+function transfers(count: number): StreamdEvent<Transfer>[] {
+  return Array.from({ length: count }, (_, i) => ({
+    type: DEPOSIT,
+    data: { asset: "0xa", amount: BigInt(i + 1), to: "0xb" },
+    version: BigInt(i + 1),
+    sequenceNumber: 0n,
+    eventIndex: 3,
+  }));
+}
+
+interface FakeOptions extends SubscriptionOptions {
+  asset?: string;
+}
+
+/** A chain client's transfers(), over a MemoryAdapter whose events already are records. */
+function fake(
+  records: StreamdEvent<Transfer>[],
+  adapter = new MemoryAdapter(records),
+): TransferClient<FakeOptions> & { destroy(): void } {
+  const client = new StreamdClient({ adapter });
+  return {
+    transfers: (callback: EventCallback<Transfer>, options?: FakeOptions) => {
+      const { asset: _asset, ...rest } = options ?? {};
+      return client.on({ kind: "module", eventType: DEPOSIT }, callback as EventCallback, rest);
+    },
+    destroy: () => client.destroy(),
+  };
+}
+
+function storedTransfers(db: Database): string[] {
+  return (db.query("SELECT version, event_index, amount FROM streamd_transfers ORDER BY version").all() as {
+    version: string;
+    event_index: number;
+    amount: string;
+  }[]).map((r) => `${BigInt(r.version)}:${r.event_index}:${r.amount}`);
+}
+
+const ids = (records: StreamdEvent<Transfer>[]) => records.map((r) => `${r.version}:${r.eventIndex}:${r.data.amount}`);
+
+describe("storeTransfers", () => {
+  it("resumes after a restart with every record stored once, under its own cursor name", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.write([], { name: "t", cursor: "event-cursor" });
+    const options = { name: "t", batchSize: 2, pollInterval: 5, asset: "0xa" };
+
+    const first = fake(transfers(5));
+    const sub = await caughtUp((onCaughtUp) => storeTransfers(first, store, { ...options, onCaughtUp }));
+    sub.unsubscribe();
+    first.destroy();
+    expect(storedTransfers(db)).toEqual(ids(transfers(5)));
+    expect(store.readCursor("transfers:t")).toBe("5");
+    expect(store.readCursor("t")).toBe("event-cursor");
+
+    const second = fake(transfers(9));
+    const seen: string[] = [];
+    const resumed = await caughtUp((onCaughtUp) =>
+      storeTransfers(second, store, { ...options, onCaughtUp, where: (e) => (seen.push(eventId(e)), true) }),
+    );
+    resumed.unsubscribe();
+    second.destroy();
+    expect(seen[0]).toBe("6:3");
+    expect(storedTransfers(db)).toEqual(ids(transfers(9)));
+  });
+
+  it("absorbs a replayed range: records redelivered from an older cursor replace their rows", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    const first = fake(transfers(4));
+    const sub = await caughtUp((onCaughtUp) => storeTransfers(first, store, { name: "t", batchSize: 2, onCaughtUp }));
+    sub.unsubscribe();
+    first.destroy();
+
+    // As after a crash between a record's write and the cursor saved after its page.
+    store.write([], { name: "transfers:t", cursor: "0" });
+    const again = fake(transfers(4));
+    const seen: string[] = [];
+    const replayed = await caughtUp((onCaughtUp) =>
+      storeTransfers(again, store, { name: "t", batchSize: 2, onCaughtUp, where: (e) => (seen.push(eventId(e)), true) }),
+    );
+    replayed.unsubscribe();
+    again.destroy();
+    expect(seen).toEqual(["1:3", "2:3", "3:3", "4:3"]);
+    expect(storedTransfers(db)).toEqual(ids(transfers(4)));
+  });
+
+  it("ends on a failed write without moving the saved cursor past it, and a restart fills the gap", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.writeTransfers([]);
+    db.exec(`CREATE TRIGGER boom BEFORE INSERT ON streamd_transfers
+      WHEN NEW.version >= '00000000000000000003' BEGIN SELECT RAISE(ABORT, 'disk full'); END`);
+    const client = fake(transfers(6));
+    const error = await new Promise<Error>((resolve) => {
+      storeTransfers(client, store, { name: "t", batchSize: 2, pollInterval: 5, onError: resolve });
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    client.destroy();
+    expect((error.cause as Error).message).toContain("disk full");
+    expect(storedTransfers(db)).toEqual(ids(transfers(2)));
+    expect(store.readCursor("transfers:t")).toBe("2");
+
+    db.exec("DROP TRIGGER boom");
+    const restarted = fake(transfers(6));
+    const sub = await caughtUp((onCaughtUp) => storeTransfers(restarted, store, { name: "t", batchSize: 2, onCaughtUp }));
+    sub.unsubscribe();
+    restarted.destroy();
+    expect(storedTransfers(db)).toEqual(ids(transfers(6)));
+  });
+
+  it("saves the cursor after a page whose last record an async predicate drops", async () => {
+    const store = new SqliteEventStore(new Database(":memory:"));
+    const adapter = new MemoryAdapter(transfers(2));
+    const client = fake([], adapter);
+    // Even versions are dropped, slowly, after the odd one before them was written.
+    const where = (e: StreamdEvent) => new Promise<boolean>((r) => setTimeout(() => r(e.version % 2n === 1n), 15));
+    const sub = await caughtUp((onCaughtUp) =>
+      storeTransfers(client, store, { name: "t", batchSize: 2, pollInterval: 5, where, onCaughtUp }),
+    );
+    expect(store.readCursor("transfers:t")).toBe("2");
+    adapter.push(...transfers(4).slice(2));
+    // Without the wait for the page to finish, the save lands on "2" and stays there.
+    for (let i = 0; i < 300 && store.readCursor("transfers:t") !== "4"; i++) await new Promise((r) => setTimeout(r, 10));
+    sub.unsubscribe();
+    client.destroy();
+    expect(store.readCursor("transfers:t")).toBe("4");
+  });
+
+  it("type-checks the options against the client's own", () => {
+    const store = new SqliteEventStore(new Database(":memory:"));
+    const client = fake([]);
+    // @ts-expect-error asset is a string on this client
+    storeTransfers(client, store, { name: "t", asset: 5 }).unsubscribe();
+    // @ts-expect-error name is required
+    expect(() => storeTransfers(client, store, { asset: "0xa" })).toThrow("needs a name");
+    client.destroy();
   });
 });

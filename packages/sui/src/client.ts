@@ -17,7 +17,7 @@ import type {
   Transfer,
 } from "@streamd/core";
 import { SuiAdapter, requireDigest, requireTransactionBytes, suiDescriptor } from "./adapter.js";
-import { addressOrName, nameService, resolveName } from "./names.js";
+import { addressOrName, nameService, primaryName, resolveName } from "./names.js";
 import { TRANSFER_DESCRIPTOR, coinType, transferSource } from "./transfers.js";
 import type { SuiTransferFilter, SuiTransferListenerOptions, SuiTransferOptions, TransferNarrowing } from "./transfers.js";
 
@@ -67,7 +67,8 @@ export type SuiClientConfig = Omit<StreamdConfig, "adapter"> & {
 /**
  * A `StreamdClient` for Sui: everything the chain-neutral client does, over a
  * `SuiAdapter` by default, plus coin transfers and balances, transaction
- * lookups, simulations and the assertions on them.
+ * lookups, simulations and the assertions on them. `withNames` attaches
+ * each sender's SuiNS primary name through `primaryName`.
  */
 export class SuiClient extends StreamdClient {
   protected readonly sui: SuiGrpcClient;
@@ -86,6 +87,7 @@ export class SuiClient extends StreamdClient {
     super({ ...rest, adapter: config.adapter ?? new SuiAdapter(sui) });
     this.sui = sui;
     this.ledger = this.adapter instanceof SuiAdapter ? this.adapter : new SuiAdapter(sui);
+    this.names.serve((address) => primaryName(sui, address));
   }
 
   /**
@@ -124,7 +126,7 @@ export class SuiClient extends StreamdClient {
   async getTransfers(filter: SuiTransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
     const { asset, account, withAssetInfo, ...rest } = filter;
     const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo);
-    return new EventQuery(source, this.limiter).getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
+    return new EventQuery(source, this.limiter, this.names).getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
   /**

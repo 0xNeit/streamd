@@ -155,3 +155,21 @@ describe("PoolAdapter readObjects", () => {
     expect(new PoolAdapter([reader("a"), node("b", [])]).readObjects).toBeUndefined();
   });
 });
+
+describe("PoolAdapter lookup by version", () => {
+  it("rotates past a rate-limited node, only when every node has it", async () => {
+    const asked: unknown[] = [];
+    const looker = (name: string, limited: boolean): EventAdapter => ({
+      ...node(name, []),
+      getTransactionEventsByVersion: async (...args) => {
+        asked.push([name, ...args]);
+        if (limited) throw limit(1000);
+        return { version: 4n, success: true, vmStatus: name, events: [] };
+      },
+    });
+    const pool = new PoolAdapter([looker("a", true), looker("b", false)]);
+    expect((await pool.getTransactionEventsByVersion!(4n, d))!.vmStatus).toBe("b");
+    expect(asked).toEqual([["a", 4n, d], ["b", 4n, d]]);
+    expect(new PoolAdapter([looker("a", false), node("b", [])]).getTransactionEventsByVersion).toBeUndefined();
+  });
+});

@@ -144,3 +144,35 @@ describe("ArchiveFallbackAdapter readObjects", () => {
     expect(new ArchiveFallbackAdapter(new MemoryAdapter(), reader("archive", 0n)).readObjects).toBeUndefined();
   });
 });
+
+describe("ArchiveFallbackAdapter lookup by version", () => {
+  it("sends only a version the fullnode refuses as pruned to the archive, and only when the fullnode has the method", async () => {
+    const tx = (version: bigint) => ({ version, success: true, vmStatus: "ok", events: [] });
+    const asked: unknown[] = [];
+    const primary = (failure?: Error): EventAdapter => ({
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      getTransactionEventsByVersion: async (version, desc) => {
+        asked.push(["fullnode", version, desc]);
+        if (failure !== undefined) throw failure;
+        return version < 5n ? Promise.reject(PRUNED) : version > 10n ? undefined : tx(version);
+      },
+    });
+    const old: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      getTransactionEventsByVersion: async (version, desc) => (asked.push(["archive", version, desc]), tx(version)),
+    };
+    const adapter = new ArchiveFallbackAdapter(primary(), old);
+    expect((await adapter.getTransactionEventsByVersion!(2n, d))!.version).toBe(2n);
+    expect((await adapter.getTransactionEventsByVersion!(8n, d))!.version).toBe(8n);
+    expect(await adapter.getTransactionEventsByVersion!(11n)).toBeUndefined();
+    expect(asked).toEqual([["fullnode", 2n, d], ["archive", 2n, d], ["fullnode", 8n, d], ["fullnode", 11n, undefined]]);
+
+    for (const failure of [new StreamdNetworkError("not found", 404), new StreamdNetworkError("down", 500)]) {
+      asked.length = 0;
+      await expect(new ArchiveFallbackAdapter(primary(failure), old).getTransactionEventsByVersion!(2n)).rejects.toBe(failure);
+      expect(asked).toEqual([["fullnode", 2n, undefined]]);
+    }
+    const bare = new ArchiveFallbackAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }, old);
+    expect(bare.getTransactionEventsByVersion).toBeUndefined();
+  });
+});
