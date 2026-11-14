@@ -71,9 +71,14 @@ function legacyTokenId(id: unknown): string | undefined {
   if (typeof data !== "object" || data === null) return undefined;
   if (typeof version !== "string" || !UNSIGNED_INTEGER.test(version)) return undefined;
   const { creator, collection, name } = data as Record<string, unknown>;
+  return legacyTokenKey(creator, collection, name, BigInt(version));
+}
+
+/** A legacy token's id as `asset` compares it: `creator::collection::name::property_version`, creator in long form. */
+export function legacyTokenKey(creator: unknown, collection: unknown, name: unknown, version: bigint): string | undefined {
   const owner = address(creator);
   if (owner === undefined || typeof collection !== "string" || typeof name !== "string") return undefined;
-  return `${owner}::${collection}::${name}::${BigInt(version)}`;
+  return `${owner}::${collection}::${name}::${version}`;
 }
 
 /** Addresses inside a coin type or an asset address, in long form, for comparing. */

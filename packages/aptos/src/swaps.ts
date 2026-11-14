@@ -1,17 +1,11 @@
-import { StreamdError, UNSIGNED_INTEGER, normalizeAddress } from "@streamd/core";
+import { normalizeAddress } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, MoveEventType, StreamdEvent } from "@streamd/core";
+import { address, amount, namedTypes, object, recordSource } from "./records.js";
+import type { Fields } from "./records.js";
 import { assetKey, requireAsset } from "./transfers.js";
 import type { Swap, SwapProtocol } from "./types.js";
 
-type Fields = Record<string, unknown>;
 type Decoded = Omit<Swap, "protocol" | "trader">;
-
-const address = (field: unknown) => (typeof field === "string" ? normalizeAddress(field) : undefined);
-/** An `Object<T>`, which the fullnode writes as `{ inner: address }`. */
-const object = (field: unknown) =>
-  typeof field === "object" && field !== null ? address((field as Fields).inner) : undefined;
-const amount = (field: unknown) =>
-  typeof field === "string" && UNSIGNED_INTEGER.test(field) ? BigInt(field) : undefined;
 
 function swap(
   poolId: string | undefined,
@@ -169,21 +163,12 @@ function indexed(poolId: string | undefined, list: unknown, read: (field: unknow
   return swap(poolId, at(d.idx_in), at(d.idx_out), d);
 }
 
-const PROTOCOL_NAMES = [...new Set(ENTRIES.map((e) => e.protocol))];
 const BY_TYPE = new Map(ENTRIES.map((entry) => [entry.type as string, entry]));
+const NAMED = ENTRIES.map((e) => ({ name: e.protocol, type: e.type }));
 
 /** The swap events of `protocol` (one or a list; every protocol when omitted), served by one scan. */
 export function swapDescriptor(protocol?: SwapProtocol | readonly SwapProtocol[]): ModuleEventDescriptor {
-  const chosen: unknown = protocol === undefined ? PROTOCOL_NAMES : typeof protocol === "string" ? [protocol] : protocol;
-  if (!Array.isArray(chosen) || chosen.length === 0) {
-    throw new StreamdError(`protocol must be one of ${PROTOCOL_NAMES.join(", ")}, or a non-empty list of them`);
-  }
-  for (const name of chosen as unknown[]) {
-    if (typeof name !== "string" || !PROTOCOL_NAMES.includes(name as SwapProtocol)) {
-      throw new StreamdError(`Unknown swap protocol: ${String(name)}; expected one of ${PROTOCOL_NAMES.join(", ")}`);
-    }
-  }
-  return { kind: "module", eventType: ENTRIES.filter((e) => chosen.includes(e.protocol)).map((e) => e.type) };
+  return namedTypes(NAMED, protocol, "protocol", "swap protocol");
 }
 
 /** One swap event as a record, or `undefined` when it is not a swap event of the shape its struct declares. */
@@ -205,18 +190,8 @@ export function toSwap(event: StreamdEvent): StreamdEvent<Swap> | undefined {
  */
 export function swapSource(adapter: EventAdapter, asset?: string): EventAdapter {
   const wanted = asset === undefined ? undefined : requireAsset(asset);
-  const source: EventAdapter = {
-    fetchEvents: async (descriptor, options) => {
-      const page = await adapter.fetchEvents(descriptor, options);
-      const events = page.events
-        .map(toSwap)
-        .filter((e): e is StreamdEvent<Swap> => e !== undefined && (wanted === undefined || e.data.assetIn === wanted || e.data.assetOut === wanted));
-      return { ...page, events };
-    },
-  };
-  for (const name of ["getHeadVersion", "getEarliestVersion", "getBlock", "getBlockHeights", "view"] as const) {
-    const method = adapter[name];
-    if (method !== undefined) Object.assign(source, { [name]: method.bind(adapter) });
-  }
-  return source;
+  return recordSource(adapter, (event) => {
+    const record = toSwap(event);
+    return record === undefined || wanted === undefined || record.data.assetIn === wanted || record.data.assetOut === wanted ? record : undefined;
+  });
 }
