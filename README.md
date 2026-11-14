@@ -2833,7 +2833,8 @@ function Feed() {
   each `loadMore()` appends the next, so `pages` holds every page loaded so far as
   `getEventPages` yielded it, oldest first, or newest first with `orderBy: "desc"`. Options are
   `getEventPages`'s, without `signal`, plus `pageSize` (default 25), the most events each
-  adapter request asks for; `limit` counts across all pages, and a list of descriptors is
+  adapter request asks for (`FullnodeScanAdapter` keeps every event of the transactions a
+  module scan read, so its pages can be longer); `limit` counts across all pages, and a list of descriptors is
   merged. `hasMore` turns `false` once a fetch finds the walk finished: the last page cannot tell
   it is the last, so the `loadMore()` after it adds nothing and turns it off, and an empty range
   shows `false` after the first fetch. A failure sets `error` and keeps the pages, and the next
