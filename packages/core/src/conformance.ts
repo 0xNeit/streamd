@@ -1,4 +1,6 @@
 import type {
+  BlockHeights,
+  BlockInfo,
   EventAdapter,
   EventDescriptor,
   EventPage,
@@ -6,7 +8,13 @@ import type {
   StreamdEvent,
 } from "./types.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
-import { DEFAULT_LIMIT, blockError, requireAdapter, versionError } from "./adapters/validate.js";
+import {
+  DEFAULT_LIMIT,
+  blockError,
+  blockHeightsError,
+  requireAdapter,
+  versionError,
+} from "./adapters/validate.js";
 import { eventId } from "./cursor.js";
 
 /** The `EventAdapter` contract rules `checkAdapter` reports on, in report order. */
@@ -21,7 +29,9 @@ export type AdapterCheckName =
   | "foreign-cursor"
   | "head-version"
   | "earliest-version"
-  | "block";
+  | "block"
+  | "block-heights"
+  | "block-sequence";
 
 export interface AdapterCheckOptions {
   /** Where the walk starts; omitted leaves the start to the adapter (usually the head). */
@@ -30,7 +40,10 @@ export interface AdapterCheckOptions {
   limit?: number;
   /** Most pages the walk fetches (default 3), which bounds the work against a real source. */
   maxPages?: number;
-  /** Height to ask `getBlock` for; its rule is skipped without one. */
+  /**
+   * Height to ask `getBlock` for; omitted takes `newest` from
+   * `getBlockHeights`, and the block rules skip when neither is there.
+   */
   blockHeight?: bigint;
 }
 
@@ -51,6 +64,7 @@ export interface AdapterCheckReport {
 
 const DEFAULT_MAX_PAGES = 3;
 const FOREIGN_CURSOR = "streamd-check:never-issued";
+const ABSENT = "not implemented (optional)";
 
 interface Settings {
   fromVersion?: bigint;
@@ -341,30 +355,96 @@ async function versionResults(
   descriptor: EventDescriptor,
   events: StreamdEvent[],
 ): Promise<AdapterCheckResult[]> {
-  const absent = "not implemented (optional)";
   const head = adapter.getHeadVersion && (await readVersion("getHeadVersion", adapter, descriptor));
   const earliest =
     adapter.getEarliestVersion && (await readVersion("getEarliestVersion", adapter, descriptor));
   return [
-    head === undefined ? skip("head-version", absent) : headResult(head, events),
+    head === undefined ? skip("head-version", ABSENT) : headResult(head, events),
     earliest === undefined
-      ? skip("earliest-version", absent)
+      ? skip("earliest-version", ABSENT)
       : earliestResult(earliest, head, events),
   ];
 }
 
-async function blockResult(
+type Outcome = { ok: true; value: unknown } | { ok: false; error: string };
+
+/** Runs one optional-method call, turning a rejection or a synchronous throw into a failure message. */
+async function attempt(method: string, run: () => unknown): Promise<Outcome> {
+  try {
+    return { ok: true, value: await run() };
+  } catch (err) {
+    return { ok: false, error: `${method} rejected: ${describe(err)}` };
+  }
+}
+
+async function readBlock(
   adapter: EventAdapter,
   descriptor: EventDescriptor,
-  height: bigint | undefined,
+  height: bigint,
+): Promise<{ block?: BlockInfo; error?: string }> {
+  const got = await attempt("getBlock", () => adapter.getBlock!(descriptor, height));
+  if (!got.ok) return { error: got.error };
+  const error = blockError(got.value, height);
+  return error === undefined ? { block: got.value as BlockInfo } : { error };
+}
+
+/** Block `height - 1` must end where `height` starts, and block time must not fall. */
+async function sequenceResult(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  height: bigint,
+  block: BlockInfo | undefined,
+  oldest: bigint | undefined,
 ): Promise<AdapterCheckResult> {
-  if (adapter.getBlock === undefined) return skip("block", "not implemented (optional)");
-  if (height === undefined) return skip("block", "blockHeight not given");
-  try {
-    return verdict("block", blockError(await adapter.getBlock(descriptor, height), height));
-  } catch (err) {
-    return verdict("block", `getBlock rejected: ${describe(err)}`);
+  const name = "block-sequence";
+  if (block === undefined) return skip(name, `block ${height} did not pass`);
+  if (height === 0n) return skip(name, "no block before height 0");
+  const before = height - 1n;
+  if (oldest !== undefined && before < oldest) return skip(name, `block ${before} is below oldest ${oldest}`);
+  const prev = await readBlock(adapter, descriptor, before);
+  if (prev.block === undefined) return verdict(name, prev.error);
+  if (prev.block.lastVersion + 1n !== block.firstVersion) {
+    return verdict(
+      name,
+      `block ${before} ends at version ${prev.block.lastVersion} but block ${height} starts at ${block.firstVersion}`,
+    );
   }
+  const fell = prev.block.timestamp > block.timestamp;
+  return verdict(
+    name,
+    fell ? `block ${height} timestamp ${block.timestamp} is below block ${before}'s ${prev.block.timestamp}` : undefined,
+  );
+}
+
+/** `block`, `block-heights` and `block-sequence`, reading the heights first for the default height. */
+async function blockResults(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  given: bigint | undefined,
+): Promise<AdapterCheckResult[]> {
+  const heights =
+    adapter.getBlockHeights &&
+    (await attempt("getBlockHeights", () => adapter.getBlockHeights!(descriptor)));
+  const heightsError = heights && (heights.ok ? blockHeightsError(heights.value) : heights.error);
+  const known = heights?.ok && heightsError === undefined ? (heights.value as BlockHeights) : undefined;
+  const heightsResult =
+    heights === undefined ? skip("block-heights", ABSENT) : verdict("block-heights", heightsError);
+  const height = given ?? known?.newest;
+  if (adapter.getBlock === undefined || height === undefined) {
+    const reason =
+      adapter.getBlock === undefined
+        ? ABSENT
+        : heights === undefined
+          ? "blockHeight not given"
+          : "blockHeight not given and getBlockHeights did not pass";
+    return [skip("block", reason), heightsResult, skip("block-sequence", reason)];
+  }
+  const at = await readBlock(adapter, descriptor, height);
+  return [
+    verdict("block", at.error),
+    heightsResult,
+    await sequenceResult(adapter, descriptor, height, at.block, known?.oldest),
+  ];
 }
 
 /**
@@ -372,8 +452,8 @@ async function blockResult(
  * which `EventAdapter` contract rules it keeps. Violations are `fail` results,
  * never rejections; it rejects only for invalid arguments. Against a real
  * source it makes network reads: at most `maxPages` walk fetches, two more
- * fetches, and one call per optional method present. Needs no test runner, so
- * assert on `report.ok` from any of them.
+ * fetches, and one call per optional method present, two for `getBlock`.
+ * Needs no test runner, so assert on `report.ok` from any of them.
  */
 export async function checkAdapter(
   adapter: EventAdapter,
@@ -388,7 +468,7 @@ export async function checkAdapter(
     await cursorPrecedence(adapter, descriptor, w, s),
     await foreignCursor(adapter, descriptor, s),
     ...(await versionResults(adapter, descriptor, allEvents(w))),
-    await blockResult(adapter, descriptor, s.blockHeight),
+    ...(await blockResults(adapter, descriptor, s.blockHeight)),
   ];
   return {
     ok: results.every((r) => r.status !== "fail"),

@@ -78,8 +78,19 @@ describe("checkAdapter walk", () => {
       "head-version": "pass",
       "earliest-version": "pass",
       block: "skip",
+      "block-heights": "skip",
+      "block-sequence": "skip",
     });
-    expect(report.results.map((r): string => r.name)).toEqual([...WALK_RULES, "cursor-precedence", "foreign-cursor", "head-version", "earliest-version", "block"]);
+    expect(report.results.map((r): string => r.name)).toEqual([
+      ...WALK_RULES,
+      "cursor-precedence",
+      "foreign-cursor",
+      "head-version",
+      "earliest-version",
+      "block",
+      "block-heights",
+      "block-sequence",
+    ]);
     expect(report.pagesFetched).toBe(3);
   });
 
@@ -315,7 +326,7 @@ describe("checkAdapter optional methods", () => {
     const base = seeded();
     const report = await checkAdapter({ fetchEvents: (d, o) => base.fetchEvents(d, o) }, desc);
     expect(report.ok).toBe(true);
-    for (const name of ["head-version", "earliest-version", "block"]) {
+    for (const name of ["head-version", "earliest-version", "block", "block-heights", "block-sequence"]) {
       expect(result(report, name)).toEqual({ name, status: "skip", message: "not implemented (optional)" } as never);
     }
   });
@@ -323,9 +334,11 @@ describe("checkAdapter optional methods", () => {
   it.each([
     ["FallbackAdapter", () => new FallbackAdapter([seeded()])],
     ["RoutingAdapter", () => new RoutingAdapter({ default: seeded() })],
-  ])("skips block for a %s over sources without getBlock", async (_label, make) => {
+  ])("skips the block rules for a %s over sources without them", async (_label, make) => {
     const report = await checkAdapter(make(), desc, { fromVersion: 0n, blockHeight: 1n });
-    expect(result(report, "block")).toEqual({ name: "block", status: "skip", message: "not implemented (optional)" } as never);
+    for (const name of ["block", "block-heights", "block-sequence"]) {
+      expect(result(report, name)).toEqual({ name, status: "skip", message: "not implemented (optional)" } as never);
+    }
     expect(report.ok).toBe(true);
   });
 
@@ -375,18 +388,111 @@ describe("checkAdapter optional methods", () => {
     expect(result(report, "block").message).toContain(message);
   });
 
-  it("stays within maxPages + 2 fetches and one call per optional method", async () => {
+  it("stays within maxPages + 2 fetches, two getBlock calls and one per other optional method", async () => {
     const base = seeded();
+    const blocks = chain();
     const calls: string[] = [];
     const adapter: EventAdapter = {
       fetchEvents: (d, o) => (calls.push("fetch"), base.fetchEvents(d, o)),
       getHeadVersion: () => (calls.push("head"), base.getHeadVersion()),
       getEarliestVersion: () => (calls.push("earliest"), base.getEarliestVersion()),
-      getBlock: async () => (calls.push("block"), block),
+      getBlockHeights: (d) => (calls.push("heights"), blocks.getBlockHeights!(d)),
+      getBlock: (d, h) => (calls.push(`block ${h}`), blocks.getBlock!(d, h)),
     };
     const report = await checkAdapter(adapter, desc, { limit: 1, maxPages: 4, blockHeight: 3n });
     expect(report.ok).toBe(true);
     expect(calls.filter((c) => c === "fetch")).toHaveLength(6);
-    expect(calls.filter((c) => c !== "fetch")).toEqual(["head", "earliest", "block"]);
+    expect(calls.filter((c) => c !== "fetch")).toEqual(["head", "earliest", "heights", "block 3", "block 2"]);
+  });
+});
+
+/** Blocks `oldest` to `newest`, block h holding versions 10h to 10h + 9 at time 100h. */
+function chain(oldest = 0n, newest = 9n): Pick<EventAdapter, "getBlock" | "getBlockHeights"> {
+  return {
+    getBlockHeights: async () => ({ oldest, newest }),
+    getBlock: async (_d, height) => ({
+      height,
+      firstVersion: 10n * height,
+      lastVersion: 10n * height + 9n,
+      timestamp: 100n * height,
+    }),
+  };
+}
+
+describe("checkAdapter block rules", () => {
+  it("passes contiguous blocks, defaulting the height to newest", async () => {
+    const asked: bigint[] = [];
+    const blocks = chain();
+    const report = await checkAdapter(
+      broken({ ...blocks, getBlock: (d, h) => (asked.push(h), blocks.getBlock!(d, h)) }),
+      desc,
+      walkOptions,
+    );
+    expect(report.ok).toBe(true);
+    expect(statuses(report)).toMatchObject({ block: "pass", "block-heights": "pass", "block-sequence": "pass" });
+    expect(asked).toEqual([9n, 8n]);
+  });
+
+  it("prefers blockHeight over newest", async () => {
+    const asked: bigint[] = [];
+    const blocks = chain();
+    await checkAdapter(broken({ ...blocks, getBlock: (d, h) => (asked.push(h), blocks.getBlock!(d, h)) }), desc, {
+      blockHeight: 4n,
+    });
+    expect(asked).toEqual([4n, 3n]);
+  });
+
+  it.each([
+    ["rejecting", async () => { throw new Error("down"); }, "getBlockHeights rejected: Error: down"],
+    ["inverted", async () => ({ oldest: 5n, newest: 4n }), "oldest is above newest"],
+    ["a number newest", async () => ({ oldest: 0n, newest: 9 }), "newest is not a non-negative bigint"],
+  ])("fails block-heights when %s and skips the rules needing its height", async (_label, getBlockHeights, message) => {
+    const report = await checkAdapter(broken({ ...chain(), getBlockHeights } as Partial<EventAdapter>), desc);
+    expect(failed(report)).toEqual(["block-heights"]);
+    expect(result(report, "block-heights").message).toContain(message);
+    expect(result(report, "block").message).toBe("blockHeight not given and getBlockHeights did not pass");
+    expect(result(report, "block-sequence").status).toBe("skip");
+  });
+
+  const shifted = (change: (height: bigint) => Partial<BlockInfo>): Partial<EventAdapter> => {
+    const blocks = chain();
+    return {
+      ...blocks,
+      getBlock: async (d, h) => ({ ...(await blocks.getBlock!(d, h)), ...change(h) }),
+    };
+  };
+
+  it.each([
+    ["a gap", shifted((h) => (h === 8n ? { lastVersion: 88n } : {})), "ends at version 88 but block 9 starts at 90"],
+    ["an overlap", shifted((h) => (h === 9n ? { firstVersion: 89n } : {})), "block 9 starts at 89"],
+    ["a falling timestamp", shifted((h) => (h === 9n ? { timestamp: 1n } : {})), "timestamp 1 is below block 8's 800"],
+    [
+      "the block before failing",
+      shifted((h) => (h === 8n ? { height: 7n } : {})),
+      "getBlock(8) returned height 7",
+    ],
+  ])("fails block-sequence on %s", async (_label, overrides, message) => {
+    const report = await checkAdapter(broken(overrides), desc, walkOptions);
+    expect(failed(report)).toEqual(["block-sequence"]);
+    expect(result(report, "block-sequence").message).toContain(message);
+  });
+
+  it("skips block-sequence at height 0, below oldest, and when block failed", async () => {
+    const zero = await checkAdapter(broken(chain()), desc, { blockHeight: 0n });
+    expect(result(zero, "block-sequence").message).toBe("no block before height 0");
+    const edge = await checkAdapter(broken(chain(5n, 9n)), desc, { blockHeight: 5n });
+    expect(result(edge, "block-sequence").message).toBe("block 4 is below oldest 5");
+    const bad = await checkAdapter(broken(shifted(() => ({ height: 1n }))), desc, walkOptions);
+    expect(failed(bad)).toEqual(["block"]);
+    expect(result(bad, "block-sequence").message).toBe("block 9 did not pass");
+  });
+
+  it("fails on a synchronous throw instead of rejecting", async () => {
+    const getBlock = () => {
+      throw new TypeError("sync");
+    };
+    const report = await checkAdapter(broken({ ...chain(), getBlock } as Partial<EventAdapter>), desc);
+    expect(failed(report)).toEqual(["block"]);
+    expect(result(report, "block").message).toBe("getBlock rejected: TypeError: sync");
   });
 });

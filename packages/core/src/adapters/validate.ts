@@ -112,7 +112,8 @@ export function blockError(block: unknown, height: bigint): string | undefined {
   return undefined;
 }
 
-function blockHeightsError(heights: unknown): string | undefined {
+/** Why `getBlockHeights()`'s result is not a served range, or undefined when it is. */
+export function blockHeightsError(heights: unknown): string | undefined {
   if (!isObject(heights)) return "getBlockHeights resolved a non-object";
   for (const key of ["oldest", "newest"]) {
     const value = heights[key];
