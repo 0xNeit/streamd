@@ -1863,7 +1863,9 @@ const wapal = await streamd.getSales({ fromVersion: 7028273582n, toVersion: 7028
   a fill emits only Wapal's event, so it is a `wapal` sale; one transaction can hold sales on
   both. A fee the aggregator adds on top is in no event and not in `price`.
 - **Buyer and seller** come from the event, in long form, never from the sender: an offer fill
-  is sent by the seller, an aggregated buy by the buyer.
+  is sent by the seller, an aggregated buy by the buyer. A Tradeport legacy-token collection bid
+  leaves the token in Tradeport's store for the buyer to claim later, so that sale's transaction
+  withdraws the token from the seller without depositing it to the buyer.
 - **Price** is what the buyer paid, in base units, royalty and fee inside: on Wapal `price`
   equals `royalty` plus `fee` (the marketplace's commission) plus the seller's proceeds. Tradeport's
   events report only the price, so its records have no `royalty` or `fee`. Neither
