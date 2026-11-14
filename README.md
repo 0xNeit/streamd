@@ -54,7 +54,7 @@ TypeScript types:
 - `@streamd/sui` (`packages/sui`) - `SuiClient` and `SuiAdapter`, the same client over Sui events,
   Sui network presets, and `resolveName`, `primaryName` and `ownedBy` over SuiNS and object owners, with
   a `./framework` catalog of `0x2` and `0x3` events. `@mysten/sui` is a peer dependency. See [Sui](#sui).
-- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
+- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents` and `useTransfers` take an
   `AptosClient`. See [React hooks](#react-hooks).
 
@@ -2828,6 +2828,24 @@ function Feed() {
   sets state. `refetch` is the same function on every render, so it can sit in effect
   dependencies; its promise resolves once that request settles and never rejects. With no
   descriptor, after unmount, or during server rendering it does nothing.
+- **`useEventPages(descriptor, options?)`** walks `client.getEventPages` a page at a time
+  and returns `{ pages, hasMore, loading, error, loadMore }`. The first page loads on mount and
+  each `loadMore()` appends the next, so `pages` holds every page loaded so far as
+  `getEventPages` yielded it, oldest first, or newest first with `orderBy: "desc"`. Options are
+  `getEventPages`'s, without `signal`, plus `pageSize` (default 25), the most events each
+  adapter request asks for; `limit` counts across all pages, and a list of descriptors is
+  merged. `hasMore` turns `false` once a fetch finds the walk finished: the last page cannot tell
+  it is the last, so the `loadMore()` after it adds nothing and turns it off, and an empty range
+  shows `false` after the first fetch. A failure sets `error` and keeps the pages, and the next
+  `loadMore()` retries, carrying on from the event after the last one held with no repeat and
+  no gap: it starts a new walk at that event's version (ends there with `"desc"`) and skips the
+  events it reads again, so the first page after a retry can be shorter, `maxPages` counts from
+  there, and an ascending `toVersion: "head"` or a `"desc"` negative `fromVersion` is measured
+  from the head again. A changed descriptor, option or client starts over, showing no pages
+  from that render on and aborting the page in flight. `loadMore` is the same function on every
+  render; its promise resolves once its page settles and never rejects, and it does nothing
+  while a page is in flight, once `hasMore` is `false`, with no descriptor, after unmount, or
+  during server rendering.
 - **`useTransactionEvents(hash, options?)`** waits for a submitted transaction through
   `client.eventsOf` and returns `{ data, error, loading, vmStatus }`. A transaction that failed
   on chain sets `error` and `vmStatus`, the chain's status; one not found in time sets `error`
