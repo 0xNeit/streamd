@@ -2770,10 +2770,9 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   `creationNumber` against the stored `guid` (`listEventHandles` returns it), and a struct
   and field handle is refused with a `StreamdError`; `resource` by the stored address and the
   resource type, exactly as the fullnode writes it (see Resource changes below). It sees only
-  what was stored, from
-  whichever subscription stored it. Following the store with `on()` is gap-free only while
-  rows arrive in version order, since its cursor is a position in the table; it sets no
-  `throughVersion` for the same reason.
+  what was stored, from whichever subscription stored it. Following the store with `on()` is
+  gap-free only while rows arrive in version order, since its cursor is a position in the
+  table; it sets no `throughVersion` for the same reason.
 - **Head and earliest** are the highest and lowest stored versions across the whole store,
   `0n` for a store that was never pruned and holds nothing, so relative `fromVersion` and
   `toVersion: "head"` count from what is stored. After a prune neither reports below the
@@ -2880,11 +2879,12 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   and `await store.write(events, checkpoint, { accountAddress })` store the address in
   `account_address`, and changes stored by an earlier release, with none, are never served as
   `resource`. A database an earlier release made gains the column on first use by either the
-  store or the adapter, in one statement that checks the catalog first, so once it is there no
-  table lock is taken; two connections migrating at once wait on each other and both succeed.
-  `streamd_events_resource` is then built in a statement of its own, which on a large table
-  holds back writes, not reads, for one scan of it. The role either one connects as must own
-  the table for that first run.
+  store or the adapter, in one statement that checks the catalog first, so once it is there the
+  `ALTER` never runs again; two connections migrating at once wait on each other and both
+  succeed. `streamd_events_resource` is then built in a statement of its own, which on a large
+  table holds back writes, not reads, for one scan of it. Like the other `CREATE INDEX IF NOT
+  EXISTS` statements each client runs on first use, it takes a brief SHARE lock even when the
+  index exists, and the role connecting must own the tables.
 - **Retention.** `await store.prune({ beforeVersion })` deletes every event and stored transfer
   below that version and leaves saved cursors, with the SQLite store's rules: a `PostgresStoreAdapter` read whose
   `fromVersion`, `cursor` or `toVersion` is below the edge fails with a `StreamdNetworkError`

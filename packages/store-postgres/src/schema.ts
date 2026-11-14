@@ -51,10 +51,16 @@ const SCHEMA = [
     END IF;
   END $$`,
   // Apart from the ALTER's transaction, so its one scan of an older table
-  // holds back writes only, not reads.
-  `CREATE INDEX IF NOT EXISTS streamd_events_resource
-    ON streamd_events (account_address, type, version, event_index)
-    WHERE account_address IS NOT NULL`,
+  // holds back writes only, not reads. Two connections building it at once
+  // race on the name, and the loser has nothing left to do.
+  `DO $$
+  BEGIN
+    CREATE INDEX IF NOT EXISTS streamd_events_resource
+      ON streamd_events (account_address, type, version, event_index)
+      WHERE account_address IS NOT NULL;
+  EXCEPTION WHEN unique_violation OR duplicate_table THEN
+    NULL;
+  END $$`,
 ];
 
 // Its own schema, created only by what writes or prunes transfers, so the
