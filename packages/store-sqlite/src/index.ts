@@ -1,5 +1,5 @@
 export { SqliteEventStore } from "./store.js";
-export type { SavedCursor, StoreCheckpoint, StoreWriteOptions } from "./store.js";
+export type { SavedCursor, StoreCheckpoint, StoreStats, StoreStatsOptions, StoreTypeCount, StoreWriteOptions } from "./store.js";
 export type { SqliteDatabase, SqliteStatement } from "./schema.js";
 export { StoreAdapter } from "./adapter.js";
 export { storeEvents, storeTransfers } from "./sink.js";

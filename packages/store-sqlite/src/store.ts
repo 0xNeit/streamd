@@ -4,8 +4,10 @@ import {
   PRUNED_BEFORE,
   TRANSFER_SCHEMA,
   ensureSchema,
+  eventColumns,
   hashKey,
   migrateSchema,
+  prunedBefore,
   raisePrunedBefore,
   transaction,
   versionKey,
@@ -33,6 +35,48 @@ export interface StoreWriteOptions {
 export interface SavedCursor {
   name: string;
   cursor: string;
+}
+
+/** What `stats()` reads beyond the totals. */
+export interface StoreStatsOptions {
+  /** Also count events per type. */
+  byType?: boolean;
+}
+
+/** How many stored events have one type. */
+export interface StoreTypeCount {
+  type: string;
+  count: bigint;
+}
+
+/** What a store holds, as `stats()` reports it. */
+export interface StoreStats {
+  /** Stored events: every row of `streamd_events` not written as a resource change. */
+  events: bigint;
+  /** Rows written as resource changes, with an `accountAddress`. */
+  resourceChanges: bigint;
+  /** Rows of `streamd_transfers`, `0n` before the first transfer write or prune. */
+  transfers: bigint;
+  /** The lowest version of any stored event or resource change; absent when there are none. */
+  lowestVersion?: bigint;
+  /** The highest version of any stored event or resource change; absent when there are none. */
+  highestVersion?: bigint;
+  /** The pruned edge: `0n` until the first prune. */
+  prunedBefore: bigint;
+  /** Events per type, most first, then by type in byte order; only when asked. */
+  byType?: StoreTypeCount[];
+}
+
+/** Reads `byType` from `stats()` options, refusing anything but a boolean. */
+function wantsByType(options: StoreStatsOptions | undefined): boolean {
+  if (options !== undefined && (typeof options !== "object" || options === null)) {
+    throw new StreamdError("stats() options must be an object");
+  }
+  const byType = options?.byType;
+  if (byType !== undefined && typeof byType !== "boolean") {
+    throw new StreamdError(`Not a valid byType: ${String(byType)} (expected a boolean)`);
+  }
+  return byType === true;
 }
 
 function rowOf(event: StreamdEvent, accountAddress: string | null = null): unknown[] {
@@ -196,6 +240,50 @@ export class SqliteEventStore {
       this.db.prepare("DELETE FROM streamd_transfers WHERE version < ?").run(key);
       raisePrunedBefore(this.db, key);
     });
+  }
+
+  /**
+   * Counts what the store holds, every read in one savepoint so a writer on
+   * another connection cannot land between them. Never migrates or creates a
+   * table, so a read-only connection to an older database answers. Each count
+   * scans its table or an index.
+   */
+  stats(options?: StoreStatsOptions): StoreStats {
+    const byType = wantsByType(options);
+    let stats!: StoreStats;
+    transaction(this.db, () => {
+      // Before a write has migrated the table, no row can be a resource change.
+      const migrated = eventColumns(this.db).has("account_address");
+      const totals = this.db
+        .prepare(
+          `SELECT count(*) AS rows, ${migrated ? "count(account_address)" : "0"} AS changes,
+             min(version) AS lowest, max(version) AS highest FROM streamd_events`,
+        )
+        .get() as { rows: number | bigint; changes: number | bigint; lowest: string | null; highest: string | null };
+      const hasTransfers = this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'streamd_transfers'")
+        .get();
+      const transfers = hasTransfers
+        ? (this.db.prepare("SELECT count(*) AS n FROM streamd_transfers").get() as { n: number | bigint }).n
+        : 0;
+      stats = {
+        events: BigInt(totals.rows) - BigInt(totals.changes),
+        resourceChanges: BigInt(totals.changes),
+        transfers: BigInt(transfers),
+        ...(totals.lowest !== null && { lowestVersion: BigInt(totals.lowest), highestVersion: BigInt(totals.highest!) }),
+        prunedBefore: prunedBefore(this.db),
+      };
+      if (byType) {
+        const rows = this.db
+          .prepare(
+            `SELECT type, count(*) AS n FROM streamd_events ${migrated ? "WHERE account_address IS NULL" : ""}
+             GROUP BY type ORDER BY n DESC, type`,
+          )
+          .all() as { type: string; n: number | bigint }[];
+        stats.byType = rows.map((r) => ({ type: r.type, count: BigInt(r.n) }));
+      }
+    });
+    return stats;
   }
 
   /** The cursor last saved under `name`, or `undefined` when none was. */
