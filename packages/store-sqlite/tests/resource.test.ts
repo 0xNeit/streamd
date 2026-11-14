@@ -80,8 +80,8 @@ describe("SqliteEventStore resource addresses", () => {
 
     const adapter = new StoreAdapter(db);
     const all = await adapter.fetchEvents({ kind: "module", eventType: [COIN, "0x1::m::E"] }, { limit: 10 });
-    expect(ids(all.events)).toEqual(["1:0", "1:2", "3:1"]);
-    // The old row has no address, so only the new one is served.
+    // The old change has no address, so it still reads as an event and only the new one as a change.
+    expect(ids(all.events)).toEqual(["1:0", "1:2"]);
     expect(ids((await adapter.fetchEvents(coinAtA, {})).events)).toEqual(["3:1"]);
 
     // A second store over a migrated database finds nothing to do.
@@ -212,6 +212,22 @@ describe("StoreAdapter resource descriptors", () => {
     store.write([change(10n, 3)], undefined, { accountAddress: A });
     const later = await adapter.fetchEvents(coinAtA, { cursor: `${CHANGES.at(-1)}:3` });
     expect(ids(later.events)).toEqual(["10:3"]);
+  });
+
+  it("keeps stored changes out of module, account and handle reads", async () => {
+    const { store, adapter } = seeded();
+    // A change carrying a sender, hash and guid, as the fullnode delivers it, beside one real event.
+    const guid = { creationNumber: 9n, accountAddress: A };
+    store.write([change(20n, 1, COIN, { sender: A, transactionHash: "0x" + "ab".repeat(32), guid })], undefined, {
+      accountAddress: A,
+    });
+    store.write([change(20n, 0, "0x1::coin::Deposit", { sender: A, guid })]);
+    const read = async (descriptor: EventDescriptor) => ids((await adapter.fetchEvents(descriptor, { limit: 100 })).events);
+    expect(await read({ kind: "account", accountAddress: A })).toEqual(["20:0"]);
+    expect(await read({ kind: "module", eventType: "0x1::coin::CoinStore" })).toEqual([]);
+    expect(await read({ kind: "module", eventType: [COIN, ACCOUNT, "0x1::coin::Deposit"] })).toEqual(["20:0"]);
+    expect(await read({ kind: "handle", accountAddress: A, creationNumber: 9n })).toEqual(["20:0"]);
+    expect(store.stats().events).toBe(1n);
   });
 
   it("passes checkAdapter", async () => {

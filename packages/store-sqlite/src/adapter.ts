@@ -140,7 +140,7 @@ function count(value: number | undefined, label: string, fallback: number): numb
  * `account` matches events stored with that `sender`, `handle` matches by
  * `creationNumber` against each event's stored `guid`, and `resource` matches
  * changes `storeEvents` stored with that address, so none an older release
- * stored without one.
+ * stored without one. Changes stored with an address match no other kind.
  */
 export class StoreAdapter implements EventAdapter {
   private readonly db: SqliteDatabase;
@@ -167,8 +167,13 @@ export class StoreAdapter implements EventAdapter {
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
     let where = descriptorWhere(this.db, descriptor);
     // Never migrates, since it may be read-only: a database no write has
-    // migrated yet holds no resource rows to serve.
-    if (descriptor.kind === "resource" && !eventColumns(this.db).has("account_address")) where = { sql: "0", params: [] };
+    // migrated yet holds no resource rows, to serve or to leave out.
+    const migrated = eventColumns(this.db).has("account_address");
+    if (descriptor.kind === "resource") {
+      if (!migrated) where = { sql: "0", params: [] };
+    } else if (migrated) {
+      where = { sql: `${where.sql} AND account_address IS NULL`, params: where.params };
+    }
     const start = startOf(options, prunedBefore(this.db));
     const limit = count(options.limit, "limit", DEFAULT_LIMIT);
     const offset = options.cursor === undefined ? count(options.offset, "offset", 0) : 0;

@@ -127,7 +127,8 @@ function checkEdge(start: Position, toVersion: bigint | undefined, edge: bigint)
  * caught: `account` matches events stored with that `sender`, `handle`
  * matches by `creationNumber` against each event's stored `guid`, and
  * `resource` matches changes `storeEvents` stored with that address, so none
- * an older release stored without one.
+ * an older release stored without one. Changes stored with an
+ * address match no other kind.
  */
 export class PostgresStoreAdapter implements EventAdapter {
   private readonly client: PostgresClient;
@@ -148,7 +149,9 @@ export class PostgresStoreAdapter implements EventAdapter {
   }
 
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
-    const where = descriptorWhere(descriptor);
+    const matches = descriptorWhere(descriptor);
+    const where: Where =
+      descriptor.kind === "resource" ? matches : (bind) => `${matches(bind)} AND account_address IS NULL`;
     const cursor = options.cursor === undefined ? undefined : parseCursor(options.cursor);
     const limit = count(options.limit, "limit", DEFAULT_LIMIT);
     const offset = cursor === undefined ? count(options.offset, "offset", 0) : 0;
