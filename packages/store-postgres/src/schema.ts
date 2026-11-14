@@ -37,6 +37,23 @@ const SCHEMA = [
     ON streamd_events (guid_address, guid_creation, version, event_index)
     WHERE guid_address IS NOT NULL`,
   "CREATE TABLE IF NOT EXISTS streamd_cursors (name text PRIMARY KEY, cursor text NOT NULL)",
+  // The column resource changes are served by, added to new and older tables
+  // alike. Checked first, since the ALTER locks the whole table even when it
+  // has nothing to do. One statement, so one transaction on any connection: a
+  // second connection migrating at once waits on the first's lock, then finds
+  // both already there.
+  `DO $$
+  BEGIN
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_attribute
+      WHERE attrelid = 'streamd_events'::regclass AND attname = 'account_address' AND NOT attisdropped
+    ) THEN
+      ALTER TABLE streamd_events ADD COLUMN IF NOT EXISTS account_address text;
+      CREATE INDEX IF NOT EXISTS streamd_events_resource
+        ON streamd_events (account_address, type, version, event_index)
+        WHERE account_address IS NOT NULL;
+    END IF;
+  END $$`,
 ];
 
 // Its own schema, created only by what writes or prunes transfers, so the

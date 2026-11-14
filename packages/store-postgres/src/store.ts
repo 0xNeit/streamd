@@ -1,4 +1,4 @@
-import { StreamdError, eventId, normalizeAddress, parseEvent, serializeEvent } from "@streamd/core";
+import { StreamdError, eventId, normalizeAddress, parseEvent, requireAddress, serializeEvent } from "@streamd/core";
 import type { StreamdEvent, Transfer } from "@streamd/core";
 import { PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
@@ -10,15 +10,25 @@ export interface StoreCheckpoint {
   cursor: string | undefined;
 }
 
+/** What a write knows about its events that they do not carry themselves. */
+export interface StoreWriteOptions {
+  /**
+   * The address holding the resource these events are changes of, as a
+   * `resource` descriptor names it. A change carries only the resource type,
+   * so this is what lets a store adapter serve the descriptor back.
+   */
+  accountAddress?: string;
+}
+
 /** A cursor saved under a name, as `cursors()` lists it. */
 export interface SavedCursor {
   name: string;
   cursor: string;
 }
 
-type Row = [string, number, string, string | null, string | null, string | null, string];
+type Row = [string, number, string, string | null, string | null, string | null, string, string | null];
 
-function rowOf(event: StreamdEvent): Row {
+function rowOf(event: StreamdEvent, accountAddress: string | null = null): Row {
   if (!Number.isSafeInteger(event.eventIndex) || event.eventIndex < 0 || event.eventIndex > 2 ** 31 - 1) {
     throw new StreamdError(`Not a valid eventIndex: ${String(event.eventIndex)}`);
   }
@@ -35,6 +45,7 @@ function rowOf(event: StreamdEvent): Row {
     guidAddress ?? null,
     guidAddress ? event.guid!.creationNumber.toString() : null,
     json,
+    accountAddress,
   ];
 }
 
@@ -95,14 +106,15 @@ function requireName(name: unknown): string {
 // since a driver told the parameter is jsonb may encode the string as a JSON string.
 const WRITE = `
 WITH incoming AS (
-  SELECT (r->>0)::numeric, (r->>1)::integer, r->>2, r->>3, r->>4, (r->>5)::numeric, r->>6
+  SELECT (r->>0)::numeric, (r->>1)::integer, r->>2, r->>3, r->>4, (r->>5)::numeric, r->>6, r->>7
   FROM jsonb_array_elements($1::text::jsonb) AS r
 ), written AS (
-  INSERT INTO streamd_events (version, event_index, type, sender, guid_address, guid_creation, event)
+  INSERT INTO streamd_events (version, event_index, type, sender, guid_address, guid_creation, event, account_address)
   SELECT * FROM incoming
   ON CONFLICT (version, event_index) DO UPDATE SET
     type = excluded.type, sender = excluded.sender, guid_address = excluded.guid_address,
-    guid_creation = excluded.guid_creation, event = excluded.event
+    guid_creation = excluded.guid_creation, event = excluded.event,
+    account_address = coalesce(excluded.account_address, streamd_events.account_address)
 )
 INSERT INTO streamd_cursors (name, cursor)
 SELECT $2::text, $3::text WHERE $2::text IS NOT NULL AND $3::text IS NOT NULL
@@ -150,12 +162,14 @@ export class PostgresEventStore {
 
   /**
    * Upserts `events` and, given a checkpoint, saves its cursor, in one
-   * statement: either everything lands or nothing does.
+   * statement: either everything lands or nothing does. A rewrite without
+   * `accountAddress` keeps the one the row was stored with.
    */
-  async write(events: readonly StreamdEvent[], checkpoint?: StoreCheckpoint): Promise<void> {
+  async write(events: readonly StreamdEvent[], checkpoint?: StoreCheckpoint, options?: StoreWriteOptions): Promise<void> {
     // Validated before anything is sent, so a bad event writes nothing. One
     // statement cannot update a row twice, so a repeated id keeps its last copy.
-    const rows = [...new Map(events.map((e) => [eventId(e), rowOf(e)])).values()];
+    const address = options?.accountAddress === undefined ? null : requireAddress(options.accountAddress);
+    const rows = [...new Map(events.map((e) => [eventId(e), rowOf(e, address)])).values()];
     await this.upsertAll(WRITE, rows, checkpoint);
   }
 
