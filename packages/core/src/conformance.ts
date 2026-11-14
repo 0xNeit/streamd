@@ -7,6 +7,7 @@ import type {
   FetchOptions,
   StreamdEvent,
   TransactionEvents,
+  ViewRequest,
 } from "./types.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
 import {
@@ -15,6 +16,7 @@ import {
   blockHeightsError,
   isObject,
   requireAdapter,
+  requireViewRequest,
   versionError,
 } from "./adapters/validate.js";
 import { eventId } from "./cursor.js";
@@ -35,7 +37,8 @@ export type AdapterCheckName =
   | "block-heights"
   | "block-sequence"
   | "transaction-events"
-  | "transaction-events-by-version";
+  | "transaction-events-by-version"
+  | "view";
 
 export interface AdapterCheckOptions {
   /** Where the walk starts; omitted leaves the start to the adapter (usually the head). */
@@ -49,6 +52,12 @@ export interface AdapterCheckOptions {
    * `getBlockHeights`, and the block rules skip when neither is there.
    */
   blockHeight?: bigint;
+  /**
+   * A view to read through `view`, at `version` or else the first walked
+   * event's version or the head; its rule is skipped without one, since no
+   * view function exists on every chain.
+   */
+  view?: { request: ViewRequest; version?: bigint };
 }
 
 export interface AdapterCheckResult {
@@ -75,6 +84,7 @@ interface Settings {
   limit: number;
   maxPages: number;
   blockHeight?: bigint;
+  view?: { request: ViewRequest; version?: bigint };
 }
 
 interface WalkedPage {
@@ -115,7 +125,17 @@ function settings(options: AdapterCheckOptions): Settings {
     limit: requireCount(options.limit, "checkAdapter limit", DEFAULT_LIMIT),
     maxPages: requireCount(options.maxPages, "checkAdapter maxPages", DEFAULT_MAX_PAGES),
     blockHeight: requireVersion(options.blockHeight, "blockHeight"),
+    view: viewOption(options.view),
   };
+}
+
+function viewOption(value: unknown): Settings["view"] {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null) {
+    throw new StreamdError("checkAdapter view must be an object");
+  }
+  const { request, version } = value as Record<string, unknown>;
+  return { request: requireViewRequest(request), version: requireVersion(version, "view.version") };
 }
 
 export function describe(err: unknown): string {
@@ -358,16 +378,17 @@ async function versionResults(
   adapter: EventAdapter,
   descriptor: EventDescriptor,
   events: StreamdEvent[],
-): Promise<AdapterCheckResult[]> {
+): Promise<{ results: AdapterCheckResult[]; head?: bigint }> {
   const head = adapter.getHeadVersion && (await readVersion("getHeadVersion", adapter, descriptor));
   const earliest =
     adapter.getEarliestVersion && (await readVersion("getEarliestVersion", adapter, descriptor));
-  return [
+  const results = [
     head === undefined ? skip("head-version", ABSENT) : headResult(head, events),
     earliest === undefined
       ? skip("earliest-version", ABSENT)
       : earliestResult(earliest, head, events),
   ];
+  return { results, head: typeof head === "bigint" ? head : undefined };
 }
 
 type Outcome = { ok: true; value: unknown } | { ok: false; error: string };
@@ -555,12 +576,29 @@ async function lookupResults(
   ];
 }
 
+async function viewResult(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  view: Settings["view"],
+  at: bigint | undefined,
+): Promise<AdapterCheckResult> {
+  if (adapter.view === undefined) return skip("view", ABSENT);
+  if (view === undefined) return skip("view", "view request not given");
+  const version = view.version ?? at;
+  if (version === undefined) return skip("view", "no version to read at");
+  const got = await attempt("view", () => adapter.view!(view.request, version, descriptor));
+  if (!got.ok) return verdict("view", got.error);
+  const label = `view(${view.request.function}) at ${version}`;
+  return verdict("view", Array.isArray(got.value) ? undefined : `${label} resolved ${typeof got.value}, not an array`);
+}
+
 /**
  * Drive `adapter` through a short read-only walk over `descriptor` and report
  * which `EventAdapter` contract rules it keeps. Violations are `fail` results,
  * never rejections; it rejects only for invalid arguments. Against a real
  * source it makes network reads: at most `maxPages` walk fetches, two more
- * fetches, and one call per optional method present, two for `getBlock`.
+ * fetches, and one call to each optional method it checks that is present
+ * (two to `getBlock`): at most `maxPages + 10` calls.
  * Needs no test runner, so assert on `report.ok` from any of them.
  */
 export async function checkAdapter(
@@ -571,13 +609,18 @@ export async function checkAdapter(
   requireAdapter(adapter, "checkAdapter");
   const s = settings(options);
   const w = await walk(adapter, descriptor, s);
+  const events = allEvents(w);
+  const precedence = await cursorPrecedence(adapter, descriptor, w, s);
+  const foreign = await foreignCursor(adapter, descriptor, s);
+  const versions = await versionResults(adapter, descriptor, events);
   const results = [
     ...walkResults(w, s),
-    await cursorPrecedence(adapter, descriptor, w, s),
-    await foreignCursor(adapter, descriptor, s),
-    ...(await versionResults(adapter, descriptor, allEvents(w))),
+    precedence,
+    foreign,
+    ...versions.results,
     ...(await blockResults(adapter, descriptor, s.blockHeight)),
-    ...(await lookupResults(adapter, descriptor, allEvents(w))),
+    ...(await lookupResults(adapter, descriptor, events)),
+    await viewResult(adapter, descriptor, s.view, events[0]?.version ?? versions.head),
   ];
   return {
     ok: results.every((r) => r.status !== "fail"),

@@ -83,6 +83,7 @@ describe("checkAdapter walk", () => {
       "block-sequence": "skip",
       "transaction-events": "skip",
       "transaction-events-by-version": "skip",
+      view: "skip",
     });
     expect(report.results.map((r): string => r.name)).toEqual([
       ...WALK_RULES,
@@ -95,6 +96,7 @@ describe("checkAdapter walk", () => {
       "block-sequence",
       "transaction-events",
       "transaction-events-by-version",
+      "view",
     ]);
     expect(report.pagesFetched).toBe(3);
   });
@@ -261,6 +263,9 @@ describe("checkAdapter walk", () => {
     ["a negative fromVersion", { fromVersion: -1n }],
     ["a number fromVersion", { fromVersion: 1 }],
     ["null options", null],
+    ["a view that is not an object", { view: "0x1::a::b" }],
+    ["a malformed view function", { view: { request: { function: "coin::balance" } } }],
+    ["a negative view version", { view: { request: { function: "0x1::a::b" }, version: -1n } }],
   ])("rejects %s with StreamdError before any call", async (_label, options) => {
     const adapter = scripted([{ events: [], hasMore: false }]);
     await expect(checkAdapter(adapter, desc, options as never)).rejects.toBeInstanceOf(StreamdError);
@@ -339,6 +344,7 @@ describe("checkAdapter optional methods", () => {
       "block-sequence",
       "transaction-events",
       "transaction-events-by-version",
+      "view",
     ];
     for (const name of optional) {
       expect(result(report, name)).toEqual({ name, status: "skip", message: "not implemented (optional)" } as never);
@@ -412,11 +418,26 @@ describe("checkAdapter optional methods", () => {
       getEarliestVersion: () => (calls.push("earliest"), base.getEarliestVersion()),
       getBlockHeights: (d) => (calls.push("heights"), blocks.getBlockHeights!(d)),
       getBlock: (d, h) => (calls.push(`block ${h}`), blocks.getBlock!(d, h)),
+      getTransactionEventsByVersion: async (v) => (calls.push("by-version"), transaction([ev(Number(v))], v)),
+      view: async () => (calls.push("view"), []),
     };
-    const report = await checkAdapter(adapter, desc, { limit: 1, maxPages: 4, blockHeight: 3n });
+    const report = await checkAdapter(adapter, desc, {
+      limit: 1,
+      maxPages: 4,
+      blockHeight: 3n,
+      view: { request: { function: "0x1::a::b" } },
+    });
     expect(report.ok).toBe(true);
     expect(calls.filter((c) => c === "fetch")).toHaveLength(6);
-    expect(calls.filter((c) => c !== "fetch")).toEqual(["head", "earliest", "heights", "block 3", "block 2"]);
+    expect(calls.filter((c) => c !== "fetch")).toEqual([
+      "head",
+      "earliest",
+      "heights",
+      "block 3",
+      "block 2",
+      "by-version",
+      "view",
+    ]);
   });
 });
 
@@ -638,5 +659,55 @@ describe("checkAdapter transaction lookups", () => {
     for (const name of LOOKUPS) expect(result(empty, name).message).toBe("no walked event to look up");
     const unhashed = await checkAdapter(lookups({ fetchEvents: (d, o) => seeded().fetchEvents(d, o) }), desc);
     expect(result(unhashed, "transaction-events").message).toBe("no walked event carries a transactionHash");
+  });
+});
+
+describe("checkAdapter view", () => {
+  const request = { function: "0x1::coin::balance", typeArguments: ["0x1::aptos_coin::AptosCoin"], functionArguments: ["0x1"] } as const;
+
+  function viewing(reply: () => unknown, base: Partial<EventAdapter> = {}) {
+    const asked: unknown[] = [];
+    const adapter = broken({
+      view: async (r, v, d) => (asked.push(r, v, d), reply() as unknown[]),
+      ...base,
+    });
+    return { adapter, asked };
+  }
+
+  it("skips without the method, and without a request", async () => {
+    const absent = await checkAdapter(seeded(), desc, { view: { request } });
+    expect(result(absent, "view").message).toBe("not implemented (optional)");
+    const { adapter, asked } = viewing(() => []);
+    expect(result(await checkAdapter(adapter, desc), "view").message).toBe("view request not given");
+    expect(asked).toHaveLength(0);
+  });
+
+  it("reads at the given version, else the first walked event's, else the head", async () => {
+    const given = viewing(() => ["1"]);
+    const report = await checkAdapter(given.adapter, desc, { ...walkOptions, view: { request, version: 4n } });
+    expect(result(report, "view").status).toBe("pass");
+    expect(given.asked).toEqual([request, 4n, desc]);
+    const walked = viewing(() => ["1"]);
+    await checkAdapter(walked.adapter, desc, { ...walkOptions, view: { request } });
+    expect(walked.asked[1]).toBe(2n);
+    const empty = async () => ({ events: [], hasMore: false });
+    const head = viewing(() => ["1"], { fetchEvents: empty, getHeadVersion: async () => 9n });
+    await checkAdapter(head.adapter, desc, { view: { request } });
+    expect(head.asked[1]).toBe(9n);
+    const none = viewing(() => ["1"], { fetchEvents: empty, getHeadVersion: undefined });
+    const skipped = await checkAdapter(none.adapter, desc, { view: { request } });
+    expect(result(skipped, "view").message).toBe("no version to read at");
+    expect(none.asked).toHaveLength(0);
+  });
+
+  it.each([
+    ["a non-array result", () => ({ value: "1" }), "view(0x1::coin::balance) at 2 resolved object, not an array"],
+    ["undefined", () => undefined, "resolved undefined, not an array"],
+    ["a rejection", () => { throw new StreamdNetworkError("pruned", 410); }, "view rejected: StreamdNetworkError: pruned"],
+  ])("fails view on %s", async (_label, reply, message) => {
+    const { adapter } = viewing(reply);
+    const report = await checkAdapter(adapter, desc, { ...walkOptions, view: { request } });
+    expect(failed(report)).toEqual(["view"]);
+    expect(result(report, "view").message).toContain(message);
   });
 });
