@@ -1,0 +1,86 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "reconfiguration",
+  "structs": [
+   {
+    "name": "Configuration",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "epoch",
+      "type": "u64"
+     },
+     {
+      "name": "last_reconfiguration_time",
+      "type": "u64"
+     },
+     {
+      "name": "events",
+      "type": "0x1::event::EventHandle<0x1::reconfiguration::NewEpochEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DisableReconfiguration",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "NewEpoch",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "epoch",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "NewEpochEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "epoch",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

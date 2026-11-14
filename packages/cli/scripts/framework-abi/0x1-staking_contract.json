@@ -1,0 +1,761 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "staking_contract",
+  "structs": [
+   {
+    "name": "AddStake",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AddStakeEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UnlockStake",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     },
+     {
+      "name": "commission_paid",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UnlockStakeEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     },
+     {
+      "name": "commission_paid",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "BeneficiaryForOperator",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "beneficiary_for_operator",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SetBeneficiaryForOperator",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "old_beneficiary",
+      "type": "address"
+     },
+     {
+      "name": "new_beneficiary",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AddDistribution",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AddDistributionEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CreateStakingContract",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "voter",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "principal",
+      "type": "u64"
+     },
+     {
+      "name": "commission_percentage",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CreateStakingContractEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "voter",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "principal",
+      "type": "u64"
+     },
+     {
+      "name": "commission_percentage",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Distribute",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "recipient",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DistributeEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "recipient",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RequestCommission",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "accumulated_rewards",
+      "type": "u64"
+     },
+     {
+      "name": "commission_amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RequestCommissionEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "accumulated_rewards",
+      "type": "u64"
+     },
+     {
+      "name": "commission_amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ResetLockup",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ResetLockupEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Staker",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "staker",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "StakingContract",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "principal",
+      "type": "u64"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "owner_cap",
+      "type": "0x1::stake::OwnerCapability"
+     },
+     {
+      "name": "commission_percentage",
+      "type": "u64"
+     },
+     {
+      "name": "distribution_pool",
+      "type": "0x1::pool_u64::Pool"
+     },
+     {
+      "name": "signer_cap",
+      "type": "0x1::account::SignerCapability"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "StakingGroupContainer",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "StakingGroupUpdateCommissionEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "update_commission_events",
+      "type": "0x1::event::EventHandle<0x1::staking_contract::UpdateCommissionEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Store",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "staking_contracts",
+      "type": "0x1::simple_map::SimpleMap<address, 0x1::staking_contract::StakingContract>"
+     },
+     {
+      "name": "create_staking_contract_events",
+      "type": "0x1::event::EventHandle<0x1::staking_contract::CreateStakingContractEvent>"
+     },
+     {
+      "name": "update_voter_events",
+      "type": "0x1::event::EventHandle<0x1::staking_contract::UpdateVoterEvent>"
+     },
+     {
+      "name": "reset_lockup_events",
+      "type": "0x1::event::EventHandle<0x1::staking_contract::ResetLockupEvent>"
+     },
+     {
+      "name": "add_stake_events",
+      "type": "0x1::event::EventHandle<0x1::staking_contract::AddStakeEvent>"
+     },
+     {
+      "name": "request_commission_events",
+      "type": "0x1::event::EventHandle<0x1::staking_contract::RequestCommissionEvent>"
+     },
+     {
+      "name": "unlock_stake_events",
+      "type": "0x1::event::EventHandle<0x1::staking_contract::UnlockStakeEvent>"
+     },
+     {
+      "name": "switch_operator_events",
+      "type": "0x1::event::EventHandle<0x1::staking_contract::SwitchOperatorEvent>"
+     },
+     {
+      "name": "add_distribution_events",
+      "type": "0x1::event::EventHandle<0x1::staking_contract::AddDistributionEvent>"
+     },
+     {
+      "name": "distribute_events",
+      "type": "0x1::event::EventHandle<0x1::staking_contract::DistributeEvent>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SwitchOperator",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "old_operator",
+      "type": "address"
+     },
+     {
+      "name": "new_operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SwitchOperatorEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "old_operator",
+      "type": "address"
+     },
+     {
+      "name": "new_operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UpdateCommission",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "staker",
+      "type": "address"
+     },
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "old_commission_percentage",
+      "type": "u64"
+     },
+     {
+      "name": "new_commission_percentage",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UpdateCommissionEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "staker",
+      "type": "address"
+     },
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "old_commission_percentage",
+      "type": "u64"
+     },
+     {
+      "name": "new_commission_percentage",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UpdateVoter",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "old_voter",
+      "type": "address"
+     },
+     {
+      "name": "new_voter",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UpdateVoterEvent",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "operator",
+      "type": "address"
+     },
+     {
+      "name": "pool_address",
+      "type": "address"
+     },
+     {
+      "name": "old_voter",
+      "type": "address"
+     },
+     {
+      "name": "new_voter",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}
