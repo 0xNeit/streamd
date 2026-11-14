@@ -1,6 +1,6 @@
 import { StreamdError, eventId, normalizeAddress, parseEvent, requireAddress, serializeEvent } from "@streamd/core";
 import type { StreamdEvent, Transfer } from "@streamd/core";
-import { PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, hashKey, versionParam } from "./schema.js";
+import { EDGE, PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, hashKey, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 
 /** A source cursor to save under `name` alongside a write. */
@@ -24,6 +24,48 @@ export interface StoreWriteOptions {
 export interface SavedCursor {
   name: string;
   cursor: string;
+}
+
+/** What `stats()` reads beyond the totals. */
+export interface StoreStatsOptions {
+  /** Also count events per type. */
+  byType?: boolean;
+}
+
+/** How many stored events have one type. */
+export interface StoreTypeCount {
+  type: string;
+  count: bigint;
+}
+
+/** What a store holds, as `stats()` reports it. */
+export interface StoreStats {
+  /** Stored events: every row of `streamd_events` not written as a resource change. */
+  events: bigint;
+  /** Rows written as resource changes, with an `accountAddress`. */
+  resourceChanges: bigint;
+  /** Rows of `streamd_transfers`. */
+  transfers: bigint;
+  /** The lowest version of any stored event or resource change; absent when there are none. */
+  lowestVersion?: bigint;
+  /** The highest version of any stored event or resource change; absent when there are none. */
+  highestVersion?: bigint;
+  /** The pruned edge: `0n` until the first prune. */
+  prunedBefore: bigint;
+  /** Events per type, most first, then by type in byte order; only when asked. */
+  byType?: StoreTypeCount[];
+}
+
+/** Reads `byType` from `stats()` options, refusing anything but a boolean. */
+function wantsByType(options: StoreStatsOptions | undefined): boolean {
+  if (options !== undefined && (typeof options !== "object" || options === null)) {
+    throw new StreamdError("stats() options must be an object");
+  }
+  const byType = options?.byType;
+  if (byType !== undefined && typeof byType !== "boolean") {
+    throw new StreamdError(`Not a valid byType: ${String(byType)} (expected a boolean)`);
+  }
+  return byType === true;
 }
 
 type Row = [string, number, string, string | null, string | null, string | null, string, string | null, string | null];
@@ -149,6 +191,23 @@ transfers AS (DELETE FROM streamd_transfers WHERE version < $1::numeric)
 INSERT INTO streamd_cursors (name, cursor) VALUES ('${PRUNED_BEFORE}', $1::text)
 ON CONFLICT (name) DO UPDATE SET cursor = GREATEST(streamd_cursors.cursor::numeric, excluded.cursor::numeric)::text`;
 
+// One statement, so every count reads one snapshot. Numbers come back as text,
+// which every driver returns as it is. The per-type list is JSON text, sorted
+// in byte order as the SQLite store sorts.
+const STATS = `
+WITH totals AS (
+  SELECT count(*) AS rows, count(account_address) AS changes, min(version) AS lowest, max(version) AS highest
+  FROM streamd_events
+)
+SELECT rows::text AS rows, changes::text AS changes, lowest::text AS lowest, highest::text AS highest,
+  (SELECT count(*) FROM streamd_transfers)::text AS transfers,
+  ${EDGE}::text AS edge,
+  CASE WHEN $1::boolean THEN (
+    SELECT coalesce(json_agg(json_build_array(type, n::text) ORDER BY n DESC, type COLLATE "C"), '[]'::json)::text
+    FROM (SELECT type, count(*) AS n FROM streamd_events WHERE account_address IS NULL GROUP BY type) AS counted
+  ) END AS by_type
+FROM totals`;
+
 /**
  * Persists events to a Postgres database through a client the caller
  * supplies. Writes are idempotent on `(version, eventIndex)`: a redelivered
@@ -212,6 +271,32 @@ export class PostgresEventStore {
     await ensureSchema(this.client);
     await ensureSchema(this.client, TRANSFER_SCHEMA);
     await this.client.query(PRUNE, [edge]);
+  }
+
+  /**
+   * Counts what the store holds, in one statement so every count reads one
+   * snapshot. Like every read, it creates and migrates the event tables on
+   * first use, and creates `streamd_transfers` as `prune` does. Each count
+   * scans its table or an index.
+   */
+  async stats(options?: StoreStatsOptions): Promise<StoreStats> {
+    const byType = wantsByType(options);
+    await ensureSchema(this.client);
+    await ensureSchema(this.client, TRANSFER_SCHEMA);
+    const { rows } = await this.client.query(STATS, [byType]);
+    const row = rows[0]!;
+    const stats: StoreStats = {
+      events: BigInt(String(row.rows)) - BigInt(String(row.changes)),
+      resourceChanges: BigInt(String(row.changes)),
+      transfers: BigInt(String(row.transfers)),
+      ...(row.lowest != null && { lowestVersion: BigInt(String(row.lowest)), highestVersion: BigInt(String(row.highest)) }),
+      prunedBefore: BigInt(String(row.edge)),
+    };
+    if (byType) {
+      const counted = JSON.parse(String(row.by_type)) as [string, string][];
+      stats.byType = counted.map(([type, count]) => ({ type, count: BigInt(count) }));
+    }
+    return stats;
   }
 
   /** The cursor last saved under `name`, or `undefined` when none was. */
