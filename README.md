@@ -3473,9 +3473,102 @@ cursor file cannot be read or written, or `--to-version` is above the head; `2` 
 arguments. Run it under a supervisor
 that restarts on `1`.
 
+### Alert on thresholds
+
+`streamd alert` follows the rules in a JSON file and POSTs one alert to a webhook the first time
+a rule's count or sum of matching events in a window reaches its threshold. Delivery, signing,
+retries and the cursor file work as for `forward`.
+
+```sh
+# signed with STREAMD_WEBHOOK_SECRET when it is set
+streamd alert --rules rules.json --to https://hooks.example.com/alerts --cursor-file alerts.cursor
+```
+
+```json
+{
+  "rules": [
+    {
+      "name": "fee-burst",
+      "descriptor": { "eventType": "0x1::transaction_fee::FeeStatement" },
+      "where": ["total_charge_gas_units>=1000"],
+      "window": "1m",
+      "threshold": { "count": 50 }
+    },
+    {
+      "name": "big-deposits",
+      "descriptor": { "eventType": ["0x1::fungible_asset::Deposit"] },
+      "window": "5m",
+      "threshold": { "sum": "amount", "gte": "1000000000000" }
+    }
+  ]
+}
+```
+
+| Rule field | Meaning |
+| --- | --- |
+| `name` | unique, non-empty; names the rule in alerts and in the cursor file (required) |
+| `descriptor` | `eventType` (a type or a list), `account` and `resource`, combined as the `tail` flags of those names are (required) |
+| `where`, `sender`, `function`, `decode` | arrays of strings, exactly as the repeatable `--where`, `--sender`, `--function` and `--decode` flags |
+| `window` | `<n>s`, `<n>m`, `<n>h` or `<n>d` (required) |
+| `threshold` | `{ "count": n }`, at least `n` matching events, or `{ "sum": "<path>", "gte": "<integer>" }`, the field at that path summed at full precision (`gte` a decimal string or a safe integer) (required) |
+
+The file is read once, before anything reaches the chain. Any other key, a missing field, or a
+value the flags would refuse exits `1` with a message naming the file, the rule and the field, such
+as `rules.json: rule "fee-burst" (#1): window: must be a duration such as 30s, 5m, 1h or 1d`.
+Handle descriptors are refused: their events carry no timestamp.
+
+| Option | Meaning |
+| --- | --- |
+| `--rules <file>` | the rules file (required) |
+| `--to <url>` | webhook URL for every rule, `http` or `https` (required) |
+| `--cursor-file <path>` | each rule's position and open window (default `streamd-alert.cursor`) |
+| `--retries`, `--timeout`, `--header`, `--secret` | as for `forward`, per alert |
+
+`--network`, `--node-url`, `--archive`, `--api-key`, `--stats`, `--chain sui`, `--from-version`,
+`--from-time` and `--poll-interval` work as for `tail`; a start applies to rules with no saved
+position.
+
+**Windows** are fixed and back to back, in chain time: an event belongs to the window of
+`window` length, aligned to the Unix epoch, that holds its `timestamp`. The same history always
+gives the same windows and the same alerts, whenever it is read. An event with no timestamp stops
+the command with exit `1`.
+
+**Firing** happens once per window and rule, on the event that first takes the count or sum to the
+threshold. Later events in that window count but send nothing, and nothing waits for a window to
+close. A summed field that is present and not an integer is reported and that event skipped.
+
+Each rule has its own subscription; rules over the same descriptor, start and poll interval share
+one fetch per interval, except when starting at the head.
+
+**The alert** is one POST per crossing, `content-type: application/json`, signed as `forward`
+signs:
+
+```json
+{"id":"fee-burst:1763130000000000","rule":"fee-burst","windowStart":"1763130000000000","windowEnd":"1763130060000000","threshold":{"count":"50"},"value":"50","event":{"type":"0x1::transaction_fee::FeeStatement","version":"3480218811",...}}
+```
+
+Times are microseconds since the epoch and integers are decimal strings; `event` is the crossing
+event as `tail` prints it, and `threshold` is `{"count":"n"}` or `{"sum":"<path>","gte":"n"}`.
+`id` is the rule and the window start, the same on every redelivery, so a receiver can
+deduplicate on it.
+
+**The cursor file** holds one JSON object: each rule's cursor beside its open window (start,
+count or sum, and whether it alerted), written atomically after each delivered page and on exit.
+The window saved is always the one as of the end of the page the cursor follows, and it is saved
+only after that page's alerts were acknowledged, so a restart resumes the window without losing an
+alert. Delivery is at least once: a crash, a failed delivery, or a stop while a page's alerts are
+being sent replays that page, resending its alerts with the same `id`. A stop between pages
+repeats nothing. An entry records what its rule counts; changing a rule's descriptor, filter,
+decode, window or threshold makes the next run exit `1` naming it, until its entry is removed or
+another cursor file is used. Entries for rules no longer in the file are kept.
+
+Exit codes: `0` on Ctrl-C or `SIGTERM`; `1` when the rules file or the cursor file cannot be read
+or is invalid, an alert fails past its retries, a rule's subscription stops on an error, an event
+has no timestamp, or the cursor file cannot be written; `2` for invalid arguments.
+
 ### Start from a time
 
-`tail`, `forward` and `query` take `--from-time` instead of `--from-version`: a duration back from
+`tail`, `forward`, `alert` and `query` take `--from-time` instead of `--from-version`: a duration back from
 now (`90s`, `30m`, `2h`, `7d`) or an ISO date or date-time, which is UTC unless it names an offset:
 
 ```sh
