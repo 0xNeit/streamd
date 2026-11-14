@@ -16,7 +16,7 @@ const METHODS = [
 ] as const satisfies readonly (keyof EventAdapter)[];
 
 // Enough for stable percentiles, and it bounds a process that runs for weeks.
-const SAMPLES = 1024;
+export const SAMPLES = 1024;
 
 export type AdapterMethod = (typeof METHODS)[number];
 
@@ -39,11 +39,14 @@ export interface MethodMetrics {
   latency?: LatencyPercentiles;
 }
 
+/** What `AdapterMetrics.snapshot()` returns: numbers for each method called so far. */
+export type AdapterMetricsSnapshot = Partial<Record<AdapterMethod, MethodMetrics>>;
+
 export interface AdapterMetrics {
   /** `adapter` with every call counted; pass this to `StreamdClient`. */
   adapter: EventAdapter;
   /** Numbers for each method called so far. */
-  snapshot(): Partial<Record<AdapterMethod, MethodMetrics>>;
+  snapshot(): AdapterMetricsSnapshot;
   /** Forgets everything counted so far. */
   reset(): void;
 }
@@ -115,7 +118,7 @@ export function adapterMetrics(adapter: EventAdapter): AdapterMetrics {
   return {
     adapter: wrapped,
     snapshot() {
-      const out: Partial<Record<AdapterMethod, MethodMetrics>> = {};
+      const out: AdapterMetricsSnapshot = {};
       for (const [method, { requests, errors, rateLimited, durations }] of counters) {
         const metrics: MethodMetrics = { requests, errors, rateLimited };
         if (durations.length > 0) {
