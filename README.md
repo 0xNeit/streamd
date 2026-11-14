@@ -1635,6 +1635,45 @@ synchronous and a descriptor's identity never depends on a lookup.
   router address resolves nothing, and the Movement presets are custom networks
   the SDK knows no ANS contract for, so names reject there with a `StreamdError`.
 
+### Sender names
+
+`withNames` on a query or listener attaches `senderName`, the primary name of each event's
+`sender`, as `primaryName` reads it:
+
+```ts
+const deposits = await streamd.getEvents(DEPOSITS, { fromVersion: -1000n, withNames: true });
+for (const e of deposits) console.log(e.senderName ?? e.sender);
+```
+
+- **The field.** `senderName` is the name (`alice.apt`), `null` when the sender was looked up
+  and has none, and absent when nothing was looked up: no `withNames`, no `sender`, or a
+  `sender` that is not a hex address. It round-trips through `serializeEvent`/`parseEvent`,
+  and an `onTransaction` group carries its events' name.
+- **Where.** Every call that takes `withState` takes it: `getEvents`, `getEventPages`,
+  `iterateEvents`, `getTransactions`, `replay`, `on`, `onBatch`, `once`, `stream`,
+  `onTransaction`, `watch`, `transfers` and `getTransfers`. Not `reduce`, `balances`, or the
+  one-shot transaction calls (`eventsOf`, `eventsAt`, `previewEvents` and the assertions).
+- **After `where`.** It runs after `decode`, `where` and `withState`, and for queries after
+  `limit` and `orderBy`, so only the events you get back cost a lookup.
+- **Cached per client.** One cache per client, shared by every call, keyed by long-form
+  address. A name, or a miss, is reused for 5 minutes; `withNames: { ttl }` sets another
+  expiry in ms (`0` reuses nothing, `Infinity` never expires), each call reading the shared
+  entry by its own. Concurrent lookups for one address share one request. At most 10,000
+  addresses are kept, the one fetched longest ago leaving first. Failures are not cached.
+- **Through the limiter.** Each lookup takes one slot of `maxConcurrentRequests` and
+  `maxRequestsPerSecond`, and `requestTimeout` applies to it (on Aptos, `primaryName` is two
+  reads in that slot when a name exists).
+- **Failures, as `withState`.** A failed lookup rejects a query, with its `retries`, and fails
+  a listener's poll: events before it are delivered and the next poll retries from it,
+  counting toward `maxErrors`. A name is cosmetic, but quietly leaving it off would make
+  "absent" mean two things, and every later event from that sender would try again at once
+  rather than back off from a node that is rate-limiting.
+- **Networks.** `AptosClient` serves names on mainnet and a localnet. On testnet, devnet and
+  custom networks such as the Movement presets, `withNames` is refused at the call with a
+  `StreamdError`. A plain `StreamdClient` refuses it too: it has no name service.
+- **Sui.** `SuiClient` serves SuiNS primary names the same way, through `@streamd/sui`'s
+  `primaryName`.
+
 ## Asset transfers
 
 `transfers(callback, options?)` follows coin, fungible-asset and token movements as
@@ -2089,7 +2128,8 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   (devnet) reject with a `StreamdError`; a node or transport failure with a `StreamdNetworkError`.
   `sui.transfers` and `sui.getTransfers` take a name as `account`, and `sui.balances` as its
   address, each resolved once on first use, a failed lookup retried. Descriptors take addresses
-  only.
+  only. `withNames` attaches each sender's primary name as `senderName`, as on Aptos (see
+  Sender names); on a network without SuiNS each lookup rejects, as `primaryName` does.
 
   ```ts
   import { primaryName, resolveName } from "@streamd/sui";

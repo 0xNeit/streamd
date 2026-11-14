@@ -1,4 +1,4 @@
-import { Aptos, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
+import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
 import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances } from "@streamd/core";
 import type {
   EventAdapter,
@@ -12,7 +12,7 @@ import type {
 import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
-import { addressOrName, resolveName } from "./names.js";
+import { addressOrName, primaryName, resolveName } from "./names.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import type { Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
@@ -26,7 +26,9 @@ export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
 /**
  * A `StreamdClient` for Aptos: everything the chain-neutral client does, plus
  * asset transfers and balances, transaction lookups, simulations and the
- * assertions on them, and Aptos names wherever an account is taken.
+ * assertions on them, and Aptos names wherever an account is taken. On
+ * mainnet and a localnet, `withNames` attaches each sender's primary name
+ * through `primaryName`; elsewhere it is refused at the call.
  */
 export class AptosClient extends StreamdClient {
   protected readonly aptos: Aptos;
@@ -37,6 +39,13 @@ export class AptosClient extends StreamdClient {
     const { aptos: _given, ...rest } = config;
     super({ ...rest, adapter: config.adapter ?? new FullnodeScanAdapter(aptos) });
     this.aptos = aptos;
+    // Testnet's ANS router is gone, so only mainnet and a localnet can answer.
+    const network = aptos.config?.network;
+    this.names.serve(
+      network === Network.MAINNET || network === Network.LOCAL
+        ? (address) => primaryName(aptos, address)
+        : `withNames needs Aptos names, which network ${network} does not serve`,
+    );
   }
 
   /**
@@ -152,7 +161,7 @@ export class AptosClient extends StreamdClient {
       withAssetInfo,
       this.requestTimeout,
     );
-    const query = new EventQuery(source, this.limiter);
+    const query = new EventQuery(source, this.limiter, this.names);
     return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 

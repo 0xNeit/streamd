@@ -176,6 +176,7 @@ export type {
   ObjectRequest,
   StateRequest,
   StateRequestBuilder,
+  NameOptions,
   SubscriptionStatus,
   TransactionEvents,
   TransactionSimulation,

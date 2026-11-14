@@ -17,6 +17,7 @@ import { mergeEvents, validateMerge } from "./merge.js";
 import { filterEvents } from "./filter.js";
 import { requireBlock, requireVersion } from "./adapters/validate.js";
 import { buildStateRequest, readState, validateWithState } from "./state.js";
+import { nameTtl, type SenderNames } from "./names.js";
 import { groupOf } from "./grouping.js";
 
 const DEFAULT_PAGE_SIZE = 25;
@@ -150,6 +151,7 @@ export class EventQuery {
   constructor(
     private readonly source: EventAdapter,
     private readonly limiter = new RequestLimiter(),
+    private readonly names?: SenderNames,
   ) {}
 
   async getEvents<TData = unknown>(
@@ -175,21 +177,41 @@ export class EventQuery {
    * selected by more than one returned once.
    *
    * `withState` is applied last, to the pages as returned; a merge reads it
-   * through its first descriptor, as it does its shared bounds.
+   * through its first descriptor, as it does its shared bounds. `withNames`
+   * follows it.
    */
   async *getEventPages<TData = unknown>(
     descriptor: Descriptors,
     filter: EventFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): AsyncGenerator<StreamdEvent<TData>[], void, unknown> {
-    const { withState, ...rest } = filter;
+    const { withState, withNames, ...rest } = filter;
     const { retries = 0, signal } = rest;
     validateWithState(withState);
+    const ttl = nameTtl(withNames, this.names);
     const pages = this.pages<TData>(descriptor, rest, pageSize);
-    if (withState === undefined) return yield* pages;
+    if (withState === undefined && ttl === undefined) return yield* pages;
     for await (const page of pages) {
-      yield (await this.attachState(descriptor, page, withState, retries, signal)) as StreamdEvent<TData>[];
+      let events: StreamdEvent[] = page;
+      if (withState !== undefined) events = await this.attachState(descriptor, events, withState, retries, signal);
+      if (ttl !== undefined) events = await this.attachNames(events, ttl, retries, signal);
+      yield events as StreamdEvent<TData>[];
     }
+  }
+
+  /** `events` with `senderName` looked up for each in order, through the client's name cache. */
+  private async attachNames(
+    events: readonly StreamdEvent[],
+    ttl: number,
+    retries: number,
+    signal: AbortSignal | undefined,
+  ): Promise<StreamdEvent[]> {
+    const named: StreamdEvent[] = [];
+    for (const event of events) {
+      if (signal?.aborted) throw signal.reason;
+      named.push(await withRetries(() => this.names!.attach(event, ttl, signal), retries, signal));
+    }
+    return named;
   }
 
   /** `events` with `withState`'s view read at each one's version, through the first descriptor. */
@@ -229,7 +251,7 @@ export class EventQuery {
     filter: TransactionFilter = {},
     pageSize = DEFAULT_PAGE_SIZE,
   ): Promise<TransactionGroup<TData>[]> {
-    const { withState, limit, orderBy, ...rest } = filter as EventFilter;
+    const { withState, withNames, limit, orderBy, ...rest } = filter as EventFilter;
     if (rest.onCursor !== undefined) {
       throw new StreamdError("getTransactions does not take onCursor: a limit stops the walk partway");
     }
@@ -237,6 +259,7 @@ export class EventQuery {
       throw new StreamdError("getTransactions does not take offset, which counts events");
     }
     validateWithState(withState);
+    const ttl = nameTtl(withNames, this.names);
     validateOrderBy(orderBy);
     if (limit !== undefined && limit <= 0) return [];
     const desc = orderBy === "desc";
@@ -261,10 +284,13 @@ export class EventQuery {
     }
     if (groups.length < enough) close();
     if (desc) groups = (limit === undefined ? groups : groups.slice(-limit)).reverse();
-    if (withState !== undefined) {
+    if (withState !== undefined || ttl !== undefined) {
       const { retries = 0, signal } = rest;
-      for (const group of groups) {
-        group.events = await this.attachState(descriptor, group.events, withState, retries, signal);
+      for (const [i, group] of groups.entries()) {
+        let events: StreamdEvent[] = group.events;
+        if (withState !== undefined) events = await this.attachState(descriptor, events, withState, retries, signal);
+        if (ttl !== undefined) events = await this.attachNames(events, ttl, retries, signal);
+        groups[i] = groupOf(group.version, events);
       }
     }
     return groups as TransactionGroup<TData>[];
