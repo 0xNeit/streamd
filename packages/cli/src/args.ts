@@ -66,6 +66,23 @@ export interface ForwardOptions extends SourceOptions {
   batchSize?: number;
 }
 
+export interface AlertOptions extends Endpoint {
+  /** The rules file; read and validated before any read from the chain. */
+  rules: string;
+  /** Webhook URL for every rule; may carry a token, so it is never printed. */
+  to: string;
+  /** Each rule's cursor and open window, as one JSON object. */
+  cursorFile: string;
+  retries: number;
+  timeout: number;
+  headers: Record<string, string>;
+  secret?: string;
+  /** Where a rule with no saved entry starts; never both. */
+  fromVersion?: bigint;
+  fromTime?: bigint;
+  pollInterval?: number;
+}
+
 export interface StoreOptions extends SourceOptions {
   /** SQLite file to write; the parser sets exactly one of this and `postgres`. */
   db?: string;
@@ -195,6 +212,7 @@ export type ParsedCommand =
   | { command: "help" }
   | { command: "tail"; options: TailOptions }
   | { command: "forward"; options: ForwardOptions }
+  | { command: "alert"; options: AlertOptions }
   | { command: "store"; options: StoreOptions }
   | { command: "check"; options: CheckOptions }
   | { command: "record"; options: RecordOptions }
@@ -257,17 +275,31 @@ const TAIL_OPTIONS = {
   format: { type: "string" },
 } as const;
 
-const FORWARD_OPTIONS = {
-  ...SOURCE_OPTIONS,
-  ...FROM_TIME,
+const DELIVERY_OPTIONS = {
   to: { type: "string" },
   "cursor-file": { type: "string" },
   retries: { type: "string" },
   timeout: { type: "string" },
   header: { type: "string", multiple: true },
   secret: { type: "string" },
+} as const;
+
+const FORWARD_OPTIONS = {
+  ...SOURCE_OPTIONS,
+  ...FROM_TIME,
+  ...DELIVERY_OPTIONS,
   "to-version": { type: "string" },
   "batch-size": { type: "string" },
+} as const;
+
+const ALERT_OPTIONS = {
+  ...READ_OPTIONS,
+  ...FROM_TIME,
+  ...DELIVERY_OPTIONS,
+  rules: { type: "string" },
+  "from-version": { type: "string" },
+  "poll-interval": { type: "string" },
+  help: { type: "boolean", short: "h" },
 } as const;
 
 const STORE_OPTIONS = {
@@ -378,6 +410,7 @@ const CODEGEN_OPTIONS = {
 const MODULE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 const DEFAULT_CURSOR_FILE = "streamd-forward.cursor";
+const DEFAULT_ALERT_CURSOR_FILE = "streamd-alert.cursor";
 const DEFAULT_RETRIES = 5;
 const MAX_RETRIES = 100;
 const DEFAULT_TIMEOUT = 10_000;
@@ -395,6 +428,7 @@ export const USAGE = `Usage:
   streamd tail --account <address> --resource <type> [options]
   streamd forward --to <url> [options] <eventType>...
   streamd forward --to <url> --account <address> [...]
+  streamd alert --rules <file> --to <url> [options]
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
   streamd store --postgres <url> [options] <eventType>...
@@ -413,6 +447,10 @@ export const USAGE = `Usage:
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array,
 saving its position to a cursor file once the webhook acknowledges it.
+alert follows the rules in a JSON file, each a descriptor, filter, window and
+count or sum threshold, and POSTs a signed alert to a webhook the first time a
+window of chain time crosses its threshold, saving each rule's position and
+open window to a cursor file.
 store follows matching events into a SQLite file, or a Postgres database
 with --postgres, resuming from the cursor saved there when run again.
 query reads a closed range of history as JSON lines, then exits.
@@ -464,7 +502,7 @@ Options:
   --api-key <key>        fullnode API key, sent as a bearer token (or set ${API_KEY_ENV}, used
                          only on mainnet, testnet and devnet without --node-url)
   --from-version <n>     start at this version instead of the chain head
-  --from-time <t>        tail, forward, query, watch: start here, as 2h, 7d or an ISO date (UTC)
+  --from-time <t>        tail, forward, alert, query, watch: start here, as 2h, 7d or an ISO date (UTC)
   --poll-interval <ms>   delay between polls (default: 1000)
   --sender <address>     only events from transactions one of these signed, repeatable
   --function <a::m::f>   only events from a call to one of these entry functions, repeatable
@@ -479,16 +517,18 @@ Options:
                          tail, forward, store and watch report it and skip the event
   --limit <n>            tail, transfers, watch: exit after printing n; balances: after n changes;
                          record, query: stop after n; compare: page size
-  --to <url>             forward: webhook URL (http or https, required)
+  --rules <file>         alert: the rules file (required)
+  --to <url>             forward, alert: webhook URL (http or https, required)
   --cursor-file <path>   tail, transfers (following): save and resume from here; watch: each
                          address's position, as one JSON object; forward: cursor file
-                         (default: ${DEFAULT_CURSOR_FILE})
+                         (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
+                         and open window (default: ${DEFAULT_ALERT_CURSOR_FILE})
   --format <name>        tail: json, or pretty for aligned lines in UTC (default: json)
-  --retries <n>          forward: retries per batch (default: ${DEFAULT_RETRIES})
-  --timeout <ms>         forward: per-request timeout (default: ${DEFAULT_TIMEOUT});
+  --retries <n>          forward, alert: retries per batch or alert (default: ${DEFAULT_RETRIES})
+  --timeout <ms>         forward, alert: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx: wait for commit (default: 20000)
-  --header <h>           forward: request header 'Name: value', repeatable
-  --secret <s>           forward: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER}
+  --header <h>           forward, alert: request header 'Name: value', repeatable
+  --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER}
                          (or set ${SECRET_ENV}, which keeps it out of ps)
   --db <file>            store: SQLite file to write (this or --postgres)
   --postgres <url>       store: Postgres database to write, postgres://user@host/db; Bun.SQL
@@ -670,8 +710,8 @@ function archive(raw: string, network: Network, sui: boolean): string {
   return raw;
 }
 
-function webhookUrl(raw: string | undefined): string {
-  if (raw === undefined) throw new UsageError("forward needs --to <url>");
+function webhookUrl(raw: string | undefined, command: string): string {
+  if (raw === undefined) throw new UsageError(`${command} needs --to <url>`);
   // The URL is not echoed: it may carry a token.
   const url = httpUrl(raw);
   if (url === undefined) throw new UsageError("--to must be an http or https URL");
@@ -721,7 +761,7 @@ function refuseOnSui(flags: DescriptorFlags): void {
   }
 }
 
-function descriptor(
+export function descriptor(
   command: string,
   flags: DescriptorFlags,
   types: string[],
@@ -835,13 +875,8 @@ function parseForward(args: string[]): ParsedCommand {
   if (values.help) return { command: "help" };
   const options: ForwardOptions = {
     ...source("forward", values, positionals),
-    to: webhookUrl(values.to),
-    cursorFile: values["cursor-file"] ?? DEFAULT_CURSOR_FILE,
-    retries: integer("retries", values.retries, 0, MAX_RETRIES) ?? DEFAULT_RETRIES,
-    timeout: integer("timeout", values.timeout, 1, MAX_TIMEOUT) ?? DEFAULT_TIMEOUT,
-    headers: headers(values.header),
+    ...delivery("forward", values, DEFAULT_CURSOR_FILE),
   };
-  if (options.cursorFile === "") throw new UsageError("--cursor-file must not be empty");
   const toVersion = version(values["to-version"], "to-version");
   if (toVersion !== undefined) {
     if (options.fromVersion === undefined && options.fromTime === undefined) {
@@ -854,6 +889,28 @@ function parseForward(args: string[]): ParsedCommand {
   }
   const batchSize = integer("batch-size", values["batch-size"], 1, Number.MAX_SAFE_INTEGER);
   if (batchSize !== undefined) options.batchSize = batchSize;
+  return { command: "forward", options };
+}
+
+interface DeliveryFlags {
+  to?: string;
+  "cursor-file"?: string;
+  retries?: string;
+  timeout?: string;
+  header?: string[];
+  secret?: string;
+}
+
+/** The webhook, its headers, signing, retry budget and cursor file, as forward and alert take them. */
+function delivery(command: string, values: DeliveryFlags, cursorFile: string) {
+  const options: Pick<ForwardOptions, "to" | "cursorFile" | "retries" | "timeout" | "headers" | "secret"> = {
+    to: webhookUrl(values.to, command),
+    cursorFile: values["cursor-file"] ?? cursorFile,
+    retries: integer("retries", values.retries, 0, MAX_RETRIES) ?? DEFAULT_RETRIES,
+    timeout: integer("timeout", values.timeout, 1, MAX_TIMEOUT) ?? DEFAULT_TIMEOUT,
+    headers: headers(values.header),
+  };
+  if (options.cursorFile === "") throw new UsageError("--cursor-file must not be empty");
   if (values.secret === "") throw new UsageError("--secret must not be empty");
   const secret = values.secret ?? (process.env[SECRET_ENV] || undefined);
   if (secret !== undefined) {
@@ -862,7 +919,27 @@ function parseForward(args: string[]): ParsedCommand {
     }
     options.secret = secret;
   }
-  return { command: "forward", options };
+  return options;
+}
+
+function parseAlert(args: string[]): ParsedCommand {
+  const { values } = wrap(() => parseArgs({ args, options: ALERT_OPTIONS, allowPositionals: false, strict: true }));
+  if (values.help) return { command: "help" };
+  if (values.rules === undefined || values.rules === "") throw new UsageError("alert needs --rules <file>");
+  const sui = chain(values.chain);
+  const options: AlertOptions = {
+    ...endpoint(values, sui),
+    rules: values.rules,
+    ...delivery("alert", values, DEFAULT_ALERT_CURSOR_FILE),
+  };
+  withKey(options, values["api-key"]);
+  const fromVersion = version(values["from-version"]);
+  const fromTime = startTime(values);
+  const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
+  if (fromVersion !== undefined) options.fromVersion = fromVersion;
+  if (fromTime !== undefined) options.fromTime = fromTime;
+  if (pollInterval !== undefined) options.pollInterval = pollInterval;
+  return { command: "alert", options };
 }
 
 /** An empty host is allowed: the driver then reads `PGHOST` or uses localhost. */
@@ -1197,6 +1274,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   }
   if (command === "tail") return parseTail(rest);
   if (command === "forward") return parseForward(rest);
+  if (command === "alert") return parseAlert(rest);
   if (command === "store") return parseStore(rest);
   if (command === "check") return parseCheck(rest);
   if (command === "record") return parseRecord(rest);
