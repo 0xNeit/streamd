@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { EventDescriptor, EventFilter, EventOf, StreamdClient } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
 import { toError, valueKey, withLatestFunctions } from "./key.js";
@@ -16,12 +16,21 @@ export interface UseLogsResult<TData> {
   error: Error | undefined;
   /** True while a request is in flight. */
   loading: boolean;
+  /**
+   * Runs the query again for the current inputs, aborting any request in flight. The same
+   * function on every render. Resolves when its request settles, never rejecting; with no
+   * descriptor, after unmount or during server rendering it does nothing.
+   */
+  refetch: () => Promise<void>;
 }
+
+type LogsState<TData> = Omit<UseLogsResult<TData>, "refetch">;
 
 /**
  * `client.getEvents(descriptor, options)` for a component: runs after mount,
- * again whenever the descriptor or options change by value, aborting the
- * request it replaces. A `null` or `undefined` descriptor fetches nothing.
+ * again whenever the descriptor or options change by value or `refetch` is
+ * called, aborting the request it replaces. A `null` or `undefined` descriptor
+ * fetches nothing.
  */
 export function useLogs<TData = unknown>(
   descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[] | null | undefined,
@@ -31,8 +40,9 @@ export function useLogs<TData = unknown>(
   const client = useStreamdClient(explicit);
   const latest = useRef(filter);
   latest.current = filter;
+  const start = useRef<(() => Promise<void>) | undefined>(undefined);
   const key = valueKey([descriptor, filter]);
-  const [state, setState] = useState<UseLogsResult<TData>>({
+  const [state, setState] = useState<LogsState<TData>>({
     data: undefined,
     error: undefined,
     loading: descriptor != null,
@@ -43,22 +53,32 @@ export function useLogs<TData = unknown>(
       setState((s) => (s.loading ? { ...s, loading: false } : s));
       return;
     }
-    const controller = new AbortController();
-    setState((s) => (s.loading ? s : { ...s, loading: true }));
-    const live = { ...withLatestFunctions(filter, () => latest.current), signal: controller.signal };
-    client.getEvents<TData>(descriptor, live).then(
-      (data) => {
-        if (!controller.signal.aborted) setState({ data, error: undefined, loading: false });
-      },
-      (err: unknown) => {
-        if (!controller.signal.aborted) {
-          setState((s) => ({ data: s.data, error: toError(err), loading: false }));
-        }
-      },
-    );
-    return () => controller.abort();
+    let controller: AbortController | undefined;
+    const run = () => {
+      controller?.abort();
+      const current = (controller = new AbortController());
+      setState((s) => (s.loading ? s : { ...s, loading: true }));
+      const live = { ...withLatestFunctions(filter, () => latest.current), signal: current.signal };
+      return client.getEvents<TData>(descriptor, live).then(
+        (data) => {
+          if (!current.signal.aborted) setState({ data, error: undefined, loading: false });
+        },
+        (err: unknown) => {
+          if (!current.signal.aborted) {
+            setState((s) => ({ data: s.data, error: toError(err), loading: false }));
+          }
+        },
+      );
+    };
+    start.current = run;
+    void run();
+    return () => {
+      start.current = undefined;
+      controller?.abort();
+    };
     // `key` stands for `descriptor` and `filter` by value.
   }, [client, key]);
 
-  return state;
+  const refetch = useCallback(() => start.current?.() ?? Promise.resolve(), []);
+  return useMemo(() => ({ ...state, refetch }), [state, refetch]);
 }

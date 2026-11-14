@@ -2818,8 +2818,16 @@ function Feed() {
   `watch()`'s, without `signal`, `positions` included to resume a saved run; a malformed address
   throws while rendering, so check addresses a user types before listing them.
 - **`useLogs(descriptor, options?)`** runs `client.getEvents` and returns
-  `{ data, error, loading }`. `data` is the last successful result and stays through refetches
+  `{ data, error, loading, refetch }`. `data` is the last successful result and stays through refetches
   and errors. Options are `getEvents`'s, without `signal`; it takes a list of descriptors too.
+  `refetch()` runs the same query again on demand: `loading` is `true` while `data` and `error`
+  keep their previous values, then a success replaces `data` and clears `error` and a failure
+  sets `error` and keeps `data`. A negative `fromVersion` is measured from the head at each run,
+  so `useLogs(Swap, { fromVersion: -1_000n })` with a refresh button shows the latest window.
+  A refetch, like a changed input, aborts any request still in flight, and only the latest one
+  sets state. `refetch` is the same function on every render, so it can sit in effect
+  dependencies; its promise resolves once that request settles and never rejects. With no
+  descriptor, after unmount, or during server rendering it does nothing.
 - **`useTransactionEvents(hash, options?)`** waits for a submitted transaction through
   `client.eventsOf` and returns `{ data, error, loading, vmStatus }`. A transaction that failed
   on chain sets `error` and `vmStatus`, the chain's status; one not found in time sets `error`
