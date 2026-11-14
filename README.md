@@ -690,6 +690,8 @@ told about a timeout or abort, so a lookup already in flight runs to completion 
 its `maxConcurrentRequests` slot until then, or until the client's `requestTimeout`. The hash must be
 `0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which
 `FullnodeScanAdapter` and `MemoryAdapter` have and the wrapping adapters pass through.
+`StoreAdapter` and `PostgresStoreAdapter` have it too, answering from a saved store (see
+[Transaction lookups](#store-events-in-sqlite)).
 
 ### A transaction's events by version
 
@@ -716,8 +718,8 @@ fullnode has pruned rejects with its `StreamdNetworkError`, `statusCode` 410; an
 `ArchiveFallbackAdapter` over [the archive](#history-the-fullnode-has-pruned) answers it
 instead. The version must be a `bigint` from 0 to `u64::MAX`, and a bad version, descriptor or
 `decode` is refused before the lookup. It needs an adapter with
-`getTransactionEventsByVersion`, which `FullnodeScanAdapter` has and the wrapping adapters pass
-through; `MemoryAdapter` and `SuiAdapter` do not, so `SuiClient` has no `eventsAt`, since placing
+`getTransactionEventsByVersion`, which `FullnodeScanAdapter`, `StoreAdapter` and
+`PostgresStoreAdapter` have and the wrapping adapters pass through; `MemoryAdapter` and `SuiAdapter` do not, so `SuiClient` has no `eventsAt`, since placing
 a Sui version on its transaction takes a checkpoint search.
 
 ### Assert a transaction's events in tests
@@ -2828,11 +2830,49 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   earlier release stored have no address and are never served as `resource`: store that range
   again to serve it. They still match `module` by type, and every change still matches `account`
   by its `sender`.
-- **Older databases.** The first `write` adds `account_address` and its index
-  (`streamd_events_resource`) to a database an earlier release made, in one savepoint, keeping
-  every row; when another connection added them first it carries on. Nothing else migrates, so
-  a read-only connection still opens the store and the adapter, and a `resource` read of a
-  database no write has migrated is empty.
+- **Transaction lookups.** Every `write` also keeps the event's `transactionHash` in the
+  `transaction_hash` column (an Aptos `0x` hash lowercased, anything else, such as a Sui base58
+  digest, exactly as given, since base58 is case-sensitive), and `StoreAdapter` implements
+  `getTransactionEvents` and `getTransactionEventsByVersion` over it, so `eventsOf`,
+  `expectEvents` and `eventsAt` answer from the file with no network:
+
+  ```ts
+  const offline = new AptosClient({ aptos, adapter: new StoreAdapter(db) });
+  const events = await offline.eventsOf(hash, undefined, { timeout: 1_000 });
+  await offline.expectEvents(hash).toEmit(Swap);
+  ```
+
+  A lookup returns the stored events with that hash, or at that version, in `eventIndex` order,
+  leaving out `resource` changes, which are write-set changes rather than events (`object`
+  changes and changes an earlier release stored without an address cannot be told apart and come
+  back with them). It sees **only what was stored**: a store following one descriptor holds that
+  descriptor's events of a transaction, not every event it emitted, so `toEmit` on a type the
+  store never followed fails and `notToEmit` passes whatever the chain did. A store keeps **no
+  transaction status**, so a found transaction is `success: true` with `vmStatus` `""`; the chain
+  keeps an aborted transaction's fee statement, so a store following
+  `0x1::transaction_fee::FeeStatement` holds events of failed transactions, and `eventsOf`
+  resolves with them instead of rejecting with `StreamdTransactionError`. A hash the store does
+  not hold is not found, so `eventsOf` keeps asking until its `timeout` (20 seconds by default)
+  and rejects with `StreamdTimeoutError`; that wait is what lets it pick up a transaction a
+  running `storeEvents` has yet to write, and for a store nobody is writing, pass a short
+  `timeout`. A version below the pruned edge fails with the 410 `StreamdNetworkError`; a pruned
+  hash is simply not found.
+- **Older databases.** The first `write` adds `account_address` and `transaction_hash`, each with
+  its index (`streamd_events_resource`, `streamd_events_transaction`), to a database an earlier
+  release made, each in one savepoint, keeping every row; when another connection added one first
+  it carries on. Nothing else migrates, so a read-only connection still opens the store and the
+  adapter, a `resource` read of a database no write has migrated is empty, and a hash lookup
+  there finds nothing. Rows stored before the column existed are not backfilled, since that
+  rewrites the whole table on the first write after an upgrade; their hashes are still in the
+  stored JSON, and this statement fills them when it suits you (or store the range again):
+
+  ```sql
+  UPDATE streamd_events
+  SET transaction_hash = CASE
+    WHEN json_extract(event, '$.transactionHash') LIKE '0x%' THEN lower(json_extract(event, '$.transactionHash'))
+    ELSE json_extract(event, '$.transactionHash') END
+  WHERE transaction_hash IS NULL AND account_address IS NULL AND event LIKE '%"transactionHash"%';
+  ```
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
   first use, and `streamd_transfers` on the first transfer write or prune.
 
@@ -2867,7 +2907,7 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
 - **No gaps, no duplicates,** as with SQLite: rows are keyed on `(version, eventIndex)`, a
   repeated write replaces its row, and the cursor moves only after its batch is stored.
 - **Queryable.** `streamd_events` holds `version` (`numeric`, exact for every u64), `event_index`,
-  `type`, `sender`, `guid_address`, `guid_creation`, `account_address` and the event as the JSON text `serializeEvent`
+  `type`, `sender`, `guid_address`, `guid_creation`, `account_address`, `transaction_hash` and the event as the JSON text `serializeEvent`
   writes, so `SELECT event::jsonb->'data'->>'amount' FROM streamd_events WHERE type = '...'` works.
   It is `text` rather than `jsonb` because `jsonb` cannot hold a NUL character, which on-chain
   strings may carry; the cast fails only on such a row. Saved cursors are in `streamd_cursors`.
@@ -2875,14 +2915,29 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   `creationNumber`) and `resource` (by stored address and type) descriptors, with the SQLite
   adapter's cursors, paging and options. Head and earliest are the highest and lowest stored
   versions, never below a pruned edge.
+- **Transaction lookups** work as on the SQLite store: `getTransactionEvents` and
+  `getTransactionEventsByVersion` over `transaction_hash` and `version`, with the same hash
+  rule, the same rows left out, only what was stored, `success: true` and `vmStatus` `""`, the
+  same wait on a hash not held, and the 410 below the pruned edge, which a version lookup reads
+  in the same statement as its rows. Older rows are not backfilled; this fills them (`::json`,
+  not `::jsonb`, so a row holding a NUL character does not fail it):
+
+  ```sql
+  UPDATE streamd_events
+  SET transaction_hash = CASE
+    WHEN event::json->>'transactionHash' LIKE '0x%' THEN lower(event::json->>'transactionHash')
+    ELSE event::json->>'transactionHash' END
+  WHERE transaction_hash IS NULL AND account_address IS NULL AND event LIKE '%"transactionHash"%';
+  ```
 - **Resource changes** work as on the SQLite store: `storeEvents` over a `resource` descriptor
   and `await store.write(events, checkpoint, { accountAddress })` store the address in
   `account_address`, and changes stored by an earlier release, with none, are never served as
-  `resource`. A database an earlier release made gains the column on first use by either the
-  store or the adapter, in one statement that checks the catalog first, so once it is there the
-  `ALTER` never runs again; two connections migrating at once wait on each other and both
-  succeed. `streamd_events_resource` is then built in a statement of its own, which on a large
-  table holds back writes, not reads, for one scan of it. Like the other `CREATE INDEX IF NOT
+  `resource`. A database an earlier release made gains `account_address` and `transaction_hash`
+  on first use by either the store or the adapter, in one `ALTER` that checks the catalog first,
+  so once they are there it never runs again; two connections migrating at once wait on each
+  other and both succeed. `streamd_events_resource` and `streamd_events_transaction` are then
+  each built in a statement of their own, which on a large table holds back writes, not reads,
+  for one scan of it. Like the other `CREATE INDEX IF NOT
   EXISTS` statements each client runs on first use, it takes a brief SHARE lock even when the
   index exists, and the role connecting must own the tables.
 - **Retention.** `await store.prune({ beforeVersion })` deletes every event and stored transfer
