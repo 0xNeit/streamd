@@ -57,7 +57,7 @@ CREATE INDEX streamd_events_resource ON streamd_events (account_address, type, v
 // The backfill the README gives, exactly.
 const BACKFILL = `UPDATE streamd_events
 SET transaction_hash = CASE
-  WHEN json_extract(event, '$.transactionHash') LIKE '0x%' THEN lower(json_extract(event, '$.transactionHash'))
+  WHEN json_extract(event, '$.transactionHash') GLOB '0x[0-9a-fA-F]*' THEN lower(json_extract(event, '$.transactionHash'))
   ELSE json_extract(event, '$.transactionHash') END
 WHERE transaction_hash IS NULL AND account_address IS NULL AND event LIKE '%"transactionHash"%'`;
 
@@ -130,8 +130,9 @@ describe("SqliteEventStore transaction hashes", () => {
     };
     expect(() => new SqliteEventStore(racing).write([ev(1n, 0, HASH)])).not.toThrow();
 
+    // From the original schema: the address column lands in its own savepoint and stays.
     const old = new Database(":memory:");
-    older(old, WITH_ADDRESS);
+    older(old, ORIGINAL);
     const failing: SqliteDatabase = {
       exec: (sql) => {
         if (sql.includes("ADD COLUMN transaction_hash")) throw new Error("disk full");
@@ -141,6 +142,7 @@ describe("SqliteEventStore transaction hashes", () => {
     };
     expect(() => new SqliteEventStore(failing).write([ev(1n, 0, HASH)])).toThrow("disk full");
     expect(columns(old)).not.toContain("transaction_hash");
+    expect(columns(old)).toContain("account_address");
   });
 
   it("migrates again after a caller's transaction rolls back the first write", async () => {
@@ -166,6 +168,9 @@ describe("SqliteEventStore transaction hashes", () => {
     expect(hashes()).toEqual([{ h: HASH }, { h: DIGEST }, { h: null }]);
     store.write([ev(3n, 0, OTHER)]);
     expect(hashes()).toEqual([{ h: HASH }, { h: DIGEST }, { h: OTHER }]);
+    // The column follows the stored JSON, so a rewrite without a hash clears it.
+    store.write([ev(3n, 0)]);
+    expect(hashes()).toEqual([{ h: HASH }, { h: DIGEST }, { h: null }]);
   });
 });
 

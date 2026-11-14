@@ -54,8 +54,11 @@ const SCHEMA = [
   // once. Checked first, since the ALTER locks the whole table even when it
   // has nothing to do. A second connection migrating at once waits on the
   // first's lock, then finds the columns there.
+  // A lock timeout, so a long read holding the table cannot queue every
+  // other statement behind the waiting ALTER; the next call tries again.
   `DO $$
   BEGIN
+    PERFORM set_config('lock_timeout', '5s', true);
     IF (
       SELECT count(*) FROM pg_attribute
       WHERE attrelid = 'streamd_events'::regclass

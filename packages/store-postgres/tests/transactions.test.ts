@@ -54,9 +54,10 @@ const WITH_ADDRESS = [
 // The backfill the README gives, exactly.
 const BACKFILL = `UPDATE streamd_events
 SET transaction_hash = CASE
-  WHEN event::json->>'transactionHash' LIKE '0x%' THEN lower(event::json->>'transactionHash')
+  WHEN event::json->>'transactionHash' ~ '^0x[0-9a-fA-F]+$' THEN lower(event::json->>'transactionHash')
   ELSE event::json->>'transactionHash' END
-WHERE transaction_hash IS NULL AND account_address IS NULL AND event LIKE '%"transactionHash"%'`;
+WHERE transaction_hash IS NULL AND account_address IS NULL AND event LIKE '%"transactionHash"%'
+  AND strpos(event, '\\u0000') = 0`;
 
 function ev(version: bigint, eventIndex: number, transactionHash?: string, type = SWAP): StreamdEvent {
   return {
@@ -110,8 +111,12 @@ describe("PostgresEventStore transaction hashes", () => {
       // The old row is not backfilled, so its hash is not found until the owner fills it.
       expect(await adapter.getTransactionEvents(HASH)).toBeUndefined();
       expect(ids((await adapter.getTransactionEvents(OTHER))?.events)).toEqual(["6:0"]);
+      // A row holding an escaped NUL is left out rather than failing the statement.
+      const nul = JSON.stringify({ type: SWAP, data: { s: "a\u0000b" }, version: "4", sequenceNumber: "0", eventIndex: 0, transactionHash: OTHER });
+      await db.query("INSERT INTO streamd_events (version, event_index, type, event) VALUES (4, 0, $1, $2)", [SWAP, nul]);
       await db.query(BACKFILL);
       expect(ids((await adapter.getTransactionEvents(HASH))?.events)).toEqual(["5:1"]);
+      expect(ids((await adapter.getTransactionEvents(OTHER))?.events)).toEqual(["6:0"]);
     });
 
     it(`lets the adapter migrate a database made by ${label}, and a new client rerun it as a no-op`, async () => {
@@ -134,6 +139,9 @@ describe("PostgresEventStore transaction hashes", () => {
     expect(await hashes()).toEqual([{ h: HASH }, { h: DIGEST }, { h: null }]);
     await store.write([ev(3n, 0, OTHER)]);
     expect(await hashes()).toEqual([{ h: HASH }, { h: DIGEST }, { h: OTHER }]);
+    // The column follows the stored JSON, so a rewrite without a hash clears it.
+    await store.write([ev(3n, 0)]);
+    expect(await hashes()).toEqual([{ h: HASH }, { h: DIGEST }, { h: null }]);
   });
 });
 

@@ -2847,7 +2847,9 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   changes and changes an earlier release stored without an address cannot be told apart and come
   back with them). It sees **only what was stored**: a store following one descriptor holds that
   descriptor's events of a transaction, not every event it emitted, so `toEmit` on a type the
-  store never followed fails and `notToEmit` passes whatever the chain did. A store keeps **no
+  store never followed fails and `notToEmit` passes whatever the chain did. With several
+  subscriptions writing one store, a lookup answers as soon as the first has written its rows,
+  so another's events of the same transaction may not be there yet. A store keeps **no
   transaction status**, so a found transaction is `success: true` with `vmStatus` `""`; the chain
   keeps an aborted transaction's fee statement, so a store following
   `0x1::transaction_fee::FeeStatement` holds events of failed transactions, and `eventsOf`
@@ -2860,7 +2862,7 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
 - **Older databases.** The first `write` adds `account_address` and `transaction_hash`, each with
   its index (`streamd_events_resource`, `streamd_events_transaction`), to a database an earlier
   release made, each in one savepoint, keeping every row; when another connection added one first
-  it carries on. Nothing else migrates, so a read-only connection still opens the store and the
+  it carries on. Building the indexes reads the whole table once, inside that first write. Nothing else migrates, so a read-only connection still opens the store and the
   adapter, a `resource` read of a database no write has migrated is empty, and a hash lookup
   there finds nothing. Rows stored before the column existed are not backfilled, since that
   rewrites the whole table on the first write after an upgrade; their hashes are still in the
@@ -2869,7 +2871,7 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   ```sql
   UPDATE streamd_events
   SET transaction_hash = CASE
-    WHEN json_extract(event, '$.transactionHash') LIKE '0x%' THEN lower(json_extract(event, '$.transactionHash'))
+    WHEN json_extract(event, '$.transactionHash') GLOB '0x[0-9a-fA-F]*' THEN lower(json_extract(event, '$.transactionHash'))
     ELSE json_extract(event, '$.transactionHash') END
   WHERE transaction_hash IS NULL AND account_address IS NULL AND event LIKE '%"transactionHash"%';
   ```
@@ -2919,15 +2921,18 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   `getTransactionEventsByVersion` over `transaction_hash` and `version`, with the same hash
   rule, the same rows left out, only what was stored, `success: true` and `vmStatus` `""`, the
   same wait on a hash not held, and the 410 below the pruned edge, which a version lookup reads
-  in the same statement as its rows. Older rows are not backfilled; this fills them (`::json`,
-  not `::jsonb`, so a row holding a NUL character does not fail it):
+  in the same statement as its rows. Older rows are not backfilled; this fills them, leaving
+  out rows whose JSON holds an escaped NUL character (`\u0000`), which Postgres cannot turn into
+  `text` and which would fail the whole statement. It rewrites every row it fills in one
+  transaction, so on a large table run it in version ranges (`AND version BETWEEN ...`):
 
   ```sql
   UPDATE streamd_events
   SET transaction_hash = CASE
-    WHEN event::json->>'transactionHash' LIKE '0x%' THEN lower(event::json->>'transactionHash')
+    WHEN event::json->>'transactionHash' ~ '^0x[0-9a-fA-F]+$' THEN lower(event::json->>'transactionHash')
     ELSE event::json->>'transactionHash' END
-  WHERE transaction_hash IS NULL AND account_address IS NULL AND event LIKE '%"transactionHash"%';
+  WHERE transaction_hash IS NULL AND account_address IS NULL AND event LIKE '%"transactionHash"%'
+    AND strpos(event, '\u0000') = 0;
   ```
 - **Resource changes** work as on the SQLite store: `storeEvents` over a `resource` descriptor
   and `await store.write(events, checkpoint, { accountAddress })` store the address in
@@ -2935,7 +2940,9 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   `resource`. A database an earlier release made gains `account_address` and `transaction_hash`
   on first use by either the store or the adapter, in one `ALTER` that checks the catalog first,
   so once they are there it never runs again; two connections migrating at once wait on each
-  other and both succeed. `streamd_events_resource` and `streamd_events_transaction` are then
+  other and both succeed. The `ALTER` waits at most 5 seconds for its lock, so a long read on the
+  table fails that first use (it is tried again on the next call) rather than queueing every other
+  statement behind it. `streamd_events_resource` and `streamd_events_transaction` are then
   each built in a statement of their own, which on a large table holds back writes, not reads,
   for one scan of it. Like the other `CREATE INDEX IF NOT
   EXISTS` statements each client runs on first use, it takes a brief SHARE lock even when the
