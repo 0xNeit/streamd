@@ -38,6 +38,21 @@ async function seeded(events = EVENTS): Promise<PostgresStoreAdapter> {
 
 const ids = (events: StreamdEvent[]) => events.map(eventId);
 
+const hashOf = (version: bigint) => "0x" + version.toString(16).padStart(64, "0");
+
+// EVENTS with each swap hashed, the mints left hashless as handle events are, and a resource
+// change sent by the same sender and hashed at every version, as one store following all three holds them.
+async function hashedStore(): Promise<PostgresStoreAdapter> {
+  const db = new PGlite();
+  const store = new PostgresEventStore(db);
+  await store.write(EVENTS.map((e) => (e.type === SWAP ? { ...e, transactionHash: hashOf(e.version) } : e)));
+  const changes = EVENTS.filter((e) => e.type === SWAP).map((e) =>
+    ev(e.version, 2, "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>", { sender: e.sender, transactionHash: hashOf(e.version) }),
+  );
+  await store.write(changes, undefined, { accountAddress: A });
+  return new PostgresStoreAdapter(db);
+}
+
 const swaps: EventDescriptor = { kind: "module", eventType: SWAP };
 const fromA: EventDescriptor = { kind: "account", accountAddress: "0xa" };
 const mintHandle: EventDescriptor = { kind: "handle", accountAddress: A, creationNumber: 2n };
@@ -140,13 +155,21 @@ describe("PostgresStoreAdapter", () => {
     for (const attempt of refused) await expect(attempt).rejects.toBeInstanceOf(StreamdError);
   });
 
-  it("passes checkAdapter for every descriptor kind", async () => {
-    const adapter = await seeded();
+  it("passes checkAdapter for every descriptor kind, transaction lookups included", async () => {
+    const adapter = await hashedStore();
+    // Mints are handle events, which carry no hash, so a handle walk has none to look up by.
+    const byHash = (descriptor: EventDescriptor) => (descriptor === mintHandle ? "skip" : "pass");
     for (const descriptor of [swaps, fromA, mintHandle]) {
       for (const options of [{ limit: 2 }, { limit: 3, fromVersion: 4n }]) {
         const report = await checkAdapter(adapter, descriptor, options);
         expect(report.results.filter((r) => r.status === "fail")).toEqual([]);
         expect(report.pagesFetched).toBe(3);
+        const status = (name: string) => report.results.find((r) => r.name === name);
+        expect(status("transaction-events")?.status).toBe(byHash(descriptor));
+        expect(status("transaction-events-by-version")?.status).toBe("pass");
+        for (const name of ["block", "block-heights", "view"]) {
+          expect(status(name)).toMatchObject({ status: "skip", message: "not implemented (optional)" });
+        }
       }
     }
   });

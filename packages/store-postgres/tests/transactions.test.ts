@@ -24,6 +24,7 @@ const SWAPPED = "5qcQXF87TPc2wQd2HVzU1DpNRdA6UKEsZTvdTJh3uTEv";
 const SWAP = "0x1::dex::Swap";
 const FEE = "0x1::transaction_fee::FeeStatement";
 const COIN = "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>";
+const DEPOSIT = "0x1::coin::DepositEvent";
 
 const ORIGINAL = [
   `CREATE TABLE streamd_events (
@@ -150,18 +151,19 @@ describe("PostgresStoreAdapter transaction lookups", () => {
     const db = new PGlite();
     const store = new PostgresEventStore(db);
     // Written out of order on purpose; a resource change of HASH, and one of another transaction.
-    await store.write([ev(10n, 3, HASH, FEE), ev(10n, 0, HASH), ev(11n, 0, OTHER), ev(12n, 0, DIGEST)]);
+    // 10:1 is a handle event of HASH's transaction, which carries no hash.
+    await store.write([ev(10n, 3, HASH, FEE), ev(10n, 1, undefined, DEPOSIT), ev(10n, 0, HASH), ev(11n, 0, OTHER), ev(12n, 0, DIGEST)]);
     await store.write([ev(10n, 5, HASH, COIN)], undefined, { accountAddress: A });
     return { db, store, adapter: new PostgresStoreAdapter(db) };
   }
 
-  it("finds a stored transaction by hash, in event order, without its resource changes", async () => {
+  it("finds a stored transaction by hash, in event order, with its hashless events and without its resource changes", async () => {
     const { adapter } = await seeded();
     const found = await adapter.getTransactionEvents(UPPER);
     expect(found?.version).toBe(10n);
     expect(found?.success).toBe(true);
     expect(found?.vmStatus).toBe("");
-    expect(ids(found?.events)).toEqual(["10:0", "10:3"]);
+    expect(ids(found?.events)).toEqual(["10:0", "10:1", "10:3"]);
     expect(found?.events[0]).toEqual(ev(10n, 0, HASH));
   });
 
@@ -180,7 +182,8 @@ describe("PostgresStoreAdapter transaction lookups", () => {
 
   it("finds a stored transaction by version, and keeps the pruned edge", async () => {
     const { store, adapter } = await seeded();
-    expect(ids((await adapter.getTransactionEventsByVersion(10n))?.events)).toEqual(["10:0", "10:3"]);
+    expect(ids((await adapter.getTransactionEventsByVersion(10n))?.events)).toEqual(["10:0", "10:1", "10:3"]);
+    expect(await adapter.getTransactionEventsByVersion(10n)).toEqual(await adapter.getTransactionEvents(HASH));
     expect(await adapter.getTransactionEventsByVersion(13n)).toBeUndefined();
     await expect(adapter.getTransactionEventsByVersion(-1n)).rejects.toThrow(StreamdError);
     await store.prune({ beforeVersion: 11n });

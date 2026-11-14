@@ -140,7 +140,7 @@ function count(value: number | undefined, label: string, fallback: number): numb
  * `account` matches events stored with that `sender`, `handle` matches by
  * `creationNumber` against each event's stored `guid`, and `resource` matches
  * changes `storeEvents` stored with that address, so none an older release
- * stored without one.
+ * stored without one. Changes stored with an address match no other kind.
  */
 export class StoreAdapter implements EventAdapter {
   private readonly db: SqliteDatabase;
@@ -167,8 +167,13 @@ export class StoreAdapter implements EventAdapter {
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
     let where = descriptorWhere(this.db, descriptor);
     // Never migrates, since it may be read-only: a database no write has
-    // migrated yet holds no resource rows to serve.
-    if (descriptor.kind === "resource" && !eventColumns(this.db).has("account_address")) where = { sql: "0", params: [] };
+    // migrated yet holds no resource rows, to serve or to leave out.
+    const migrated = eventColumns(this.db).has("account_address");
+    if (descriptor.kind === "resource") {
+      if (!migrated) where = { sql: "0", params: [] };
+    } else if (migrated) {
+      where = { sql: `${where.sql} AND account_address IS NULL`, params: where.params };
+    }
     const start = startOf(options, prunedBefore(this.db));
     const limit = count(options.limit, "limit", DEFAULT_LIMIT);
     const offset = options.cursor === undefined ? count(options.offset, "offset", 0) : 0;
@@ -199,23 +204,27 @@ export class StoreAdapter implements EventAdapter {
   }
 
   /**
-   * The stored events carrying this hash, in transaction order, or
-   * `undefined` when none is stored, which `eventsOf` waits on. Only what the
-   * store's subscriptions caught, and no resource changes.
+   * The stored events of the transaction at the version a row with this hash
+   * is stored at, in transaction order, so rows stored there without a hash
+   * (handle events, older rows) come back too, as `getTransactionEventsByVersion`
+   * returns them; `undefined` when none is stored, which `eventsOf` waits on.
+   * Only what the store's subscriptions caught, and no resource changes.
    */
   async getTransactionEvents(transactionHash: string): Promise<TransactionEvents | undefined> {
     const hash = requireHash(transactionHash);
     if (!eventColumns(this.db).has("transaction_hash")) return undefined;
     const rows = this.db
       .prepare(
-        `SELECT event FROM streamd_events WHERE transaction_hash = ? AND account_address IS NULL
-         ORDER BY version, event_index`,
+        `SELECT event FROM streamd_events
+         WHERE version = (SELECT version FROM streamd_events WHERE transaction_hash = ? LIMIT 1)
+           AND account_address IS NULL
+         ORDER BY event_index`,
       )
       .all(hash) as { event: string }[];
     return transactionOf(rows);
   }
 
-  /** The stored events at `version`, as `getTransactionEvents` reads them; below the pruned edge, a 410. */
+  /** Every stored event at `version`, resource changes left out; below the pruned edge, a 410. */
   async getTransactionEventsByVersion(version: bigint): Promise<TransactionEvents | undefined> {
     const key = versionKey(version);
     startOf({ fromVersion: version }, prunedBefore(this.db));
