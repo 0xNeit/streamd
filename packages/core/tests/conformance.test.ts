@@ -12,6 +12,7 @@ import type {
   EventPage,
   FetchOptions,
   StreamdEvent,
+  TransactionEvents,
 } from "../src/types.js";
 
 const TYPE = "0x1::test::Ping";
@@ -78,8 +79,25 @@ describe("checkAdapter walk", () => {
       "head-version": "pass",
       "earliest-version": "pass",
       block: "skip",
+      "block-heights": "skip",
+      "block-sequence": "skip",
+      "transaction-events": "skip",
+      "transaction-events-by-version": "skip",
+      view: "skip",
     });
-    expect(report.results.map((r): string => r.name)).toEqual([...WALK_RULES, "cursor-precedence", "foreign-cursor", "head-version", "earliest-version", "block"]);
+    expect(report.results.map((r): string => r.name)).toEqual([
+      ...WALK_RULES,
+      "cursor-precedence",
+      "foreign-cursor",
+      "head-version",
+      "earliest-version",
+      "block",
+      "block-heights",
+      "block-sequence",
+      "transaction-events",
+      "transaction-events-by-version",
+      "view",
+    ]);
     expect(report.pagesFetched).toBe(3);
   });
 
@@ -245,6 +263,9 @@ describe("checkAdapter walk", () => {
     ["a negative fromVersion", { fromVersion: -1n }],
     ["a number fromVersion", { fromVersion: 1 }],
     ["null options", null],
+    ["a view that is not an object", { view: "0x1::a::b" }],
+    ["a malformed view function", { view: { request: { function: "coin::balance" } } }],
+    ["a negative view version", { view: { request: { function: "0x1::a::b" }, version: -1n } }],
   ])("rejects %s with StreamdError before any call", async (_label, options) => {
     const adapter = scripted([{ events: [], hasMore: false }]);
     await expect(checkAdapter(adapter, desc, options as never)).rejects.toBeInstanceOf(StreamdError);
@@ -315,7 +336,17 @@ describe("checkAdapter optional methods", () => {
     const base = seeded();
     const report = await checkAdapter({ fetchEvents: (d, o) => base.fetchEvents(d, o) }, desc);
     expect(report.ok).toBe(true);
-    for (const name of ["head-version", "earliest-version", "block"]) {
+    const optional = [
+      "head-version",
+      "earliest-version",
+      "block",
+      "block-heights",
+      "block-sequence",
+      "transaction-events",
+      "transaction-events-by-version",
+      "view",
+    ];
+    for (const name of optional) {
       expect(result(report, name)).toEqual({ name, status: "skip", message: "not implemented (optional)" } as never);
     }
   });
@@ -323,9 +354,11 @@ describe("checkAdapter optional methods", () => {
   it.each([
     ["FallbackAdapter", () => new FallbackAdapter([seeded()])],
     ["RoutingAdapter", () => new RoutingAdapter({ default: seeded() })],
-  ])("skips block for a %s over sources without getBlock", async (_label, make) => {
+  ])("skips the block rules for a %s over sources without them", async (_label, make) => {
     const report = await checkAdapter(make(), desc, { fromVersion: 0n, blockHeight: 1n });
-    expect(result(report, "block")).toEqual({ name: "block", status: "skip", message: "not implemented (optional)" } as never);
+    for (const name of ["block", "block-heights", "block-sequence"]) {
+      expect(result(report, name)).toEqual({ name, status: "skip", message: "not implemented (optional)" } as never);
+    }
     expect(report.ok).toBe(true);
   });
 
@@ -375,18 +408,306 @@ describe("checkAdapter optional methods", () => {
     expect(result(report, "block").message).toContain(message);
   });
 
-  it("stays within maxPages + 2 fetches and one call per optional method", async () => {
+  it("stays within maxPages + 2 fetches, two getBlock calls and one per other optional method", async () => {
     const base = seeded();
+    const blocks = chain();
     const calls: string[] = [];
     const adapter: EventAdapter = {
       fetchEvents: (d, o) => (calls.push("fetch"), base.fetchEvents(d, o)),
       getHeadVersion: () => (calls.push("head"), base.getHeadVersion()),
       getEarliestVersion: () => (calls.push("earliest"), base.getEarliestVersion()),
-      getBlock: async () => (calls.push("block"), block),
+      getBlockHeights: (d) => (calls.push("heights"), blocks.getBlockHeights!(d)),
+      getBlock: (d, h) => (calls.push(`block ${h}`), blocks.getBlock!(d, h)),
+      getTransactionEventsByVersion: async (v) => (calls.push("by-version"), transaction([ev(Number(v))], v)),
+      view: async () => (calls.push("view"), []),
     };
-    const report = await checkAdapter(adapter, desc, { limit: 1, maxPages: 4, blockHeight: 3n });
+    const report = await checkAdapter(adapter, desc, {
+      limit: 1,
+      maxPages: 4,
+      blockHeight: 3n,
+      view: { request: { function: "0x1::a::b" } },
+    });
     expect(report.ok).toBe(true);
     expect(calls.filter((c) => c === "fetch")).toHaveLength(6);
-    expect(calls.filter((c) => c !== "fetch")).toEqual(["head", "earliest", "block"]);
+    expect(calls.filter((c) => c !== "fetch")).toEqual([
+      "head",
+      "earliest",
+      "heights",
+      "block 3",
+      "block 2",
+      "by-version",
+      "view",
+    ]);
+  });
+});
+
+/** Blocks `oldest` to `newest`, block h holding versions 10h to 10h + 9 at time 100h. */
+function chain(oldest = 0n, newest = 9n): Pick<EventAdapter, "getBlock" | "getBlockHeights"> {
+  return {
+    getBlockHeights: async () => ({ oldest, newest }),
+    getBlock: async (_d, height) => ({
+      height,
+      firstVersion: 10n * height,
+      lastVersion: 10n * height + 9n,
+      timestamp: 100n * height,
+    }),
+  };
+}
+
+describe("checkAdapter block rules", () => {
+  it("passes contiguous blocks, defaulting the height to newest", async () => {
+    const asked: bigint[] = [];
+    const blocks = chain();
+    const report = await checkAdapter(
+      broken({ ...blocks, getBlock: (d, h) => (asked.push(h), blocks.getBlock!(d, h)) }),
+      desc,
+      walkOptions,
+    );
+    expect(report.ok).toBe(true);
+    expect(statuses(report)).toMatchObject({ block: "pass", "block-heights": "pass", "block-sequence": "pass" });
+    expect(asked).toEqual([9n, 8n]);
+  });
+
+  it("prefers blockHeight over newest", async () => {
+    const asked: bigint[] = [];
+    const blocks = chain();
+    await checkAdapter(broken({ ...blocks, getBlock: (d, h) => (asked.push(h), blocks.getBlock!(d, h)) }), desc, {
+      blockHeight: 4n,
+    });
+    expect(asked).toEqual([4n, 3n]);
+  });
+
+  it.each([
+    ["rejecting", async () => { throw new Error("down"); }, "getBlockHeights rejected: Error: down"],
+    ["inverted", async () => ({ oldest: 5n, newest: 4n }), "oldest is above newest"],
+    ["a number newest", async () => ({ oldest: 0n, newest: 9 }), "newest is not a non-negative bigint"],
+  ])("fails block-heights when %s and skips the rules needing its height", async (_label, getBlockHeights, message) => {
+    const report = await checkAdapter(broken({ ...chain(), getBlockHeights } as Partial<EventAdapter>), desc);
+    expect(failed(report)).toEqual(["block-heights"]);
+    expect(result(report, "block-heights").message).toContain(message);
+    expect(result(report, "block").message).toBe("blockHeight not given and getBlockHeights did not pass");
+    expect(result(report, "block-sequence").status).toBe("skip");
+  });
+
+  const shifted = (change: (height: bigint) => Partial<BlockInfo>): Partial<EventAdapter> => {
+    const blocks = chain();
+    return {
+      ...blocks,
+      getBlock: async (d, h) => ({ ...(await blocks.getBlock!(d, h)), ...change(h) }),
+    };
+  };
+
+  it.each([
+    ["a gap", shifted((h) => (h === 8n ? { lastVersion: 88n } : {})), "ends at version 88 but block 9 starts at 90"],
+    ["an overlap", shifted((h) => (h === 9n ? { firstVersion: 89n } : {})), "block 9 starts at 89"],
+    ["a falling timestamp", shifted((h) => (h === 9n ? { timestamp: 1n } : {})), "timestamp 1 is below block 8's 800"],
+    [
+      "the block before failing",
+      shifted((h) => (h === 8n ? { height: 7n } : {})),
+      "getBlock(8) returned height 7",
+    ],
+  ])("fails block-sequence on %s", async (_label, overrides, message) => {
+    const report = await checkAdapter(broken(overrides), desc, walkOptions);
+    expect(failed(report)).toEqual(["block-sequence"]);
+    expect(result(report, "block-sequence").message).toContain(message);
+  });
+
+  it("skips block-sequence at height 0, below oldest, and when block failed", async () => {
+    const zero = await checkAdapter(broken(chain()), desc, { blockHeight: 0n });
+    expect(result(zero, "block-sequence").message).toBe("no block before height 0");
+    const edge = await checkAdapter(broken(chain(5n, 9n)), desc, { blockHeight: 5n });
+    expect(result(edge, "block-sequence").message).toBe("block 4 is below oldest 5");
+    const bad = await checkAdapter(broken(shifted(() => ({ height: 1n }))), desc, walkOptions);
+    expect(failed(bad)).toEqual(["block"]);
+    expect(result(bad, "block-sequence").message).toBe("block 9 did not pass");
+  });
+
+  it("fails on a synchronous throw instead of rejecting", async () => {
+    const getBlock = () => {
+      throw new TypeError("sync");
+    };
+    const report = await checkAdapter(broken({ ...chain(), getBlock } as Partial<EventAdapter>), desc);
+    expect(failed(report)).toEqual(["block"]);
+    expect(result(report, "block").message).toBe("getBlock rejected: TypeError: sync");
+  });
+});
+
+const hashOf = (version: bigint) => `0x${version.toString(16).padStart(64, "0")}`;
+
+/** Two events per transaction at versions 1 to 4, each carrying its transaction's hash. */
+function hashedEvents(): StreamdEvent[] {
+  return [1, 2, 3, 4].flatMap((v) => [0, 1].map((i) => ({ ...ev(v, i), transactionHash: hashOf(BigInt(v)) })));
+}
+
+/** A transaction as both lookups should report it, from `events`. */
+function transaction(events: StreamdEvent[], version: bigint): TransactionEvents {
+  return { version, success: true, vmStatus: "Executed successfully", events: events.filter((e) => e.version === version) };
+}
+
+/** Serves the walk and both lookups correctly from `hashedEvents()`, with overrides. */
+function lookups(overrides: Partial<EventAdapter> = {}): EventAdapter {
+  const events = hashedEvents();
+  const base = new MemoryAdapter(events);
+  return {
+    fetchEvents: (d, o) => base.fetchEvents(d, o),
+    getTransactionEvents: async (hash) => {
+      const found = events.find((e) => e.transactionHash === hash);
+      return found && transaction(events, found.version);
+    },
+    getTransactionEventsByVersion: async (version) =>
+      events.some((e) => e.version === version) ? transaction(events, version) : undefined,
+    ...overrides,
+  };
+}
+
+const LOOKUPS = ["transaction-events", "transaction-events-by-version"];
+
+describe("checkAdapter transaction lookups", () => {
+  it("passes a MemoryAdapter seeded with hashed events", async () => {
+    const report = await checkAdapter(new MemoryAdapter(hashedEvents()), desc, { fromVersion: 2n });
+    expect(report.ok).toBe(true);
+    expect(statuses(report)).toMatchObject({
+      "transaction-events": "pass",
+      "transaction-events-by-version": "skip",
+    });
+  });
+
+  it("passes both lookups, asking for the first hashed walked event", async () => {
+    const asked: unknown[] = [];
+    const correct = lookups();
+    const report = await checkAdapter(
+      lookups({
+        getTransactionEvents: (hash, d) => (asked.push(hash, d), correct.getTransactionEvents!(hash)),
+        getTransactionEventsByVersion: (v, d) => (asked.push(v, d), correct.getTransactionEventsByVersion!(v)),
+      }),
+      desc,
+      { fromVersion: 3n },
+    );
+    expect(report.ok).toBe(true);
+    expect(statuses(report)).toMatchObject({ "transaction-events": "pass", "transaction-events-by-version": "pass" });
+    expect(asked).toEqual([hashOf(3n), desc, 3n, desc]);
+  });
+
+  const wrong = (change: (t: TransactionEvents) => unknown) => async (version: bigint) =>
+    change(transaction(hashedEvents(), version)) as TransactionEvents;
+
+  it.each([
+    ["nothing found", { getTransactionEvents: async () => undefined }, "transaction-events", "found nothing for walked event 1:0"],
+    ["a wrong version", { getTransactionEvents: async () => transaction(hashedEvents(), 2n) }, "transaction-events", "returned version 2, but walked event 1:0 is at 1"],
+    ["a missing success", { getTransactionEventsByVersion: wrong((t) => ({ ...t, success: undefined })) }, "transaction-events-by-version", "success is not a boolean"],
+    ["a malformed event", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: [{ ...t.events[0], version: 1 }] })) }, "transaction-events-by-version", "events[0] version"],
+    ["an event at another version", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: [...t.events, ev(2, 5)] })) }, "transaction-events-by-version", "event 2:5 is not at version 1"],
+    ["descending eventIndex", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: [...t.events].reverse() })) }, "transaction-events-by-version", "eventIndex 0 follows 1"],
+    ["the walked event missing", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: t.events.slice(1) })) }, "transaction-events-by-version", "does not hold walked event 1:0"],
+    ["a different type", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: t.events.map((e) => ({ ...e, type: "0x1::other::Pong" })) })) }, "transaction-events-by-version", "does not hold walked event 1:0 (0x1::test::Ping)"],
+    ["a by-version answer that disagrees", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: t.events.slice(0, 1) })) }, "transaction-events-by-version", "disagrees with getTransactionEvents: [1:0] vs [1:0,1:1]"],
+    ["a rejection", { getTransactionEvents: async () => { throw new StreamdNetworkError("down", 503); } }, "transaction-events", "getTransactionEvents(0x"],
+    ["a synchronous throw", { getTransactionEventsByVersion: () => { throw new Error("sync"); } }, "transaction-events-by-version", "rejected: Error: sync"],
+  ])("fails on %s", async (_label, overrides, name, message) => {
+    const report = await checkAdapter(lookups(overrides as Partial<EventAdapter>), desc);
+    expect(failed(report)).toEqual([name]);
+    expect(result(report, name).message).toContain(message);
+  });
+
+  it("looks up by version the first walked event when no lookup by hash ran", async () => {
+    const asked: bigint[] = [];
+    const events = [ev(5), ev(6)];
+    const report = await checkAdapter(
+      {
+        fetchEvents: (d, o) => new MemoryAdapter(events).fetchEvents(d, o),
+        getTransactionEventsByVersion: async (v) => (asked.push(v), transaction(events, v)),
+      },
+      desc,
+    );
+    expect(report.ok).toBe(true);
+    expect(asked).toEqual([5n]);
+  });
+
+  const handleDesc: EventDescriptor = {
+    kind: "handle",
+    accountAddress: "0x1",
+    eventHandleStruct: "0x1::test::Handles",
+    fieldName: "pings",
+  };
+
+  it("matches a handle event by sequenceNumber, not eventIndex", async () => {
+    const walked = { ...ev(8, 7), sequenceNumber: 7n };
+    const page = scripted([{ events: [walked], hasMore: false }]);
+    const at = (sequenceNumber: bigint) => async (): Promise<TransactionEvents> => ({
+      version: 8n,
+      success: true,
+      vmStatus: "",
+      events: [{ ...ev(8, 0), sequenceNumber }],
+    });
+    const ok = await checkAdapter({ ...page, getTransactionEventsByVersion: at(7n) }, handleDesc);
+    expect(result(ok, "transaction-events-by-version").status).toBe("pass");
+    const off = await checkAdapter({ ...page, getTransactionEventsByVersion: at(6n) }, handleDesc);
+    expect(failed(off)).toEqual(["transaction-events-by-version"]);
+  });
+
+  it.each([
+    ["a resource descriptor", { kind: "resource", accountAddress: "0x1", resourceType: TYPE }, "resource changes are not transaction events"],
+    ["an object descriptor", { kind: "object", objectId: "0x1" }, "object changes are not transaction events"],
+  ])("skips both lookups for %s", async (_label, descriptor, message) => {
+    const page = scripted([{ events: [ev(1)], hasMore: false }]);
+    const report = await checkAdapter(lookups({ fetchEvents: page.fetchEvents }), descriptor as EventDescriptor);
+    for (const name of LOOKUPS) expect(result(report, name).message).toBe(message);
+  });
+
+  it("skips without a walked event, and by hash without a hashed one", async () => {
+    const empty = await checkAdapter(lookups({ fetchEvents: async () => ({ events: [], hasMore: false }) }), desc);
+    for (const name of LOOKUPS) expect(result(empty, name).message).toBe("no walked event to look up");
+    const unhashed = await checkAdapter(lookups({ fetchEvents: (d, o) => seeded().fetchEvents(d, o) }), desc);
+    expect(result(unhashed, "transaction-events").message).toBe("no walked event carries a transactionHash");
+  });
+});
+
+describe("checkAdapter view", () => {
+  const request = { function: "0x1::coin::balance", typeArguments: ["0x1::aptos_coin::AptosCoin"], functionArguments: ["0x1"] } as const;
+
+  function viewing(reply: () => unknown, base: Partial<EventAdapter> = {}) {
+    const asked: unknown[] = [];
+    const adapter = broken({
+      view: async (r, v, d) => (asked.push(r, v, d), reply() as unknown[]),
+      ...base,
+    });
+    return { adapter, asked };
+  }
+
+  it("skips without the method, and without a request", async () => {
+    const absent = await checkAdapter(seeded(), desc, { view: { request } });
+    expect(result(absent, "view").message).toBe("not implemented (optional)");
+    const { adapter, asked } = viewing(() => []);
+    expect(result(await checkAdapter(adapter, desc), "view").message).toBe("view request not given");
+    expect(asked).toHaveLength(0);
+  });
+
+  it("reads at the given version, else the first walked event's, else the head", async () => {
+    const given = viewing(() => ["1"]);
+    const report = await checkAdapter(given.adapter, desc, { ...walkOptions, view: { request, version: 4n } });
+    expect(result(report, "view").status).toBe("pass");
+    expect(given.asked).toEqual([request, 4n, desc]);
+    const walked = viewing(() => ["1"]);
+    await checkAdapter(walked.adapter, desc, { ...walkOptions, view: { request } });
+    expect(walked.asked[1]).toBe(2n);
+    const empty = async () => ({ events: [], hasMore: false });
+    const head = viewing(() => ["1"], { fetchEvents: empty, getHeadVersion: async () => 9n });
+    await checkAdapter(head.adapter, desc, { view: { request } });
+    expect(head.asked[1]).toBe(9n);
+    const none = viewing(() => ["1"], { fetchEvents: empty, getHeadVersion: undefined });
+    const skipped = await checkAdapter(none.adapter, desc, { view: { request } });
+    expect(result(skipped, "view").message).toBe("no version to read at");
+    expect(none.asked).toHaveLength(0);
+  });
+
+  it.each([
+    ["a non-array result", () => ({ value: "1" }), "view(0x1::coin::balance) at 2 resolved object, not an array"],
+    ["undefined", () => undefined, "resolved undefined, not an array"],
+    ["a rejection", () => { throw new StreamdNetworkError("pruned", 410); }, "view rejected: StreamdNetworkError: pruned"],
+  ])("fails view on %s", async (_label, reply, message) => {
+    const { adapter } = viewing(reply);
+    const report = await checkAdapter(adapter, desc, { ...walkOptions, view: { request } });
+    expect(failed(report)).toEqual(["view"]);
+    expect(result(report, "view").message).toContain(message);
   });
 });
