@@ -721,7 +721,7 @@ function refuseOnSui(flags: DescriptorFlags): void {
   }
 }
 
-function descriptor(
+export function descriptor(
   command: string,
   flags: DescriptorFlags,
   types: string[],
