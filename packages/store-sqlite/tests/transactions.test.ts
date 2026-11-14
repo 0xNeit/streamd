@@ -59,7 +59,7 @@ const BACKFILL = `UPDATE streamd_events
 SET transaction_hash = CASE
   WHEN json_extract(event, '$.transactionHash') LIKE '0x%' THEN lower(json_extract(event, '$.transactionHash'))
   ELSE json_extract(event, '$.transactionHash') END
-WHERE transaction_hash IS NULL AND account_address IS NULL`;
+WHERE transaction_hash IS NULL AND account_address IS NULL AND event LIKE '%"transactionHash"%'`;
 
 function ev(version: bigint, eventIndex: number, transactionHash?: string, type = SWAP): StreamdEvent {
   return {

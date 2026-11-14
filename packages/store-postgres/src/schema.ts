@@ -19,6 +19,18 @@ export function versionParam(version: bigint): string {
   return version.toString();
 }
 
+// Apart from the ALTER's transaction, so its one scan of an older table holds
+// back writes only, not reads. Two connections building it at once race on
+// the name, and the loser has nothing left to do.
+function addedIndex(name: string, definition: string): string {
+  return `DO $$
+  BEGIN
+    CREATE INDEX IF NOT EXISTS ${name} ON streamd_events ${definition};
+  EXCEPTION WHEN unique_violation OR duplicate_table THEN
+    NULL;
+  END $$`;
+}
+
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS streamd_events (
     version numeric(20, 0) NOT NULL,
@@ -37,30 +49,25 @@ const SCHEMA = [
     ON streamd_events (guid_address, guid_creation, version, event_index)
     WHERE guid_address IS NOT NULL`,
   "CREATE TABLE IF NOT EXISTS streamd_cursors (name text PRIMARY KEY, cursor text NOT NULL)",
-  // The column resource changes are served by, added to new and older tables
-  // alike. Checked first, since the ALTER locks the whole table even when it
+  // The columns resource changes and transaction lookups are served by, added
+  // to new and older tables alike, together, so an upgrade locks the table
+  // once. Checked first, since the ALTER locks the whole table even when it
   // has nothing to do. A second connection migrating at once waits on the
-  // first's lock, then finds the column there.
+  // first's lock, then finds the columns there.
   `DO $$
   BEGIN
-    IF NOT EXISTS (
-      SELECT 1 FROM pg_attribute
-      WHERE attrelid = 'streamd_events'::regclass AND attname = 'account_address' AND NOT attisdropped
-    ) THEN
-      ALTER TABLE streamd_events ADD COLUMN IF NOT EXISTS account_address text;
+    IF (
+      SELECT count(*) FROM pg_attribute
+      WHERE attrelid = 'streamd_events'::regclass
+        AND attname IN ('account_address', 'transaction_hash') AND NOT attisdropped
+    ) < 2 THEN
+      ALTER TABLE streamd_events
+        ADD COLUMN IF NOT EXISTS account_address text,
+        ADD COLUMN IF NOT EXISTS transaction_hash text;
     END IF;
   END $$`,
-  // Apart from the ALTER's transaction, so its one scan of an older table
-  // holds back writes only, not reads. Two connections building it at once
-  // race on the name, and the loser has nothing left to do.
-  `DO $$
-  BEGIN
-    CREATE INDEX IF NOT EXISTS streamd_events_resource
-      ON streamd_events (account_address, type, version, event_index)
-      WHERE account_address IS NOT NULL;
-  EXCEPTION WHEN unique_violation OR duplicate_table THEN
-    NULL;
-  END $$`,
+  addedIndex("streamd_events_resource", "(account_address, type, version, event_index) WHERE account_address IS NOT NULL"),
+  addedIndex("streamd_events_transaction", "(transaction_hash, version, event_index) WHERE transaction_hash IS NOT NULL"),
 ];
 
 // Its own schema, created only by what writes or prunes transfers, so the
@@ -88,6 +95,14 @@ export const TRANSFER_SCHEMA = [
 // Kept among the cursors, as the SQLite store does, so a database created
 // before pruning existed needs no migration: the row appears on the first prune.
 export const PRUNED_BEFORE = "streamd:pruned-before";
+
+/**
+ * A transaction hash as stored and looked up: an Aptos hex hash lowercased,
+ * anything else, such as a case-sensitive Sui base58 digest, as it is.
+ */
+export function hashKey(hash: string): string {
+  return /^0x[0-9a-fA-F]+$/.test(hash) ? hash.toLowerCase() : hash;
+}
 
 /** The pruned edge as a `numeric` expression: `0` until something is pruned. */
 export const EDGE = `coalesce((SELECT cursor::numeric FROM streamd_cursors WHERE name = '${PRUNED_BEFORE}'), 0)`;
