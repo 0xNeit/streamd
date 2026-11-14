@@ -31,6 +31,7 @@ import { aptosConfig, chainFor } from "./chain.js";
 import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
 import { generateEventTypes } from "./codegen.js";
+import { checkGenerated } from "./codegen-check.js";
 import { SUI_DIALECT, suiCodegen } from "./sui-abi.js";
 import { loadSui } from "./sui.js";
 import type { SuiNetworkPreset } from "@streamd/sui";
@@ -305,6 +306,12 @@ async function suiSource(options: CodegenOptions): Promise<string> {
 }
 
 async function write(options: CodegenOptions, source: string): Promise<number> {
+  if (options.check === true && options.out !== undefined) {
+    const drift = await checkGenerated(options.out, source);
+    if (drift === undefined) return 0;
+    process.stderr.write(`streamd: ${drift}\n`);
+    return 1;
+  }
   if (options.out === undefined) process.stdout.write(source);
   else await writeFile(options.out, source);
   return 0;

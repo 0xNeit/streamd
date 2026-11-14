@@ -272,6 +272,18 @@ describe("parseCommand codegen", () => {
     expect(parseCommand(["codegen", "0x1::coin"])).not.toMatchObject({ options: { validators: true } });
   });
 
+  it("takes --check with --out, beside the other flags", () => {
+    expect(parseCommand(["codegen", "--check", "--out", "events.ts", "--validators", "0x1"])).toEqual({
+      command: "codegen",
+      options: { modules: [{ address: ADDR }], network: "mainnet", out: "events.ts", validators: true, check: true },
+    });
+    expect(parseCommand(["codegen", "--chain", "sui", "--out", "events.ts", "--check", "0x2::kiosk"])).toEqual({
+      command: "codegen",
+      options: { chain: "sui", modules: [{ address: "0x2", module: "kiosk" }], network: "mainnet", out: "events.ts", check: true },
+    });
+    expect(parseCommand(["codegen", "--out", "events.ts", "0x1"])).not.toMatchObject({ options: { check: true } });
+  });
+
   it("takes a bare address as every module at it", () => {
     expect(parseCommand(["codegen", "0x1", `${LONG_ADDR}::coin`])).toEqual({
       command: "codegen",
@@ -291,6 +303,8 @@ describe("parseCommand codegen", () => {
     [["codegen", "0x1::co-in"], /expected <address> or <address>::<module>/],
     [["codegen", "nothex::coin"], /Not a valid Aptos address/],
     [["codegen", "--out", "", "0x1::coin"], /--out must not be empty/],
+    [["codegen", "--check", "0x1::coin"], /^--check needs --out <file> to compare with$/],
+    [["codegen", "--chain", "sui", "--check", "0x2"], /^--check needs --out <file> to compare with$/],
     [["codegen", "--network", "moon", "0x1::coin"], /--network must be one of/],
     [["codegen", "--limit", "1", "0x1::coin"], /Unknown option/],
     [["codegen", "--chain", "evm", "0x1::coin"], /--chain must be aptos or sui: evm/],
