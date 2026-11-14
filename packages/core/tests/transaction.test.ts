@@ -55,6 +55,17 @@ describe("eventsOf in core", () => {
     expect(seen).toEqual([ID, ID, ID]);
   });
 
+  it("narrows by a type written without type arguments to the struct with any", async () => {
+    const { adapter } = lookups(0, {
+      version: 5n,
+      success: true,
+      vmStatus: "success",
+      events: [ev(`${A}<0x1::c::X>`, 0), ev(B, 1), ev(`${A}<0x1::c::Y>`, 2), ev(`${A}x<0x1::c::X>`, 3)],
+    });
+    const events = await eventsOf(adapter, limiter, 0, ID, { kind: "module", eventType: A }, {});
+    expect(events.map((e) => e.eventIndex)).toEqual([0, 2]);
+  });
+
   it("rejects a failed transaction with StreamdTransactionError", async () => {
     const { adapter } = lookups(0, { version: 7n, success: false, vmStatus: "MoveAbort 101", events: [] });
     const err = await eventsOf(adapter, limiter, 0, ID, undefined, {}).catch((e: unknown) => e);

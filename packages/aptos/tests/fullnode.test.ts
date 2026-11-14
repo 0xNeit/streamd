@@ -120,6 +120,21 @@ describe("FullnodeScanAdapter module scan", () => {
     expect(page.events.map((e) => e.eventIndex)).toEqual([1, 2]);
   });
 
+  it("matches a type written without type arguments against every instantiation", async () => {
+    const SWAP = "0x1::pool::Swap";
+    const txns = [
+      txn(0, [`${SWAP}<0x1::a::CoinA, 0x1::b::CoinB>`, TYPE, `${SWAP}Fee<0x1::a::CoinA>`]),
+      txn(1, [`${SWAP}<0x1::b::CoinB, 0x1::pool::LP<0x1::a::CoinA, 0x1::b::CoinB>>`, SWAP]),
+    ];
+    const { aptos } = fakeNode(chain(1, txns));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(
+      { kind: "module", eventType: SWAP },
+      { fromVersion: 0n, toVersion: 1n },
+    );
+
+    expect(page.events.map((e) => `${e.version}:${e.eventIndex}`)).toEqual(["0:0", "1:0", "1:1"]);
+  });
+
   it("matches multiple eventTypes in one transaction scan and preserves order", async () => {
     const GENERIC = "0x1::pool::Swap<0x1::a::CoinA, 0x1::b::CoinB>" as const;
     const UNLISTED = "0x1::test::Ignored";
