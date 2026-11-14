@@ -2,7 +2,7 @@ import type { EventAdapter } from "../types.js";
 import { StreamdNetworkError } from "../errors.js";
 import { requireAdapter } from "./validate.js";
 
-const METHODS = [
+export const METHODS = [
   "fetchEvents",
   "getHeadVersion",
   "getEarliestVersion",
@@ -70,7 +70,7 @@ function percentile(sorted: readonly number[], p: number): number {
   return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)]!;
 }
 
-function isRateLimited(err: unknown): boolean {
+export function isRateLimited(err: unknown): boolean {
   return err instanceof StreamdNetworkError && (err.statusCode === 429 || err.retryAfter !== undefined);
 }
 

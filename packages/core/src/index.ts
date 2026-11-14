@@ -6,6 +6,7 @@ export { PoolAdapter } from "./adapters/pool.js";
 export type { PoolAdapterOptions } from "./adapters/pool.js";
 export { withHooks } from "./adapters/hooks.js";
 export { adapterMetrics } from "./adapters/metrics.js";
+export { withTracing } from "./adapters/tracing.js";
 export { toPrometheus } from "./prometheus.js";
 export { MemoryAdapter } from "./adapters/memory.js";
 export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
@@ -105,6 +106,7 @@ export type {
   MethodMetrics,
 } from "./adapters/metrics.js";
 export type { PrometheusOptions, PrometheusSource } from "./prometheus.js";
+export type { SpanAttributes, SpanLike, TracerLike } from "./adapters/tracing.js";
 export type {
   AdapterHooks,
   AdapterRequest,
