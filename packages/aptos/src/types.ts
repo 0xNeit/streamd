@@ -63,6 +63,44 @@ export type TransferListenerOptions = SubscriptionOptions & TransferOptions;
 /** Filter for `StreamdClient.getTransfers`. */
 export type TransferFilter = EventFilter & TransferOptions;
 
+/** A DEX whose swap events `swaps` and `getSwaps` read. */
+export type SwapProtocol = "hyperion" | "thala-clamm" | "thala-v2" | "cellana";
+
+/**
+ * One swap through one pool, the `data` of the records `swaps` and
+ * `getSwaps` deliver. A multi-hop route gives one per hop.
+ */
+export interface Swap {
+  protocol: SwapProtocol;
+  /** The pool object's address, in long form. */
+  poolId: string;
+  /** The transaction's sender, in long form; absent when the source reports none. */
+  trader?: string;
+  /**
+   * What the pool took in: a fungible-asset metadata address, or on Cellana a
+   * coin type, in long form, as `Transfer.asset` reports them.
+   */
+  assetIn: string;
+  /** Base units, as the swap event reports them. */
+  amountIn: bigint;
+  /** What the pool paid out, in the same form as `assetIn`. */
+  assetOut: string;
+  amountOut: bigint;
+}
+
+export interface SwapOptions {
+  /** Only these DEXes' swaps, one or a list; every supported one when omitted. */
+  protocol?: SwapProtocol | readonly SwapProtocol[];
+  /** Only swaps with this asset on either side, in any form `TransferOptions.asset` takes. */
+  asset?: string;
+}
+
+/** Options for `AptosClient.swaps`. */
+export type SwapListenerOptions = SubscriptionOptions & SwapOptions;
+
+/** Filter for `AptosClient.getSwaps`. */
+export type SwapFilter = EventFilter & SwapOptions;
+
 /** A built, unsigned Aptos transaction to simulate, with the keys whose checks the node should run. */
 export interface AptosTransactionSimulation extends TransactionSimulation {
   /** From `aptos.transaction.build.simple`, or `build.multiAgent` for secondary signers. */

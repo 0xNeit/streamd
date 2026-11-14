@@ -18,8 +18,8 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `balances`, `balanceAt`, `eventsOf`, `eventsAt`, `expectEvents`,
-`previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
+`transfers`, `getTransfers`, `swaps`, `getSwaps`, `balances`, `balanceAt`, `eventsOf`, `eventsAt`,
+`expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
 adapter.
@@ -1653,7 +1653,7 @@ for (const e of deposits) console.log(e.senderName ?? e.sender);
   and an `onTransaction` group carries its events' name.
 - **Where.** Every call that takes `withState` takes it: `getEvents`, `getEventPages`,
   `iterateEvents`, `getTransactions`, `replay`, `on`, `onBatch`, `once`, `stream`,
-  `onTransaction`, `watch`, `transfers` and `getTransfers`. Not `reduce`, `balances`, or the
+  `onTransaction`, `watch`, `transfers`, `getTransfers`, `swaps` and `getSwaps`. Not `reduce`, `balances`, or the
   one-shot transaction calls (`eventsOf`, `eventsAt`, `previewEvents` and the assertions).
 - **After `where`.** It runs after `decode`, `where` and `withState`, and for queries after
   `limit` and `orderBy`, so only the events you get back cost a lookup.
@@ -1749,6 +1749,61 @@ const mine = await streamd.getTransfers({ fromVersion: -10_000n, account: "alice
   they do not appear. A legacy token offer and its claim land in different
   transactions and come out as a lone withdraw and a lone deposit. A transfers subscription is not a
   listener for `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+
+## DEX swaps
+
+`swaps(callback, options?)` follows swaps on the main Aptos DEXes as they land, and
+`getSwaps(filter?)` returns them for a past range. Each arrives as an event whose `data` is a
+`Swap { protocol, poolId, trader, assetIn, amountIn, assetOut, amountOut }`, one per pool hop:
+
+```ts
+const sub = streamd.swaps(
+  ({ data }) => console.log(`${data.protocol}: ${data.amountIn} ${data.assetIn} -> ${data.amountOut} ${data.assetOut}`),
+  { asset: "0xa" }, // swaps with APT on either side; omit for every swap
+);
+
+const thala = await streamd.getSwaps({ fromVersion: -10_000n, protocol: ["thala-clamm", "thala-v2"] });
+```
+
+- **Sources.** One scan over these swap events, each decoded from its on-chain struct, with
+  no view read:
+
+  | `protocol` | Package | Event |
+  | --- | --- | --- |
+  | `"hyperion"` | `0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c` | `pool_v3::SwapEventV3` |
+  | `"thala-clamm"` | `0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920` (ThalaSwap CLAMM) | `pool::SwapEvent` |
+  | `"thala-v2"` | `0x007730cd28ee1cdc9e999336cbc430f99e7c44397c0aa77516f6f23a78559bb5` (ThalaSwap v2) | `pool::SwapEvent` |
+  | `"cellana"` | `0x4bf51972879e3b95c4781a5cdcb9e1ee24ef483e7d22f2d903626f126df62bd1` | `liquidity_pool::SwapEvent` |
+
+  `protocol`, one or a list, narrows the scanned types; an unknown name throws.
+- **Trader.** None of these events names the swapper, and routers and aggregators call the
+  pools on a user's behalf, so `trader` is the transaction's sender in long form (for a
+  sponsored transaction, the user, not the fee payer). It is absent when the source reports no
+  sender.
+- **Direction.** Hyperion and Cellana name the token in and out. Thala CLAMM reports its two
+  assets and `zero_for_one`; ThalaSwap v2 its asset list and `idx_in`/`idx_out`.
+- **Assets.** A fungible asset is its metadata address in long form, as `Transfer.asset`
+  reports it. Cellana names a coin by its type (`0x1::aptos_coin::AptosCoin`, addresses inside
+  in long form), so APT is `0x...0a` on Hyperion and Thala and may be the coin type on Cellana:
+  no coin is mapped to its paired fungible asset. `asset` keeps swaps with that asset on
+  either side and takes what `transfers`'s `asset` takes.
+- **Amounts.** `amountIn` and `amountOut` are the event's base units: what the pool took in and
+  paid out, its own fee inside `amountIn`, not split out. A fee taken before the pool is not in
+  them, so the trader can have paid more: Hyperion's router keeps about 1 basis point
+  (`fee_sharer::DistributeEvent`), and an aggregator may take its own. On a Thala CLAMM
+  exact-out swap, `amountIn` is net of the refund.
+- **Routes.** A multi-hop route gives one record per pool hop, in event order, not joined:
+  an aggregator may take a fee between hops, so one hop's `amountOut` need not equal the
+  next one's `amountIn`.
+- **Identity.** A record is the swap event with `data` replaced, so it keeps the event's
+  `(version, eventIndex)`, `transactionHash`, `timestamp`, `sender` and `entryFunction`;
+  cursors, dedup, `where` (`fromSender`, `whereField("poolId", ...)`), `limit` and the other
+  options work as for any event.
+- **Limits.** Tapp, LiquidSwap, PancakeSwap and ThalaSwap v1 are not read yet; the last three
+  emit swap events generic over coin types, which a `module` type list does not match.
+  Hyperion's earlier `SwapEvent` and `SwapEventV2` are not read. An event whose fields do not
+  have its struct's shape is skipped. A swaps subscription is not a listener for `off()` or
+  `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 
 ## Live balances
 
