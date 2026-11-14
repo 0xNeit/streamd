@@ -2422,6 +2422,60 @@ function sets itself; label values must be strings, and backslashes, double quot
 in them are escaped. Two sources with the same labels would write the same series twice, so
 they are refused. Each refusal is a `StreamdError`, thrown before anything is rendered.
 
+To see adapter calls in your traces, wrap the adapter with `withTracing` and an OpenTelemetry
+tracer. It opens one span per call of every method the adapter has, named `streamd.<method>`
+(`streamd.fetchEvents`, `streamd.view`), and ends it once the call settles. streamd does not
+depend on `@opentelemetry/api`: `withTracing` takes a structural `TracerLike`, the
+`startSpan` and the four span methods it calls, which a real tracer satisfies:
+
+```ts
+import { trace } from "@opentelemetry/api";
+import { StreamdClient, withTracing } from "@streamd/core";
+import { FullnodeScanAdapter } from "@streamd/aptos";
+
+const streamd = new StreamdClient({
+  adapter: withTracing(new FullnodeScanAdapter(aptos), trace.getTracer("my-app")),
+});
+```
+
+| Attribute | Set from |
+| --- | --- |
+| `streamd.descriptor.kind` | the call's descriptor, when it has one |
+| `streamd.event_type` | `eventType` of a `module` descriptor or `eventTypes` of an `account` one, a string or a string array |
+| `streamd.account` | `accountAddress` |
+| `streamd.handle.struct`, `streamd.handle.field`, `streamd.handle.creation_number` | a `handle` descriptor's fields |
+| `streamd.resource_type`, `streamd.object_id` | a `resource` or `object` descriptor |
+| `streamd.limit`, `streamd.cursor_present` | `fetchEvents` options; whether a cursor was passed, never its value |
+| `streamd.block_height` | `getBlock` |
+| `streamd.transaction_hash` | `getTransactionEvents` |
+| `streamd.version` | `getTransactionEventsByVersion`, `view`'s ledger version, `readObjects`'s `at.version` |
+| `streamd.view.function` | `view`'s function name, never its arguments |
+| `streamd.event_count`, `streamd.has_more`, `streamd.final` | a page from `fetchEvents` |
+| `streamd.found`, `streamd.event_count`, `streamd.success` | the transaction lookups; `simulateTransactionEvents` sets the last two |
+| `error.type`, `streamd.rate_limited`, `http.response.status_code` | a failure: the error's `name` (`_OTHER` for a non-Error), status 429 or a `retryAfter` hint, and a `StreamdNetworkError`'s status |
+
+Versions and heights are decimal strings, since attributes cannot be `bigint`. Payloads, event
+data, view arguments and simulated transactions are never written. A call that succeeds leaves
+the span's status unset, as OpenTelemetry asks of instrumentation; one that fails records the
+exception, sets status `ERROR` (code 2) with its message, and rejects with the same error.
+The message is the error's own, and a fullnode failure's includes the request URL, so a node
+URL carrying a key in its path or query reaches the trace backend.
+Adapter calls take no abort signal, so any rejection is a failure, and a client
+`requestTimeout`, which gives up on the call outside the adapter, leaves the span open until the
+call itself settles.
+
+Spans start with `startSpan`, so they are children of whatever span is active where the call
+is made. They are not made active themselves, which would need `context.with` from
+`@opentelemetry/api`: an HTTP auto-instrumentation span for the fetch underneath appears beside
+streamd's span rather than inside it.
+
+A tracer fault never fails a call: when `startSpan` throws or returns nothing the call runs
+untraced, a span method that throws is skipped, and a rejected promise returned by any of them
+is caught rather than left unhandled. A tracer without a `startSpan` method is
+refused with a `StreamdError` when wrapping. `withTracing`, `adapterMetrics` and `withHooks`
+stack in any order. Outside `CachingAdapter` a cache hit is still a span, with no call beneath
+it; inside it a hit makes none.
+
 To skip the source when re-reading settled history, wrap an adapter with
 `CachingAdapter`. It stores only pages the adapter marks `final: true`,
 meaning the same request will always return the same page, and passes
