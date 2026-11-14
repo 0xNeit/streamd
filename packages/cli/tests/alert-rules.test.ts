@@ -110,6 +110,6 @@ describe("parseRules", () => {
     expect(rule!.descriptor).toEqual({ kind: "account", accountAddress: `0x${"0".repeat(63)}2` });
     expect(() =>
       parseRules(JSON.stringify({ rules: [{ ...base, descriptor: { account: "0x2", resource: "0x2::a::A" } }] }), "f", true),
-    ).toThrow('f: rule "fees" (#1): descriptor: --resource is not available with --chain sui');
+    ).toThrow('f: rule "fees" (#1): descriptor: resource is not available with chain sui');
   });
 });

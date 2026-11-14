@@ -56,8 +56,10 @@ function savedWindow(raw: unknown): AlertWindow | undefined {
 
 /** Every saved entry by rule name, each still raw so entries for rules no longer in the file are kept as they are. */
 function readState(path: string): Record<string, unknown> {
+  // No prototype, so a rule named __proto__ is an ordinary key.
+  const state: Record<string, unknown> = Object.create(null);
   const text = readCursor(path);
-  if (text === undefined) return {};
+  if (text === undefined) return state;
   let parsed: unknown;
   try {
     parsed = JSON.parse(text);
@@ -67,7 +69,7 @@ function readState(path: string): Record<string, unknown> {
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
     throw new Error(`not a JSON object of rule name to saved position: ${path}`);
   }
-  return parsed as Record<string, unknown>;
+  return Object.assign(state, parsed);
 }
 
 function savedPosition(raw: unknown, rule: AlertRule, path: string): Position {

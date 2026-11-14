@@ -60,7 +60,7 @@ function ruleDescriptor(raw: unknown, sui: boolean): EventDescriptor {
   try {
     return descriptor("a rule", { account: account as string | undefined, resource: resource as string | undefined }, types ?? [], sui);
   } catch (err) {
-    throw new Error(`descriptor: ${reason(err)}`);
+    throw new Error(`descriptor: ${reason(err).replace(/--(\w)/g, "$1")}`);
   }
 }
 

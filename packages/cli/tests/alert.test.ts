@@ -326,4 +326,9 @@ describe("runAlert window and cursor pairing", () => {
     expect(await run).toBe(0);
     expect(state().burst).toMatchObject({ cursor: "c2", window: { value: "3" } });
   });
+
+  it("saves a rule named __proto__ like any other", async () => {
+    await runTo(new MemoryAdapter([ev(1, T0)]), rules(rule("__proto__", { count: 5 })), () => existsSync(cursorFile()));
+    expect(Object.hasOwn(state(), "__proto__")).toBe(true);
+  });
 });
