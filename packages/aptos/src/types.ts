@@ -114,6 +114,52 @@ export type SwapListenerOptions = SubscriptionOptions & SwapOptions;
 /** Filter for `AptosClient.getSwaps`. */
 export type SwapFilter = EventFilter & SwapOptions;
 
+/** An NFT marketplace whose fill events `sales` and `getSales` read. */
+export type SaleMarketplace = "wapal" | "tradeport";
+
+/** How a sale filled: a listing bought, an offer on one token accepted, or an offer on any token of a collection accepted. */
+export type SaleKind = "listing" | "token-offer" | "collection-offer";
+
+/**
+ * One NFT sold on one marketplace, the `data` of the records `sales` and
+ * `getSales` deliver. A bulk buy gives one per token.
+ */
+export interface Sale {
+  /** The marketplace whose listing or offer filled, not the front end or aggregator that sent the transaction. */
+  marketplace: SaleMarketplace;
+  kind: SaleKind;
+  /**
+   * A token object's address in long form, or a legacy token's id as
+   * `<creator>::<collection>::<name>::<property_version>`, as `Transfer.asset` reports them.
+   */
+  token: string;
+  /** The collection object's address in long form, when the event names one (Wapal, token objects). */
+  collection?: string;
+  /** Who sold, from the event, in long form. */
+  seller: string;
+  /** Who bought, from the event, in long form. */
+  buyer: string;
+  /** What the buyer paid, in base units of the order's coin (APT on every fill seen), royalty and fee inside. */
+  price: bigint;
+  /** The creator's royalty inside `price`, when the event reports it (Wapal). */
+  royalty?: bigint;
+  /** The marketplace's commission inside `price`, when the event reports it (Wapal). */
+  fee?: bigint;
+}
+
+export interface SaleOptions {
+  /** Only these marketplaces' sales, one or a list; every supported one when omitted. */
+  marketplace?: SaleMarketplace | readonly SaleMarketplace[];
+  /** Only sales of this token: a token object address in any form, or a legacy token id. */
+  token?: string;
+}
+
+/** Options for `AptosClient.sales`. */
+export type SaleListenerOptions = SubscriptionOptions & SaleOptions;
+
+/** Filter for `AptosClient.getSales`. */
+export type SaleFilter = EventFilter & SaleOptions;
+
 /** A built, unsigned Aptos transaction to simulate, with the keys whose checks the node should run. */
 export interface AptosTransactionSimulation extends TransactionSimulation {
   /** From `aptos.transaction.build.simple`, or `build.multiAgent` for secondary signers. */

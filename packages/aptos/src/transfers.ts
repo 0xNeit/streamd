@@ -65,7 +65,7 @@ type Parsed =
 const address = (field: unknown) => (typeof field === "string" ? normalizeAddress(field) : undefined);
 
 /** A legacy `0x3::token::TokenId` as `creator::collection::name::property_version`. */
-function legacyTokenId(id: unknown): string | undefined {
+export function legacyTokenId(id: unknown): string | undefined {
   if (typeof id !== "object" || id === null) return undefined;
   const { token_data_id: data, property_version: version } = id as Record<string, unknown>;
   if (typeof data !== "object" || data === null) return undefined;
