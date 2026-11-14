@@ -6,12 +6,14 @@ import type {
   EventPage,
   FetchOptions,
   StreamdEvent,
+  TransactionEvents,
 } from "./types.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
 import {
   DEFAULT_LIMIT,
   blockError,
   blockHeightsError,
+  isObject,
   requireAdapter,
   versionError,
 } from "./adapters/validate.js";
@@ -31,7 +33,9 @@ export type AdapterCheckName =
   | "earliest-version"
   | "block"
   | "block-heights"
-  | "block-sequence";
+  | "block-sequence"
+  | "transaction-events"
+  | "transaction-events-by-version";
 
 export interface AdapterCheckOptions {
   /** Where the walk starts; omitted leaves the start to the adapter (usually the head). */
@@ -447,6 +451,110 @@ async function blockResults(
   ];
 }
 
+const LOOKUP_KINDS = new Set(["module", "account", "handle"]);
+
+/** Why `value` is not a lookup result for `walked`'s transaction, or undefined when it is. */
+function lookupError(
+  label: string,
+  value: unknown,
+  walked: StreamdEvent,
+  kind: EventDescriptor["kind"],
+): string | undefined {
+  if (value === undefined) return `${label} found nothing for walked event ${eventId(walked)}`;
+  if (!isObject(value)) return `${label} resolved a non-object`;
+  const { version, success, vmStatus, events } = value;
+  if (typeof version !== "bigint" || version < 0n) return `${label} version is not a non-negative bigint`;
+  if (typeof success !== "boolean") return `${label} success is not a boolean`;
+  if (typeof vmStatus !== "string") return `${label} vmStatus is not a string`;
+  if (!Array.isArray(events)) return `${label} events is not an array`;
+  for (const [i, event] of events.entries()) {
+    const error = eventShapeError(event);
+    if (error !== undefined) return `${label} events[${i}] ${error}`;
+  }
+  if (version !== walked.version) {
+    return `${label} returned version ${version}, but walked event ${eventId(walked)} is at ${walked.version}`;
+  }
+  const held = events as StreamdEvent[];
+  const off = held.find((e) => e.version !== version);
+  if (off) return `${label} event ${eventId(off)} is not at version ${version}`;
+  for (let i = 1; i < held.length; i++) {
+    if (held[i]!.eventIndex <= held[i - 1]!.eventIndex) {
+      return `${label} eventIndex ${held[i]!.eventIndex} follows ${held[i - 1]!.eventIndex}; transaction order must strictly ascend`;
+    }
+  }
+  // A handle source may index by the handle's sequence number, as FullnodeScanAdapter does.
+  const same =
+    kind === "handle"
+      ? (e: StreamdEvent) => e.type === walked.type && e.sequenceNumber === walked.sequenceNumber
+      : (e: StreamdEvent) => e.type === walked.type && e.eventIndex === walked.eventIndex;
+  return held.some(same) ? undefined : `${label} does not hold walked event ${eventId(walked)} (${walked.type})`;
+}
+
+async function judgeLookup(
+  name: AdapterCheckName,
+  label: string,
+  run: () => unknown,
+  walked: StreamdEvent,
+  kind: EventDescriptor["kind"],
+): Promise<{ result: AdapterCheckResult; found?: TransactionEvents }> {
+  const got = await attempt(label, run);
+  if (!got.ok) return { result: verdict(name, got.error) };
+  const error = lookupError(label, got.value, walked, kind);
+  return { result: verdict(name, error), found: error === undefined ? (got.value as TransactionEvents) : undefined };
+}
+
+/** `transaction-events` and `transaction-events-by-version`, each looking up a walked event's transaction. */
+async function lookupResults(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  events: StreamdEvent[],
+): Promise<AdapterCheckResult[]> {
+  const byHashName = "transaction-events";
+  const byVersionName = "transaction-events-by-version";
+  const reason = !LOOKUP_KINDS.has(descriptor.kind)
+    ? `${descriptor.kind} changes are not transaction events`
+    : events.length === 0
+      ? "no walked event to look up"
+      : undefined;
+  const hashed = events.find((e) => e.transactionHash !== undefined);
+  let byHash: { result: AdapterCheckResult; found?: TransactionEvents } | undefined;
+  let hashResult: AdapterCheckResult;
+  if (adapter.getTransactionEvents === undefined) hashResult = skip(byHashName, ABSENT);
+  else if (reason !== undefined) hashResult = skip(byHashName, reason);
+  else if (hashed === undefined) hashResult = skip(byHashName, "no walked event carries a transactionHash");
+  else {
+    const hash = hashed.transactionHash!;
+    byHash = await judgeLookup(
+      byHashName,
+      `getTransactionEvents(${hash})`,
+      () => adapter.getTransactionEvents!(hash, descriptor),
+      hashed,
+      descriptor.kind,
+    );
+    hashResult = byHash.result;
+  }
+  if (adapter.getTransactionEventsByVersion === undefined) return [hashResult, skip(byVersionName, ABSENT)];
+  if (reason !== undefined) return [hashResult, skip(byVersionName, reason)];
+  const walked = byHash !== undefined ? hashed! : events[0]!;
+  const byVersion = await judgeLookup(
+    byVersionName,
+    `getTransactionEventsByVersion(${walked.version})`,
+    () => adapter.getTransactionEventsByVersion!(walked.version, descriptor),
+    walked,
+    descriptor.kind,
+  );
+  if (byHash?.found === undefined || byVersion.found === undefined) return [hashResult, byVersion.result];
+  const hashIds = byHash.found.events.map(eventId).join(",");
+  const versionIds = byVersion.found.events.map(eventId).join(",");
+  return [
+    hashResult,
+    verdict(
+      byVersionName,
+      hashIds === versionIds ? undefined : `disagrees with getTransactionEvents: [${versionIds}] vs [${hashIds}]`,
+    ),
+  ];
+}
+
 /**
  * Drive `adapter` through a short read-only walk over `descriptor` and report
  * which `EventAdapter` contract rules it keeps. Violations are `fail` results,
@@ -469,6 +577,7 @@ export async function checkAdapter(
     await foreignCursor(adapter, descriptor, s),
     ...(await versionResults(adapter, descriptor, allEvents(w))),
     ...(await blockResults(adapter, descriptor, s.blockHeight)),
+    ...(await lookupResults(adapter, descriptor, allEvents(w))),
   ];
   return {
     ok: results.every((r) => r.status !== "fail"),

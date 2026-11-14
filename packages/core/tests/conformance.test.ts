@@ -12,6 +12,7 @@ import type {
   EventPage,
   FetchOptions,
   StreamdEvent,
+  TransactionEvents,
 } from "../src/types.js";
 
 const TYPE = "0x1::test::Ping";
@@ -80,6 +81,8 @@ describe("checkAdapter walk", () => {
       block: "skip",
       "block-heights": "skip",
       "block-sequence": "skip",
+      "transaction-events": "skip",
+      "transaction-events-by-version": "skip",
     });
     expect(report.results.map((r): string => r.name)).toEqual([
       ...WALK_RULES,
@@ -90,6 +93,8 @@ describe("checkAdapter walk", () => {
       "block",
       "block-heights",
       "block-sequence",
+      "transaction-events",
+      "transaction-events-by-version",
     ]);
     expect(report.pagesFetched).toBe(3);
   });
@@ -326,7 +331,16 @@ describe("checkAdapter optional methods", () => {
     const base = seeded();
     const report = await checkAdapter({ fetchEvents: (d, o) => base.fetchEvents(d, o) }, desc);
     expect(report.ok).toBe(true);
-    for (const name of ["head-version", "earliest-version", "block", "block-heights", "block-sequence"]) {
+    const optional = [
+      "head-version",
+      "earliest-version",
+      "block",
+      "block-heights",
+      "block-sequence",
+      "transaction-events",
+      "transaction-events-by-version",
+    ];
+    for (const name of optional) {
       expect(result(report, name)).toEqual({ name, status: "skip", message: "not implemented (optional)" } as never);
     }
   });
@@ -494,5 +508,135 @@ describe("checkAdapter block rules", () => {
     const report = await checkAdapter(broken({ ...chain(), getBlock } as Partial<EventAdapter>), desc);
     expect(failed(report)).toEqual(["block"]);
     expect(result(report, "block").message).toBe("getBlock rejected: TypeError: sync");
+  });
+});
+
+const hashOf = (version: bigint) => `0x${version.toString(16).padStart(64, "0")}`;
+
+/** Two events per transaction at versions 1 to 4, each carrying its transaction's hash. */
+function hashedEvents(): StreamdEvent[] {
+  return [1, 2, 3, 4].flatMap((v) => [0, 1].map((i) => ({ ...ev(v, i), transactionHash: hashOf(BigInt(v)) })));
+}
+
+/** A transaction as both lookups should report it, from `events`. */
+function transaction(events: StreamdEvent[], version: bigint): TransactionEvents {
+  return { version, success: true, vmStatus: "Executed successfully", events: events.filter((e) => e.version === version) };
+}
+
+/** Serves the walk and both lookups correctly from `hashedEvents()`, with overrides. */
+function lookups(overrides: Partial<EventAdapter> = {}): EventAdapter {
+  const events = hashedEvents();
+  const base = new MemoryAdapter(events);
+  return {
+    fetchEvents: (d, o) => base.fetchEvents(d, o),
+    getTransactionEvents: async (hash) => {
+      const found = events.find((e) => e.transactionHash === hash);
+      return found && transaction(events, found.version);
+    },
+    getTransactionEventsByVersion: async (version) =>
+      events.some((e) => e.version === version) ? transaction(events, version) : undefined,
+    ...overrides,
+  };
+}
+
+const LOOKUPS = ["transaction-events", "transaction-events-by-version"];
+
+describe("checkAdapter transaction lookups", () => {
+  it("passes a MemoryAdapter seeded with hashed events", async () => {
+    const report = await checkAdapter(new MemoryAdapter(hashedEvents()), desc, { fromVersion: 2n });
+    expect(report.ok).toBe(true);
+    expect(statuses(report)).toMatchObject({
+      "transaction-events": "pass",
+      "transaction-events-by-version": "skip",
+    });
+  });
+
+  it("passes both lookups, asking for the first hashed walked event", async () => {
+    const asked: unknown[] = [];
+    const correct = lookups();
+    const report = await checkAdapter(
+      lookups({
+        getTransactionEvents: (hash, d) => (asked.push(hash, d), correct.getTransactionEvents!(hash)),
+        getTransactionEventsByVersion: (v, d) => (asked.push(v, d), correct.getTransactionEventsByVersion!(v)),
+      }),
+      desc,
+      { fromVersion: 3n },
+    );
+    expect(report.ok).toBe(true);
+    expect(statuses(report)).toMatchObject({ "transaction-events": "pass", "transaction-events-by-version": "pass" });
+    expect(asked).toEqual([hashOf(3n), desc, 3n, desc]);
+  });
+
+  const wrong = (change: (t: TransactionEvents) => unknown) => async (version: bigint) =>
+    change(transaction(hashedEvents(), version)) as TransactionEvents;
+
+  it.each([
+    ["nothing found", { getTransactionEvents: async () => undefined }, "transaction-events", "found nothing for walked event 1:0"],
+    ["a wrong version", { getTransactionEvents: async () => transaction(hashedEvents(), 2n) }, "transaction-events", "returned version 2, but walked event 1:0 is at 1"],
+    ["a missing success", { getTransactionEventsByVersion: wrong((t) => ({ ...t, success: undefined })) }, "transaction-events-by-version", "success is not a boolean"],
+    ["a malformed event", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: [{ ...t.events[0], version: 1 }] })) }, "transaction-events-by-version", "events[0] version"],
+    ["an event at another version", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: [...t.events, ev(2, 5)] })) }, "transaction-events-by-version", "event 2:5 is not at version 1"],
+    ["descending eventIndex", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: [...t.events].reverse() })) }, "transaction-events-by-version", "eventIndex 0 follows 1"],
+    ["the walked event missing", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: t.events.slice(1) })) }, "transaction-events-by-version", "does not hold walked event 1:0"],
+    ["a different type", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: t.events.map((e) => ({ ...e, type: "0x1::other::Pong" })) })) }, "transaction-events-by-version", "does not hold walked event 1:0 (0x1::test::Ping)"],
+    ["a by-version answer that disagrees", { getTransactionEventsByVersion: wrong((t) => ({ ...t, events: t.events.slice(0, 1) })) }, "transaction-events-by-version", "disagrees with getTransactionEvents: [1:0] vs [1:0,1:1]"],
+    ["a rejection", { getTransactionEvents: async () => { throw new StreamdNetworkError("down", 503); } }, "transaction-events", "getTransactionEvents(0x"],
+    ["a synchronous throw", { getTransactionEventsByVersion: () => { throw new Error("sync"); } }, "transaction-events-by-version", "rejected: Error: sync"],
+  ])("fails on %s", async (_label, overrides, name, message) => {
+    const report = await checkAdapter(lookups(overrides as Partial<EventAdapter>), desc);
+    expect(failed(report)).toEqual([name]);
+    expect(result(report, name).message).toContain(message);
+  });
+
+  it("looks up by version the first walked event when no lookup by hash ran", async () => {
+    const asked: bigint[] = [];
+    const events = [ev(5), ev(6)];
+    const report = await checkAdapter(
+      {
+        fetchEvents: (d, o) => new MemoryAdapter(events).fetchEvents(d, o),
+        getTransactionEventsByVersion: async (v) => (asked.push(v), transaction(events, v)),
+      },
+      desc,
+    );
+    expect(report.ok).toBe(true);
+    expect(asked).toEqual([5n]);
+  });
+
+  const handleDesc: EventDescriptor = {
+    kind: "handle",
+    accountAddress: "0x1",
+    eventHandleStruct: "0x1::test::Handles",
+    fieldName: "pings",
+  };
+
+  it("matches a handle event by sequenceNumber, not eventIndex", async () => {
+    const walked = { ...ev(8, 7), sequenceNumber: 7n };
+    const page = scripted([{ events: [walked], hasMore: false }]);
+    const at = (sequenceNumber: bigint) => async (): Promise<TransactionEvents> => ({
+      version: 8n,
+      success: true,
+      vmStatus: "",
+      events: [{ ...ev(8, 0), sequenceNumber }],
+    });
+    const ok = await checkAdapter({ ...page, getTransactionEventsByVersion: at(7n) }, handleDesc);
+    expect(result(ok, "transaction-events-by-version").status).toBe("pass");
+    const off = await checkAdapter({ ...page, getTransactionEventsByVersion: at(6n) }, handleDesc);
+    expect(failed(off)).toEqual(["transaction-events-by-version"]);
+  });
+
+  it.each([
+    ["a resource descriptor", { kind: "resource", accountAddress: "0x1", resourceType: TYPE }, "resource changes are not transaction events"],
+    ["an object descriptor", { kind: "object", objectId: "0x1" }, "object changes are not transaction events"],
+  ])("skips both lookups for %s", async (_label, descriptor, message) => {
+    const page = scripted([{ events: [ev(1)], hasMore: false }]);
+    const report = await checkAdapter(lookups({ fetchEvents: page.fetchEvents }), descriptor as EventDescriptor);
+    for (const name of LOOKUPS) expect(result(report, name).message).toBe(message);
+  });
+
+  it("skips without a walked event, and by hash without a hashed one", async () => {
+    const empty = await checkAdapter(lookups({ fetchEvents: async () => ({ events: [], hasMore: false }) }), desc);
+    for (const name of LOOKUPS) expect(result(empty, name).message).toBe("no walked event to look up");
+    const unhashed = await checkAdapter(lookups({ fetchEvents: (d, o) => seeded().fetchEvents(d, o) }), desc);
+    expect(result(unhashed, "transaction-events").message).toBe("no walked event carries a transactionHash");
   });
 });
