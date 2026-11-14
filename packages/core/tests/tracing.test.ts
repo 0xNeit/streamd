@@ -218,13 +218,34 @@ describe("withTracing", () => {
       },
     };
     const throwingSpan: TracerLike = { startSpan: () => brokenSpan };
-    for (const tracer of [throwingStart, noSpan, throwingSpan]) {
+    const reject = async () => Promise.reject(new Error("async tracer bug"));
+    const rejectingSpan: TracerLike = {
+      startSpan: () => ({ setAttributes: reject, setStatus: reject, recordException: reject, end: reject }),
+    };
+    const asyncStart = { startSpan: reject } as unknown as TracerLike;
+    const oddSpans = [42, {}].map((span) => ({ startSpan: () => span }) as unknown as TracerLike);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    for (const tracer of [throwingStart, noSpan, throwingSpan, rejectingSpan, asyncStart, ...oddSpans]) {
       const adapter = withTracing(memory, tracer);
       expect((await adapter.fetchEvents(descriptor, { fromVersion: 0n })).events).toHaveLength(1);
       const boom = new StreamdError("boom");
       const failing = withTracing({ fetchEvents: async () => Promise.reject(boom) }, tracer);
       await expect(failing.fetchEvents(descriptor, {})).rejects.toBe(boom);
     }
+    await new Promise((r) => setTimeout(r, 0));
+    process.off("unhandledRejection", onUnhandled);
+    expect(unhandled).toEqual([]);
+  });
+
+  it("keeps the descriptor's attributes when another argument is malformed", async () => {
+    const { tracer, spans } = recordingTracer();
+    const adapter = withTracing({ ...new MemoryAdapter(), fetchEvents: async () => ({ events: [], hasMore: false }), view: async () => [], readObjects: async () => [] }, tracer);
+    await adapter.view!(null as never, 3n, descriptor);
+    await adapter.readObjects!({ objects: [] }, null as never, descriptor);
+    const kind = { "streamd.descriptor.kind": "module", "streamd.event_type": PING };
+    expect(spans.map((s) => s.attributes)).toEqual([{ ...kind, "streamd.version": "3" }, kind]);
   });
 
   it("still traces a malformed descriptor or page, which pass through", async () => {

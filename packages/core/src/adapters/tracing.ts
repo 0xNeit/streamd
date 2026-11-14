@@ -78,10 +78,10 @@ function requestAttributes(method: AdapterMethod, args: unknown[]): SpanAttribut
   } else if (method === "getTransactionEventsByVersion") {
     put(out, "streamd.version", args[0]);
   } else if (method === "view") {
-    put(out, "streamd.view.function", (args[0] as { function?: unknown }).function);
+    if (isObject(args[0])) put(out, "streamd.view.function", args[0].function);
     put(out, "streamd.version", args[1]);
-  } else if (method === "readObjects") {
-    put(out, "streamd.version", (args[1] as { version?: unknown }).version);
+  } else if (method === "readObjects" && isObject(args[1])) {
+    put(out, "streamd.version", args[1].version);
   }
   return out;
 }
@@ -118,10 +118,17 @@ function errorAttributes(err: unknown): SpanAttributes {
   return out;
 }
 
-// A tracer bug must never fail the call it observes.
+// A tracer bug must never fail the call it observes, nor reject unhandled.
+function quiet(value: unknown): boolean {
+  const then = isObject(value) ? value.then : undefined;
+  if (typeof then !== "function") return false;
+  then.call(value, undefined, () => {});
+  return true;
+}
+
 function safely(action: () => unknown): void {
   try {
-    action();
+    quiet(action());
   } catch {}
 }
 
@@ -130,7 +137,7 @@ function startSpan(tracer: TracerLike, method: AdapterMethod, args: unknown[]): 
   safely(() => (attributes = requestAttributes(method, args)));
   try {
     const span = tracer.startSpan(`streamd.${method}`, { attributes });
-    return isObject(span) ? span : undefined;
+    return isObject(span) && !quiet(span) ? span : undefined;
   } catch {
     return undefined;
   }

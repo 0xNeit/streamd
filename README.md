@@ -2458,6 +2458,8 @@ Versions and heights are decimal strings, since attributes cannot be `bigint`. P
 data, view arguments and simulated transactions are never written. A call that succeeds leaves
 the span's status unset, as OpenTelemetry asks of instrumentation; one that fails records the
 exception, sets status `ERROR` (code 2) with its message, and rejects with the same error.
+The message is the error's own, and a fullnode failure's includes the request URL, so a node
+URL carrying a key in its path or query reaches the trace backend.
 Adapter calls take no abort signal, so any rejection is a failure, and a client
 `requestTimeout`, which gives up on the call outside the adapter, leaves the span open until the
 call itself settles.
@@ -2468,7 +2470,8 @@ is made. They are not made active themselves, which would need `context.with` fr
 streamd's span rather than inside it.
 
 A tracer fault never fails a call: when `startSpan` throws or returns nothing the call runs
-untraced, and a span method that throws is skipped. A tracer without a `startSpan` method is
+untraced, a span method that throws is skipped, and a rejected promise returned by any of them
+is caught rather than left unhandled. A tracer without a `startSpan` method is
 refused with a `StreamdError` when wrapping. `withTracing`, `adapterMetrics` and `withHooks`
 stack in any order. Outside `CachingAdapter` a cache hit is still a span, with no call beneath
 it; inside it a hit makes none.
