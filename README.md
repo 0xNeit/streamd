@@ -3007,10 +3007,12 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   in the `account_address` column (long form, `0x` and 64 lowercase hex digits; null on every
   other row), and `StoreAdapter` serves that descriptor back with the same cursors, paging and
   pruned edge as every kind. `store.write(events, checkpoint, { accountAddress })` does the same
-  for your own wiring; a rewrite without `accountAddress` keeps the address a row has. Changes an
-  earlier release stored have no address and are never served as `resource`: store that range
-  again to serve it. They still match `module` by type, and every change still matches `account`
-  by its `sender`.
+  for your own wiring; a rewrite without `accountAddress` keeps the address a row has. A change
+  stored with an address is served only as `resource`, never by `module`, `account` or `handle`,
+  so a store following a wallet's resources and its events keeps the two apart, as `stats()` counts
+  them. Changes an earlier release stored have no address and cannot be told from events: they are
+  never served as `resource`, and still match `module` by type and `account` by `sender`. Store
+  that range again to serve it as changes.
 - **Transaction lookups.** Every `write` also keeps the event's `transactionHash` in the
   `transaction_hash` column (an Aptos `0x` hash lowercased, anything else, such as a Sui base58
   digest, exactly as given, since base58 is case-sensitive), and `StoreAdapter` implements
@@ -3023,10 +3025,12 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   await offline.expectEvents(hash).toEmit(Swap);
   ```
 
-  A lookup returns the stored events with that hash, or at that version, in `eventIndex` order,
-  leaving out `resource` changes, which are write-set changes rather than events (`object`
-  changes and changes an earlier release stored without an address cannot be told apart and come
-  back with them). It sees **only what was stored**: a store following one descriptor holds that
+  Both lookups return the same thing for one transaction: every event stored at its version, in
+  `eventIndex` order. By hash, the hash finds the version first, so events stored without a hash
+  (`handle` events, rows an earlier release wrote) come back too, as they do by version. Both leave
+  out `resource` changes, which are write-set changes rather than events (`object` changes and
+  changes an earlier release stored without an address cannot be told apart and come back with
+  them). It sees **only what was stored**: a store following one descriptor holds that
   descriptor's events of a transaction, not every event it emitted, so `toEmit` on a type the
   store never followed fails and `notToEmit` passes whatever the chain did. With several
   subscriptions writing one store, a lookup answers as soon as the first has written its rows,
@@ -3096,11 +3100,12 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   strings may carry; the cast fails only on such a row. Saved cursors are in `streamd_cursors`.
 - `PostgresStoreAdapter` serves `module`, `account` (by stored `sender`), `handle` (by
   `creationNumber`) and `resource` (by stored address and type) descriptors, with the SQLite
-  adapter's cursors, paging and options. Head and earliest are the highest and lowest stored
+  adapter's cursors, paging and options; a change stored with an address is served only as
+  `resource`, as there. Head and earliest are the highest and lowest stored
   versions, never below a pruned edge.
 - **Transaction lookups** work as on the SQLite store: `getTransactionEvents` and
   `getTransactionEventsByVersion` over `transaction_hash` and `version`, with the same hash
-  rule, the same rows left out, only what was stored, `success: true` and `vmStatus` `""`, the
+  rule, the same events at the hash's version either way, the same rows left out, only what was stored, `success: true` and `vmStatus` `""`, the
   same wait on a hash not held, and the 410 below the pruned edge, which a version lookup reads
   in the same statement as its rows. Older rows are not backfilled; this fills them, leaving
   out rows whose JSON holds an escaped NUL character (`\u0000`), which Postgres cannot turn into

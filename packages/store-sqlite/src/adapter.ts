@@ -204,23 +204,27 @@ export class StoreAdapter implements EventAdapter {
   }
 
   /**
-   * The stored events carrying this hash, in transaction order, or
-   * `undefined` when none is stored, which `eventsOf` waits on. Only what the
-   * store's subscriptions caught, and no resource changes.
+   * The stored events of the transaction at the version a row with this hash
+   * is stored at, in transaction order, so rows stored there without a hash
+   * (handle events, older rows) come back too, as `getTransactionEventsByVersion`
+   * returns them; `undefined` when none is stored, which `eventsOf` waits on.
+   * Only what the store's subscriptions caught, and no resource changes.
    */
   async getTransactionEvents(transactionHash: string): Promise<TransactionEvents | undefined> {
     const hash = requireHash(transactionHash);
     if (!eventColumns(this.db).has("transaction_hash")) return undefined;
     const rows = this.db
       .prepare(
-        `SELECT event FROM streamd_events WHERE transaction_hash = ? AND account_address IS NULL
-         ORDER BY version, event_index`,
+        `SELECT event FROM streamd_events
+         WHERE version = (SELECT version FROM streamd_events WHERE transaction_hash = ? LIMIT 1)
+           AND account_address IS NULL
+         ORDER BY event_index`,
       )
       .all(hash) as { event: string }[];
     return transactionOf(rows);
   }
 
-  /** The stored events at `version`, as `getTransactionEvents` reads them; below the pruned edge, a 410. */
+  /** Every stored event at `version`, resource changes left out; below the pruned edge, a 410. */
   async getTransactionEventsByVersion(version: bigint): Promise<TransactionEvents | undefined> {
     const key = versionKey(version);
     startOf({ fromVersion: version }, prunedBefore(this.db));
