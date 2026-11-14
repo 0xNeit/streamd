@@ -2,7 +2,7 @@ import "./dom.js";
 import { describe, expect, it } from "bun:test";
 import { StrictMode, act, createElement } from "react";
 import { renderToString } from "react-dom/server";
-import { StreamdClient, type EventFilter, type MoveEventType } from "@streamd/core";
+import { StreamdClient, StreamdNetworkError, type EventFilter, type MoveEventType, type StreamdEvent } from "@streamd/core";
 import { StreamdProvider, useEventPages, type UseEventPagesOptions, type UseEventPagesResult } from "../src/index.js";
 import { OTHER, TYPE, TestAdapter, ev } from "./fixtures.js";
 import { render, rerender, unmount, waitFor } from "./render.js";
@@ -13,9 +13,11 @@ function setup(events = FIVE) {
   const adapter = new TestAdapter(events);
   const client = new StreamdClient({ adapter });
   const signals: AbortSignal[] = [];
+  const filters: EventFilter[] = [];
   const getEventPages = client.getEventPages.bind(client);
   client.getEventPages = ((d: never, f?: EventFilter, size?: number) => {
     signals.push(f!.signal!);
+    filters.push(f!);
     return getEventPages(d, f, size);
   }) as typeof client.getEventPages;
   const results: UseEventPagesResult<unknown>[] = [];
@@ -26,7 +28,7 @@ function setup(events = FIVE) {
   }
   const el = (type: MoveEventType | null, options?: UseEventPagesOptions) =>
     createElement(StreamdProvider, { client }, createElement(Pages, { type, options }));
-  return { adapter, client, signals, results, el, last: () => results.at(-1)! };
+  return { adapter, client, signals, filters, results, el, last: () => results.at(-1)! };
 }
 
 const versions = (r: UseEventPagesResult<unknown>) => r.pages.map((p) => p.map((e) => e.version));
@@ -196,5 +198,94 @@ describe("useEventPages", () => {
     await s.last().loadMore();
     expect(s.adapter.fetches).toBe(0);
     expect(s.last()).toMatchObject({ pages: [], hasMore: true, loading: true });
+  });
+
+  describe("retry after a failure", () => {
+    const at = (version: bigint, eventIndex: number): StreamdEvent => ({ ...ev(version), eventIndex });
+    // Version 3 holds three events, so a page boundary can fall inside it.
+    const SPLIT = [ev(1n), ev(2n), at(3n, 0), at(3n, 1), at(3n, 2), ev(4n), ev(5n)];
+    const ids = (r: UseEventPagesResult<unknown>) => r.pages.flat().map((e) => `${e.version}:${e.eventIndex}`);
+
+    async function walkAll(t: ReturnType<typeof setup>) {
+      while (t.last().hasMore) await act(() => t.last().loadMore());
+    }
+
+    async function expected(options: EventFilter) {
+      const client = new StreamdClient({ adapter: new TestAdapter(SPLIT) });
+      const events = await client.getEvents({ kind: "module", eventType: TYPE }, options);
+      return events.map((e) => `${e.version}:${e.eventIndex}`);
+    }
+
+    it("keeps the pages, then carries on from the next event, inside a split transaction", async () => {
+      for (const limit of [undefined, 5]) {
+        const t = setup(SPLIT);
+        const root = await render(t.el(TYPE, { limit }));
+        await settled(t);
+        await act(() => t.last().loadMore());
+        expect(ids(t.last())).toEqual(["1:0", "2:0", "3:0", "3:1"]);
+        t.adapter.failing = true;
+        await act(() => t.last().loadMore());
+        expect(t.last().error).toBeInstanceOf(StreamdNetworkError);
+        expect(t.last()).toMatchObject({ hasMore: true, loading: false });
+        expect(ids(t.last())).toEqual(["1:0", "2:0", "3:0", "3:1"]);
+        t.adapter.failing = false;
+        await act(() => t.last().loadMore());
+        expect(t.last().error).toBeUndefined();
+        expect(ids(t.last()).slice(4, 5)).toEqual(["3:2"]);
+        expect(t.filters.map((f) => [f.fromVersion, f.limit])).toEqual([
+          [undefined, limit],
+          [3n, limit === undefined ? undefined : 3],
+        ]);
+        await walkAll(t);
+        expect(ids(t.last())).toEqual(await expected({ limit }));
+        await unmount(root);
+      }
+    });
+
+    it("carries on newest first under desc", async () => {
+      const t = setup(SPLIT);
+      let failing = false;
+      Object.assign(t.adapter, {
+        view: async (_request: unknown, version: bigint) => {
+          if (failing) throw new StreamdNetworkError("view failed");
+          return [String(version)];
+        },
+      });
+      const withState = () => ({ function: "0x1::m::f" }) as never;
+      const root = await render(t.el(TYPE, { orderBy: "desc", limit: 6, withState }));
+      await settled(t);
+      expect(ids(t.last())).toEqual(["5:0", "4:0"]);
+      await act(() => t.last().loadMore());
+      expect(ids(t.last())).toEqual(["5:0", "4:0", "3:2", "3:1"]);
+      failing = true;
+      await act(() => t.last().loadMore());
+      expect(t.last().error).toBeInstanceOf(StreamdNetworkError);
+      failing = false;
+      await act(() => t.last().loadMore());
+      expect(t.last().error).toBeUndefined();
+      expect(ids(t.last())[4]).toBe("3:0");
+      expect(t.filters.map((f) => [f.toVersion, f.limit])).toEqual([
+        [undefined, 6],
+        [3n, 4],
+      ]);
+      await walkAll(t);
+      expect(ids(t.last())).toEqual(await expected({ orderBy: "desc", limit: 6 }));
+      expect(t.last().pages.flat().every((e) => e.state !== undefined)).toBe(true);
+      await unmount(root);
+    });
+
+    it("retries the same walk when the first page failed", async () => {
+      const t = setup();
+      t.adapter.failing = true;
+      const root = await render(t.el(TYPE, { fromVersion: 2n }));
+      await settled(t);
+      expect(t.last()).toMatchObject({ pages: [], hasMore: true });
+      expect(t.last().error).toBeInstanceOf(StreamdNetworkError);
+      t.adapter.failing = false;
+      await act(() => t.last().loadMore());
+      expect(versions(t.last())).toEqual([[2n, 3n]]);
+      expect(t.last().error).toBeUndefined();
+      await unmount(root);
+    });
   });
 });

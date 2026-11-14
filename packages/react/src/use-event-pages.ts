@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { EventDescriptor, EventFilter, EventOf, StreamdClient } from "@streamd/core";
+import { eventId, type EventDescriptor, type EventFilter, type EventOf, type StreamdClient } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
 import { toError, valueKey, withLatestFunctions } from "./key.js";
 
@@ -43,11 +43,27 @@ function fresh<TData>(client: StreamdClient, key: string, active: boolean): Page
 }
 
 /**
+ * The filter that carries on a walk that failed after delivering `held`, since
+ * a generator that threw cannot be asked again. It starts at the last held
+ * event's version (ends there under `"desc"`), so the events held at that
+ * version come again and count against `limit` again; the caller skips them.
+ */
+function resumeFilter(filter: EventFilter, held: readonly { version: bigint }[]): EventFilter {
+  const last = held.at(-1);
+  if (last === undefined) return filter;
+  const again = held.filter((e) => e.version === last.version).length;
+  const limit = filter.limit === undefined ? undefined : filter.limit - held.length + again;
+  return filter.orderBy === "desc"
+    ? { ...filter, toVersion: last.version, toBlock: undefined, limit }
+    : { ...filter, fromVersion: last.version, fromBlock: undefined, fromTime: undefined, offset: undefined, limit };
+}
+
+/**
  * `client.getEventPages(descriptor, options, pageSize)` for a component: the
  * first page loads after mount and `loadMore()` appends the next. A change of
  * descriptor or options by value, or of client, starts the walk over with no
- * pages, aborting the page in flight. A `null` or `undefined` descriptor
- * fetches nothing.
+ * pages, aborting the page in flight. After a failure the next `loadMore()`
+ * retries the same page. A `null` or `undefined` descriptor fetches nothing.
  */
 export function useEventPages<TData = unknown>(
   descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[] | null | undefined,
@@ -68,7 +84,9 @@ export function useEventPages<TData = unknown>(
     if (descriptor == null) return;
     const controller = new AbortController();
     const live = { ...withLatestFunctions(filter, () => latest.current), signal: controller.signal };
-    const walk = client.getEventPages<TData>(descriptor, live, pageSize);
+    const held: EventOf<TData>[] = [];
+    const seen = new Set<string>();
+    let walk: AsyncGenerator<EventOf<TData>[], void> | undefined;
     let busy = false;
     let done = false;
     const next = async () => {
@@ -76,17 +94,26 @@ export function useEventPages<TData = unknown>(
       busy = true;
       setState((s) => (s.loading ? s : { ...s, loading: true }));
       try {
-        const step = await walk.next();
+        walk ??= client.getEventPages<TData>(descriptor, resumeFilter(live, held), pageSize);
+        let page: EventOf<TData>[] = [];
+        while (page.length === 0) {
+          const step = await walk.next();
+          if (step.done) break;
+          page = step.value.filter((e) => !seen.has(eventId(e)));
+        }
         if (controller.signal.aborted) return;
-        done = step.done === true;
+        done = page.length === 0;
+        for (const e of page) seen.add(eventId(e));
+        held.push(...page);
         setState((s) => ({
           ...s,
-          pages: step.done ? s.pages : [...s.pages, step.value],
+          pages: done ? s.pages : [...s.pages, page],
           hasMore: !done,
           error: undefined,
           loading: false,
         }));
       } catch (err) {
+        walk = undefined;
         if (!controller.signal.aborted) setState((s) => ({ ...s, error: toError(err), loading: false }));
       } finally {
         busy = false;
