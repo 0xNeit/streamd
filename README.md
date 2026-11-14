@@ -1902,7 +1902,9 @@ the reason in `message`. The optional methods are judged against what the walk s
   transaction events.
 - `view` - with a `view: { request, version? }` option, `view` resolves an array at
   `version`, else the first walked event's version, else the head. No view function exists
-  on every chain, so without the option the rule skips. The values themselves are not judged.
+  on every chain, so without the option the rule skips. The values themselves are not judged,
+  but the function must be a view at that version: pass `version` when the walk reaches back
+  before it was published, since a node then refuses the call and the rule fails.
 
 To check that two sources agree, `compareAdapters(a, b, descriptor, range)` walks both over
 the same version range and reports, by `eventId`, what only `a` returned (`missing`), what
