@@ -1,6 +1,17 @@
-import { StreamdError, normalizeAddress, parseEvent, serializeEvent } from "@streamd/core";
+import { StreamdError, normalizeAddress, parseEvent, requireAddress, serializeEvent } from "@streamd/core";
 import type { StreamdEvent, Transfer } from "@streamd/core";
-import { PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, raisePrunedBefore, transaction, versionKey } from "./schema.js";
+import {
+  PRUNED_BEFORE,
+  TRANSFER_SCHEMA,
+  ensureSchema,
+  eventColumns,
+  hashKey,
+  migrateSchema,
+  prunedBefore,
+  raisePrunedBefore,
+  transaction,
+  versionKey,
+} from "./schema.js";
 import type { SqliteDatabase, SqliteStatement } from "./schema.js";
 
 /** A source cursor to save under `name` alongside a write. */
@@ -10,13 +21,65 @@ export interface StoreCheckpoint {
   cursor: string | undefined;
 }
 
+/** What a write knows about its events that they do not carry themselves. */
+export interface StoreWriteOptions {
+  /**
+   * The address holding the resource these events are changes of, as a
+   * `resource` descriptor names it. A change carries only the resource type,
+   * so this is what lets a store adapter serve the descriptor back.
+   */
+  accountAddress?: string;
+}
+
 /** A cursor saved under a name, as `cursors()` lists it. */
 export interface SavedCursor {
   name: string;
   cursor: string;
 }
 
-function rowOf(event: StreamdEvent): unknown[] {
+/** What `stats()` reads beyond the totals. */
+export interface StoreStatsOptions {
+  /** Also count events per type. */
+  byType?: boolean;
+}
+
+/** How many stored events have one type. */
+export interface StoreTypeCount {
+  type: string;
+  count: bigint;
+}
+
+/** What a store holds, as `stats()` reports it. */
+export interface StoreStats {
+  /** Stored events: every row of `streamd_events` not written as a resource change. */
+  events: bigint;
+  /** Rows written as resource changes, with an `accountAddress`. */
+  resourceChanges: bigint;
+  /** Rows of `streamd_transfers`, `0n` before the first transfer write or prune. */
+  transfers: bigint;
+  /** The lowest version of any stored event or resource change; absent when there are none. */
+  lowestVersion?: bigint;
+  /** The highest version of any stored event or resource change; absent when there are none. */
+  highestVersion?: bigint;
+  /** The pruned edge: `0n` until the first prune. */
+  prunedBefore: bigint;
+  /** Events per type, most first, then by type in byte order; only when asked. */
+  byType?: StoreTypeCount[];
+}
+
+/** Reads `byType` from `stats()` options, refusing anything but a boolean. */
+function wantsByType(options: StoreStatsOptions | undefined): boolean {
+  if (options !== undefined && (typeof options !== "object" || options === null)) {
+    throw new StreamdError("stats() options must be an object");
+  }
+  const byType = options?.byType;
+  if (byType !== undefined && typeof byType !== "boolean") {
+    throw new StreamdError(`Not a valid byType: ${String(byType)} (expected a boolean)`);
+  }
+  return byType === true;
+}
+
+function rowOf(event: StreamdEvent, accountAddress: string | null = null): unknown[] {
   if (!Number.isSafeInteger(event.eventIndex) || event.eventIndex < 0) {
     throw new StreamdError(`Not a valid eventIndex: ${String(event.eventIndex)}`);
   }
@@ -33,6 +96,8 @@ function rowOf(event: StreamdEvent): unknown[] {
     guidAddress ?? null,
     guidAddress ? event.guid!.creationNumber.toString() : null,
     json,
+    accountAddress,
+    typeof event.transactionHash === "string" ? hashKey(event.transactionHash) : null,
   ];
 }
 
@@ -84,7 +149,7 @@ function requireName(name: unknown): string {
  */
 export class SqliteEventStore {
   private readonly db: SqliteDatabase;
-  private readonly upsert: SqliteStatement;
+  private upsert?: SqliteStatement;
   private readonly saveCursor: SqliteStatement;
   private readonly loadCursor: SqliteStatement;
   private readonly listCursors: SqliteStatement;
@@ -94,13 +159,6 @@ export class SqliteEventStore {
   constructor(db: SqliteDatabase) {
     ensureSchema(db);
     this.db = db;
-    this.upsert = db.prepare(
-      `INSERT INTO streamd_events (version, event_index, type, sender, guid_address, guid_creation, event)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (version, event_index) DO UPDATE SET
-         type = excluded.type, sender = excluded.sender, guid_address = excluded.guid_address,
-         guid_creation = excluded.guid_creation, event = excluded.event`,
-    );
     this.saveCursor = db.prepare(
       `INSERT INTO streamd_cursors (name, cursor) VALUES (?, ?)
        ON CONFLICT (name) DO UPDATE SET cursor = excluded.cursor`,
@@ -112,11 +170,28 @@ export class SqliteEventStore {
 
   /**
    * Upserts `events` and, given a checkpoint, saves its cursor, all in one
-   * transaction: either everything lands or nothing does.
+   * transaction: either everything lands or nothing does. A rewrite without
+   * `accountAddress` keeps the one the row was stored with.
    */
-  write(events: readonly StreamdEvent[], checkpoint?: StoreCheckpoint): void {
+  write(events: readonly StreamdEvent[], checkpoint?: StoreCheckpoint, options?: StoreWriteOptions): void {
     // Validated before the transaction opens, so a bad event writes nothing.
-    this.upsertAll(this.upsert, events.map(rowOf), checkpoint);
+    const address = options?.accountAddress === undefined ? null : requireAddress(options.accountAddress);
+    const rows = events.map((event) => rowOf(event, address));
+    // Migrated by a write, not at construction, so a read-only connection that
+    // never writes can still read its cursors. Checked on every write: a caller
+    // rolling back its own transaction around the first one undoes the column.
+    migrateSchema(this.db);
+    this.upsert ??= this.db.prepare(
+      `INSERT INTO streamd_events
+         (version, event_index, type, sender, guid_address, guid_creation, event, account_address, transaction_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (version, event_index) DO UPDATE SET
+         type = excluded.type, sender = excluded.sender, guid_address = excluded.guid_address,
+         guid_creation = excluded.guid_creation, event = excluded.event,
+         account_address = coalesce(excluded.account_address, account_address),
+         transaction_hash = excluded.transaction_hash`,
+    );
+    this.upsertAll(this.upsert, rows, checkpoint);
   }
 
   private upsertAll(upsert: SqliteStatement, rows: unknown[][], checkpoint: StoreCheckpoint | undefined): void {
@@ -165,6 +240,50 @@ export class SqliteEventStore {
       this.db.prepare("DELETE FROM streamd_transfers WHERE version < ?").run(key);
       raisePrunedBefore(this.db, key);
     });
+  }
+
+  /**
+   * Counts what the store holds, every read in one savepoint so a writer on
+   * another connection cannot land between them. Never migrates or creates a
+   * table, so a read-only connection to an older database answers. Each count
+   * scans its table or an index.
+   */
+  stats(options?: StoreStatsOptions): StoreStats {
+    const byType = wantsByType(options);
+    let stats!: StoreStats;
+    transaction(this.db, () => {
+      // Before a write has migrated the table, no row can be a resource change.
+      const migrated = eventColumns(this.db).has("account_address");
+      const totals = this.db
+        .prepare(
+          `SELECT count(*) AS rows, ${migrated ? "count(account_address)" : "0"} AS changes,
+             min(version) AS lowest, max(version) AS highest FROM streamd_events`,
+        )
+        .get() as { rows: number | bigint; changes: number | bigint; lowest: string | null; highest: string | null };
+      const hasTransfers = this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'streamd_transfers'")
+        .get();
+      const transfers = hasTransfers
+        ? (this.db.prepare("SELECT count(*) AS n FROM streamd_transfers").get() as { n: number | bigint }).n
+        : 0;
+      stats = {
+        events: BigInt(totals.rows) - BigInt(totals.changes),
+        resourceChanges: BigInt(totals.changes),
+        transfers: BigInt(transfers),
+        ...(totals.lowest !== null && { lowestVersion: BigInt(totals.lowest), highestVersion: BigInt(totals.highest!) }),
+        prunedBefore: prunedBefore(this.db),
+      };
+      if (byType) {
+        const rows = this.db
+          .prepare(
+            `SELECT type, count(*) AS n FROM streamd_events ${migrated ? "WHERE account_address IS NULL" : ""}
+             GROUP BY type ORDER BY n DESC, type`,
+          )
+          .all() as { type: string; n: number | bigint }[];
+        stats.byType = rows.map((r) => ({ type: r.type, count: BigInt(r.n) }));
+      }
+    });
+    return stats;
   }
 
   /** The cursor last saved under `name`, or `undefined` when none was. */

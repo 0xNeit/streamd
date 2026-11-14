@@ -1,6 +1,13 @@
-import { StreamdError, StreamdNetworkError, parseEvent, requireAddress, requireEventType } from "@streamd/core";
-import type { EventAdapter, EventDescriptor, EventPage, FetchOptions } from "@streamd/core";
-import { EDGE, ensureSchema, versionParam } from "./schema.js";
+import {
+  StreamdError,
+  StreamdNetworkError,
+  parseEvent,
+  requireAddress,
+  requireEventType,
+  requireResourceType,
+} from "@streamd/core";
+import type { EventAdapter, EventDescriptor, EventPage, FetchOptions, TransactionEvents } from "@streamd/core";
+import { EDGE, ensureSchema, hashKey, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 
 const DEFAULT_LIMIT = 25;
@@ -20,6 +27,23 @@ function types(list: readonly string[]): Where {
   return (bind) => `type IN (SELECT jsonb_array_elements_text(${bind(JSON.stringify(checked))}::text::jsonb))`;
 }
 
+/**
+ * A `module` descriptor's types: each exactly, and one written without type
+ * arguments also with any, as a byte-ordered range [`T<`, `T=`) under the C
+ * collation, so it holds whatever the column's collation is.
+ */
+function moduleTypes(list: readonly string[]): Where {
+  const exact = types(list);
+  const bare = list.filter((t) => !t.includes("<"));
+  if (bare.length === 0) return exact;
+  return (bind) => {
+    const ranges = bare.map(
+      (t) => ` OR (type COLLATE "C" >= ${bind(`${t}<`)} AND type COLLATE "C" < ${bind(`${t}=`)})`,
+    );
+    return `(${exact(bind)}${ranges.join("")})`;
+  };
+}
+
 function descriptorWhere(descriptor: EventDescriptor): Where {
   switch (descriptor?.kind) {
     case "module": {
@@ -27,7 +51,7 @@ function descriptorWhere(descriptor: EventDescriptor): Where {
       if (Array.isArray(eventType) && eventType.length === 0) {
         throw new StreamdError("Module descriptor requires at least one eventType");
       }
-      return types(Array.isArray(eventType) ? eventType : [eventType as string]);
+      return moduleTypes(Array.isArray(eventType) ? eventType : [eventType as string]);
     }
     case "account": {
       if (descriptor.received === true) {
@@ -49,6 +73,11 @@ function descriptorWhere(descriptor: EventDescriptor): Where {
       return (bind) =>
         `guid_address = ${bind(address)} AND guid_creation = ${bind(creationNumber.toString())}::numeric`;
     }
+    case "resource": {
+      const address = requireAddress(descriptor.accountAddress);
+      const type = requireResourceType(descriptor.resourceType);
+      return (bind) => `account_address = ${bind(address)} AND type = ${bind(type)}`;
+    }
     default:
       throw new StreamdError(`Unknown descriptor kind: ${String((descriptor as { kind?: unknown })?.kind)}`);
   }
@@ -61,6 +90,21 @@ function parseCursor(cursor: string): Position {
     throw new StreamdError(`Not a cursor this adapter issued: ${String(cursor)}`);
   }
   return { version: BigInt(match[1]!), eventIndex };
+}
+
+function requireHash(hash: unknown): string {
+  if (typeof hash !== "string" || hash === "") throw new StreamdError("A transaction hash must be a non-empty string");
+  return hashKey(hash);
+}
+
+/**
+ * Stored rows as one transaction. A store keeps no status, so even a failed
+ * transaction's stored fee statement reads as a success.
+ */
+function transactionOf(rows: Record<string, unknown>[]): TransactionEvents | undefined {
+  if (rows.length === 0) return undefined;
+  const events = rows.map((r) => parseEvent(String(r.event)));
+  return { version: events[0]!.version, success: true, vmStatus: "", events };
 }
 
 function count(value: number | undefined, label: string, fallback: number): number {
@@ -80,8 +124,11 @@ function checkEdge(start: Position, toVersion: bigint | undefined, edge: bigint)
 /**
  * Serves events a `PostgresEventStore` wrote, as an `EventAdapter`. It
  * answers from what is stored, so it sees only what the store's subscriptions
- * caught: `account` matches events stored with that `sender`, and `handle`
- * matches by `creationNumber` against each event's stored `guid`.
+ * caught: `account` matches events stored with that `sender`, `handle`
+ * matches by `creationNumber` against each event's stored `guid`, and
+ * `resource` matches changes `storeEvents` stored with that address, so none
+ * an older release stored without one. Changes stored with an
+ * address match no other kind.
  */
 export class PostgresStoreAdapter implements EventAdapter {
   private readonly client: PostgresClient;
@@ -102,7 +149,9 @@ export class PostgresStoreAdapter implements EventAdapter {
   }
 
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
-    const where = descriptorWhere(descriptor);
+    const matches = descriptorWhere(descriptor);
+    const where: Where =
+      descriptor.kind === "resource" ? matches : (bind) => `${matches(bind)} AND account_address IS NULL`;
     const cursor = options.cursor === undefined ? undefined : parseCursor(options.cursor);
     const limit = count(options.limit, "limit", DEFAULT_LIMIT);
     const offset = cursor === undefined ? count(options.offset, "offset", 0) : 0;
@@ -141,6 +190,43 @@ export class PostgresStoreAdapter implements EventAdapter {
     // No throughVersion: another writer may still add rows below the cursor.
     if (options.orderBy === "desc") events.reverse();
     return page;
+  }
+
+  /**
+   * The stored events of the transaction at the version a row with this hash
+   * is stored at, in transaction order, so rows stored there without a hash
+   * (handle events, older rows) come back too, as `getTransactionEventsByVersion`
+   * returns them; `undefined` when none is stored, which `eventsOf` waits on.
+   * Only what the store's subscriptions caught, and no resource changes.
+   */
+  async getTransactionEvents(transactionHash: string): Promise<TransactionEvents | undefined> {
+    const hash = requireHash(transactionHash);
+    await ensureSchema(this.client);
+    const { rows } = await this.client.query(
+      `SELECT event FROM streamd_events
+       WHERE version = (SELECT version FROM streamd_events WHERE transaction_hash = $1 LIMIT 1)
+         AND account_address IS NULL
+       ORDER BY event_index`,
+      [hash],
+    );
+    return transactionOf(rows);
+  }
+
+  /** Every stored event at `version`, resource changes left out; below the pruned edge, a 410. */
+  async getTransactionEventsByVersion(version: bigint): Promise<TransactionEvents | undefined> {
+    const at = versionParam(version);
+    await ensureSchema(this.client);
+    // The edge and the rows in one statement, as fetchEvents reads them.
+    const { rows } = await this.client.query(
+      `WITH edge AS (SELECT ${EDGE} AS v)
+       SELECT edge.v::text AS edge, found.event FROM edge LEFT JOIN LATERAL (
+         SELECT event_index, event FROM streamd_events WHERE version = $1::numeric AND account_address IS NULL
+       ) found ON true
+       ORDER BY found.event_index`,
+      [at],
+    );
+    checkEdge({ version, eventIndex: -1 }, undefined, BigInt(String(rows[0]!.edge)));
+    return transactionOf(rows.filter((r) => r.event != null));
   }
 
   private async bound(fn: "max" | "min"): Promise<bigint> {

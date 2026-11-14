@@ -1,12 +1,24 @@
 import type {
+  BlockHeights,
+  BlockInfo,
   EventAdapter,
   EventDescriptor,
   EventPage,
   FetchOptions,
   StreamdEvent,
+  TransactionEvents,
+  ViewRequest,
 } from "./types.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
-import { DEFAULT_LIMIT, blockError, requireAdapter, versionError } from "./adapters/validate.js";
+import {
+  DEFAULT_LIMIT,
+  blockError,
+  blockHeightsError,
+  isObject,
+  requireAdapter,
+  requireViewRequest,
+  versionError,
+} from "./adapters/validate.js";
 import { eventId } from "./cursor.js";
 
 /** The `EventAdapter` contract rules `checkAdapter` reports on, in report order. */
@@ -21,7 +33,12 @@ export type AdapterCheckName =
   | "foreign-cursor"
   | "head-version"
   | "earliest-version"
-  | "block";
+  | "block"
+  | "block-heights"
+  | "block-sequence"
+  | "transaction-events"
+  | "transaction-events-by-version"
+  | "view";
 
 export interface AdapterCheckOptions {
   /** Where the walk starts; omitted leaves the start to the adapter (usually the head). */
@@ -30,8 +47,17 @@ export interface AdapterCheckOptions {
   limit?: number;
   /** Most pages the walk fetches (default 3), which bounds the work against a real source. */
   maxPages?: number;
-  /** Height to ask `getBlock` for; its rule is skipped without one. */
+  /**
+   * Height to ask `getBlock` for; omitted takes `newest` from
+   * `getBlockHeights`, and the block rules skip when neither is there.
+   */
   blockHeight?: bigint;
+  /**
+   * A view to read through `view`, at `version` or else the first walked
+   * event's version or the head; its rule is skipped without one, since no
+   * view function exists on every chain.
+   */
+  view?: { request: ViewRequest; version?: bigint };
 }
 
 export interface AdapterCheckResult {
@@ -51,12 +77,14 @@ export interface AdapterCheckReport {
 
 const DEFAULT_MAX_PAGES = 3;
 const FOREIGN_CURSOR = "streamd-check:never-issued";
+const ABSENT = "not implemented (optional)";
 
 interface Settings {
   fromVersion?: bigint;
   limit: number;
   maxPages: number;
   blockHeight?: bigint;
+  view?: { request: ViewRequest; version?: bigint };
 }
 
 interface WalkedPage {
@@ -97,7 +125,17 @@ function settings(options: AdapterCheckOptions): Settings {
     limit: requireCount(options.limit, "checkAdapter limit", DEFAULT_LIMIT),
     maxPages: requireCount(options.maxPages, "checkAdapter maxPages", DEFAULT_MAX_PAGES),
     blockHeight: requireVersion(options.blockHeight, "blockHeight"),
+    view: viewOption(options.view),
   };
+}
+
+function viewOption(value: unknown): Settings["view"] {
+  if (value === undefined) return undefined;
+  if (typeof value !== "object" || value === null) {
+    throw new StreamdError("checkAdapter view must be an object");
+  }
+  const { request, version } = value as Record<string, unknown>;
+  return { request: requireViewRequest(request), version: requireVersion(version, "view.version") };
 }
 
 export function describe(err: unknown): string {
@@ -340,31 +378,218 @@ async function versionResults(
   adapter: EventAdapter,
   descriptor: EventDescriptor,
   events: StreamdEvent[],
-): Promise<AdapterCheckResult[]> {
-  const absent = "not implemented (optional)";
+): Promise<{ results: AdapterCheckResult[]; head?: bigint }> {
   const head = adapter.getHeadVersion && (await readVersion("getHeadVersion", adapter, descriptor));
   const earliest =
     adapter.getEarliestVersion && (await readVersion("getEarliestVersion", adapter, descriptor));
-  return [
-    head === undefined ? skip("head-version", absent) : headResult(head, events),
+  const results = [
+    head === undefined ? skip("head-version", ABSENT) : headResult(head, events),
     earliest === undefined
-      ? skip("earliest-version", absent)
+      ? skip("earliest-version", ABSENT)
       : earliestResult(earliest, head, events),
+  ];
+  return { results, head: typeof head === "bigint" ? head : undefined };
+}
+
+type Outcome = { ok: true; value: unknown } | { ok: false; error: string };
+
+/** Runs one optional-method call, turning a rejection or a synchronous throw into a failure message. */
+async function attempt(method: string, run: () => unknown): Promise<Outcome> {
+  try {
+    return { ok: true, value: await run() };
+  } catch (err) {
+    return { ok: false, error: `${method} rejected: ${describe(err)}` };
+  }
+}
+
+async function readBlock(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  height: bigint,
+): Promise<{ block?: BlockInfo; error?: string }> {
+  const got = await attempt("getBlock", () => adapter.getBlock!(descriptor, height));
+  if (!got.ok) return { error: got.error };
+  const error = blockError(got.value, height);
+  return error === undefined ? { block: got.value as BlockInfo } : { error };
+}
+
+/** Block `height - 1` must end where `height` starts, and block time must not fall. */
+async function sequenceResult(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  height: bigint,
+  block: BlockInfo | undefined,
+  oldest: bigint | undefined,
+): Promise<AdapterCheckResult> {
+  const name = "block-sequence";
+  if (block === undefined) return skip(name, `block ${height} did not pass`);
+  if (height === 0n) return skip(name, "no block before height 0");
+  const before = height - 1n;
+  if (oldest !== undefined && before < oldest) return skip(name, `block ${before} is below oldest ${oldest}`);
+  const prev = await readBlock(adapter, descriptor, before);
+  if (prev.block === undefined) return verdict(name, prev.error);
+  if (prev.block.lastVersion + 1n !== block.firstVersion) {
+    return verdict(
+      name,
+      `block ${before} ends at version ${prev.block.lastVersion} but block ${height} starts at ${block.firstVersion}`,
+    );
+  }
+  const fell = prev.block.timestamp > block.timestamp;
+  return verdict(
+    name,
+    fell ? `block ${height} timestamp ${block.timestamp} is below block ${before}'s ${prev.block.timestamp}` : undefined,
+  );
+}
+
+/** `block`, `block-heights` and `block-sequence`, reading the heights first for the default height. */
+async function blockResults(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  given: bigint | undefined,
+): Promise<AdapterCheckResult[]> {
+  const heights =
+    adapter.getBlockHeights &&
+    (await attempt("getBlockHeights", () => adapter.getBlockHeights!(descriptor)));
+  const heightsError = heights && (heights.ok ? blockHeightsError(heights.value) : heights.error);
+  const known = heights?.ok && heightsError === undefined ? (heights.value as BlockHeights) : undefined;
+  const heightsResult =
+    heights === undefined ? skip("block-heights", ABSENT) : verdict("block-heights", heightsError);
+  const height = given ?? known?.newest;
+  if (adapter.getBlock === undefined || height === undefined) {
+    const reason =
+      adapter.getBlock === undefined
+        ? ABSENT
+        : heights === undefined
+          ? "blockHeight not given"
+          : "blockHeight not given and getBlockHeights did not pass";
+    return [skip("block", reason), heightsResult, skip("block-sequence", reason)];
+  }
+  const at = await readBlock(adapter, descriptor, height);
+  return [
+    verdict("block", at.error),
+    heightsResult,
+    await sequenceResult(adapter, descriptor, height, at.block, known?.oldest),
   ];
 }
 
-async function blockResult(
+const LOOKUP_KINDS = new Set(["module", "account", "handle"]);
+
+/** Why `value` is not a lookup result for `walked`'s transaction, or undefined when it is. */
+function lookupError(
+  label: string,
+  value: unknown,
+  walked: StreamdEvent,
+  kind: EventDescriptor["kind"],
+): string | undefined {
+  if (value === undefined) return `${label} found nothing for walked event ${eventId(walked)}`;
+  if (!isObject(value)) return `${label} resolved a non-object`;
+  const { version, success, vmStatus, events } = value;
+  if (typeof version !== "bigint" || version < 0n) return `${label} version is not a non-negative bigint`;
+  if (typeof success !== "boolean") return `${label} success is not a boolean`;
+  if (typeof vmStatus !== "string") return `${label} vmStatus is not a string`;
+  if (!Array.isArray(events)) return `${label} events is not an array`;
+  for (const [i, event] of events.entries()) {
+    const error = eventShapeError(event);
+    if (error !== undefined) return `${label} events[${i}] ${error}`;
+  }
+  if (version !== walked.version) {
+    return `${label} returned version ${version}, but walked event ${eventId(walked)} is at ${walked.version}`;
+  }
+  const held = events as StreamdEvent[];
+  const off = held.find((e) => e.version !== version);
+  if (off) return `${label} event ${eventId(off)} is not at version ${version}`;
+  for (let i = 1; i < held.length; i++) {
+    if (held[i]!.eventIndex <= held[i - 1]!.eventIndex) {
+      return `${label} eventIndex ${held[i]!.eventIndex} follows ${held[i - 1]!.eventIndex}; transaction order must strictly ascend`;
+    }
+  }
+  // A handle source may index by the handle's sequence number, as FullnodeScanAdapter does.
+  const same =
+    kind === "handle"
+      ? (e: StreamdEvent) => e.type === walked.type && e.sequenceNumber === walked.sequenceNumber
+      : (e: StreamdEvent) => e.type === walked.type && e.eventIndex === walked.eventIndex;
+  return held.some(same) ? undefined : `${label} does not hold walked event ${eventId(walked)} (${walked.type})`;
+}
+
+async function judgeLookup(
+  name: AdapterCheckName,
+  label: string,
+  run: () => unknown,
+  walked: StreamdEvent,
+  kind: EventDescriptor["kind"],
+): Promise<{ result: AdapterCheckResult; found?: TransactionEvents }> {
+  const got = await attempt(label, run);
+  if (!got.ok) return { result: verdict(name, got.error) };
+  const error = lookupError(label, got.value, walked, kind);
+  return { result: verdict(name, error), found: error === undefined ? (got.value as TransactionEvents) : undefined };
+}
+
+/** `transaction-events` and `transaction-events-by-version`, each looking up a walked event's transaction. */
+async function lookupResults(
   adapter: EventAdapter,
   descriptor: EventDescriptor,
-  height: bigint | undefined,
-): Promise<AdapterCheckResult> {
-  if (adapter.getBlock === undefined) return skip("block", "not implemented (optional)");
-  if (height === undefined) return skip("block", "blockHeight not given");
-  try {
-    return verdict("block", blockError(await adapter.getBlock(descriptor, height), height));
-  } catch (err) {
-    return verdict("block", `getBlock rejected: ${describe(err)}`);
+  events: StreamdEvent[],
+): Promise<AdapterCheckResult[]> {
+  const byHashName = "transaction-events";
+  const byVersionName = "transaction-events-by-version";
+  const reason = !LOOKUP_KINDS.has(descriptor.kind)
+    ? `${descriptor.kind} changes are not transaction events`
+    : events.length === 0
+      ? "no walked event to look up"
+      : undefined;
+  const hashed = events.find((e) => e.transactionHash !== undefined);
+  let byHash: { result: AdapterCheckResult; found?: TransactionEvents } | undefined;
+  let hashResult: AdapterCheckResult;
+  if (adapter.getTransactionEvents === undefined) hashResult = skip(byHashName, ABSENT);
+  else if (reason !== undefined) hashResult = skip(byHashName, reason);
+  else if (hashed === undefined) hashResult = skip(byHashName, "no walked event carries a transactionHash");
+  else {
+    const hash = hashed.transactionHash!;
+    byHash = await judgeLookup(
+      byHashName,
+      `getTransactionEvents(${hash})`,
+      () => adapter.getTransactionEvents!(hash, descriptor),
+      hashed,
+      descriptor.kind,
+    );
+    hashResult = byHash.result;
   }
+  if (adapter.getTransactionEventsByVersion === undefined) return [hashResult, skip(byVersionName, ABSENT)];
+  if (reason !== undefined) return [hashResult, skip(byVersionName, reason)];
+  const walked = byHash !== undefined ? hashed! : events[0]!;
+  const byVersion = await judgeLookup(
+    byVersionName,
+    `getTransactionEventsByVersion(${walked.version})`,
+    () => adapter.getTransactionEventsByVersion!(walked.version, descriptor),
+    walked,
+    descriptor.kind,
+  );
+  if (byHash?.found === undefined || byVersion.found === undefined) return [hashResult, byVersion.result];
+  const hashIds = byHash.found.events.map(eventId).join(",");
+  const versionIds = byVersion.found.events.map(eventId).join(",");
+  return [
+    hashResult,
+    verdict(
+      byVersionName,
+      hashIds === versionIds ? undefined : `disagrees with getTransactionEvents: [${versionIds}] vs [${hashIds}]`,
+    ),
+  ];
+}
+
+async function viewResult(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  view: Settings["view"],
+  at: bigint | undefined,
+): Promise<AdapterCheckResult> {
+  if (adapter.view === undefined) return skip("view", ABSENT);
+  if (view === undefined) return skip("view", "view request not given");
+  const version = view.version ?? at;
+  if (version === undefined) return skip("view", "no version to read at");
+  const got = await attempt("view", () => adapter.view!(view.request, version, descriptor));
+  if (!got.ok) return verdict("view", got.error);
+  const label = `view(${view.request.function}) at ${version}`;
+  return verdict("view", Array.isArray(got.value) ? undefined : `${label} resolved ${typeof got.value}, not an array`);
 }
 
 /**
@@ -372,8 +597,9 @@ async function blockResult(
  * which `EventAdapter` contract rules it keeps. Violations are `fail` results,
  * never rejections; it rejects only for invalid arguments. Against a real
  * source it makes network reads: at most `maxPages` walk fetches, two more
- * fetches, and one call per optional method present. Needs no test runner, so
- * assert on `report.ok` from any of them.
+ * fetches, and one call to each optional method it checks that is present
+ * (two to `getBlock`): at most `maxPages + 10` calls.
+ * Needs no test runner, so assert on `report.ok` from any of them.
  */
 export async function checkAdapter(
   adapter: EventAdapter,
@@ -383,12 +609,18 @@ export async function checkAdapter(
   requireAdapter(adapter, "checkAdapter");
   const s = settings(options);
   const w = await walk(adapter, descriptor, s);
+  const events = allEvents(w);
+  const precedence = await cursorPrecedence(adapter, descriptor, w, s);
+  const foreign = await foreignCursor(adapter, descriptor, s);
+  const versions = await versionResults(adapter, descriptor, events);
   const results = [
     ...walkResults(w, s),
-    await cursorPrecedence(adapter, descriptor, w, s),
-    await foreignCursor(adapter, descriptor, s),
-    ...(await versionResults(adapter, descriptor, allEvents(w))),
-    await blockResult(adapter, descriptor, s.blockHeight),
+    precedence,
+    foreign,
+    ...versions.results,
+    ...(await blockResults(adapter, descriptor, s.blockHeight)),
+    ...(await lookupResults(adapter, descriptor, events)),
+    await viewResult(adapter, descriptor, s.view, events[0]?.version ?? versions.head),
   ];
   return {
     ok: results.every((r) => r.status !== "fail"),

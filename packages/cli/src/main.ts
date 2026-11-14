@@ -1,4 +1,5 @@
 import { once } from "node:events";
+import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { Aptos, getAptosFullNode } from "@aptos-labs/ts-sdk";
 import { listEventHandles } from "@streamd/aptos";
@@ -7,6 +8,7 @@ import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
 import type {
+  AlertOptions,
   BalancesCommandOptions,
   CheckOptions,
   CodegenOptions,
@@ -24,6 +26,9 @@ import type {
   TxOptions,
   WatchCommandOptions,
 } from "./args.js";
+import { runAlert } from "./alert.js";
+import { parseRules } from "./alert-rules.js";
+import type { AlertRule } from "./alert-rules.js";
 import { runBalances } from "./balances.js";
 import { openCache } from "./cache.js";
 import type { PageCache } from "./cache.js";
@@ -82,6 +87,33 @@ async function forward(options: ForwardOptions): Promise<number> {
       error: (message) => process.stderr.write(`${message}\n`),
       signal: controller.signal,
       headVersion: () => chain.adapter().getHeadVersion(),
+    });
+  } finally {
+    client.destroy();
+  }
+}
+
+async function alert(options: AlertOptions): Promise<number> {
+  let text: string;
+  let rules: AlertRule[];
+  try {
+    text = readFileSync(options.rules, "utf8");
+  } catch (err) {
+    process.stderr.write(`streamd: cannot read rules file: ${message(err)}\n`);
+    return 1;
+  }
+  try {
+    rules = parseRules(text, options.rules, options.chain === "sui");
+  } catch (err) {
+    process.stderr.write(`streamd: ${message(err)}\n`);
+    return 1;
+  }
+  const { client, controller } = await setup(options);
+  try {
+    return await runAlert(options, rules, {
+      client,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
     });
   } finally {
     client.destroy();
@@ -366,6 +398,7 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "codegen") return codegen(parsed.options);
   if (parsed.command === "compare") return compare(parsed.options);
   if (parsed.command === "store") return store(parsed.options);
+  if (parsed.command === "alert") return alert(parsed.options);
   if (parsed.command === "check") return check(parsed.options);
   if (parsed.command === "record") return withCache(parsed.options, (cache) => record(parsed.options, cache));
   if (parsed.command === "query") return withCache(parsed.options, (cache) => query(parsed.options, cache));

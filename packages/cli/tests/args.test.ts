@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { parseCommand, parseTime, UsageError } from "../src/args.js";
-import type { StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
+import type { AlertOptions, StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
 const LONG_ADDR = `0x${"0".repeat(63)}1`;
@@ -1293,5 +1293,93 @@ describe("--stats", () => {
 
   it("takes no value", () => {
     rejects(["tail", TYPE, "--stats=yes"], /--stats/);
+  });
+});
+
+describe("parseCommand alert", () => {
+  const HOOK = "https://hooks.example.com/in?token=s3cret";
+
+  function alert(...argv: string[]): AlertOptions {
+    const parsed = parseCommand(["alert", ...argv]);
+    if (parsed.command !== "alert") throw new Error("expected an alert command");
+    return parsed.options;
+  }
+
+  it("applies defaults", () => {
+    expect(alert("--rules", "rules.json", "--to", HOOK)).toEqual({
+      network: "mainnet",
+      rules: "rules.json",
+      to: HOOK,
+      cursorFile: "streamd-alert.cursor",
+      retries: 5,
+      timeout: 10000,
+      headers: {},
+    });
+  });
+
+  it("reads every flag", () => {
+    expect(
+      alert(
+        "--rules", "r.json",
+        "--to", "http://127.0.0.1:9000/hook",
+        "--cursor-file", "/tmp/a",
+        "--retries", "0",
+        "--timeout", "500",
+        "--header", "Authorization: Bearer x",
+        "--secret", "k",
+        "--from-version", "12",
+        "--poll-interval", "250",
+        "--network", "testnet",
+        "--node-url", "http://127.0.0.1:8080/v1",
+        "--node-url", "http://127.0.0.1:8081/v1",
+        "--archive", "http://127.0.0.1:8082/v1",
+        "--api-key", "key",
+        "--stats",
+      ),
+    ).toEqual({
+      network: "testnet",
+      nodeUrl: "http://127.0.0.1:8080/v1",
+      extraNodeUrls: ["http://127.0.0.1:8081/v1"],
+      archive: "http://127.0.0.1:8082/v1",
+      apiKey: "key",
+      stats: true,
+      rules: "r.json",
+      to: "http://127.0.0.1:9000/hook",
+      cursorFile: "/tmp/a",
+      retries: 0,
+      timeout: 500,
+      headers: { authorization: "Bearer x" },
+      secret: "k",
+      fromVersion: 12n,
+      pollInterval: 250,
+    });
+  });
+
+  it("takes the secret from the environment, --from-time, and --chain sui", () => {
+    process.env.STREAMD_WEBHOOK_SECRET = "from-env";
+    try {
+      expect(alert("--rules", "r", "--to", HOOK).secret).toBe("from-env");
+    } finally {
+      delete process.env.STREAMD_WEBHOOK_SECRET;
+    }
+    expect(alert("--rules", "r", "--to", HOOK, "--from-time", "2026-01-01").fromTime).toBe(1767225600000000n);
+    expect(alert("--rules", "r", "--to", HOOK, "--chain", "sui")).toMatchObject({ chain: "sui", network: "mainnet" });
+    expect(parseCommand(["alert", "--help"])).toEqual({ command: "help" });
+  });
+
+  it.each([
+    [["alert", "--to", HOOK], /alert needs --rules <file>/],
+    [["alert", "--rules", "", "--to", HOOK], /alert needs --rules <file>/],
+    [["alert", "--rules", "r"], /alert needs --to <url>/],
+    [["alert", "--rules", "r", "--to", HOOK, TYPE], /Unexpected argument/],
+    [["alert", "--rules", "r", "--to", HOOK, "--account", ADDR], /Unknown option '--account'/],
+    [["alert", "--rules", "r", "--to", HOOK, "--where", "a>1"], /Unknown option '--where'/],
+    [["alert", "--rules", "r", "--to", HOOK, "--from-version", "1", "--from-time", "1h"], /--from-time or --from-version, not both/],
+    [["alert", "--rules", "r", "--to", HOOK, "--secret", "k", "--header", "X-Streamd-Signature: x"], /x-streamd-signature/],
+    [["alert", "--rules", "r", "--to", HOOK, "--cursor-file", ""], /--cursor-file must not be empty/],
+    [["alert", "--rules", "r", "--to", "https://u:p@hooks.example.com/"], /--to must not carry credentials/],
+    [["alert", "--rules", "r", "--to", HOOK, "--chain", "sui", "--api-key", "k"], /--api-key is not sent to Sui nodes/],
+  ])("rejects %j", (argv, message) => {
+    rejects(argv as string[], message as RegExp);
   });
 });

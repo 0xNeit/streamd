@@ -2,7 +2,7 @@ import type { EventAdapter } from "../types.js";
 import { StreamdNetworkError } from "../errors.js";
 import { requireAdapter } from "./validate.js";
 
-const METHODS = [
+export const METHODS = [
   "fetchEvents",
   "getHeadVersion",
   "getEarliestVersion",
@@ -16,7 +16,7 @@ const METHODS = [
 ] as const satisfies readonly (keyof EventAdapter)[];
 
 // Enough for stable percentiles, and it bounds a process that runs for weeks.
-const SAMPLES = 1024;
+export const SAMPLES = 1024;
 
 export type AdapterMethod = (typeof METHODS)[number];
 
@@ -39,11 +39,14 @@ export interface MethodMetrics {
   latency?: LatencyPercentiles;
 }
 
+/** What `AdapterMetrics.snapshot()` returns: numbers for each method called so far. */
+export type AdapterMetricsSnapshot = Partial<Record<AdapterMethod, MethodMetrics>>;
+
 export interface AdapterMetrics {
   /** `adapter` with every call counted; pass this to `StreamdClient`. */
   adapter: EventAdapter;
   /** Numbers for each method called so far. */
-  snapshot(): Partial<Record<AdapterMethod, MethodMetrics>>;
+  snapshot(): AdapterMetricsSnapshot;
   /** Forgets everything counted so far. */
   reset(): void;
 }
@@ -67,7 +70,7 @@ function percentile(sorted: readonly number[], p: number): number {
   return sorted[Math.max(0, Math.ceil((p / 100) * sorted.length) - 1)]!;
 }
 
-function isRateLimited(err: unknown): boolean {
+export function isRateLimited(err: unknown): boolean {
   return err instanceof StreamdNetworkError && (err.statusCode === 429 || err.retryAfter !== undefined);
 }
 
@@ -115,7 +118,7 @@ export function adapterMetrics(adapter: EventAdapter): AdapterMetrics {
   return {
     adapter: wrapped,
     snapshot() {
-      const out: Partial<Record<AdapterMethod, MethodMetrics>> = {};
+      const out: AdapterMetricsSnapshot = {};
       for (const [method, { requests, errors, rateLimited, durations }] of counters) {
         const metrics: MethodMetrics = { requests, errors, rateLimited };
         if (durations.length > 0) {

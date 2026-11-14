@@ -38,6 +38,21 @@ function seeded(events = EVENTS): StoreAdapter {
 
 const ids = (events: StreamdEvent[]) => events.map(eventId);
 
+const hashOf = (version: bigint) => "0x" + version.toString(16).padStart(64, "0");
+
+// EVENTS with each swap hashed, the mints left hashless as handle events are, and a resource
+// change sent by the same sender and hashed at every version, as one store following all three holds them.
+function hashedStore(): StoreAdapter {
+  const db = new Database(":memory:");
+  const store = new SqliteEventStore(db);
+  store.write(EVENTS.map((e) => (e.type === SWAP ? { ...e, transactionHash: hashOf(e.version) } : e)));
+  const changes = EVENTS.filter((e) => e.type === SWAP).map((e) =>
+    ev(e.version, 2, "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>", { sender: e.sender, transactionHash: hashOf(e.version) }),
+  );
+  store.write(changes, undefined, { accountAddress: A });
+  return new StoreAdapter(db);
+}
+
 const swaps: EventDescriptor = { kind: "module", eventType: SWAP };
 const fromA: EventDescriptor = { kind: "account", accountAddress: "0xa" };
 const mintHandle: EventDescriptor = { kind: "handle", accountAddress: A, creationNumber: 2n };
@@ -62,6 +77,28 @@ describe("StoreAdapter", () => {
     expect(ids((await adapter.fetchEvents(mintHandle, all)).events)).toEqual(
       EVENTS.filter((e) => e.type === MINT).map(eventId),
     );
+  });
+
+  it("matches a module type written without type arguments against the struct with any", async () => {
+    // Neighbours either side of the range: a longer name, a digit sorting below "<", and "=" itself.
+    const generic = [
+      ev(1n, 0, `${SWAP}<0x1::a::A, 0x1::b::B>`),
+      ev(1n, 1, `${SWAP}Fee<0x1::a::A>`),
+      ev(1n, 2, `${SWAP}2<0x1::a::A>`),
+      ev(1n, 3, `${SWAP}=x`),
+      ev(2n, 0, `${SWAP}<0x1::b::B, 0x1::d::LP<0x1::a::A, 0x1::b::B>>`),
+      ev(2n, 1, SWAP),
+      ev(2n, 2, MINT),
+    ];
+    const db = new Database(":memory:");
+    new SqliteEventStore(db).write(generic);
+    const adapter = new StoreAdapter(db);
+    const read = async (eventType: string | string[]) =>
+      ids((await adapter.fetchEvents({ kind: "module", eventType } as EventDescriptor, { limit: 100 })).events);
+    expect(await read(SWAP)).toEqual(["1:0", "2:0", "2:1"]);
+    expect(await read(`${SWAP}<0x1::a::A, 0x1::b::B>`)).toEqual(["1:0"]);
+    expect(await read([MINT, SWAP])).toEqual(["1:0", "2:0", "2:1", "2:2"]);
+    expect(await read([`${SWAP}Fee<0x1::a::A>`, MINT])).toEqual(["1:1", "2:2"]);
   });
 
   it("pages with fromVersion, toVersion, limit, offset and cursor", async () => {
@@ -116,13 +153,21 @@ describe("StoreAdapter", () => {
     for (const attempt of refused) await expect(attempt).rejects.toBeInstanceOf(StreamdError);
   });
 
-  it("passes checkAdapter for every descriptor kind", async () => {
-    const adapter = seeded();
+  it("passes checkAdapter for every descriptor kind, transaction lookups included", async () => {
+    const adapter = hashedStore();
+    // Mints are handle events, which carry no hash, so a handle walk has none to look up by.
+    const byHash = (descriptor: EventDescriptor) => (descriptor === mintHandle ? "skip" : "pass");
     for (const descriptor of [swaps, fromA, mintHandle]) {
       for (const options of [{ limit: 2 }, { limit: 3, fromVersion: 4n }]) {
         const report = await checkAdapter(adapter, descriptor, options);
         expect(report.results.filter((r) => r.status === "fail")).toEqual([]);
         expect(report.pagesFetched).toBe(3);
+        const status = (name: string) => report.results.find((r) => r.name === name);
+        expect(status("transaction-events")?.status).toBe(byHash(descriptor));
+        expect(status("transaction-events-by-version")?.status).toBe("pass");
+        for (const name of ["block", "block-heights", "view"]) {
+          expect(status(name)).toMatchObject({ status: "skip", message: "not implemented (optional)" });
+        }
       }
     }
   });

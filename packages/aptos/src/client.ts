@@ -14,8 +14,10 @@ import { expectPreview } from "./expect.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { eventsOf, previewEvents } from "./transaction.js";
+import { saleDescriptor, saleSource } from "./sales.js";
+import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import type { Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Sale, SaleFilter, SaleListenerOptions, Swap, SwapFilter, SwapListenerOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -83,6 +85,65 @@ export class AptosClient extends StreamdClient {
       rest.id,
       (source) => transferSource(source, asset, who, withAssetInfo, this.requestTimeout),
     );
+  }
+
+  /**
+   * Follow DEX swaps as they land, one record per pool hop, each delivered as
+   * an event whose `data` is a `Swap`, from one scan over the swap events of
+   * Hyperion (`pool_v3::SwapEventV3`), Thala CLAMM and ThalaSwap v2
+   * (`pool::SwapEvent`) and Cellana (`liquidity_pool::SwapEvent`). Every
+   * field comes from the event, `trader` from the transaction's sender, so
+   * nothing is read by view. `protocol` narrows the scanned types; `asset`
+   * keeps swaps with that asset on either side. Like `transfers()`, it is not
+   * a listener for `off()` or `listenerCount()`.
+   */
+  swaps(callback: EventCallback<Swap>, options: SwapListenerOptions = {}): Subscription {
+    const { protocol, asset, ...rest } = options;
+    const descriptor = swapDescriptor(protocol);
+    return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, (source) =>
+      swapSource(source, asset),
+    );
+  }
+
+  /**
+   * Past swaps, built as `swaps()` builds them, over the range and options
+   * `getEvents` takes; `where` and `limit` apply to the records.
+   */
+  async getSwaps(filter: SwapFilter = {}): Promise<StreamdEvent<Swap>[]> {
+    const { protocol, asset, ...rest } = filter;
+    const descriptor = swapDescriptor(protocol);
+    const query = new EventQuery(swapSource(this.adapter, asset), this.limiter, this.names);
+    return query.getEvents<Swap>(descriptor, rest);
+  }
+
+  /**
+   * Follow NFT marketplace sales as they land, one record per token sold,
+   * each delivered as an event whose `data` is a `Sale`, from one scan over
+   * the fill events of Wapal (`events::ListingFilledEvent`,
+   * `TokenOfferFilledEvent`, `CollectionOfferFilledEvent`) and Tradeport
+   * (`listings_v2::BuyEvent`, `biddings_v2::AcceptTokenBidEvent`,
+   * `AcceptCollectionBidEvent`, and the same in its legacy-token modules).
+   * Every field comes from the event, so nothing is read by view.
+   * `marketplace` narrows the scanned types; `token` keeps sales of one
+   * token. Like `swaps()`, it is not a listener for `off()` or `listenerCount()`.
+   */
+  sales(callback: EventCallback<Sale>, options: SaleListenerOptions = {}): Subscription {
+    const { marketplace, token, ...rest } = options;
+    const descriptor = saleDescriptor(marketplace);
+    return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, (source) =>
+      saleSource(source, token),
+    );
+  }
+
+  /**
+   * Past sales, built as `sales()` builds them, over the range and options
+   * `getEvents` takes; `where` and `limit` apply to the records.
+   */
+  async getSales(filter: SaleFilter = {}): Promise<StreamdEvent<Sale>[]> {
+    const { marketplace, token, ...rest } = filter;
+    const descriptor = saleDescriptor(marketplace);
+    const query = new EventQuery(saleSource(this.adapter, token), this.limiter, this.names);
+    return query.getEvents<Sale>(descriptor, rest);
   }
 
   /**

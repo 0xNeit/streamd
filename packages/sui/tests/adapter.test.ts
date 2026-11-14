@@ -5,6 +5,13 @@ import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiAdapter } from "../src/index.js";
 import { LONG, digest, fakeLedger, ptb, transactionBytes, withCalls, withSimulator, withTransfers, OBJECT_TYPE, type FakeEvent, type FakeListed, type FakeTransaction } from "./helpers.js";
 
+/**
+ * fakeLedger lists events under placeholder digests (`D<cp>t<ti>`) that
+ * getTransactionEvents refuses, so checkAdapter runs without that lookup.
+ */
+const withoutLookup = (client: ConstructorParameters<typeof SuiAdapter>[0]) =>
+  Object.assign(new SuiAdapter(client), { getTransactionEvents: undefined });
+
 const STAKE = `${LONG("3")}::validator::StakingRequestEvent` as MoveEventType;
 const SWAP = `${LONG("abc")}::pool::Swap` as MoveEventType;
 const ALICE = LONG("a11ce");
@@ -208,7 +215,7 @@ describe("SuiAdapter versions as bounds", () => {
 
   it("passes checkAdapter", async () => {
     const { client } = fakeLedger(SIZES, EVENTS);
-    const report = await checkAdapter(new SuiAdapter(client), { kind: "module", eventType: [STAKE, SWAP] }, { limit: 2, fromVersion: 0n });
+    const report = await checkAdapter(withoutLookup(client), { kind: "module", eventType: [STAKE, SWAP] }, { limit: 2, fromVersion: 0n });
     expect(report.results.filter((r) => r.status === "fail")).toEqual([]);
   });
 });
@@ -255,7 +262,7 @@ describe("SuiAdapter checkpoints as blocks", () => {
 
   it("passes checkAdapter's block rule", async () => {
     const { client } = fakeLedger(SIZES, EVENTS);
-    const report = await checkAdapter(new SuiAdapter(client), stakes, { limit: 2, fromVersion: 0n, blockHeight: 2n });
+    const report = await checkAdapter(withoutLookup(client), stakes, { limit: 2, fromVersion: 0n, blockHeight: 2n });
     expect(report.results.find((r) => r.name === "block")?.status).toBe("pass");
     expect(report.results.filter((r) => r.status === "fail")).toEqual([]);
   });

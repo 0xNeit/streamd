@@ -202,6 +202,33 @@ function storedTransfers(db: Database): string[] {
 
 const ids = (records: StreamdEvent<Transfer>[]) => records.map((r) => `${r.version}:${r.eventIndex}:${r.data.amount}`);
 
+describe("storeEvents over a resource descriptor", () => {
+  it("stores each change with the descriptor's address, which StoreAdapter then serves", async () => {
+    const COIN = "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>";
+    const coin: EventDescriptor = { kind: "resource", accountAddress: "0xa", resourceType: COIN };
+    const changes = history(5).map((e) => ({ ...e, type: COIN, eventIndex: 2 }));
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    const client = new StreamdClient({ adapter: new MemoryAdapter([...changes, ...history(5)]) });
+    const options = { batchSize: 2, pollInterval: 5 };
+    const subs = await Promise.all([
+      caughtUp((onCaughtUp) => storeEvents(client, store, coin, { ...options, name: "coin", onCaughtUp })),
+      caughtUp((onCaughtUp) => storeEvents(client, store, swaps, { ...options, name: "swaps", onCaughtUp })),
+    ]);
+    for (const sub of subs) sub.unsubscribe();
+    client.destroy();
+
+    const rows = db.query("SELECT type, account_address FROM streamd_events ORDER BY version, event_index").all();
+    expect(rows).toHaveLength(10);
+    const A = "0x" + "0".repeat(63) + "a";
+    for (const row of rows as { type: string; account_address: string | null }[]) {
+      expect(row.account_address).toBe(row.type === COIN ? A : null);
+    }
+    const served = await new StreamdClient({ adapter: new StoreAdapter(db) }).getEvents(coin, { limit: 100 });
+    expect(served).toEqual(changes);
+  });
+});
+
 describe("storeTransfers", () => {
   it("resumes after a restart with every record stored once, under its own cursor name", async () => {
     const db = new Database(":memory:");

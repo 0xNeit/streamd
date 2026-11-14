@@ -9,22 +9,41 @@ const desc: EventDescriptor = { kind: "module", eventType: TYPE };
 const walkOptions = { fromVersion: 2n, limit: 2 };
 
 describe("checkAdapter against FullnodeScanAdapter", () => {
-  /** A real `Aptos` over a stubbed transport serving versions 0..9, one Ping each. */
+  const hashOf = (v: number) => `0x${v.toString(16).padStart(64, "0")}`;
+  const transactions = Array.from({ length: 10 }, (_, v) => ({
+    version: String(v),
+    hash: hashOf(v),
+    type: "user_transaction",
+    success: true,
+    vm_status: "Executed successfully",
+    events: [{ type: TYPE, data: {}, sequence_number: "0" }],
+  }));
+  const block = (h: number) => ({
+    block_height: String(h),
+    block_timestamp: String(h + 2),
+    first_version: String(2 * h),
+    last_version: String(2 * h + 1),
+  });
+
+  /**
+   * A real `Aptos` over a stubbed transport serving versions 0..9, one Ping
+   * each, blocks 0..4 of two versions each, both transaction lookups and a view.
+   */
   function stubbedFullnode(): FullnodeScanAdapter {
     const route = (path: string, params: Record<string, unknown>): unknown => {
-      if (path === "") return { ledger_version: "9", oldest_ledger_version: "0" };
+      if (path === "") {
+        return { ledger_version: "9", oldest_ledger_version: "0", block_height: "4", oldest_block_height: "0" };
+      }
       if (path === "transactions") {
         const start = Number(params.start ?? 0);
         const limit = Number(params.limit ?? 25);
-        return Array.from({ length: 10 }, (_, v) => ({
-          version: String(v),
-          type: "user_transaction",
-          events: [{ type: TYPE, data: {}, sequence_number: "0" }],
-        })).slice(start, start + limit);
+        return transactions.slice(start, start + limit);
       }
-      if (path === "blocks/by_height/3") {
-        return { block_height: "3", block_timestamp: "5", first_version: "6", last_version: "7" };
-      }
+      const at = /^(blocks\/by_height|transactions\/by_version|transactions\/by_hash)\/(\w+)$/.exec(path);
+      if (at?.[1] === "blocks/by_height") return block(Number(at[2]));
+      if (at?.[1] === "transactions/by_version") return transactions[Number(at[2])];
+      if (at?.[1] === "transactions/by_hash") return transactions.find((t) => t.hash === at[2]);
+      if (path === "view") return ["1"];
       throw new Error(`unexpected path ${path}`);
     };
     const client = {
@@ -48,7 +67,11 @@ describe("checkAdapter against FullnodeScanAdapter", () => {
   }
 
   it("passes every rule on a module descriptor", async () => {
-    const report = await checkAdapter(stubbedFullnode(), desc, { ...walkOptions, blockHeight: 3n });
+    const report = await checkAdapter(stubbedFullnode(), desc, {
+      ...walkOptions,
+      blockHeight: 3n,
+      view: { request: { function: "0x1::timestamp::now_microseconds" } },
+    });
     expect(report.results.filter((r) => r.status !== "pass")).toEqual([]);
     expect(report.ok).toBe(true);
     expect(report.pagesFetched).toBe(3);

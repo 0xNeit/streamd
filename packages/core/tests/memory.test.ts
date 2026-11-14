@@ -99,6 +99,23 @@ describe("MemoryAdapter", () => {
     ]);
   });
 
+  it("matches a type written without type arguments against the struct with any", async () => {
+    const other = "0x1::pool::Swap<0x1::a::CoinB, 0x1::b::CoinA>";
+    const adapter = new MemoryAdapter([
+      ev(1, 0, GENERIC),
+      ev(1, 1, other),
+      ev(1, 2, "0x1::pool::SwapFee<0x1::a::CoinA>"),
+      ev(1, 3, "0x1::pool::Swap"),
+      ev(2, 0, PING),
+    ]);
+    const ids = async (eventType: EventDescriptor & { kind: "module" }) =>
+      (await adapter.fetchEvents(eventType)).events.map((e) => `${e.version}:${e.eventIndex}`);
+    expect(await ids({ kind: "module", eventType: "0x1::pool::Swap" })).toEqual(["1:0", "1:1", "1:3"]);
+    expect(await ids({ kind: "module", eventType: GENERIC })).toEqual(["1:0"]);
+    expect(await ids({ kind: "module", eventType: [GENERIC, PING] })).toEqual(["1:0", "2:0"]);
+    expect(await ids({ kind: "module", eventType: PING })).toEqual(["2:0"]);
+  });
+
   it("matches account descriptors with and without eventTypes, and handle descriptors", async () => {
     const adapter = new MemoryAdapter([
       ev(1, 0, PING),

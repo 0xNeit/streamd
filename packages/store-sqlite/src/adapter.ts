@@ -4,6 +4,7 @@ import {
   parseEvent,
   requireAddress,
   requireEventType,
+  requireResourceType,
 } from "@streamd/core";
 import type {
   EventAdapter,
@@ -11,8 +12,9 @@ import type {
   EventPage,
   FetchOptions,
   StreamdEvent,
+  TransactionEvents,
 } from "@streamd/core";
-import { ensureSchema, prunedBefore, versionKey } from "./schema.js";
+import { ensureSchema, eventColumns, hashKey, prunedBefore, versionKey } from "./schema.js";
 import type { SqliteDatabase } from "./schema.js";
 
 const DEFAULT_LIMIT = 25;
@@ -32,14 +34,29 @@ function typeList(types: readonly string[]): Where {
   return { sql: `type IN (${types.map(() => "?").join(", ")})`, params: types.map(requireEventType) };
 }
 
-function descriptorWhere(descriptor: EventDescriptor): Where {
+/**
+ * A `module` descriptor's types: each exactly, and one written without type
+ * arguments also with any. The column's BINARY collation orders by bytes, so
+ * `T<...` lies in [`T<`, `T=`). The range is added only when a probe finds a
+ * row in it, so a non-generic type keeps the plan that seeks the type index.
+ */
+function moduleTypes(db: SqliteDatabase, types: readonly string[]): Where {
+  const exact = typeList(types);
+  const probe = db.prepare("SELECT 1 FROM streamd_events WHERE type >= ? AND type < ? LIMIT 1");
+  const generic = (exact.params as string[]).filter((t) => !t.includes("<") && probe.get(`${t}<`, `${t}=`) != null);
+  if (generic.length === 0) return exact;
+  const ranges = generic.map(() => " OR (type >= ? AND type < ?)").join("");
+  return { sql: `(${exact.sql}${ranges})`, params: [...exact.params, ...generic.flatMap((t) => [`${t}<`, `${t}=`])] };
+}
+
+function descriptorWhere(db: SqliteDatabase, descriptor: EventDescriptor): Where {
   switch (descriptor?.kind) {
     case "module": {
       const { eventType } = descriptor;
       if (Array.isArray(eventType) && eventType.length === 0) {
         throw new StreamdError("Module descriptor requires at least one eventType");
       }
-      return typeList(Array.isArray(eventType) ? eventType : [eventType as string]);
+      return moduleTypes(db, Array.isArray(eventType) ? eventType : [eventType as string]);
     }
     case "account": {
       if (descriptor.received === true) throw new StreamdError("StoreAdapter keys account events by sender, so it cannot serve received ones");
@@ -61,6 +78,11 @@ function descriptorWhere(descriptor: EventDescriptor): Where {
         params: [requireAddress(descriptor.accountAddress), creationNumber.toString()],
       };
     }
+    case "resource":
+      return {
+        sql: "account_address = ? AND type = ?",
+        params: [requireAddress(descriptor.accountAddress), requireResourceType(descriptor.resourceType)],
+      };
     default:
       throw new StreamdError(
         `Unknown descriptor kind: ${String((descriptor as { kind?: unknown })?.kind)}`,
@@ -91,6 +113,21 @@ function startOf(options: FetchOptions, edge: bigint): Position {
   return start;
 }
 
+function requireHash(hash: unknown): string {
+  if (typeof hash !== "string" || hash === "") throw new StreamdError("A transaction hash must be a non-empty string");
+  return hashKey(hash);
+}
+
+/**
+ * Stored rows as one transaction. A store keeps no status, so even a failed
+ * transaction's stored fee statement reads as a success.
+ */
+function transactionOf(rows: { event: string }[]): TransactionEvents | undefined {
+  if (rows.length === 0) return undefined;
+  const events = rows.map((r) => parseEvent(r.event));
+  return { version: events[0]!.version, success: true, vmStatus: "", events };
+}
+
 function count(value: number | undefined, label: string, fallback: number): number {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value < 0) throw new StreamdError(`Not a valid ${label}: ${value}`);
@@ -100,8 +137,10 @@ function count(value: number | undefined, label: string, fallback: number): numb
 /**
  * Serves events a `SqliteEventStore` wrote, as an `EventAdapter`. It answers
  * from what is stored, so it sees only what the store's subscriptions caught:
- * `account` matches events stored with that `sender`, and `handle` matches by
- * `creationNumber` against each event's stored `guid`.
+ * `account` matches events stored with that `sender`, `handle` matches by
+ * `creationNumber` against each event's stored `guid`, and `resource` matches
+ * changes `storeEvents` stored with that address, so none an older release
+ * stored without one. Changes stored with an address match no other kind.
  */
 export class StoreAdapter implements EventAdapter {
   private readonly db: SqliteDatabase;
@@ -126,7 +165,15 @@ export class StoreAdapter implements EventAdapter {
   }
 
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
-    const where = descriptorWhere(descriptor);
+    let where = descriptorWhere(this.db, descriptor);
+    // Never migrates, since it may be read-only: a database no write has
+    // migrated yet holds no resource rows, to serve or to leave out.
+    const migrated = eventColumns(this.db).has("account_address");
+    if (descriptor.kind === "resource") {
+      if (!migrated) where = { sql: "0", params: [] };
+    } else if (migrated) {
+      where = { sql: `${where.sql} AND account_address IS NULL`, params: where.params };
+    }
     const start = startOf(options, prunedBefore(this.db));
     const limit = count(options.limit, "limit", DEFAULT_LIMIT);
     const offset = options.cursor === undefined ? count(options.offset, "offset", 0) : 0;
@@ -154,6 +201,38 @@ export class StoreAdapter implements EventAdapter {
     // No throughVersion: another writer may still add rows below the cursor.
     if (options.orderBy === "desc") events.reverse();
     return page;
+  }
+
+  /**
+   * The stored events of the transaction at the version a row with this hash
+   * is stored at, in transaction order, so rows stored there without a hash
+   * (handle events, older rows) come back too, as `getTransactionEventsByVersion`
+   * returns them; `undefined` when none is stored, which `eventsOf` waits on.
+   * Only what the store's subscriptions caught, and no resource changes.
+   */
+  async getTransactionEvents(transactionHash: string): Promise<TransactionEvents | undefined> {
+    const hash = requireHash(transactionHash);
+    if (!eventColumns(this.db).has("transaction_hash")) return undefined;
+    const rows = this.db
+      .prepare(
+        `SELECT event FROM streamd_events
+         WHERE version = (SELECT version FROM streamd_events WHERE transaction_hash = ? LIMIT 1)
+           AND account_address IS NULL
+         ORDER BY event_index`,
+      )
+      .all(hash) as { event: string }[];
+    return transactionOf(rows);
+  }
+
+  /** Every stored event at `version`, resource changes left out; below the pruned edge, a 410. */
+  async getTransactionEventsByVersion(version: bigint): Promise<TransactionEvents | undefined> {
+    const key = versionKey(version);
+    startOf({ fromVersion: version }, prunedBefore(this.db));
+    const onlyEvents = eventColumns(this.db).has("account_address") ? " AND account_address IS NULL" : "";
+    const rows = this.db
+      .prepare(`SELECT event FROM streamd_events WHERE version = ?${onlyEvents} ORDER BY event_index`)
+      .all(key) as { event: string }[];
+    return transactionOf(rows);
   }
 
   private bound(fn: "MAX" | "MIN"): bigint | undefined {

@@ -52,6 +52,54 @@ CREATE TABLE IF NOT EXISTS streamd_cursors (
 );
 `;
 
+// Columns added by the first write rather than the table's CREATE, so a
+// database made before a column existed gains it the same way a new one does,
+// and a read-only connection to either never has to alter anything.
+const MIGRATIONS: readonly (readonly [column: string, sql: string])[] = [
+  [
+    "account_address",
+    `ALTER TABLE streamd_events ADD COLUMN account_address TEXT;
+     CREATE INDEX IF NOT EXISTS streamd_events_resource
+       ON streamd_events (account_address, type, version, event_index)
+       WHERE account_address IS NOT NULL;`,
+  ],
+  [
+    "transaction_hash",
+    `ALTER TABLE streamd_events ADD COLUMN transaction_hash TEXT;
+     CREATE INDEX IF NOT EXISTS streamd_events_transaction
+       ON streamd_events (transaction_hash, version, event_index)
+       WHERE transaction_hash IS NOT NULL;`,
+  ],
+];
+
+/** The columns `streamd_events` has, from one catalog read. */
+export function eventColumns(db: SqliteDatabase): Set<string> {
+  const rows = db.prepare("SELECT name FROM pragma_table_info('streamd_events')").all() as { name: string }[];
+  return new Set(rows.map((r) => r.name));
+}
+
+/** Adds each missing column and its index, each in its own savepoint; idempotent. */
+export function migrateSchema(db: SqliteDatabase): void {
+  const present = eventColumns(db);
+  for (const [column, sql] of MIGRATIONS) {
+    if (present.has(column)) continue;
+    try {
+      transaction(db, () => db.exec(sql));
+    } catch (err) {
+      // Another connection may have migrated between the check and the ALTER.
+      if (!eventColumns(db).has(column)) throw err;
+    }
+  }
+}
+
+/**
+ * A transaction hash as stored and looked up: an Aptos hex hash lowercased,
+ * anything else, such as a case-sensitive Sui base58 digest, as it is.
+ */
+export function hashKey(hash: string): string {
+  return /^0x[0-9a-fA-F]+$/.test(hash) ? hash.toLowerCase() : hash;
+}
+
 // Its own schema, created only by what writes transfers: a read-only
 // connection to a database made before it existed must still open.
 export const TRANSFER_SCHEMA = `
