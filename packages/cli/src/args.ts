@@ -187,6 +187,8 @@ export interface CodegenOptions extends Endpoint {
   out?: string;
   /** Also write an `is<Type>` runtime check per generated type. */
   validators?: boolean;
+  /** Compare with `out` instead of writing it; set only with `out`. */
+  check?: boolean;
 }
 
 export type ParsedCommand =
@@ -369,6 +371,7 @@ const CODEGEN_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   out: { type: "string" },
   validators: { type: "boolean" },
+  check: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -404,7 +407,7 @@ export const USAGE = `Usage:
   streamd name <name | address>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] [--cache <file>] <eventType>...
-  streamd codegen [--out <file>] [--validators] (<address> | <address>::<module>)...
+  streamd codegen [--out <file> [--check]] [--validators] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
 
 tail follows matching events and prints each as one JSON line on stdout.
@@ -430,6 +433,8 @@ compare reads one range from two nodes and prints what one has that the other
 does not, exiting 1 if they disagree.
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
+With --check it compares what it would write with --out instead, and exits 1
+if the file differs or is missing.
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
 Every command but handles takes --chain sui to read Sui instead of Aptos.
@@ -504,6 +509,8 @@ Options:
                          as one JSON line {"stats":...} on exit and on SIGUSR1 (not Windows);
                          reads made outside the adapter, such as name lookups, are not counted
   --validators           codegen: also write an is<Type> runtime check per type
+  --check                codegen: compare with the --out file, writing nothing; exit 1 if
+                         it differs or is missing, naming the first line that differs
   --chain <name>         aptos or sui (default: aptos); with sui, --network is mainnet,
                          testnet or devnet, --node-url and --against are Sui gRPC URLs,
                          tx takes a base58 digest, and --handle, --field,
@@ -1175,6 +1182,10 @@ function parseCodegen(args: string[]): ParsedCommand {
     options.out = values.out;
   }
   if (values.validators) options.validators = true;
+  if (values.check) {
+    if (options.out === undefined) throw new UsageError("--check needs --out <file> to compare with");
+    options.check = true;
+  }
   return { command: "codegen", options };
 }
 

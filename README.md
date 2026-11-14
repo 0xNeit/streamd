@@ -3553,15 +3553,39 @@ that still collides. A descriptor shares its type's name; a generic event's desc
 function of its type arguments, since module descriptors match the full type string. The
 output reflects the ABI at generation time, so regenerate after a module upgrade.
 
+`--check` catches a file that has fallen behind, in CI for instance. It generates in memory with
+every other flag as given, compares the result byte for byte with the `--out` file, and writes
+nothing:
+
+```sh
+streamd codegen --check --out src/events.ts 0x1::fungible_asset 0x1::coin
+```
+
+It exits `0` when they match, printing nothing, and `1` when the file is missing or differs,
+naming the file and the first line that differs, each side as a JSON string cut to 120
+characters (a line ending or byte order mark counts as a difference, since regenerating would
+change it):
+
+```text
+streamd: src/events.ts differs from the generated output at line 42
+  on disk:   "  store: string;"
+  generated: "  store: { inner: string };"
+```
+
+Run the same command without `--check` to bring the file up to date. `--check` needs `--out`,
+and works the same with `--chain sui`.
+
 | Option | Meaning |
 | --- | --- |
 | `--out <file>` | write to this file instead of stdout |
+| `--check` | compare with the `--out` file instead of writing it |
 | `--chain <aptos\|sui>` | the chain to read (default `aptos`); see below |
 
-`--network` and `--node-url` work as for `tail`. Exit codes: `0` once the file is written;
-`1` when a module or a struct it references is missing, a module declares no events, an ABI
-is malformed, or a field type is unsupported (such as a function type); `2` for invalid
-arguments.
+`--network` and `--node-url` work as for `tail`. Exit codes: `0` once the file is written, or
+under `--check` when it matches; `1` when a module or a struct it references is missing, a
+module declares no events, an ABI is malformed, a field type is unsupported (such as a function
+type), the node cannot be read, or under `--check` when the file differs or is missing (told
+apart by the message); `2` for invalid arguments, `--check` without `--out` among them.
 
 #### Sui packages
 
