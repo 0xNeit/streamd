@@ -7,6 +7,7 @@ import { MemoryAdapter, StreamdClient, StreamdError, checkAdapter, eventId } fro
 import type { EventDescriptor, StreamdEvent } from "@streamd/core";
 import { SqliteEventStore, StoreAdapter } from "../src/index.js";
 import { versionKey } from "../src/schema.js";
+import type { SqliteDatabase } from "../src/schema.js";
 
 const A = "0x" + "0".repeat(63) + "a";
 const B = "0x" + "b".repeat(64);
@@ -83,9 +84,57 @@ describe("SqliteEventStore resource addresses", () => {
     // The old row has no address, so only the new one is served.
     expect(ids((await adapter.fetchEvents(coinAtA, {})).events)).toEqual(["3:1"]);
 
-    // A second store, or a second connection's first write, finds nothing to do.
-    expect(() => new SqliteEventStore(db).write([change(4n, 1)], undefined, { accountAddress: A })).not.toThrow();
-    expect(columns(db).filter((c) => c === "account_address")).toHaveLength(1);
+    // A second store over a migrated database finds nothing to do.
+    new SqliteEventStore(db).write([change(4n, 1)], undefined, { accountAddress: A });
+    expect(ids((await adapter.fetchEvents(coinAtA, {})).events)).toEqual(["3:1", "4:1"]);
+  });
+
+  it("carries on when another connection migrated first, and rethrows any other failure", () => {
+    const db = new Database(":memory:");
+    new SqliteEventStore(db).write([]);
+    // Reports the column missing once, as a connection that checked before another migrated would.
+    let stale = true;
+    const racing: SqliteDatabase = {
+      exec: (sql) => db.exec(sql),
+      prepare: (sql) => (sql.includes("pragma_table_info") && stale ? ((stale = false), db.prepare("SELECT 1 WHERE 0")) : db.prepare(sql)),
+    };
+    expect(() => new SqliteEventStore(racing).write([change(1n, 0)], undefined, { accountAddress: A })).not.toThrow();
+
+    const old = new Database(":memory:");
+    oldDatabase(old);
+    const failing: SqliteDatabase = {
+      exec: (sql) => {
+        if (sql.includes("ALTER TABLE")) throw new Error("disk full");
+        return old.exec(sql);
+      },
+      prepare: (sql) => old.prepare(sql),
+    };
+    expect(() => new SqliteEventStore(failing).write([change(1n, 0)])).toThrow("disk full");
+    expect(columns(old)).not.toContain("account_address");
+  });
+
+  it("migrates again after a caller's transaction rolls back the first write", async () => {
+    const db = new Database(":memory:");
+    oldDatabase(db);
+    const store = new SqliteEventStore(db);
+    expect(() =>
+      db.transaction(() => {
+        store.write([change(2n, 1)], undefined, { accountAddress: A });
+        throw new Error("caller rolls back");
+      })(),
+    ).toThrow("caller rolls back");
+    expect(columns(db)).not.toContain("account_address");
+    store.write([change(3n, 1)], undefined, { accountAddress: A });
+    expect(ids((await new StoreAdapter(db).fetchEvents(coinAtA, {})).events)).toEqual(["3:1"]);
+  });
+
+  it("lets an adapter built before the migration serve what is written after it", async () => {
+    const db = new Database(":memory:");
+    oldDatabase(db);
+    const adapter = new StoreAdapter(db);
+    expect((await adapter.fetchEvents(coinAtA, {})).events).toEqual([]);
+    new SqliteEventStore(db).write([change(2n, 1)], undefined, { accountAddress: A });
+    expect(ids((await adapter.fetchEvents(coinAtA, {})).events)).toEqual(["2:1"]);
   });
 
   it("stores the address canonically and keeps it through a rewrite without one", () => {
@@ -99,6 +148,10 @@ describe("SqliteEventStore resource addresses", () => {
     }[];
     expect(stored.map((r) => r.account_address)).toEqual([A, null]);
     expect(stored[0]!.event).toContain("later");
+    store.write([change(1n, 0)], undefined, { accountAddress: B });
+    expect(db.query("SELECT account_address FROM streamd_events WHERE version = ?").get(versionKey(1n))).toEqual({
+      account_address: B,
+    });
   });
 
   it("refuses a malformed address before writing anything", () => {

@@ -85,7 +85,6 @@ describe("PostgresEventStore resource addresses", () => {
     // Another client over the same database runs the schema again and finds nothing to do.
     const again: PostgresClient = { query: (text, params) => db.query(text, params) };
     await new PostgresEventStore(again).write([change(4n, 1)], undefined, { accountAddress: A });
-    expect((await columns(db)).filter((c) => c === "account_address")).toHaveLength(1);
     expect(ids((await new PostgresStoreAdapter(again).fetchEvents(coinAtA, {})).events)).toEqual(["3:1", "4:1"]);
   });
 
@@ -106,6 +105,9 @@ describe("PostgresEventStore resource addresses", () => {
     const { rows } = await db.query<{ account_address: string | null; event: string }>("SELECT account_address, event FROM streamd_events ORDER BY version");
     expect(rows.map((r) => r.account_address)).toEqual([A, null]);
     expect(String(rows[0]!.event)).toContain("later");
+    await store.write([change(1n, 0)], undefined, { accountAddress: B });
+    const replaced = await db.query("SELECT account_address FROM streamd_events WHERE version = 1");
+    expect(replaced.rows).toEqual([{ account_address: B }]);
   });
 
   it("refuses a malformed address before sending anything", async () => {

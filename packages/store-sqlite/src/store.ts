@@ -131,9 +131,10 @@ export class SqliteEventStore {
     // Validated before the transaction opens, so a bad event writes nothing.
     const address = options?.accountAddress === undefined ? null : requireAddress(options.accountAddress);
     const rows = events.map((event) => rowOf(event, address));
-    // Prepared on first write, which migrates an older database: a read-only
-    // connection that never writes can still read its cursors.
-    if (this.upsert === undefined) migrateSchema(this.db);
+    // Migrated by a write, not at construction, so a read-only connection that
+    // never writes can still read its cursors. Checked on every write: a caller
+    // rolling back its own transaction around the first one undoes the column.
+    migrateSchema(this.db);
     this.upsert ??= this.db.prepare(
       `INSERT INTO streamd_events
          (version, event_index, type, sender, guid_address, guid_creation, event, account_address)
