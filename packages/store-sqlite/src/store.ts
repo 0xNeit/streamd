@@ -113,7 +113,7 @@ export class SqliteEventStore {
     return row?.cursor ?? undefined;
   }
 
-  /** Every saved cursor, sorted by name in byte order. The pruned edge is not one. */
+  /** Every saved cursor, sorted by name in the database encoding's byte order. The pruned edge is not one. */
   cursors(): SavedCursor[] {
     return (this.listCursors.all(PRUNED_BEFORE) as SavedCursor[]).map(({ name, cursor }) => ({ name, cursor }));
   }

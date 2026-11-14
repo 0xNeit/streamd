@@ -169,6 +169,7 @@ describe("SqliteEventStore cursors", () => {
     const store = new SqliteEventStore(db);
     store.write([ev(1n), ev(5n)], { name: "swaps", cursor: "c-swaps" });
     store.write([ev(6n)], { name: "Bids", cursor: "c-bids" });
+    store.write([], { name: "bids", cursor: "c-lower" });
     store.prune({ beforeVersion: 2n });
     return { db, store };
   }
@@ -181,6 +182,7 @@ describe("SqliteEventStore cursors", () => {
     const { store } = populated();
     expect(store.cursors()).toEqual([
       { name: "Bids", cursor: "c-bids" },
+      { name: "bids", cursor: "c-lower" },
       { name: "swaps", cursor: "c-swaps" },
     ]);
   });
@@ -190,7 +192,7 @@ describe("SqliteEventStore cursors", () => {
     expect(store.deleteCursor("swaps")).toBe(true);
     expect(store.deleteCursor("swaps")).toBe(false);
     expect(store.readCursor("swaps")).toBeUndefined();
-    expect(store.cursors()).toEqual([{ name: "Bids", cursor: "c-bids" }]);
+    expect(store.cursors().map((c) => c.name)).toEqual(["Bids", "bids"]);
     expect(rows(db).map((e) => e.version)).toEqual([5n, 6n]);
     expect(edge(db)).toBe(versionKey(2n));
   });

@@ -2599,7 +2599,7 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   reserved cursor name `streamd:pruned-before`. SQLite reuses the freed pages; run `VACUUM`
   yourself to shrink the file.
 - **Saved cursors.** `store.cursors()` lists every saved cursor as `{ name, cursor }`, sorted
-  by name in byte order, and `store.deleteCursor(name)` removes one, returning `true` when
+  by name in byte order (of UTF-8, SQLite's default encoding), and `store.deleteCursor(name)` removes one, returning `true` when
   there was one and `false` otherwise. Deleting a cursor leaves the events it stored. A
   subscription still running under that name saves it again on its next batch, so stop it
   first. The reserved `streamd:pruned-before` is never listed, and deleting it throws, since
@@ -2656,8 +2656,9 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   migration, and that cursor name is reserved. Postgres reuses the space after autovacuum; run
   `VACUUM FULL` yourself to return it to the system.
 - **Saved cursors.** `await store.cursors()` and `await store.deleteCursor(name)` work as they
-  do on the SQLite store, the delete one statement. Names sort in byte order (`COLLATE "C"`)
-  whatever the database's collation, so both stores list the same names in the same order.
+  do on the SQLite store, the delete itself a single statement. Names sort in byte order
+  (`COLLATE "C"`) whatever the database's collation, so in a UTF-8 database both stores list
+  the same names in the same order.
 - **Page cache.** `PostgresPageStore` is the Postgres counterpart of `SqlitePageStore`, over
   the same client, for `CachingAdapter`'s `store`, so a pool of processes shares one cache:
 
