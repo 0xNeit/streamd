@@ -408,6 +408,7 @@ export class StreamdClient {
         },
       },
       this.limiter,
+      this.names,
     );
 
     poller.start();

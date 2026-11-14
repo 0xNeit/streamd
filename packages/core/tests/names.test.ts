@@ -225,3 +225,89 @@ describe("withNames on queries", () => {
     await expect(named.getEvents(D, { withNames: { ttl: -1 } })).rejects.toThrow("ttl");
   });
 });
+
+async function until(done: () => boolean, ms = 2000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!done()) {
+    if (Date.now() > end) throw new Error("timed out waiting");
+    await new Promise((r) => setTimeout(r, 2));
+  }
+}
+
+describe("withNames on listeners", () => {
+  const HISTORY = [at(1n, ALICE), at(2n, BOB, false), at(3n, BOB), at(4n, undefined), at(5n, ALICE)];
+  const FAST = { fromVersion: 0n, pollInterval: 5, maxBackoff: 10 };
+
+  it("names each event on() and onBatch() deliver, looking up nothing for skipped ones", async () => {
+    const client = new NamedClient(new MemoryAdapter(HISTORY));
+    const seen: [bigint, string | null | undefined][] = [];
+    const batches: (string | null | undefined)[][] = [];
+    const where = whereField("keep", true);
+    client.on(D, (e) => void seen.push([e.version, e.senderName]), { ...FAST, where, withNames: true });
+    client.onBatch(D, (es) => void batches.push(es.map((e) => e.senderName)), { ...FAST, where, withNames: true });
+    await until(() => seen.length === 4 && batches.flat().length === 4);
+    client.destroy();
+    expect(seen).toEqual([
+      [1n, "alice.apt"],
+      [3n, null],
+      [4n, undefined],
+      [5n, "alice.apt"],
+    ]);
+    expect(batches.flat()).toEqual(["alice.apt", null, undefined, "alice.apt"]);
+    expect(client.lookups.filter((a) => a === BOB)).toHaveLength(1);
+    expect(client.lookups.filter((a) => a === ALICE)).toHaveLength(1);
+  });
+
+  it("fails the poll on a failed lookup and delivers the event named on the next", async () => {
+    const answers = {
+      [ALICE]: "alice.apt",
+      [BOB]: (n: number) => {
+        if (n === 2) throw new StreamdNetworkError("name read failed", 503);
+        return "bob.apt";
+      },
+    };
+    const client = new NamedClient(new MemoryAdapter(HISTORY), answers);
+    const seen: [bigint, string | null | undefined][] = [];
+    const errors: Error[] = [];
+    client.on(D, (e) => void seen.push([e.version, e.senderName]), {
+      ...FAST,
+      withNames: true,
+      onError: (err) => void errors.push(err),
+    });
+    await until(() => seen.length === 5);
+    client.destroy();
+    expect(errors.map((e) => [e.name, (e as { cause?: Error }).cause?.message])).toEqual([
+      ["StreamdPollingError", "name read failed"],
+    ]);
+    expect(seen).toEqual([
+      [1n, "alice.apt"],
+      [2n, "bob.apt"],
+      [3n, "bob.apt"],
+      [4n, undefined],
+      [5n, "alice.apt"],
+    ]);
+  });
+
+  it("names onTransaction groups and their events", async () => {
+    const client = new NamedClient(new MemoryAdapter([at(1n, ALICE), at(1n, ALICE, true, 1), at(2n, BOB)]));
+    const groups: [bigint, string | null | undefined, (string | null | undefined)[]][] = [];
+    client.onTransaction(D, (g) => void groups.push([g.version, g.senderName, g.events.map((e) => e.senderName)]), {
+      ...FAST,
+      withNames: true,
+    });
+    await until(() => groups.length === 2);
+    client.destroy();
+    expect(groups).toEqual([
+      [1n, "alice.apt", ["alice.apt", "alice.apt"]],
+      [2n, null, [null]],
+    ]);
+  });
+
+  it("is refused at the call by a client that serves no names", () => {
+    const plain = new StreamdClient({ adapter: new MemoryAdapter(HISTORY) });
+    expect(() => plain.on(D, () => {}, { withNames: true })).toThrow("withNames needs a client that looks up names");
+    expect(() => plain.onBatch(D, () => {}, { withNames: { ttl: 5 } })).toThrow(StreamdError);
+    expect(plain.listenerCount()).toBe(0);
+    plain.destroy();
+  });
+});

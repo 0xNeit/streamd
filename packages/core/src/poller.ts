@@ -23,6 +23,7 @@ import { RequestLimiter } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
 import { buildStateRequest, readState, validateWithState } from "./state.js";
+import { nameTtl, type SenderNames } from "./names.js";
 import { isThenable } from "./filter.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
@@ -116,6 +117,8 @@ export class EventPoller {
   private readonly where?: EventPredicate;
   private readonly decode?: (event: StreamdEvent) => StreamdEvent;
   private readonly withState?: StateRequestBuilder;
+  /** The `withNames` expiry, `undefined` when off. */
+  private readonly nameTtl?: number;
   private readonly onError?: (error: Error) => void;
   private readonly onCaughtUp?: () => void;
   private readonly signal?: AbortSignal;
@@ -127,6 +130,7 @@ export class EventPoller {
     delivery: Delivery,
     options: ListenerOptions = {},
     private readonly limiter = new RequestLimiter(),
+    private readonly names?: SenderNames,
   ) {
     if (typeof delivery === "function") this.callback = delivery;
     else if ("batch" in delivery) this.onBatch = delivery.batch;
@@ -143,6 +147,7 @@ export class EventPoller {
     this.decode = fieldDecoder(options.decode);
     validateWithState(options.withState);
     this.withState = options.withState;
+    this.nameTtl = nameTtl(options.withNames, names);
     this.onError = options.onError;
     this.onCaughtUp = options.onCaughtUp;
     this.signal = options.signal;
@@ -435,6 +440,15 @@ export class EventPoller {
       if (prepared.request !== undefined) {
         try {
           event = await readState(adapter, this.descriptor, event, prepared.request);
+        } catch (err) {
+          failure = err;
+          break;
+        }
+        if (!this.isCurrent(gen)) return;
+      }
+      if (this.nameTtl !== undefined) {
+        try {
+          event = await this.names!.attach(event, this.nameTtl, run);
         } catch (err) {
           failure = err;
           break;
