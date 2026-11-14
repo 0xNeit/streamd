@@ -216,3 +216,56 @@ describe("saleSource", () => {
     expect(await saleSource(new MemoryAdapter(EVENTS)).getHeadVersion!(saleDescriptor())).toBe(7028351626n);
   });
 });
+
+describe("AptosClient sales", () => {
+  it("getSales reads a range, counting limit after token and where", async () => {
+    const client = testClient({ adapter: new MemoryAdapter(EVENTS) });
+    expect(ids(await client.getSales({ fromVersion: 7028273582n, toVersion: 7028351626n }))).toEqual([
+      "7028273582:5", "7028273582:11", "7028351626:7", "7028351626:15",
+    ]);
+    const token = "0x6a47fb229792109470e09892bf48d371b64767838dd572fbe997e7be548e6feb";
+    expect(ids(await client.getSales({ fromVersion: 0n, token, limit: 1 }))).toEqual(["7028351626:15"]);
+    const big = await client.getSales({ fromVersion: 0n, where: (e) => (e.data as Sale).price >= 500_000_000n, limit: 1 });
+    expect(ids(big)).toEqual(["6966070277:4"]);
+  });
+
+  it("getSales narrows by marketplace and refuses an unknown one", async () => {
+    const client = testClient({ adapter: new MemoryAdapter(EVENTS) });
+    const wapal = await client.getSales({ fromVersion: 0n, marketplace: "wapal" });
+    expect(wapal.map((e) => e.data.marketplace)).toEqual(Array(6).fill("wapal"));
+    expect(await client.getSales({ fromVersion: 0n, marketplace: ["wapal", "tradeport"] })).toHaveLength(EVENTS.length);
+    await expect(client.getSales({ marketplace: "topaz" as never })).rejects.toThrow(StreamdError);
+  });
+
+  it("sales follows pushed fills live until unsubscribed", async () => {
+    const adapter = new MemoryAdapter([]);
+    const client = testClient({ adapter });
+    const seen: StreamdEvent<Sale>[] = [];
+    let arrived = () => {};
+    const sub = client.sales(
+      (event) => {
+        seen.push(event);
+        if (seen.length === 2) arrived();
+      },
+      { marketplace: "tradeport", pollInterval: 1 },
+    );
+    expect(client.listenerCount()).toBe(0);
+    await sub.caughtUp;
+    const done = new Promise<void>((resolve) => (arrived = resolve));
+    adapter.push(...EVENTS.filter((e) => e.version === 7025333927n || e.version === 7028105119n));
+    await done;
+    sub.unsubscribe();
+    expect(seen.map((e) => [e.version, e.eventIndex, e.data.kind])).toEqual([
+      [7025333927n, 13, "listing"],
+      [7028105119n, 7, "listing"],
+    ]);
+    client.destroy();
+  });
+
+  it("sales refuses a bad marketplace or token at the call", () => {
+    const client = testClient({ adapter: new MemoryAdapter([]) });
+    expect(() => client.sales(() => {}, { marketplace: [] })).toThrow(StreamdError);
+    expect(() => client.sales(() => {}, { token: "0xnot" })).toThrow(StreamdError);
+    client.destroy();
+  });
+});
