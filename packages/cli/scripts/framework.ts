@@ -8,19 +8,24 @@ import { normalizeAddress, StreamdError } from "@streamd/core";
 import { parseModuleAbi } from "../src/abi.js";
 import { generateEventTypes } from "../src/codegen.js";
 
-const FRAMEWORK_MODULES = {
+export const FRAMEWORK_MODULES = {
   "0x1": [
     "account",
     "aptos_account",
     "aptos_governance",
     "block",
+    "code",
     "coin",
     "delegation_pool",
     "fungible_asset",
     "multisig_account",
     "object",
+    "object_code_deployment",
+    "reconfiguration",
     "stake",
+    "staking_contract",
     "transaction_fee",
+    "vesting",
     "voting",
   ],
   "0x3": ["token"],
@@ -31,7 +36,11 @@ export const CATALOG_PATH = fileURLToPath(new URL("../../aptos/src/framework.ts"
 
 // Exports that were unqualified until another module shared their names.
 const KEPT_NAMES = `
-export { DelegationPool_CreateProposal as CreateProposal, DelegationPool_Vote as Vote };
+export {
+  DelegationPool_CreateProposal as CreateProposal,
+  DelegationPool_SetBeneficiaryForOperator as SetBeneficiaryForOperator,
+  DelegationPool_Vote as Vote,
+};
 `;
 
 const SNAPSHOTS = new URL("./framework-abi/", import.meta.url);

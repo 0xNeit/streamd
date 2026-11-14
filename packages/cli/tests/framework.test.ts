@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
-import { CATALOG_PATH, generateCatalog } from "../scripts/framework.js";
+import { readdirSync, readFileSync } from "node:fs";
+import { CATALOG_PATH, FRAMEWORK_MODULES, generateCatalog } from "../scripts/framework.js";
 
 describe("framework catalog", () => {
   it("matches the generator's output over the committed ABI snapshots", async () => {
@@ -23,6 +23,11 @@ describe("framework catalog", () => {
       "0x1::aptos_governance::CreateProposal",
       "0x1::voting::ResolveProposal",
       "0x1::multisig_account::AddOwners",
+      "0x1::staking_contract::Distribute",
+      "0x1::vesting::Vest",
+      "0x1::code::PublishPackage",
+      "0x1::object_code_deployment::Upgrade",
+      "0x1::reconfiguration::NewEpoch",
     ]) {
       expect(source).toContain(`("${type}")`);
     }
@@ -34,6 +39,23 @@ describe("framework catalog", () => {
     expect(new Set(consts).size).toBe(consts.length);
     expect(source).toContain("DelegationPool_CreateProposal as CreateProposal");
     expect(source).toContain("DelegationPool_Vote as Vote");
+    expect(source).toContain("DelegationPool_SetBeneficiaryForOperator as SetBeneficiaryForOperator");
     expect(source).toContain("Voting_CreateProposal");
+  });
+
+  it("has a descriptor for every event in the snapshots of every listed module", async () => {
+    const source = await generateCatalog();
+    const dir = new URL("../scripts/framework-abi/", import.meta.url);
+    const listed = Object.entries(FRAMEWORK_MODULES).flatMap(([a, ms]) => ms.map((m) => `${a}-${m}.json`));
+    expect(readdirSync(dir)).toEqual(expect.arrayContaining(listed));
+    let events = 0;
+    for (const file of listed) {
+      const { abi } = JSON.parse(readFileSync(new URL(file, dir), "utf8"));
+      for (const s of abi.structs.filter((s: { is_event: boolean }) => s.is_event)) {
+        expect(source).toMatch(new RegExp(`${abi.address}::${abi.name}::${s.name}["<]`));
+        events++;
+      }
+    }
+    expect(events).toBeGreaterThan(100);
   });
 });
