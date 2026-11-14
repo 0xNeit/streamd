@@ -23,6 +23,8 @@ export interface TransferClient<O extends SubscriptionOptions = SubscriptionOpti
 /** The client's own `transfers()` options, plus the `name` its cursor is saved under. */
 export type StoreTransfersOptions<O extends SubscriptionOptions = SubscriptionOptions> = O & { name: string };
 
+const SAVE_RETRY_MS = 10;
+
 // Transfer cursors are saved apart from event cursors of the same name.
 const TRANSFER_CURSOR_PREFIX = "transfers:";
 
@@ -70,7 +72,7 @@ export function storeTransfers<O extends SubscriptionOptions>(
 ): Subscription {
   const { name, ...listener } = options;
   if (typeof name !== "string" || name === "") throw new StreamdError("storeTransfers needs a name to save its cursor under");
-  // ponytail: one transaction per record, since transfers() delivers one at a time; a batch delivery on it would cut that.
+  // One transaction per record, since transfers() delivers one at a time.
   return sink(
     store,
     TRANSFER_CURSOR_PREFIX + name,
@@ -91,8 +93,9 @@ function sink(
   let saving = false;
   const subscription: Subscription = subscribe(
     (events) => {
+      const before = subscription.cursor;
       try {
-        write(events, { name, cursor: subscription.cursor });
+        write(events, { name, cursor: before });
       } catch (err) {
         // Pausing stops the cursor moving past this batch and still lets the
         // throw reach onError, which an ended subscription would drop. It then
@@ -101,20 +104,27 @@ function sink(
         queueMicrotask(() => subscription.unsubscribe());
         throw err;
       }
-      // The poller moves its cursor past this page as soon as this returns,
-      // so a microtask sees the cursor after it. Saving that one means a
-      // relative or head start never re-resolves after the first batch. One
-      // pending save covers every write of a page.
+      // The poller moves its cursor past this page as soon as the page's last
+      // delivery returns, so a microtask usually sees the cursor after it.
+      // Saving that one means a relative or head start never re-resolves after
+      // the first batch. One pending save covers every write of a page, and
+      // waits while an async predicate or view later in the page holds the
+      // cursor where it was.
       if (saving) return;
       saving = true;
-      queueMicrotask(() => {
+      const save = () => {
+        if (subscription.active && subscription.cursor === before) {
+          setTimeout(save, SAVE_RETRY_MS);
+          return;
+        }
         saving = false;
         try {
           store.write([], { name, cursor: subscription.cursor });
         } catch {
           // The cursor saved with the batch stands; resuming there only redelivers it.
         }
-      });
+      };
+      queueMicrotask(save);
     },
     {
       ...listener,

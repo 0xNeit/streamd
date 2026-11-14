@@ -317,9 +317,14 @@ describe("PostgresEventStore transfers", () => {
     expect(second).toMatchObject({ amount: "9", from_address: null, to_address: "0xt", symbol: null, decimals: null });
     expect(await store.readCursor("transfers:t")).toBe("c1");
 
+    await store.writeTransfers([tr(4n, 0, { symbol: "A\u0000B" })]);
+    const [nul] = (await transferRows(db)).filter((r) => r.version === "4");
+    expect(nul!.symbol).toBe("A\uFFFDB");
+    expect(parseEvent(nul!.transfer as string).data).toMatchObject({ symbol: "A\u0000B" });
+
     await store.write([ev(1n), ev(3n)]);
     await store.prune({ beforeVersion: 3n });
-    expect((await transferRows(db)).map((r) => r.version)).toEqual(["3"]);
+    expect((await transferRows(db)).map((r) => r.version)).toEqual(["3", "4"]);
     expect((await rows(db)).map((e) => e.version)).toEqual([3n]);
   });
 

@@ -42,10 +42,17 @@ type TransferRow = [string, number, string, string, string | null, string | null
 
 const U256_MAX = 2n ** 256n - 1n;
 
+// `text` cannot hold NUL, which an asset's symbol may carry; the record JSON
+// keeps the exact value, so the column takes a replacement character instead
+// of failing the write and, with it, every retry of the sink.
+function columnText(value: string): string {
+  return value.replaceAll("\0", "\uFFFD");
+}
+
 function optionalText(value: unknown, field: string): string | null {
   if (value === undefined) return null;
   if (typeof value !== "string") throw new StreamdError(`Not a valid transfer ${field}: ${String(value)}`);
-  return value;
+  return columnText(value);
 }
 
 function transferRowOf(record: StreamdEvent<Transfer>): TransferRow {
@@ -63,7 +70,7 @@ function transferRowOf(record: StreamdEvent<Transfer>): TransferRow {
   return [
     version,
     eventIndex,
-    asset,
+    columnText(asset),
     amount.toString(),
     optionalText(data.from, "from"),
     optionalText(data.to, "to"),

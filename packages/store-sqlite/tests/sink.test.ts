@@ -178,8 +178,11 @@ interface FakeOptions extends SubscriptionOptions {
 }
 
 /** A chain client's transfers(), over a MemoryAdapter whose events already are records. */
-function fake(records: StreamdEvent<Transfer>[]): TransferClient<FakeOptions> & { destroy(): void } {
-  const client = new StreamdClient({ adapter: new MemoryAdapter(records) });
+function fake(
+  records: StreamdEvent<Transfer>[],
+  adapter = new MemoryAdapter(records),
+): TransferClient<FakeOptions> & { destroy(): void } {
+  const client = new StreamdClient({ adapter });
   return {
     transfers: (callback: EventCallback<Transfer>, options?: FakeOptions) => {
       const { asset: _asset, ...rest } = options ?? {};
@@ -268,6 +271,23 @@ describe("storeTransfers", () => {
     sub.unsubscribe();
     restarted.destroy();
     expect(storedTransfers(db)).toEqual(ids(transfers(6)));
+  });
+
+  it("saves the cursor after a page whose last record an async predicate drops", async () => {
+    const store = new SqliteEventStore(new Database(":memory:"));
+    const adapter = new MemoryAdapter(transfers(2));
+    const client = fake([], adapter);
+    // Even versions are dropped, slowly, after the odd one before them was written.
+    const where = (e: StreamdEvent) => new Promise<boolean>((r) => setTimeout(() => r(e.version % 2n === 1n), 15));
+    const sub = await caughtUp((onCaughtUp) =>
+      storeTransfers(client, store, { name: "t", batchSize: 2, pollInterval: 5, where, onCaughtUp }),
+    );
+    expect(store.readCursor("transfers:t")).toBe("2");
+    adapter.push(...transfers(4).slice(2));
+    await new Promise((r) => setTimeout(r, 120));
+    sub.unsubscribe();
+    client.destroy();
+    expect(store.readCursor("transfers:t")).toBe("4");
   });
 
   it("type-checks the options against the client's own", () => {

@@ -23,6 +23,8 @@ export interface TransferClient<O extends SubscriptionOptions = SubscriptionOpti
 /** The client's own `transfers()` options, plus the `name` its cursor is saved under. */
 export type StoreTransfersOptions<O extends SubscriptionOptions = SubscriptionOptions> = O & { name: string };
 
+const SAVE_RETRY_MS = 10;
+
 // Transfer cursors are saved apart from event cursors of the same name.
 const TRANSFER_CURSOR_PREFIX = "transfers:";
 
@@ -70,7 +72,7 @@ export async function storeTransfers<O extends SubscriptionOptions>(
 ): Promise<Subscription> {
   const { name, ...listener } = options;
   if (typeof name !== "string" || name === "") throw new StreamdError("storeTransfers needs a name to save its cursor under");
-  // ponytail: one statement per record, since transfers() delivers one at a time; a batch delivery on it would cut that.
+  // One statement per record, since transfers() delivers one at a time.
   return sink(
     store,
     TRANSFER_CURSOR_PREFIX + name,
@@ -102,8 +104,9 @@ async function sink(
   let saving = false;
   const subscription: Subscription = subscribe(
     async (events) => {
+      const before = subscription.cursor;
       try {
-        await write(events, { name, cursor: subscription.cursor });
+        await write(events, { name, cursor: before });
       } catch (err) {
         // Pausing stops the cursor moving past this batch and still lets the
         // rejection reach onError, which an ended subscription would drop. It
@@ -113,17 +116,23 @@ async function sink(
         setTimeout(() => subscription.unsubscribe(), 0);
         throw err;
       }
-      // The poller moves its cursor past this page once this promise settles;
-      // a timer runs after that. Saving that cursor means a relative or head
-      // start never re-resolves after the first batch. One pending save covers
-      // every write of a page.
+      // The poller moves its cursor past this page once the page's last
+      // delivery settles; a timer usually runs after that. Saving that cursor
+      // means a relative or head start never re-resolves after the first
+      // batch. One pending save covers every write of a page, and waits while
+      // a later write, async predicate or view holds the cursor where it was.
       if (saving) return;
       saving = true;
-      setTimeout(() => {
+      const save = () => {
+        if (subscription.active && subscription.cursor === before) {
+          setTimeout(save, SAVE_RETRY_MS);
+          return;
+        }
         saving = false;
         // The cursor saved with the batch stands; resuming there only redelivers it.
         store.write([], { name, cursor: subscription.cursor }).catch(() => {});
-      }, 0);
+      };
+      setTimeout(save, 0);
     },
     {
       ...listener,
