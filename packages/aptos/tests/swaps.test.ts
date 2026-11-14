@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { MemoryAdapter, StreamdError, parseEvent } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
 import { swapDescriptor, swapSource, toSwap } from "../src/swaps.js";
+import { testClient } from "./helpers.js";
 import type { Swap } from "../src/types.js";
 
 /**
@@ -172,5 +173,58 @@ describe("swapSource", () => {
   it("passes the adapter's optional methods through", async () => {
     const source = swapSource(new MemoryAdapter(EVENTS));
     expect(await source.getHeadVersion!(swapDescriptor())).toBe(8049170625n);
+  });
+});
+
+describe("AptosClient swaps", () => {
+  const ids = (events: StreamdEvent[]) => events.map((e) => `${e.version}:${e.eventIndex}`);
+
+  it("getSwaps reads a range, counting limit after asset and where", async () => {
+    const client = testClient({ adapter: new MemoryAdapter(EVENTS) });
+    expect(await client.getSwaps({ fromVersion: 8049164873n, toVersion: 8049164873n })).toHaveLength(3);
+    const usdc = await client.getSwaps({ fromVersion: 0n, asset: USDC, limit: 2 });
+    expect(ids(usdc)).toEqual(["8028118058:21", "8049164541:8"]);
+    const big = await client.getSwaps({ fromVersion: 0n, where: (e) => (e.data as Swap).amountIn > 100_000_000n });
+    expect(ids(big)).toEqual(["8028118058:5", "8049164873:13", "8049168924:12"]);
+  });
+
+  it("getSwaps narrows by protocol", async () => {
+    const client = testClient({ adapter: new MemoryAdapter(EVENTS) });
+    const thala = await client.getSwaps({ fromVersion: 0n, protocol: ["thala-clamm", "thala-v2"] });
+    expect(new Set(thala.map((e) => e.data.protocol))).toEqual(new Set(["thala-clamm", "thala-v2"]));
+    expect(thala).toHaveLength(5);
+    await expect(client.getSwaps({ protocol: "sushi" as never })).rejects.toThrow(StreamdError);
+  });
+
+  it("swaps follows pushed swap events live until unsubscribed", async () => {
+    const adapter = new MemoryAdapter([]);
+    const client = testClient({ adapter });
+    const seen: StreamdEvent<Swap>[] = [];
+    let arrived = () => {};
+    const sub = client.swaps(
+      (event) => {
+        seen.push(event);
+        if (seen.length === 2) arrived();
+      },
+      { protocol: "thala-v2", pollInterval: 1 },
+    );
+    expect(client.listenerCount()).toBe(0);
+    await sub.caughtUp;
+    const done = new Promise<void>((resolve) => (arrived = resolve));
+    adapter.push(...EVENTS.filter((e) => e.version === 8049168924n));
+    await done;
+    sub.unsubscribe();
+    expect(seen.map((e) => [e.eventIndex, e.data.assetIn])).toEqual([
+      [16, USDT],
+      [21, USD1],
+    ]);
+    client.destroy();
+  });
+
+  it("swaps refuses a bad protocol or asset at the call", () => {
+    const client = testClient({ adapter: new MemoryAdapter([]) });
+    expect(() => client.swaps(() => {}, { protocol: [] })).toThrow(StreamdError);
+    expect(() => client.swaps(() => {}, { asset: "0xnot" })).toThrow(StreamdError);
+    client.destroy();
   });
 });
