@@ -1934,6 +1934,40 @@ const streamd = new StreamdClient({
 });
 ```
 
+`module` descriptors can also be routed by the event types they name, ahead of the kind
+routes:
+
+```ts
+const router = new RoutingAdapter({
+  types: { "0x1::fungible_asset::Deposit": depositIndex },
+  modules: { "0xabc::pool": poolIndex },
+  default: fullnode,
+});
+```
+
+- **Keys.** `types` keys are `address::module::Struct`, with or without type arguments;
+  `modules` keys are `address::module`. Addresses compare in long form and whitespace is
+  ignored, so `0x1` and its padded form are one key, inside type arguments too. A malformed
+  key, two keys that are the same after that, or a value that is not an adapter throws a
+  `StreamdError` at construction.
+- **Precedence.** For each type: the exact `types` key, then for a generic type its struct
+  without type arguments (`0x1::coin::CoinStore` serves `0x1::coin::CoinStore<0xf::usdc::USDC>`
+  unless that exact key is also listed), then the `modules` key, then the `module` route, then
+  `default`. A type that is not a Move type string skips the first three, so the adapter it
+  lands on refuses it as before.
+- **Lists.** A descriptor with a list of types goes to the one adapter they all resolve to
+  (two routes holding the same adapter count as one). Types resolving to different adapters
+  reject with a `StreamdError` naming each type and its route, before any fetch. To read across
+  routes, pass a list of descriptors instead: `getEvents([depositDescriptor, swapDescriptor])`
+  merges walks from each source.
+- **Kinds.** Only `module` descriptors consult `types` and `modules`. `handle`, `account`
+  (`eventTypes` included), `resource` and `object` route by kind as before.
+- **Optional methods.** `getHeadVersion`, `getBlock`, `view`, `readObjects`, the transaction
+  lookups and the rest resolve their adapter from the descriptor the same way, and use
+  `default` when called without one.
+- **Cursors.** Routing depends only on the descriptor and the routes fixed at construction,
+  so a descriptor always reaches the same adapter and its cursor never goes to another.
+
 ### Sui
 
 `@streamd/sui` serves Sui events through the same client, from Sui's gRPC API (public Sui nodes no
