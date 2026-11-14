@@ -54,9 +54,14 @@ export class SenderNames {
   async attach(event: StreamdEvent, ttl: number, signal?: AbortSignal): Promise<StreamdEvent> {
     const address = event.sender === undefined ? undefined : normalizeAddress(event.sender);
     if (address === undefined) return event;
+    return { ...event, senderName: await this.name(address, ttl, signal) };
+  }
+
+  /** The primary name of a long-form `address`, `null` for none, from the cache while younger than `ttl`. */
+  async name(address: string, ttl: number, signal?: AbortSignal): Promise<string | null> {
     const hit = this.cache.get(address);
-    if (hit !== undefined && this.now() - hit.at < ttl) return { ...event, senderName: hit.name };
-    return { ...event, senderName: await raceAbort(this.fetch(address), signal) };
+    if (hit !== undefined && this.now() - hit.at < ttl) return hit.name;
+    return raceAbort(this.fetch(address), signal);
   }
 
   private fetch(address: string): Promise<string | null> {

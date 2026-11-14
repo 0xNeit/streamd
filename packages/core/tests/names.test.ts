@@ -53,6 +53,14 @@ describe("SenderNames", () => {
     expect(lookups).toHaveLength(3);
   });
 
+  it("names any address through the cache attach uses", async () => {
+    const { cache, lookups } = setup();
+    expect(await cache.name(ALICE, DEFAULT_NAME_TTL)).toBe("alice.apt");
+    expect(await cache.name(BOB, DEFAULT_NAME_TTL)).toBeNull();
+    expect((await cache.attach(ev(ALICE), DEFAULT_NAME_TTL)).senderName).toBe("alice.apt");
+    expect(lookups).toEqual([ALICE, BOB]);
+  });
+
   it("caches a miss as null", async () => {
     const { cache, lookups } = setup();
     expect((await cache.attach(ev(BOB), 1000)).senderName).toBeNull();
