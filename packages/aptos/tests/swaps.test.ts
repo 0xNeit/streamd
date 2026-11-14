@@ -222,6 +222,7 @@ describe("toSwap on generic-event DEXes and Tapp", () => {
       { ...liquid, data: { ...data(liquid), x_in: "7" } },
       { ...liquid, data: { ...data(liquid), x_out: "-1" } },
       { ...liquid, type: liquid.type.replace(/<.*$/, "") },
+      { ...thala, type: thala.type.replace(/<.*$/, "") },
       { ...thala, data: { ...data(thala), idx_in: "2" } },
       { ...thala, data: { ...data(thala), idx_out: "4" } },
       { ...tapp, data: { ...data(tapp), asset_in_index: "2" } },

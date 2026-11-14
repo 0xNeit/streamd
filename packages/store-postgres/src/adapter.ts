@@ -30,7 +30,7 @@ function types(list: readonly string[]): Where {
 /**
  * A `module` descriptor's types: each exactly, and one written without type
  * arguments also with any, as a byte-ordered range [`T<`, `T=`) under the C
- * collation, which `streamd_events_type_c` serves whatever the column's is.
+ * collation, so it holds whatever the column's collation is.
  */
 function moduleTypes(list: readonly string[]): Where {
   const exact = types(list);

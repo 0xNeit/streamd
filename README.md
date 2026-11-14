@@ -1081,7 +1081,11 @@ not `SwapEventV2`. A struct is either generic or not, so a non-generic type matc
 did before, and a type with arguments matches only that instantiation. This holds on
 `FullnodeScanAdapter`, `MemoryAdapter`, both store adapters, `SuiAdapter` (whose node filter
 works this way) and in `eventsOf`, `eventsAt`, `previewEvents` and the test assertions. An
-`account` descriptor's `eventTypes` are still matched exactly.
+`account` descriptor's `eventTypes`, the `ofType` predicate and a `RoutingAdapter` route are still
+matched as before, and `defineEvents` types `event.type` as the key you wrote, so a generic
+struct's events carry their type arguments past a `switch` on it. A persisted page cache
+(`CachingAdapter` with a `PageStore`) written by an earlier release may hold an empty settled
+page for such a type; clear it, or use a new namespace, before following generic events.
 
 A `handle` descriptor takes one form or the other, never both. The creation-number
 form names the handle by its guid, so `accountAddress` is the account that created

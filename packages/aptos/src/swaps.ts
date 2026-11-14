@@ -49,8 +49,11 @@ function typeArguments(type: string): string[] {
 }
 
 /** The pool resource a generic event names: the same type arguments on the pool's struct, in long form. */
-const poolType = (type: string, struct: string) =>
-  assetKey(`${type.slice(0, type.lastIndexOf("::", type.indexOf("<")))}::${struct}${type.slice(type.indexOf("<"))}`);
+function poolType(type: string, struct: string): string | undefined {
+  const open = type.indexOf("<");
+  if (open < 0) return undefined;
+  return assetKey(`${type.slice(0, type.lastIndexOf("::", open))}::${struct}${type.slice(open)}`);
+}
 
 /**
  * A coin pair's swap from its four amounts: one side in and the other out,
@@ -61,6 +64,7 @@ function pairSwap(type: string, struct: string, xIn: unknown, xOut: unknown, yIn
   const [a, b, c, d] = [amount(xIn), amount(xOut), amount(yIn), amount(yOut)];
   if (x === undefined || y === undefined || a === undefined || b === undefined || c === undefined || d === undefined) return undefined;
   const poolId = poolType(type, struct);
+  if (poolId === undefined) return undefined;
   if (a > 0n && d > 0n && b === 0n && c === 0n) return { poolId, assetIn: x, amountIn: a, assetOut: y, amountOut: d };
   if (c > 0n && b > 0n && a === 0n && d === 0n) return { poolId, assetIn: y, amountIn: c, assetOut: x, amountOut: b };
   return undefined;

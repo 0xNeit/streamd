@@ -84,8 +84,6 @@ describe("PostgresStoreAdapter", () => {
     expect(await read(`${SWAP}<0x1::a::A, 0x1::b::B>`)).toEqual(["1:0"]);
     expect(await read([MINT, SWAP])).toEqual(["1:0", "2:0", "2:1", "2:2"]);
     expect(await read([`${SWAP}Fee<0x1::a::A>`, MINT])).toEqual(["1:1", "2:2"]);
-    const { rows } = await db.query<{ indexdef: string }>("SELECT indexdef FROM pg_indexes WHERE indexname = 'streamd_events_type_c'");
-    expect(String(rows[0]?.indexdef)).toContain('COLLATE "C"');
   });
 
   it("pages with fromVersion, toVersion, limit, offset and cursor", async () => {
