@@ -2588,8 +2588,8 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   `0n` for a store that was never pruned and holds nothing, so relative `fromVersion` and
   `toVersion: "head"` count from what is stored. After a prune neither reports below the
   edge. With no `cursor` or `fromVersion` a fetch starts at the earliest stored event.
-- **Retention.** `store.prune({ beforeVersion })` deletes every event below that version in
-  one transaction and leaves saved cursors alone. A `StoreAdapter` read whose `fromVersion`,
+- **Retention.** `store.prune({ beforeVersion })` deletes every event and stored transfer
+  below that version in one transaction and leaves saved cursors alone. A `StoreAdapter` read whose `fromVersion`,
   `cursor` or `toVersion` is below that edge then fails with a `StreamdNetworkError` (status
   410), as a pruned fullnode does, rather than returning a short history. That includes a
   relative `fromVersion` reaching below it, and a follower on a rare event: its cursor stays
@@ -2604,8 +2604,34 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   subscription still running under that name saves it again on its next batch, so stop it
   first. The reserved `streamd:pruned-before` is never listed, and deleting it throws, since
   that would lower the edge and let reads below pruned history through.
+- **Stored transfers.** `storeTransfers(client, store, options)` does for a chain client's
+  `transfers()` what `storeEvents` does for events, with the same resume, catch-up and failure
+  rules. `client` is anything with that method, an `AptosClient` or a `SuiClient`, and `options`
+  are its own (`asset`, `account`, `withAssetInfo` and the listener options) plus `name`:
+
+  ```ts
+  import { SqliteEventStore, storeTransfers } from "@streamd/store-sqlite";
+
+  // Every APT movement from here on, resuming after a restart.
+  storeTransfers(aptosClient, store, { name: "apt", asset: "0xa", fromVersion: -10_000n });
+  ```
+
+  Records land in `streamd_transfers`, keyed on their `(version, eventIndex)` (the deposit's,
+  or the lone withdraw's) so a redelivered record replaces its row. Columns: `version` (the
+  zero-padded text the event table uses), `event_index`, `asset`, `amount` (exact decimal text),
+  `from_address`, `to_address`, `symbol` and `decimals` (null when the record has none) and
+  `transfer`, the whole record as `serializeEvent` writes it, with indexes on `asset`,
+  `from_address` and `to_address`. Read them back with SQL; there is no adapter over them. Each
+  record is one transaction, with the cursor saved under `transfers:<name>`, so it never shares
+  a cursor with an event subscription of the same `name` (avoid event names starting
+  `transfers:`); `cursors()` lists it with the prefix. A cursor is a position in the transfer
+  scan as its filter reads it, so give each `asset` or `account` its own name. A malformed
+  record (no asset, an amount that is not a u256 `bigint`) is refused before anything is
+  written, which ends the subscription as a failed write does. `store.writeTransfers(records,
+  { name, cursor })` is there for wiring your own, and `prune` deletes transfers below its edge
+  with the events.
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
-  first use.
+  first use, and `streamd_transfers` on the first transfer write or prune.
 
 ## Store events in Postgres
 
@@ -2645,8 +2671,8 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
 - `PostgresStoreAdapter` serves `module`, `account` (by stored `sender`) and `handle` (by
   `creationNumber`) descriptors, with the SQLite adapter's cursors, paging and options. Head and
   earliest are the highest and lowest stored versions, never below a pruned edge.
-- **Retention.** `await store.prune({ beforeVersion })` deletes every event below that version
-  and leaves saved cursors, with the SQLite store's rules: a `PostgresStoreAdapter` read whose
+- **Retention.** `await store.prune({ beforeVersion })` deletes every event and stored transfer
+  below that version and leaves saved cursors, with the SQLite store's rules: a `PostgresStoreAdapter` read whose
   `fromVersion`, `cursor` or `toVersion` is below the edge fails with a `StreamdNetworkError`
   (status 410), a follower on a rare event fails once the edge passes its last match, a fetch with
   no start begins at the oldest version kept, and the edge only rises. The delete and the edge
@@ -2655,6 +2681,13 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   `streamd:pruned-before` in `streamd_cursors`, so a database made before `prune` existed needs no
   migration, and that cursor name is reserved. Postgres reuses the space after autovacuum; run
   `VACUUM FULL` yourself to return it to the system.
+- **Stored transfers.** `await storeTransfers(client, store, options)` and
+  `await store.writeTransfers(records, checkpoint)` work as on the SQLite store, each record and
+  its cursor one statement. `streamd_transfers` holds `version` (`numeric`), `event_index`,
+  `asset`, `amount` (`numeric(78, 0)`, exact for every u256, so `SUM(amount)` is too),
+  `from_address`, `to_address`, `symbol`, `decimals` and the record as JSON text in `transfer`.
+  It is created on the first transfer write or prune, apart from the event tables, and `prune`
+  deletes transfers below the edge in its one statement.
 - **Saved cursors.** `await store.cursors()` and `await store.deleteCursor(name)` work as they
   do on the SQLite store, the delete itself a single statement. Names sort in byte order
   (`COLLATE "C"`) whatever the database's collation, so in a UTF-8 database both stores list
