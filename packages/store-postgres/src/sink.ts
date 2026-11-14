@@ -41,6 +41,8 @@ type Subscribe = (deliver: (events: StreamdEvent[]) => Promise<void>, options: S
  * is also saved on first catching up, which fixes a relative or head start
  * before any event matches. A failed write reaches `onError` and ends the
  * subscription before its cursor moves past the batch; start it again to retry.
+ * A `resource` descriptor's changes are stored with its address, so a
+ * `PostgresStoreAdapter` can serve the descriptor back.
  */
 export async function storeEvents(
   client: StreamdClient,
@@ -49,11 +51,13 @@ export async function storeEvents(
   options: StoreEventsOptions,
 ): Promise<Subscription> {
   const { name, ...listener } = options;
+  // A resource change carries only its type, so the address comes from the descriptor.
+  const written = descriptor?.kind === "resource" ? { accountAddress: descriptor.accountAddress } : undefined;
   return sink(
     store,
     name,
     listener,
-    (events, checkpoint) => store.write(events, checkpoint),
+    (events, checkpoint) => store.write(events, checkpoint, written),
     (deliver, resolved) => client.onBatch(descriptor, deliver, resolved),
   );
 }
