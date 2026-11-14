@@ -284,7 +284,8 @@ describe("storeTransfers", () => {
     );
     expect(store.readCursor("transfers:t")).toBe("2");
     adapter.push(...transfers(4).slice(2));
-    await new Promise((r) => setTimeout(r, 120));
+    // Without the wait for the page to finish, the save lands on "2" and stays there.
+    for (let i = 0; i < 300 && store.readCursor("transfers:t") !== "4"; i++) await new Promise((r) => setTimeout(r, 10));
     sub.unsubscribe();
     client.destroy();
     expect(store.readCursor("transfers:t")).toBe("4");
