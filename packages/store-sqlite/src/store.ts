@@ -4,6 +4,7 @@ import {
   PRUNED_BEFORE,
   TRANSFER_SCHEMA,
   ensureSchema,
+  hashKey,
   migrateSchema,
   raisePrunedBefore,
   transaction,
@@ -52,6 +53,7 @@ function rowOf(event: StreamdEvent, accountAddress: string | null = null): unkno
     guidAddress ? event.guid!.creationNumber.toString() : null,
     json,
     accountAddress,
+    typeof event.transactionHash === "string" ? hashKey(event.transactionHash) : null,
   ];
 }
 
@@ -137,12 +139,13 @@ export class SqliteEventStore {
     migrateSchema(this.db);
     this.upsert ??= this.db.prepare(
       `INSERT INTO streamd_events
-         (version, event_index, type, sender, guid_address, guid_creation, event, account_address)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         (version, event_index, type, sender, guid_address, guid_creation, event, account_address, transaction_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (version, event_index) DO UPDATE SET
          type = excluded.type, sender = excluded.sender, guid_address = excluded.guid_address,
          guid_creation = excluded.guid_creation, event = excluded.event,
-         account_address = coalesce(excluded.account_address, account_address)`,
+         account_address = coalesce(excluded.account_address, account_address),
+         transaction_hash = excluded.transaction_hash`,
     );
     this.upsertAll(this.upsert, rows, checkpoint);
   }
