@@ -21,6 +21,9 @@ export interface ForwardIO {
 
 const MAX_RETRY_DELAY = 60_000;
 
+/** What a delivery reads: the webhook, its headers and signing, and the retry budget. */
+export type Delivery = Pick<ForwardOptions, "to" | "headers" | "secret" | "timeout" | "retries">;
+
 interface Attempt {
   ok: boolean;
   failure?: string;
@@ -28,7 +31,7 @@ interface Attempt {
   retryAfter?: number;
 }
 
-async function post(body: string, options: ForwardOptions, signal: AbortSignal): Promise<Attempt> {
+async function post(body: string, options: Delivery, signal: AbortSignal): Promise<Attempt> {
   let response: Response;
   try {
     response = await fetch(options.to, {
@@ -70,7 +73,11 @@ async function post(body: string, options: ForwardOptions, signal: AbortSignal):
 }
 
 /** POSTs `body` until a 2xx, the retry bound, or abort; true once acknowledged. */
-async function deliver(body: string, options: ForwardOptions, io: ForwardIO): Promise<boolean> {
+export async function deliver(
+  body: string,
+  options: Delivery,
+  io: Pick<ForwardIO, "error" | "signal" | "retryDelay">,
+): Promise<boolean> {
   let delay = io.retryDelay ?? 1000;
   for (let attempt = 1; ; attempt++) {
     const result = await post(body, options, io.signal);

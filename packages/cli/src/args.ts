@@ -66,6 +66,23 @@ export interface ForwardOptions extends SourceOptions {
   batchSize?: number;
 }
 
+export interface AlertOptions extends Endpoint {
+  /** The rules file; read and validated before any read from the chain. */
+  rules: string;
+  /** Webhook URL for every rule; may carry a token, so it is never printed. */
+  to: string;
+  /** Each rule's cursor and open window, as one JSON object. */
+  cursorFile: string;
+  retries: number;
+  timeout: number;
+  headers: Record<string, string>;
+  secret?: string;
+  /** Where a rule with no saved entry starts; never both. */
+  fromVersion?: bigint;
+  fromTime?: bigint;
+  pollInterval?: number;
+}
+
 export interface StoreOptions extends SourceOptions {
   /** SQLite file to write; the parser sets exactly one of this and `postgres`. */
   db?: string;
