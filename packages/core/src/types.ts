@@ -1028,6 +1028,16 @@ export interface EventAdapter {
     descriptor?: EventDescriptor,
   ): Promise<TransactionEvents | undefined>;
   /**
+   * Every event of the transaction committed at `version`, in transaction
+   * order, or `undefined` when the source has no transaction there (above its
+   * head). One lookup, no waiting. `descriptor` is for routing only: return
+   * the events unfiltered. Optional; `eventsAt` needs it.
+   */
+  getTransactionEventsByVersion?(
+    version: bigint,
+    descriptor?: EventDescriptor,
+  ): Promise<TransactionEvents | undefined>;
+  /**
    * The events `simulation.transaction` would emit if it ran now, from a
    * simulation that commits nothing. `version` is the one the source simulated
    * at, and events carry no `transactionHash`, since an unsigned transaction's
@@ -1095,6 +1105,9 @@ export interface EventsOfOptions {
   /** Aborting rejects with the signal's `reason` and stops looking. */
   signal?: AbortSignal;
 }
+
+/** Options for a chain client's `eventsAt`: no `timeout`, since nothing waits. */
+export type EventsAtOptions = Pick<EventsOfOptions, "decode" | "where" | "signal">;
 
 /** Options for a chain client's `expectEvents`. */
 export type ExpectEventsOptions = Pick<EventsOfOptions, "decode" | "timeout" | "signal">;

@@ -28,6 +28,7 @@ export { formatAmount, startBalances } from "./balances.js";
 export type { BalanceReader, BalancesHost } from "./balances.js";
 export {
   committedEvents,
+  eventsAt,
   eventsOf,
   expectEvents,
   expectPreview,
@@ -147,6 +148,7 @@ export type {
   SyncEventPredicate,
   EventStream,
   EventExpectation,
+  EventsAtOptions,
   EventsOfOptions,
   ExpectEventsOptions,
   FetchOptions,

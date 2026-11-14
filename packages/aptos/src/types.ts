@@ -11,6 +11,7 @@ export type {
   Balances,
   BalancesOptions,
   EventExpectation,
+  EventsAtOptions,
   EventsOfOptions,
   ExpectEventsOptions,
   Transfer,

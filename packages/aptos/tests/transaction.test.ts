@@ -1,6 +1,6 @@
 import { testClient } from "./helpers.js";
 import { describe, it, expect, spyOn } from "bun:test";
-import { MemoryAdapter } from "@streamd/core";
+import { ArchiveFallbackAdapter, MemoryAdapter } from "@streamd/core";
 import { StreamdError, StreamdNetworkError, StreamdTimeoutError, StreamdTransactionError } from "@streamd/core";
 import type { PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type { EventAdapter, StreamdEvent, TransactionEvents } from "@streamd/core";
@@ -444,5 +444,61 @@ describe("eventsOf with a resource descriptor", () => {
       client(adapter).eventsOf(HASH, { kind: "resource", accountAddress: SENDER, resourceType: PING }),
     ).rejects.toThrow("not write sets");
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("eventsAt", () => {
+  const atVersion = (result: TransactionEvents | undefined | Error | (() => Promise<never>), calls: unknown[] = []): EventAdapter => ({
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    async getTransactionEventsByVersion(...args) {
+      calls.push(args);
+      if (typeof result === "function") return result();
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  });
+
+  it("resolves the transaction's events narrowed by descriptor, decode and where", async () => {
+    const calls: unknown[] = [];
+    const c = client(atVersion(committed, calls));
+    const pings = await c.eventsAt(9n, { kind: "module", eventType: PING }, {
+      decode: ["amount"],
+      where: (e) => (e.data as { amount: bigint }).amount > 10n,
+    });
+    expect(pings.map((e) => [e.eventIndex, (e.data as { amount: bigint }).amount, e.transactionHash])).toEqual([[2, 30n, HASH]]);
+    expect(calls[0]).toEqual([9n, { kind: "module", eventType: PING }]);
+    expect(await c.eventsAt(9n)).toEqual(EVENTS);
+  });
+
+  it("rejects a failed transaction with StreamdTransactionError, and a missing one by version", async () => {
+    const failed = { version: 9n, success: false, vmStatus: "Move abort: 0x1", events: [ev(0, "0x1::transaction_fee::FeeStatement")] };
+    const err = await client(atVersion(failed)).eventsAt(9n).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdTransactionError);
+    expect(err).toMatchObject({ transactionHash: HASH, version: 9n, vmStatus: "Move abort: 0x1" });
+    await expect(client(atVersion(undefined)).eventsAt(10n ** 15n)).rejects.toThrow(`No transaction at version ${10n ** 15n}`);
+  });
+
+  it("answers a pruned version from the archive behind ArchiveFallbackAdapter", async () => {
+    const pruned = new StreamdNetworkError("Fullnode request for transaction at version 9 failed: pruned", 410);
+    await expect(client(atVersion(pruned)).eventsAt(9n)).rejects.toBe(pruned);
+    const calls: unknown[] = [];
+    const c = client(new ArchiveFallbackAdapter(atVersion(pruned), atVersion(committed, calls)));
+    expect(await c.eventsAt(9n, { kind: "module", eventType: PONG })).toEqual([EVENTS[1]!]);
+    expect(calls).toEqual([[9n, { kind: "module", eventType: PONG }]]);
+  });
+
+  it("refuses bad input before any lookup, and an adapter without the method", async () => {
+    const calls: unknown[] = [];
+    const c = client(atVersion(committed, calls));
+    await expect(c.eventsAt(-1n)).rejects.toBeInstanceOf(StreamdError);
+    await expect(c.eventsAt(9 as unknown as bigint)).rejects.toBeInstanceOf(StreamdError);
+    await expect(c.eventsAt(9n, { kind: "resource", accountAddress: SENDER, resourceType: PING })).rejects.toThrow("not write sets");
+    expect(calls).toHaveLength(0);
+    await expect(client(new MemoryAdapter()).eventsAt(9n)).rejects.toThrow("getTransactionEventsByVersion");
+  });
+
+  it("is bounded by requestTimeout", async () => {
+    const c = client(atVersion(() => new Promise<never>(() => {})), { requestTimeout: 20 });
+    await expect(c.eventsAt(9n)).rejects.toBeInstanceOf(StreamdNetworkError);
   });
 });

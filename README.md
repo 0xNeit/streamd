@@ -18,8 +18,8 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `balances`, `balanceAt`, `eventsOf`, `expectEvents`, `previewEvents`
-and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
+`transfers`, `getTransfers`, `balances`, `balanceAt`, `eventsOf`, `eventsAt`, `expectEvents`,
+`previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
 adapter.
@@ -690,6 +690,35 @@ told about a timeout or abort, so a lookup already in flight runs to completion 
 its `maxConcurrentRequests` slot until then, or until the client's `requestTimeout`. The hash must be
 `0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which
 `FullnodeScanAdapter` and `MemoryAdapter` have and the wrapping adapters pass through.
+
+### A transaction's events by version
+
+```ts
+const [event] = await streamd.getEvents(Deposit, { fromVersion: -1000n, limit: 1 });
+const all = await streamd.eventsAt(event!.version); // every event of that transaction
+const deposits = await streamd.eventsAt(
+  event!.version,
+  { kind: "module", eventType: "0x1::fungible_asset::Deposit" }, // optional
+  { decode: ["amount"] }, // optional: decode, where, signal
+);
+```
+
+`eventsAt()` reads the transaction committed at one ledger version and resolves with its
+events, shaped and narrowed exactly as `eventsOf()` returns them for the same transaction,
+`transactionHash`, `sender`, `timestamp` and `entryFunction` included. It is one lookup
+through the client's limiter, so `maxConcurrentRequests`, `maxRequestsPerSecond` and
+`requestTimeout` apply, and it never waits: there is no `timeout` option.
+
+A failed transaction rejects with `StreamdTransactionError` carrying `vmStatus`, as
+`eventsOf()` does, with `transactionHash` taken from the fee statement event it kept. A version
+with no transaction yet, above the head, rejects with a `StreamdError` naming it. A version the
+fullnode has pruned rejects with its `StreamdNetworkError`, `statusCode` 410; an
+`ArchiveFallbackAdapter` over [the archive](#history-the-fullnode-has-pruned) answers it
+instead. The version must be a `bigint` from 0 to `u64::MAX`, and a bad version, descriptor or
+`decode` is refused before the lookup. It needs an adapter with
+`getTransactionEventsByVersion`, which `FullnodeScanAdapter` has and the wrapping adapters pass
+through; `MemoryAdapter` and `SuiAdapter` do not, so `SuiClient` has no `eventsAt`, since placing
+a Sui version on its transaction takes a checkpoint search.
 
 ### Assert a transaction's events in tests
 
@@ -1773,7 +1802,9 @@ a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` tha
 `fromBlock`/`toBlock` need, an optional `getBlockHeights(descriptor)` that `fromTime`
 needs alongside `getBlock`, and an optional `getTransactionEvents(hash, descriptor?)` that
 `eventsOf()` needs, returning `{ version, success, vmStatus, events }` or `undefined` while
-the transaction is not committed, and an optional
+the transaction is not committed, an optional
+`getTransactionEventsByVersion(version, descriptor?)` that `eventsAt()` needs, returning the
+same shape or `undefined` when there is no transaction at that version, and an optional
 `simulateTransactionEvents({ transaction, signerPublicKey? }, descriptor?)` that
 `previewEvents()` needs, returning the same shape for a simulation. See the `EventAdapter` type for the full contract.
 
@@ -2173,7 +2204,8 @@ const streamd = new StreamdClient({
 await streamd.getEvents(NewBlockEvent, { fromVersion: 1000n, limit: 10 }); // served by the archive
 ```
 
-- **Only pruned reads move.** Event pages, blocks, transaction lookups and `withState` views
+- **Only pruned reads move.** Event pages, blocks, transaction lookups (by hash and by
+  version) and `withState` views
   go to the archive when the fullnode answers `410`; a rate limit or an outage is rethrown, so
   backoff and `maxErrors` work as usual. Each call starts at the fullnode, so a walk returns to
   it once it passes the pruned edge.
@@ -2300,8 +2332,8 @@ from its first source, and `MemoryAdapter` never sets it.
 To capture a real session once and replay it offline, wrap an adapter with
 `recordingAdapter`. Every call that succeeds for one of the three descriptor
 kinds is kept, `fetchEvents` and the optional `getHeadVersion`,
-`getEarliestVersion`, `getBlock`, `getBlockHeights` and `getTransactionEvents` (by
-hash), and `JSON.stringify(recorder)` gives the recording.
+`getEarliestVersion`, `getBlock`, `getBlockHeights`, `getTransactionEvents` (by
+hash) and `getTransactionEventsByVersion` (by version), and `JSON.stringify(recorder)` gives the recording.
 `replayAdapter` takes that object or its JSON text and answers the same
 requests with no network:
 

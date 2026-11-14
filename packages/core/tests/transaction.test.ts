@@ -5,6 +5,7 @@ import {
   StreamdError,
   StreamdTimeoutError,
   StreamdTransactionError,
+  eventsAt,
   eventsOf,
   expectEvents,
   expectPreview,
@@ -153,5 +154,101 @@ describe("transaction lookups with an object descriptor", () => {
     await expect(previewEvents(simulation.adapter, limiter, SIMULATION, object, {})).rejects.toBeInstanceOf(StreamdError);
     expect(seen).toEqual([]);
     expect(simulation.asked).toEqual([]);
+  });
+});
+
+/** Answers each by-version lookup with `found`, recording what it was asked. */
+function byVersion(found: TransactionEvents | undefined | (() => Promise<TransactionEvents | undefined>)) {
+  const seen: unknown[][] = [];
+  const adapter: EventAdapter = {
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    async getTransactionEventsByVersion(...args) {
+      seen.push(args);
+      return typeof found === "function" ? found() : found;
+    },
+  };
+  return { adapter, seen };
+}
+
+describe("eventsAt in core", () => {
+  const txn: TransactionEvents = {
+    version: 5n,
+    success: true,
+    vmStatus: "success",
+    events: [ev(A, 0, "3"), ev(B, 1), ev(A, 2, "9")],
+  };
+
+  it("narrows by descriptor, decode and an async where, passing the descriptor along", async () => {
+    const { adapter, seen } = byVersion(txn);
+    const descriptor = { kind: "module", eventType: A } as const;
+    const events = await eventsAt(adapter, limiter, 5n, descriptor, {
+      decode: ["amount"],
+      where: async (e) => (e.data as { amount: bigint }).amount > 5n,
+    });
+    expect(events.map((e) => [e.eventIndex, (e.data as { amount: bigint }).amount])).toEqual([[2, 9n]]);
+    expect(seen).toEqual([[5n, descriptor]]);
+    expect(await eventsAt(adapter, limiter, 5n, undefined, {})).toEqual(txn.events);
+  });
+
+  it("rejects a failed transaction with StreamdTransactionError, hash from its events", async () => {
+    const fee = { ...ev("0x1::transaction_fee::FeeStatement", 0), version: 7n, transactionHash: ID };
+    for (const [events, hash] of [[[fee], ID], [[], undefined]] as const) {
+      const { adapter } = byVersion({ version: 7n, success: false, vmStatus: "MoveAbort 101", events: [...events] });
+      const err = await eventsAt(adapter, limiter, 7n, undefined, {}).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdTransactionError);
+      expect(err).toMatchObject({ transactionHash: hash, version: 7n, vmStatus: "MoveAbort 101" });
+    }
+  });
+
+  it("rejects a version the source has no transaction at", async () => {
+    const { adapter } = byVersion(undefined);
+    const err = await eventsAt(adapter, limiter, 99n, undefined, {}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect((err as Error).message).toBe("No transaction at version 99");
+  });
+
+  it("refuses bad input and a missing method before any lookup", async () => {
+    const { adapter, seen } = byVersion(txn);
+    for (const version of [-1n, 5, "5", 2n ** 64n, undefined]) {
+      const err = await eventsAt(adapter, limiter, version as bigint, undefined, {}).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+    }
+    for (const [descriptor, decode] of [
+      [{ kind: "resource", accountAddress: "0x1", resourceType: "0x1::m::R" }, undefined],
+      [{ kind: "handle", accountAddress: "0x1", eventHandleStruct: "0x1::m::S", fieldName: "f" }, undefined],
+      [undefined, ["bad path.."]],
+    ] as const) {
+      const err = await eventsAt(adapter, limiter, 5n, descriptor as never, { decode: decode as never }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+    }
+    expect(seen).toHaveLength(0);
+    const bare = await eventsAt({ fetchEvents: adapter.fetchEvents }, limiter, 5n, undefined, {}).catch((e: Error) => e);
+    expect((bare as Error).message).toContain("getTransactionEventsByVersion");
+  });
+
+  it("rejects with the signal's reason, before or during the lookup", async () => {
+    const reason = new Error("stop");
+    const { adapter, seen } = byVersion(txn);
+    expect(await eventsAt(adapter, limiter, 5n, undefined, { signal: AbortSignal.abort(reason) }).catch((e) => e)).toBe(reason);
+    expect(seen).toHaveLength(0);
+    const hung = byVersion(() => new Promise(() => {}));
+    const controller = new AbortController();
+    const pending = eventsAt(hung.adapter, limiter, 5n, undefined, { signal: controller.signal });
+    controller.abort(reason);
+    expect(await pending.catch((e) => e)).toBe(reason);
+  });
+
+  it("goes through maxConcurrentRequests", async () => {
+    let active = 0;
+    let peak = 0;
+    const { adapter } = byVersion(async () => {
+      peak = Math.max(peak, ++active);
+      await Bun.sleep(2);
+      active--;
+      return txn;
+    });
+    const one = new RequestLimiter(1);
+    await Promise.all([eventsAt(adapter, one, 5n, undefined, {}), eventsAt(adapter, one, 5n, undefined, {})]);
+    expect(peak).toBe(1);
   });
 });

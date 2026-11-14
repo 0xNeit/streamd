@@ -18,6 +18,7 @@ const OPTIONAL: readonly Optional[] = [
   "getBlock",
   "getBlockHeights",
   "getTransactionEvents",
+  "getTransactionEventsByVersion",
   "simulateTransactionEvents",
   "view",
   "readObjects",
@@ -47,6 +48,7 @@ export class PoolAdapter implements EventAdapter {
   declare getBlock?: EventAdapter["getBlock"];
   declare getBlockHeights?: EventAdapter["getBlockHeights"];
   declare getTransactionEvents?: EventAdapter["getTransactionEvents"];
+  declare getTransactionEventsByVersion?: EventAdapter["getTransactionEventsByVersion"];
   declare simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
   declare view?: EventAdapter["view"];
   declare readObjects?: EventAdapter["readObjects"];

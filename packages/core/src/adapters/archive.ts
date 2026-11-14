@@ -34,6 +34,7 @@ export class ArchiveFallbackAdapter implements EventAdapter {
   declare getBlock?: EventAdapter["getBlock"];
   declare getBlockHeights?: EventAdapter["getBlockHeights"];
   declare getTransactionEvents?: EventAdapter["getTransactionEvents"];
+  declare getTransactionEventsByVersion?: EventAdapter["getTransactionEventsByVersion"];
   declare simulateTransactionEvents?: EventAdapter["simulateTransactionEvents"];
   declare view?: EventAdapter["view"];
   declare readObjects?: EventAdapter["readObjects"];
@@ -63,6 +64,13 @@ export class ArchiveFallbackAdapter implements EventAdapter {
         orArchive(
           () => p.getTransactionEvents!(hash, d),
           a.getTransactionEvents && (() => a.getTransactionEvents!(hash, d)),
+        );
+    }
+    if (p.getTransactionEventsByVersion) {
+      this.getTransactionEventsByVersion = (version, d) =>
+        orArchive(
+          () => p.getTransactionEventsByVersion!(version, d),
+          a.getTransactionEventsByVersion && (() => a.getTransactionEventsByVersion!(version, d)),
         );
     }
     if (p.view) {

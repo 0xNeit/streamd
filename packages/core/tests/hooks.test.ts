@@ -265,3 +265,20 @@ describe("withHooks readObjects", () => {
     expect(withHooks(new MemoryAdapter(), {}).readObjects).toBeUndefined();
   });
 });
+
+describe("withHooks lookup by version", () => {
+  it("passes getTransactionEventsByVersion through unhooked, only when the source has it", async () => {
+    const found = { version: 4n, success: true, vmStatus: "Executed successfully", events: [] };
+    let hooked = 0;
+    const hooks = { onRequest: () => void hooked++ };
+    const seen: unknown[] = [];
+    const wrapped = withHooks(
+      { fetchEvents: async () => PAGE, getTransactionEventsByVersion: async (...args) => (seen.push(args), found) },
+      hooks,
+    );
+    expect(await wrapped.getTransactionEventsByVersion!(4n, moduleDesc)).toBe(found);
+    expect(seen).toEqual([[4n, moduleDesc]]);
+    expect(hooked).toBe(0);
+    expect(withHooks({ fetchEvents: async () => PAGE }, hooks).getTransactionEventsByVersion).toBeUndefined();
+  });
+});

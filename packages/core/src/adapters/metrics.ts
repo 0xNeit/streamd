@@ -9,6 +9,7 @@ const METHODS = [
   "getBlock",
   "getBlockHeights",
   "getTransactionEvents",
+  "getTransactionEventsByVersion",
   "simulateTransactionEvents",
   "view",
   "readObjects",

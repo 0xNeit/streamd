@@ -23,6 +23,7 @@ export type RecordedMethod =
   | "getBlock"
   | "getBlockHeights"
   | "getTransactionEvents"
+  | "getTransactionEventsByVersion"
   | "view"
   | "readObjects";
 
@@ -78,8 +79,9 @@ function transactionJson(found: TransactionEvents | undefined): unknown {
  * Wraps `adapter` and records every call that succeeds, for `replayAdapter`
  * to answer offline later. Failures pass through unrecorded, and so does a
  * call whose descriptor is not one of the three kinds. `getHeadVersion`,
- * `getEarliestVersion`, `getBlock`, `getBlockHeights` and `getTransactionEvents`
- * (keyed by hash) are recorded only when the wrapped adapter has them.
+ * `getEarliestVersion`, `getBlock`, `getBlockHeights`, `getTransactionEvents`
+ * (keyed by hash) and `getTransactionEventsByVersion` (keyed by version) are
+ * recorded only when the wrapped adapter has them.
  * `view` is recorded keyed by request and ledger version, and `readObjects`
  * by its ids, version and transaction hash, since neither answer ever
  * changes. `simulateTransactionEvents` passes through unrecorded: a
@@ -135,6 +137,15 @@ export function recordingAdapter(adapter: EventAdapter): RecordingAdapter {
         "getTransactionEvents",
         typeof hash === "string" ? hash : undefined,
         source.getTransactionEvents!(hash, descriptor),
+        transactionJson,
+      );
+  }
+  if (source.getTransactionEventsByVersion !== undefined) {
+    recorder.getTransactionEventsByVersion = (version, descriptor) =>
+      tap(
+        "getTransactionEventsByVersion",
+        typeof version === "bigint" ? String(version) : undefined,
+        source.getTransactionEventsByVersion!(version, descriptor),
         transactionJson,
       );
   }
@@ -245,6 +256,7 @@ const PARSERS: Record<RecordedMethod, (result: unknown) => unknown> = {
   getBlock: (result) => decimals(result, ["height", "firstVersion", "lastVersion", "timestamp"]),
   getBlockHeights: (result) => decimals(result, ["oldest", "newest"]),
   getTransactionEvents: parseTransaction,
+  getTransactionEventsByVersion: parseTransaction,
   view: array,
   readObjects: array,
 };
@@ -346,6 +358,13 @@ export function replayAdapter(recording: Recording | string): EventAdapter {
   if (has("getTransactionEvents")) {
     adapter.getTransactionEvents = async (hash) => {
       const found = answer<TransactionEvents | undefined>("getTransactionEvents", hash);
+      return found === undefined ? undefined : { ...found, events: [...found.events] };
+    };
+  }
+  if (has("getTransactionEventsByVersion")) {
+    adapter.getTransactionEventsByVersion = async (version) => {
+      const key = typeof version === "bigint" ? String(version) : undefined;
+      const found = answer<TransactionEvents | undefined>("getTransactionEventsByVersion", key);
       return found === undefined ? undefined : { ...found, events: [...found.events] };
     };
   }
