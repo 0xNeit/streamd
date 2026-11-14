@@ -2362,6 +2362,66 @@ metrics.reset();
 status 429 or a `retryAfter` hint. Latency is in milliseconds over the most recent 1024 settled
 calls per method. A method that has not been called is absent.
 
+`toPrometheus` renders a snapshot as Prometheus text exposition format, so a process can serve
+it on a `/metrics` route with no client library. Serve it as
+`text/plain; version=0.0.4; charset=utf-8`:
+
+```ts
+import { toPrometheus } from "@streamd/core";
+
+Bun.serve({
+  port: 9464,
+  fetch: () =>
+    new Response(toPrometheus(metrics.snapshot()), {
+      headers: { "content-type": "text/plain; version=0.0.4; charset=utf-8" },
+    }),
+});
+```
+
+```text
+# HELP streamd_adapter_requests_total Adapter calls started, in-flight ones included.
+# TYPE streamd_adapter_requests_total counter
+streamd_adapter_requests_total{method="fetchEvents"} 12
+...
+# TYPE streamd_adapter_latency_seconds gauge
+streamd_adapter_latency_seconds{method="fetchEvents",quantile="0.5"} 0.12
+```
+
+| Metric | Type | Labels | From |
+| --- | --- | --- | --- |
+| `streamd_adapter_requests_total` | counter | `method` | `requests` |
+| `streamd_adapter_errors_total` | counter | `method` | `errors` |
+| `streamd_adapter_rate_limited_total` | counter | `method` | `rateLimited` |
+| `streamd_adapter_latency_seconds` | gauge | `method`, `quantile` (`0.5`, `0.95`, `0.99`, `1`) | `p50`, `p95`, `p99`, `max`, in seconds |
+
+Latency is a gauge rather than a summary: the percentiles cover only the most recent 1024
+settled calls per method, not every call since start, and there is no sum or settled count to
+write a summary's `_sum` and `_count` from. `quantile="1"` is the maximum. A method with no
+settled call has no latency series, a family with no series is left out, and an empty snapshot
+renders `""`. After `reset()` the counters start again from zero, which Prometheus reads as a
+counter reset.
+
+To render several sources as one exposition, such as each fullnode of a pool and the archive,
+pass a list of `{ snapshot, labels }`. Each family's `# HELP` and `# TYPE` are written once,
+series follow the list's order, and `labels` in the options go on every series, a source's own
+label of the same name winning:
+
+```ts
+const nodes = urls.map((url) => adapterMetrics(new FullnodeScanAdapter(aptosFor(url))));
+
+toPrometheus(
+  nodes.map((node, i) => ({ snapshot: node.snapshot(), labels: { node: String(i) } })),
+  { prefix: "myapp_aptos", labels: { network: "mainnet" } },
+);
+// myapp_aptos_requests_total{network="mainnet",node="0",method="fetchEvents"} 40
+```
+
+`prefix` (default `streamd_adapter`) must be a valid metric name. Label names must be valid
+Prometheus label names, not starting with `__` and not `method` or `quantile`, which the
+function sets itself; label values must be strings, and backslashes, double quotes and newlines
+in them are escaped. Two sources with the same labels would write the same series twice, so
+they are refused. Each refusal is a `StreamdError`, thrown before anything is rendered.
+
 To skip the source when re-reading settled history, wrap an adapter with
 `CachingAdapter`. It stores only pages the adapter marks `final: true`,
 meaning the same request will always return the same page, and passes
