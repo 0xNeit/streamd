@@ -203,6 +203,12 @@ export interface StreamdEvent<TData = unknown> {
    */
   sender?: string;
   /**
+   * The primary name of `sender` (`alice.apt` on Aptos, a SuiNS name on Sui),
+   * attached by `withNames`: `null` when it was looked up and the sender has
+   * none, omitted when it was not looked up.
+   */
+  senderName?: string | null;
+  /**
    * The `EventHandle` that emitted this event, when the source reports one.
    * Module events report the zero guid, which names no handle, so they carry
    * none.
@@ -270,6 +276,12 @@ export type StateRequest = ViewRequest | ObjectRequest;
  * to deliver the event without state. Runs after `decode` and `where`.
  */
 export type StateRequestBuilder = (event: StreamdEvent) => StateRequest | undefined;
+
+/** `withNames` as an object: how long a looked-up name, or its absence, is reused. */
+export interface NameOptions {
+  /** Milliseconds a cached name or miss is reused for (default 300000, five minutes); `0` reuses none. */
+  ttl?: number;
+}
 
 /** An `EventHandle`'s on-chain id: the account that created it and its creation number. */
 export interface EventGuid {
@@ -365,6 +377,15 @@ export interface EventFilter {
    */
   withState?: StateRequestBuilder;
   /**
+   * Attach `senderName` to each returned event with a `sender`: its primary
+   * name, through the chain client's name lookup and a cache it shares across
+   * calls (`true` for the default expiry, or `{ ttl }`). Runs after
+   * `withState`, so only returned events cost a lookup: one per uncached
+   * sender, in order, through `maxConcurrentRequests` and with `retries`. A
+   * failed lookup rejects the query. Refused on a client that looks up no names.
+   */
+  withNames?: boolean | NameOptions;
+  /**
    * Stop after this many adapter pages, even if `limit` is unmet. Unbounded
    * when omitted. Use it to put a ceiling on a filtered walk.
    */
@@ -419,6 +440,7 @@ export interface FetchOptions
     | "where"
     | "decode"
     | "withState"
+    | "withNames"
     | "maxPages"
     | "retries"
     | "signal"
@@ -554,6 +576,16 @@ export interface ListenerOptions {
    */
   withState?: StateRequestBuilder;
   /**
+   * Attach `senderName` to each delivered event with a `sender`: its primary
+   * name, through the chain client's name lookup and a cache it shares across
+   * calls (`true` for the default expiry, or `{ ttl }`), after `withState`.
+   * One lookup per uncached sender, through `maxConcurrentRequests`. A failed
+   * lookup fails the poll as a failed view does: events before it on the page
+   * are delivered, and the next poll retries from it. Refused at the call on a
+   * client that looks up no names.
+   */
+  withNames?: boolean | NameOptions;
+  /**
    * Receives polling failures and errors thrown by `where` or the callback,
    * overriding `StreamdConfig.onError` for this subscription. A throw from it
    * does not stop polling: it is rethrown on a microtask and surfaces as an
@@ -679,6 +711,7 @@ export interface ReplayOptions
       | "where"
       | "decode"
       | "withState"
+      | "withNames"
       | "maxPages"
       | "retries"
       | "onCursor"
@@ -905,6 +938,8 @@ export interface TransactionGroup<TData = unknown> {
   version: bigint;
   transactionHash?: string;
   sender?: string;
+  /** As on `StreamdEvent`, from the events, under `withNames`. */
+  senderName?: string | null;
   timestamp?: bigint;
   entryFunction?: EntryFunctionCall;
   events: EventOf<TData>[];

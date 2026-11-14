@@ -22,6 +22,7 @@ export function serializeEvent(event: StreamdEvent): string {
       transactionHash: event.transactionHash,
       timestamp: event.timestamp,
       sender: event.sender,
+      senderName: event.senderName,
       guid: event.guid,
       state: event.state,
       entryFunction: event.entryFunction,
@@ -117,6 +118,12 @@ export function parseEvent<TData = unknown>(
       throw new StreamdError('Cannot parse event: "sender" must be a string');
     }
     event.sender = record.sender;
+  }
+  if (record.senderName !== undefined) {
+    if (typeof record.senderName !== "string" && record.senderName !== null) {
+      throw new StreamdError('Cannot parse event: "senderName" must be a string or null');
+    }
+    event.senderName = record.senderName;
   }
   if (record.guid !== undefined) event.guid = guidOf(record.guid);
   if (record.state !== undefined) {
