@@ -1787,8 +1787,11 @@ const thala = await streamd.getSwaps({ fromVersion: -10_000n, protocol: ["thala-
   in long form), so APT is `0x...0a` on Hyperion and Thala and may be the coin type on Cellana:
   no coin is mapped to its paired fungible asset. `asset` keeps swaps with that asset on
   either side and takes what `transfers`'s `asset` takes.
-- **Amounts.** `amountIn` and `amountOut` are the event's base units; fees are inside them, not
-  split out. On a Thala CLAMM exact-out swap, `amountIn` is net of the refund.
+- **Amounts.** `amountIn` and `amountOut` are the event's base units: what the pool took in and
+  paid out, its own fee inside `amountIn`, not split out. A fee taken before the pool is not in
+  them, so the trader can have paid more: Hyperion's router keeps about 1 basis point
+  (`fee_sharer::DistributeEvent`), and an aggregator may take its own. On a Thala CLAMM
+  exact-out swap, `amountIn` is net of the refund.
 - **Routes.** A multi-hop route gives one record per pool hop, in event order, not joined:
   an aggregator may take a fee between hops, so one hop's `amountOut` need not equal the
   next one's `amountIn`.
