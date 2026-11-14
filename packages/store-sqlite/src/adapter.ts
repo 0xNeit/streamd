@@ -12,8 +12,9 @@ import type {
   EventPage,
   FetchOptions,
   StreamdEvent,
+  TransactionEvents,
 } from "@streamd/core";
-import { ensureSchema, hasAddressColumn, prunedBefore, versionKey } from "./schema.js";
+import { ensureSchema, eventColumns, hashKey, prunedBefore, versionKey } from "./schema.js";
 import type { SqliteDatabase } from "./schema.js";
 
 const DEFAULT_LIMIT = 25;
@@ -97,6 +98,21 @@ function startOf(options: FetchOptions, edge: bigint): Position {
   return start;
 }
 
+function requireHash(hash: unknown): string {
+  if (typeof hash !== "string" || hash === "") throw new StreamdError("A transaction hash must be a non-empty string");
+  return hashKey(hash);
+}
+
+/**
+ * Stored rows as one transaction. A store keeps no status, so even a failed
+ * transaction's stored fee statement reads as a success.
+ */
+function transactionOf(rows: { event: string }[]): TransactionEvents | undefined {
+  if (rows.length === 0) return undefined;
+  const events = rows.map((r) => parseEvent(r.event));
+  return { version: events[0]!.version, success: true, vmStatus: "", events };
+}
+
 function count(value: number | undefined, label: string, fallback: number): number {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || value < 0) throw new StreamdError(`Not a valid ${label}: ${value}`);
@@ -137,7 +153,7 @@ export class StoreAdapter implements EventAdapter {
     let where = descriptorWhere(descriptor);
     // Never migrates, since it may be read-only: a database no write has
     // migrated yet holds no resource rows to serve.
-    if (descriptor.kind === "resource" && !hasAddressColumn(this.db)) where = { sql: "0", params: [] };
+    if (descriptor.kind === "resource" && !eventColumns(this.db).has("account_address")) where = { sql: "0", params: [] };
     const start = startOf(options, prunedBefore(this.db));
     const limit = count(options.limit, "limit", DEFAULT_LIMIT);
     const offset = options.cursor === undefined ? count(options.offset, "offset", 0) : 0;
@@ -165,6 +181,34 @@ export class StoreAdapter implements EventAdapter {
     // No throughVersion: another writer may still add rows below the cursor.
     if (options.orderBy === "desc") events.reverse();
     return page;
+  }
+
+  /**
+   * The stored events carrying this hash, in transaction order, or
+   * `undefined` when none is stored, which `eventsOf` waits on. Only what the
+   * store's subscriptions caught, and no resource changes.
+   */
+  async getTransactionEvents(transactionHash: string): Promise<TransactionEvents | undefined> {
+    const hash = requireHash(transactionHash);
+    if (!eventColumns(this.db).has("transaction_hash")) return undefined;
+    const rows = this.db
+      .prepare(
+        `SELECT event FROM streamd_events WHERE transaction_hash = ? AND account_address IS NULL
+         ORDER BY version, event_index`,
+      )
+      .all(hash) as { event: string }[];
+    return transactionOf(rows);
+  }
+
+  /** The stored events at `version`, as `getTransactionEvents` reads them; below the pruned edge, a 410. */
+  async getTransactionEventsByVersion(version: bigint): Promise<TransactionEvents | undefined> {
+    const key = versionKey(version);
+    startOf({ fromVersion: version }, prunedBefore(this.db));
+    const onlyEvents = eventColumns(this.db).has("account_address") ? " AND account_address IS NULL" : "";
+    const rows = this.db
+      .prepare(`SELECT event FROM streamd_events WHERE version = ?${onlyEvents} ORDER BY event_index`)
+      .all(key) as { event: string }[];
+    return transactionOf(rows);
   }
 
   private bound(fn: "MAX" | "MIN"): bigint | undefined {

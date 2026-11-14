@@ -6,8 +6,8 @@ import {
   requireEventType,
   requireResourceType,
 } from "@streamd/core";
-import type { EventAdapter, EventDescriptor, EventPage, FetchOptions } from "@streamd/core";
-import { EDGE, ensureSchema, versionParam } from "./schema.js";
+import type { EventAdapter, EventDescriptor, EventPage, FetchOptions, TransactionEvents } from "@streamd/core";
+import { EDGE, ensureSchema, hashKey, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 
 const DEFAULT_LIMIT = 25;
@@ -73,6 +73,21 @@ function parseCursor(cursor: string): Position {
     throw new StreamdError(`Not a cursor this adapter issued: ${String(cursor)}`);
   }
   return { version: BigInt(match[1]!), eventIndex };
+}
+
+function requireHash(hash: unknown): string {
+  if (typeof hash !== "string" || hash === "") throw new StreamdError("A transaction hash must be a non-empty string");
+  return hashKey(hash);
+}
+
+/**
+ * Stored rows as one transaction. A store keeps no status, so even a failed
+ * transaction's stored fee statement reads as a success.
+ */
+function transactionOf(rows: Record<string, unknown>[]): TransactionEvents | undefined {
+  if (rows.length === 0) return undefined;
+  const events = rows.map((r) => parseEvent(String(r.event)));
+  return { version: events[0]!.version, success: true, vmStatus: "", events };
 }
 
 function count(value: number | undefined, label: string, fallback: number): number {
@@ -155,6 +170,39 @@ export class PostgresStoreAdapter implements EventAdapter {
     // No throughVersion: another writer may still add rows below the cursor.
     if (options.orderBy === "desc") events.reverse();
     return page;
+  }
+
+  /**
+   * The stored events carrying this hash, in transaction order, or
+   * `undefined` when none is stored, which `eventsOf` waits on. Only what the
+   * store's subscriptions caught, and no resource changes.
+   */
+  async getTransactionEvents(transactionHash: string): Promise<TransactionEvents | undefined> {
+    const hash = requireHash(transactionHash);
+    await ensureSchema(this.client);
+    const { rows } = await this.client.query(
+      `SELECT event FROM streamd_events WHERE transaction_hash = $1 AND account_address IS NULL
+       ORDER BY version, event_index`,
+      [hash],
+    );
+    return transactionOf(rows);
+  }
+
+  /** The stored events at `version`, as `getTransactionEvents` reads them; below the pruned edge, a 410. */
+  async getTransactionEventsByVersion(version: bigint): Promise<TransactionEvents | undefined> {
+    const at = versionParam(version);
+    await ensureSchema(this.client);
+    // The edge and the rows in one statement, as fetchEvents reads them.
+    const { rows } = await this.client.query(
+      `WITH edge AS (SELECT ${EDGE} AS v)
+       SELECT edge.v::text AS edge, found.event FROM edge LEFT JOIN LATERAL (
+         SELECT event_index, event FROM streamd_events WHERE version = $1::numeric AND account_address IS NULL
+       ) found ON true
+       ORDER BY found.event_index`,
+      [at],
+    );
+    checkEdge({ version, eventIndex: -1 }, undefined, BigInt(String(rows[0]!.edge)));
+    return transactionOf(rows.filter((r) => r.event != null));
   }
 
   private async bound(fn: "max" | "min"): Promise<bigint> {

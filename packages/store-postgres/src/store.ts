@@ -1,6 +1,6 @@
 import { StreamdError, eventId, normalizeAddress, parseEvent, requireAddress, serializeEvent } from "@streamd/core";
 import type { StreamdEvent, Transfer } from "@streamd/core";
-import { PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, versionParam } from "./schema.js";
+import { PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, hashKey, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 
 /** A source cursor to save under `name` alongside a write. */
@@ -26,7 +26,7 @@ export interface SavedCursor {
   cursor: string;
 }
 
-type Row = [string, number, string, string | null, string | null, string | null, string, string | null];
+type Row = [string, number, string, string | null, string | null, string | null, string, string | null, string | null];
 
 function rowOf(event: StreamdEvent, accountAddress: string | null = null): Row {
   if (!Number.isSafeInteger(event.eventIndex) || event.eventIndex < 0 || event.eventIndex > 2 ** 31 - 1) {
@@ -46,6 +46,7 @@ function rowOf(event: StreamdEvent, accountAddress: string | null = null): Row {
     guidAddress ? event.guid!.creationNumber.toString() : null,
     json,
     accountAddress,
+    typeof event.transactionHash === "string" ? hashKey(event.transactionHash) : null,
   ];
 }
 
@@ -106,15 +107,17 @@ function requireName(name: unknown): string {
 // since a driver told the parameter is jsonb may encode the string as a JSON string.
 const WRITE = `
 WITH incoming AS (
-  SELECT (r->>0)::numeric, (r->>1)::integer, r->>2, r->>3, r->>4, (r->>5)::numeric, r->>6, r->>7
+  SELECT (r->>0)::numeric, (r->>1)::integer, r->>2, r->>3, r->>4, (r->>5)::numeric, r->>6, r->>7, r->>8
   FROM jsonb_array_elements($1::text::jsonb) AS r
 ), written AS (
-  INSERT INTO streamd_events (version, event_index, type, sender, guid_address, guid_creation, event, account_address)
+  INSERT INTO streamd_events
+    (version, event_index, type, sender, guid_address, guid_creation, event, account_address, transaction_hash)
   SELECT * FROM incoming
   ON CONFLICT (version, event_index) DO UPDATE SET
     type = excluded.type, sender = excluded.sender, guid_address = excluded.guid_address,
     guid_creation = excluded.guid_creation, event = excluded.event,
-    account_address = coalesce(excluded.account_address, streamd_events.account_address)
+    account_address = coalesce(excluded.account_address, streamd_events.account_address),
+    transaction_hash = excluded.transaction_hash
 )
 INSERT INTO streamd_cursors (name, cursor)
 SELECT $2::text, $3::text WHERE $2::text IS NOT NULL AND $3::text IS NOT NULL
