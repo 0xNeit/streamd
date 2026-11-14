@@ -2819,6 +2819,27 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   subscription still running under that name saves it again on its next batch, so stop it
   first. The reserved `streamd:pruned-before` is never listed, and deleting it throws, since
   that would lower the edge and let reads below pruned history through.
+- **Stats.** `store.stats()` says what the file holds, all of it read in one savepoint, so a
+  writer on another connection never lands between the counts:
+
+  ```ts
+  const { events, resourceChanges, transfers, lowestVersion, highestVersion, prunedBefore, byType } =
+    store.stats({ byType: true });
+  // byType: [{ type: "0x1::fungible_asset::Deposit", count: 81234n }, ...]
+  ```
+
+  Every count is a `bigint`. `events` counts the rows of `streamd_events` that are events, and
+  `resourceChanges` the rows stored as `resource` changes (with an address), so the two never
+  overlap; changes an earlier release stored without an address count as events, as the
+  transaction lookups treat them. `transfers` counts `streamd_transfers`, `0n` before it exists.
+  `lowestVersion` and `highestVersion` are the lowest and highest version of any stored event or
+  change, absent when there are none, and are what is stored rather than what is readable: a row
+  written below the edge after a prune shows there, while `StoreAdapter` refuses to read it.
+  `prunedBefore` is the edge, `0n` until the first prune. `byType` appears only with
+  `{ byType: true }`: events per type (not resource changes, so the counts add up to `events`),
+  most first, ties in byte order of type. Each count scans its table or an index, so it takes
+  time in proportion to the rows; read it on demand rather than polling a large file. It never
+  migrates or creates a table, so it works on a read-only connection to an older database.
 - **Stored transfers.** `storeTransfers(client, store, options)` does for a chain client's
   `transfers()` what `storeEvents` does for events, with the same resume, catch-up and failure
   rules. `client` is anything with that method, an `AptosClient` or a `SuiClient`, and `options`
@@ -2992,6 +3013,14 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   do on the SQLite store, the delete itself a single statement. Names sort in byte order
   (`COLLATE "C"`) whatever the database's collation, so in a UTF-8 database both stores list
   the same names in the same order.
+- **Stats.** `await store.stats({ byType: true })` returns what the SQLite store's `stats()`
+  returns, field for field: in a UTF-8 database the two stores holding the same rows give the
+  same answer, `byType` in the same order (`COLLATE "C"` for ties). It is one statement, so every
+  count reads one snapshot. Like the other reads it creates and migrates the event tables on
+  first use, and it creates `streamd_transfers` when it is missing, as `prune` does. `count(*)`
+  in Postgres reads the whole table (a sequential or index-only scan), and these counts are
+  exact, never the planner's estimate, so on a large table read them on demand rather than on
+  every request.
 - **Page cache.** `PostgresPageStore` is the Postgres counterpart of `SqlitePageStore`, over
   the same client, for `CachingAdapter`'s `store`, so a pool of processes shares one cache:
 
