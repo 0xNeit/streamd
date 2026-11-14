@@ -2768,10 +2768,11 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
 - **What `StoreAdapter` matches.** `module` by event type; `account` by the stored `sender`,
   so events stored without one (from `handle` descriptors) never match; `handle` by
   `creationNumber` against the stored `guid` (`listEventHandles` returns it), and a struct
-  and field handle is refused with a `StreamdError`. It sees only what was stored, from
-  whichever subscription stored it. Following the store with `on()` is gap-free only while
-  rows arrive in version order, since its cursor is a position in the table; it sets no
-  `throughVersion` for the same reason.
+  and field handle is refused with a `StreamdError`; `resource` by the stored address and the
+  resource type, exactly as the fullnode writes it (see Resource changes below). It sees only
+  what was stored, from whichever subscription stored it. Following the store with `on()` is
+  gap-free only while rows arrive in version order, since its cursor is a position in the
+  table; it sets no `throughVersion` for the same reason.
 - **Head and earliest** are the highest and lowest stored versions across the whole store,
   `0n` for a store that was never pruned and holds nothing, so relative `fromVersion` and
   `toVersion: "head"` count from what is stored. After a prune neither reports below the
@@ -2818,6 +2819,20 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   written, which ends the subscription as a failed write does. `store.writeTransfers(records,
   { name, cursor })` is there for wiring your own, and `prune` deletes transfers below its edge
   with the events.
+- **Resource changes.** A change carries its resource type but not the address holding it, so
+  `storeEvents` over a `resource` descriptor stores the descriptor's address with each change,
+  in the `account_address` column (long form, `0x` and 64 lowercase hex digits; null on every
+  other row), and `StoreAdapter` serves that descriptor back with the same cursors, paging and
+  pruned edge as every kind. `store.write(events, checkpoint, { accountAddress })` does the same
+  for your own wiring; a rewrite without `accountAddress` keeps the address a row has. Changes an
+  earlier release stored have no address and are never served as `resource`: store that range
+  again to serve it. They still match `module` by type, and every change still matches `account`
+  by its `sender`.
+- **Older databases.** The first `write` adds `account_address` and its index
+  (`streamd_events_resource`) to a database an earlier release made, in one savepoint, keeping
+  every row; when another connection added them first it carries on. Nothing else migrates, so
+  a read-only connection still opens the store and the adapter, and a `resource` read of a
+  database no write has migrated is empty.
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
   first use, and `streamd_transfers` on the first transfer write or prune.
 
@@ -2852,13 +2867,24 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
 - **No gaps, no duplicates,** as with SQLite: rows are keyed on `(version, eventIndex)`, a
   repeated write replaces its row, and the cursor moves only after its batch is stored.
 - **Queryable.** `streamd_events` holds `version` (`numeric`, exact for every u64), `event_index`,
-  `type`, `sender`, `guid_address`, `guid_creation` and the event as the JSON text `serializeEvent`
+  `type`, `sender`, `guid_address`, `guid_creation`, `account_address` and the event as the JSON text `serializeEvent`
   writes, so `SELECT event::jsonb->'data'->>'amount' FROM streamd_events WHERE type = '...'` works.
   It is `text` rather than `jsonb` because `jsonb` cannot hold a NUL character, which on-chain
   strings may carry; the cast fails only on such a row. Saved cursors are in `streamd_cursors`.
-- `PostgresStoreAdapter` serves `module`, `account` (by stored `sender`) and `handle` (by
-  `creationNumber`) descriptors, with the SQLite adapter's cursors, paging and options. Head and
-  earliest are the highest and lowest stored versions, never below a pruned edge.
+- `PostgresStoreAdapter` serves `module`, `account` (by stored `sender`), `handle` (by
+  `creationNumber`) and `resource` (by stored address and type) descriptors, with the SQLite
+  adapter's cursors, paging and options. Head and earliest are the highest and lowest stored
+  versions, never below a pruned edge.
+- **Resource changes** work as on the SQLite store: `storeEvents` over a `resource` descriptor
+  and `await store.write(events, checkpoint, { accountAddress })` store the address in
+  `account_address`, and changes stored by an earlier release, with none, are never served as
+  `resource`. A database an earlier release made gains the column on first use by either the
+  store or the adapter, in one statement that checks the catalog first, so once it is there the
+  `ALTER` never runs again; two connections migrating at once wait on each other and both
+  succeed. `streamd_events_resource` is then built in a statement of its own, which on a large
+  table holds back writes, not reads, for one scan of it. Like the other `CREATE INDEX IF NOT
+  EXISTS` statements each client runs on first use, it takes a brief SHARE lock even when the
+  index exists, and the role connecting must own the tables.
 - **Retention.** `await store.prune({ beforeVersion })` deletes every event and stored transfer
   below that version and leaves saved cursors, with the SQLite store's rules: a `PostgresStoreAdapter` read whose
   `fromVersion`, `cursor` or `toVersion` is below the edge fails with a `StreamdNetworkError`
@@ -3694,6 +3720,8 @@ sqlite3 events.db 'SELECT count(*) FROM streamd_events'
   file can follow several descriptors. A saved cursor beats `--from-version`, which only
   seeds the first run.
 - Use one file per network, since events are keyed on `(version, eventIndex)`.
+- `--account <address> --resource <type>` stores each change with that address, so
+  `StoreAdapter` and `PostgresStoreAdapter` serve the `resource` descriptor back.
 - The file is in WAL mode with a 5 second busy timeout, so it can be queried while written.
 - Exit code 0 on Ctrl-C or SIGTERM, 1 when polling gives up, a write fails, or the file cannot
   be opened.

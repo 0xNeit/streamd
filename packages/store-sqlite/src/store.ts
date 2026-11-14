@@ -1,6 +1,14 @@
-import { StreamdError, normalizeAddress, parseEvent, serializeEvent } from "@streamd/core";
+import { StreamdError, normalizeAddress, parseEvent, requireAddress, serializeEvent } from "@streamd/core";
 import type { StreamdEvent, Transfer } from "@streamd/core";
-import { PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, raisePrunedBefore, transaction, versionKey } from "./schema.js";
+import {
+  PRUNED_BEFORE,
+  TRANSFER_SCHEMA,
+  ensureSchema,
+  migrateSchema,
+  raisePrunedBefore,
+  transaction,
+  versionKey,
+} from "./schema.js";
 import type { SqliteDatabase, SqliteStatement } from "./schema.js";
 
 /** A source cursor to save under `name` alongside a write. */
@@ -10,13 +18,23 @@ export interface StoreCheckpoint {
   cursor: string | undefined;
 }
 
+/** What a write knows about its events that they do not carry themselves. */
+export interface StoreWriteOptions {
+  /**
+   * The address holding the resource these events are changes of, as a
+   * `resource` descriptor names it. A change carries only the resource type,
+   * so this is what lets a store adapter serve the descriptor back.
+   */
+  accountAddress?: string;
+}
+
 /** A cursor saved under a name, as `cursors()` lists it. */
 export interface SavedCursor {
   name: string;
   cursor: string;
 }
 
-function rowOf(event: StreamdEvent): unknown[] {
+function rowOf(event: StreamdEvent, accountAddress: string | null = null): unknown[] {
   if (!Number.isSafeInteger(event.eventIndex) || event.eventIndex < 0) {
     throw new StreamdError(`Not a valid eventIndex: ${String(event.eventIndex)}`);
   }
@@ -33,6 +51,7 @@ function rowOf(event: StreamdEvent): unknown[] {
     guidAddress ?? null,
     guidAddress ? event.guid!.creationNumber.toString() : null,
     json,
+    accountAddress,
   ];
 }
 
@@ -84,7 +103,7 @@ function requireName(name: unknown): string {
  */
 export class SqliteEventStore {
   private readonly db: SqliteDatabase;
-  private readonly upsert: SqliteStatement;
+  private upsert?: SqliteStatement;
   private readonly saveCursor: SqliteStatement;
   private readonly loadCursor: SqliteStatement;
   private readonly listCursors: SqliteStatement;
@@ -94,13 +113,6 @@ export class SqliteEventStore {
   constructor(db: SqliteDatabase) {
     ensureSchema(db);
     this.db = db;
-    this.upsert = db.prepare(
-      `INSERT INTO streamd_events (version, event_index, type, sender, guid_address, guid_creation, event)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT (version, event_index) DO UPDATE SET
-         type = excluded.type, sender = excluded.sender, guid_address = excluded.guid_address,
-         guid_creation = excluded.guid_creation, event = excluded.event`,
-    );
     this.saveCursor = db.prepare(
       `INSERT INTO streamd_cursors (name, cursor) VALUES (?, ?)
        ON CONFLICT (name) DO UPDATE SET cursor = excluded.cursor`,
@@ -112,11 +124,27 @@ export class SqliteEventStore {
 
   /**
    * Upserts `events` and, given a checkpoint, saves its cursor, all in one
-   * transaction: either everything lands or nothing does.
+   * transaction: either everything lands or nothing does. A rewrite without
+   * `accountAddress` keeps the one the row was stored with.
    */
-  write(events: readonly StreamdEvent[], checkpoint?: StoreCheckpoint): void {
+  write(events: readonly StreamdEvent[], checkpoint?: StoreCheckpoint, options?: StoreWriteOptions): void {
     // Validated before the transaction opens, so a bad event writes nothing.
-    this.upsertAll(this.upsert, events.map(rowOf), checkpoint);
+    const address = options?.accountAddress === undefined ? null : requireAddress(options.accountAddress);
+    const rows = events.map((event) => rowOf(event, address));
+    // Migrated by a write, not at construction, so a read-only connection that
+    // never writes can still read its cursors. Checked on every write: a caller
+    // rolling back its own transaction around the first one undoes the column.
+    migrateSchema(this.db);
+    this.upsert ??= this.db.prepare(
+      `INSERT INTO streamd_events
+         (version, event_index, type, sender, guid_address, guid_creation, event, account_address)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (version, event_index) DO UPDATE SET
+         type = excluded.type, sender = excluded.sender, guid_address = excluded.guid_address,
+         guid_creation = excluded.guid_creation, event = excluded.event,
+         account_address = coalesce(excluded.account_address, account_address)`,
+    );
+    this.upsertAll(this.upsert, rows, checkpoint);
   }
 
   private upsertAll(upsert: SqliteStatement, rows: unknown[][], checkpoint: StoreCheckpoint | undefined): void {

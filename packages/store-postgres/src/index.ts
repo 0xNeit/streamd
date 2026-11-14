@@ -1,5 +1,5 @@
 export { PostgresEventStore } from "./store.js";
-export type { SavedCursor, StoreCheckpoint } from "./store.js";
+export type { SavedCursor, StoreCheckpoint, StoreWriteOptions } from "./store.js";
 export type { PostgresClient } from "./schema.js";
 export { PostgresStoreAdapter } from "./adapter.js";
 export { storeEvents, storeTransfers } from "./sink.js";

@@ -4,6 +4,7 @@ import {
   parseEvent,
   requireAddress,
   requireEventType,
+  requireResourceType,
 } from "@streamd/core";
 import type {
   EventAdapter,
@@ -12,7 +13,7 @@ import type {
   FetchOptions,
   StreamdEvent,
 } from "@streamd/core";
-import { ensureSchema, prunedBefore, versionKey } from "./schema.js";
+import { ensureSchema, hasAddressColumn, prunedBefore, versionKey } from "./schema.js";
 import type { SqliteDatabase } from "./schema.js";
 
 const DEFAULT_LIMIT = 25;
@@ -61,6 +62,11 @@ function descriptorWhere(descriptor: EventDescriptor): Where {
         params: [requireAddress(descriptor.accountAddress), creationNumber.toString()],
       };
     }
+    case "resource":
+      return {
+        sql: "account_address = ? AND type = ?",
+        params: [requireAddress(descriptor.accountAddress), requireResourceType(descriptor.resourceType)],
+      };
     default:
       throw new StreamdError(
         `Unknown descriptor kind: ${String((descriptor as { kind?: unknown })?.kind)}`,
@@ -100,8 +106,10 @@ function count(value: number | undefined, label: string, fallback: number): numb
 /**
  * Serves events a `SqliteEventStore` wrote, as an `EventAdapter`. It answers
  * from what is stored, so it sees only what the store's subscriptions caught:
- * `account` matches events stored with that `sender`, and `handle` matches by
- * `creationNumber` against each event's stored `guid`.
+ * `account` matches events stored with that `sender`, `handle` matches by
+ * `creationNumber` against each event's stored `guid`, and `resource` matches
+ * changes `storeEvents` stored with that address, so none an older release
+ * stored without one.
  */
 export class StoreAdapter implements EventAdapter {
   private readonly db: SqliteDatabase;
@@ -126,7 +134,10 @@ export class StoreAdapter implements EventAdapter {
   }
 
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
-    const where = descriptorWhere(descriptor);
+    let where = descriptorWhere(descriptor);
+    // Never migrates, since it may be read-only: a database no write has
+    // migrated yet holds no resource rows to serve.
+    if (descriptor.kind === "resource" && !hasAddressColumn(this.db)) where = { sql: "0", params: [] };
     const start = startOf(options, prunedBefore(this.db));
     const limit = count(options.limit, "limit", DEFAULT_LIMIT);
     const offset = options.cursor === undefined ? count(options.offset, "offset", 0) : 0;

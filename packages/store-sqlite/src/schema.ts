@@ -52,6 +52,32 @@ CREATE TABLE IF NOT EXISTS streamd_cursors (
 );
 `;
 
+// Added by the first write rather than the table's CREATE, so a database made
+// before the column existed gains it the same way a new one does, and a
+// read-only connection to either never has to alter anything.
+const RESOURCE_MIGRATION = `
+ALTER TABLE streamd_events ADD COLUMN account_address TEXT;
+CREATE INDEX IF NOT EXISTS streamd_events_resource
+  ON streamd_events (account_address, type, version, event_index)
+  WHERE account_address IS NOT NULL;
+`;
+
+/** Whether `streamd_events` has the column resource changes are served by. */
+export function hasAddressColumn(db: SqliteDatabase): boolean {
+  return db.prepare("SELECT 1 FROM pragma_table_info('streamd_events') WHERE name = 'account_address'").get() != null;
+}
+
+/** Adds the resource address column and its index when missing; idempotent. */
+export function migrateSchema(db: SqliteDatabase): void {
+  if (hasAddressColumn(db)) return;
+  try {
+    transaction(db, () => db.exec(RESOURCE_MIGRATION));
+  } catch (err) {
+    // Another connection may have migrated between the check and the ALTER.
+    if (!hasAddressColumn(db)) throw err;
+  }
+}
+
 // Its own schema, created only by what writes transfers: a read-only
 // connection to a database made before it existed must still open.
 export const TRANSFER_SCHEMA = `

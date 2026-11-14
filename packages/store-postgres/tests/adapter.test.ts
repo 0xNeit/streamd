@@ -288,7 +288,7 @@ describe("PostgresStoreAdapter after prune", () => {
     const adapter = new PostgresStoreAdapter({ query: (text, params) => (seen.push(text), db.query(text, params)) });
     await adapter.fetchEvents(swaps, { fromVersion: 3n });
     await adapter.getEarliestVersion();
-    const reads = seen.filter((t) => !t.includes("CREATE"));
+    const reads = seen.filter((t) => !t.includes("CREATE") && !t.startsWith("DO"));
     expect(reads).toHaveLength(2);
     expect(reads.every((t) => t.includes("streamd:pruned-before"))).toBe(true);
   });

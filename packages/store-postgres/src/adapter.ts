@@ -1,4 +1,11 @@
-import { StreamdError, StreamdNetworkError, parseEvent, requireAddress, requireEventType } from "@streamd/core";
+import {
+  StreamdError,
+  StreamdNetworkError,
+  parseEvent,
+  requireAddress,
+  requireEventType,
+  requireResourceType,
+} from "@streamd/core";
 import type { EventAdapter, EventDescriptor, EventPage, FetchOptions } from "@streamd/core";
 import { EDGE, ensureSchema, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
@@ -49,6 +56,11 @@ function descriptorWhere(descriptor: EventDescriptor): Where {
       return (bind) =>
         `guid_address = ${bind(address)} AND guid_creation = ${bind(creationNumber.toString())}::numeric`;
     }
+    case "resource": {
+      const address = requireAddress(descriptor.accountAddress);
+      const type = requireResourceType(descriptor.resourceType);
+      return (bind) => `account_address = ${bind(address)} AND type = ${bind(type)}`;
+    }
     default:
       throw new StreamdError(`Unknown descriptor kind: ${String((descriptor as { kind?: unknown })?.kind)}`);
   }
@@ -80,8 +92,10 @@ function checkEdge(start: Position, toVersion: bigint | undefined, edge: bigint)
 /**
  * Serves events a `PostgresEventStore` wrote, as an `EventAdapter`. It
  * answers from what is stored, so it sees only what the store's subscriptions
- * caught: `account` matches events stored with that `sender`, and `handle`
- * matches by `creationNumber` against each event's stored `guid`.
+ * caught: `account` matches events stored with that `sender`, `handle`
+ * matches by `creationNumber` against each event's stored `guid`, and
+ * `resource` matches changes `storeEvents` stored with that address, so none
+ * an older release stored without one.
  */
 export class PostgresStoreAdapter implements EventAdapter {
   private readonly client: PostgresClient;
