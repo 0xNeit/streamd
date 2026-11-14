@@ -6,6 +6,7 @@ export { PoolAdapter } from "./adapters/pool.js";
 export type { PoolAdapterOptions } from "./adapters/pool.js";
 export { withHooks } from "./adapters/hooks.js";
 export { adapterMetrics } from "./adapters/metrics.js";
+export { toPrometheus } from "./prometheus.js";
 export { MemoryAdapter } from "./adapters/memory.js";
 export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
 export { RoutingAdapter } from "./adapters/routing.js";
@@ -99,9 +100,11 @@ export type { CachingAdapterOptions, PageStore } from "./adapters/caching.js";
 export type {
   AdapterMethod,
   AdapterMetrics,
+  AdapterMetricsSnapshot,
   LatencyPercentiles,
   MethodMetrics,
 } from "./adapters/metrics.js";
+export type { PrometheusOptions, PrometheusSource } from "./prometheus.js";
 export type {
   AdapterHooks,
   AdapterRequest,
