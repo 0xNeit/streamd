@@ -1,7 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { StreamdError } from "../src/errors.js";
+import { MemoryAdapter } from "../src/adapters/memory.js";
+import { StreamdClient } from "../src/client.js";
+import { StreamdError, StreamdNetworkError } from "../src/errors.js";
+import { whereField } from "../src/filter.js";
 import { DEFAULT_NAME_TTL, SenderNames } from "../src/names.js";
-import type { StreamdEvent } from "../src/types.js";
+import type { EventAdapter, EventDescriptor, StreamdConfig, StreamdEvent } from "../src/types.js";
 
 const ALICE = `0x${"a".repeat(64)}`;
 const BOB = `0x${"b".repeat(64)}`;
@@ -37,16 +40,15 @@ describe("SenderNames", () => {
   it("reuses a name within the expiry and looks it up again after it", async () => {
     const { cache, lookups, clock } = setup();
     await cache.attach(ev(ALICE), 1000);
-    clock.now = 1000;
+    clock.now = 999;
     await cache.attach(ev(ALICE), 1000);
     expect(lookups).toHaveLength(1);
-    clock.now = 1001;
+    clock.now = 1000;
     await cache.attach(ev(ALICE), 1000);
     expect(lookups).toHaveLength(2);
-    // A shorter expiry on another call reads the same entry by its own rule.
-    expect((await cache.attach(ev(ALICE), 0)).senderName).toBe("alice.apt");
+    // Another call's expiry reads the same entry by its own rule; 0 reuses nothing.
+    expect((await cache.attach(ev(ALICE), 5000)).senderName).toBe("alice.apt");
     expect(lookups).toHaveLength(2);
-    clock.now = 1002;
     await cache.attach(ev(ALICE), 0);
     expect(lookups).toHaveLength(3);
   });
@@ -133,5 +135,93 @@ describe("SenderNames", () => {
     expect(() => cache.ttl(true)).toThrow("withNames needs a client that looks up names");
     cache.serve("no names on this network");
     expect(() => cache.ttl(true)).toThrow("no names on this network");
+  });
+});
+
+const TYPE = "0x1::a::B";
+const D: EventDescriptor = { kind: "module", eventType: TYPE };
+
+function at(version: bigint, sender: string | undefined, keep = true, eventIndex = 0): StreamdEvent {
+  return { ...ev(sender, version), eventIndex, data: { keep } };
+}
+
+/** A client serving names from `answers`; a function answer runs per lookup, so a test can fail one. */
+class NamedClient extends StreamdClient {
+  readonly lookups: string[] = [];
+
+  constructor(
+    adapter: EventAdapter,
+    answers: Record<string, string | ((n: number) => string | undefined)> = { [ALICE]: "alice.apt" },
+    config: Omit<StreamdConfig, "adapter"> = {},
+  ) {
+    super({ ...config, adapter });
+    this.names.serve(async (address) => {
+      this.lookups.push(address);
+      const answer = answers[address];
+      return typeof answer === "function" ? answer(this.lookups.length) : answer;
+    });
+  }
+}
+
+describe("withNames on queries", () => {
+  const HISTORY = [at(1n, ALICE), at(2n, BOB, false), at(3n, BOB), at(4n, undefined), at(5n, ALICE), at(6n, ALICE)];
+
+  it("names only the events where kept and limit returned, one lookup per sender", async () => {
+    const client = new NamedClient(new MemoryAdapter(HISTORY));
+    const events = await client.getEvents(D, { where: whereField("keep", true), limit: 4, withNames: true });
+    expect(events.map((e) => [e.version, e.senderName])).toEqual([
+      [1n, "alice.apt"],
+      [3n, null],
+      [4n, undefined],
+      [5n, "alice.apt"],
+    ]);
+    expect("senderName" in events[2]!).toBe(false);
+    expect(client.lookups).toEqual([ALICE, BOB]);
+  });
+
+  it("shares the cache across calls, and ttl 0 looks up again", async () => {
+    const client = new NamedClient(new MemoryAdapter(HISTORY));
+    await client.getEvents(D, { withNames: true });
+    await client.getEvents(D, { withNames: { ttl: 60_000 } });
+    expect(client.lookups).toEqual([ALICE, BOB]);
+    await client.getEvents(D, { limit: 1, withNames: { ttl: 0 } });
+    expect(client.lookups).toEqual([ALICE, BOB, ALICE]);
+  });
+
+  it("names iterateEvents, getTransactions groups and replay deliveries", async () => {
+    const client = new NamedClient(new MemoryAdapter([...HISTORY, at(6n, ALICE, true, 1)]));
+    const iterated: (string | null | undefined)[] = [];
+    for await (const event of client.iterateEvents(D, { toVersion: 1n, withNames: true })) iterated.push(event.senderName);
+    expect(iterated).toEqual(["alice.apt"]);
+    const groups = await client.getTransactions(D, { fromVersion: 5n, withNames: true });
+    expect(groups.map((g) => [g.version, g.senderName, g.events.map((e) => e.senderName)])).toEqual([
+      [5n, "alice.apt", ["alice.apt"]],
+      [6n, "alice.apt", ["alice.apt", "alice.apt"]],
+    ]);
+    const replayed: (string | null | undefined)[] = [];
+    await client.replay(D, (e) => void replayed.push(e.senderName), { toVersion: 3n, withNames: true }).done;
+    expect(replayed).toEqual(["alice.apt", null, null]);
+  });
+
+  it("rejects on a failed lookup, and retries it under retries", async () => {
+    const busy = (n: number) => {
+      if (n === 1) throw new StreamdNetworkError("name read failed", 503, undefined, 1);
+      return "alice.apt";
+    };
+    const failing = new NamedClient(new MemoryAdapter(HISTORY), { [ALICE]: busy });
+    await expect(failing.getEvents(D, { withNames: true })).rejects.toThrow("name read failed");
+    const retried = new NamedClient(new MemoryAdapter(HISTORY), { [ALICE]: busy });
+    const events = await retried.getEvents(D, { limit: 1, withNames: true, retries: 1 });
+    expect(events[0]!.senderName).toBe("alice.apt");
+    expect(retried.lookups).toEqual([ALICE, ALICE]);
+  });
+
+  it("is refused by a client that serves no names, and a bad value by any", async () => {
+    const plain = new StreamdClient({ adapter: new MemoryAdapter(HISTORY) });
+    await expect(plain.getEvents(D, { withNames: true })).rejects.toThrow("withNames needs a client that looks up names");
+    await expect(plain.getTransactions(D, { withNames: true })).rejects.toThrow(StreamdError);
+    expect(await plain.getEvents(D, { withNames: false })).toHaveLength(6);
+    const named = new NamedClient(new MemoryAdapter(HISTORY));
+    await expect(named.getEvents(D, { withNames: { ttl: -1 } })).rejects.toThrow("ttl");
   });
 });

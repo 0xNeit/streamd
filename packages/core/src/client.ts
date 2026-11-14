@@ -44,6 +44,7 @@ import { startReplay } from "./replay.js";
 import { startTransactions, type TransactionHost } from "./grouping.js";
 import { isThenable } from "./filter.js";
 import { startWatch } from "./watch.js";
+import { SenderNames } from "./names.js";
 
 const MAX_TIMEOUT = 2_147_483_647;
 
@@ -166,6 +167,8 @@ export class StreamdClient {
   /** Shared by every poller and query, so the cap holds client-wide. */
   protected readonly limiter: RequestLimiter;
   protected readonly requestTimeout?: number;
+  /** The `withNames` cache, shared by every call; a chain client serves its lookup into it. */
+  protected readonly names: SenderNames;
   /** Lets identical subscriptions share each poll's adapter request. */
   private readonly shared: SharedFetches;
   private readonly subscriptions = new Map<string, { poller: EventPoller; stop: () => void }>();
@@ -185,7 +188,8 @@ export class StreamdClient {
     this.requestTimeout = config.requestTimeout;
     this.adapter = resolveAdapter(config);
     this.shared = new SharedFetches(this.adapter, this.requestTimeout);
-    this.query = new EventQuery(this.adapter, this.limiter);
+    this.names = new SenderNames(this.limiter);
+    this.query = new EventQuery(this.adapter, this.limiter, this.names);
     this.reduceHost = {
       query: this.query,
       defaults: this.defaults,

@@ -55,7 +55,7 @@ export class SenderNames {
     const address = event.sender === undefined ? undefined : normalizeAddress(event.sender);
     if (address === undefined) return event;
     const hit = this.cache.get(address);
-    if (hit !== undefined && this.now() - hit.at <= ttl) return { ...event, senderName: hit.name };
+    if (hit !== undefined && this.now() - hit.at < ttl) return { ...event, senderName: hit.name };
     return { ...event, senderName: await raceAbort(this.fetch(address), signal) };
   }
 
@@ -76,4 +76,11 @@ export class SenderNames {
     }
     return pending;
   }
+}
+
+const UNSERVED = new SenderNames();
+
+/** `names.ttl(withNames)`, refusing `withNames` where no cache was given. */
+export function nameTtl(withNames: unknown, names: SenderNames | undefined): number | undefined {
+  return (names ?? UNSERVED).ttl(withNames);
 }
