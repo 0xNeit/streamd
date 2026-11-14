@@ -267,6 +267,17 @@ describe("SuiClient transfers and balances", () => {
     expect(() => sui.transfers(() => {}, { account: "carol" })).toThrow(StreamdError);
   });
 
+  it("attaches each sender's SuiNS primary name under withNames, one lookup per sender", async () => {
+    const CAROL = LONG("ca401");
+    const names = fakeNames({ "carol.sui": CAROL }, { [CAROL]: "carol.sui" });
+    const at = (version: bigint, sender: string) => ({ type: STAKE, data: {}, version, sequenceNumber: 0n, eventIndex: 0, sender });
+    const adapter = new MemoryAdapter([at(1n, CAROL), at(2n, ALICE), at(3n, CAROL)]);
+    const sui = new SuiClient({ sui: { ...fakeLedger([1], []).client, nameService: names.nameService } as unknown as SuiGrpcClient, adapter });
+    const events = await sui.getEvents(stakes, { fromVersion: 0n, withNames: true });
+    expect(events.map((e) => e.senderName)).toEqual(["carol.sui", null, "carol.sui"]);
+    expect(names.calls.reverse).toEqual([CAROL, ALICE]);
+  });
+
   it("reads transfers through a SuiAdapter over sui when given another adapter", async () => {
     const { sui, calls } = client(LISTED, undefined, { adapter: new MemoryAdapter([]) });
     expect(await sui.getTransfers({ fromVersion: 0n })).toHaveLength(3);
