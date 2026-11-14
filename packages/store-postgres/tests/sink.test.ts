@@ -1,8 +1,9 @@
 import { PGlite } from "@electric-sql/pglite";
 import { describe, expect, it } from "bun:test";
 import { MemoryAdapter, StreamdClient, eventId } from "@streamd/core";
-import type { EventDescriptor, StreamdEvent, Subscription } from "@streamd/core";
-import { PostgresEventStore, PostgresStoreAdapter, storeEvents } from "../src/index.js";
+import type { EventCallback, EventDescriptor, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
+import { PostgresEventStore, PostgresStoreAdapter, storeEvents, storeTransfers } from "../src/index.js";
+import type { TransferClient } from "../src/index.js";
 
 const SWAP = "0x1::dex::Swap";
 const swaps: EventDescriptor = { kind: "module", eventType: SWAP };
@@ -201,5 +202,93 @@ describe("storeEvents", () => {
     expect(error.message).toBe("onCaughtUp threw");
     expect((error.cause as Error).message).toBe("boom");
     client.destroy();
+  });
+});
+
+const DEPOSIT = "0x1::fungible_asset::Deposit";
+
+function transfers(count: number): StreamdEvent<Transfer>[] {
+  return Array.from({ length: count }, (_, i) => ({
+    type: DEPOSIT,
+    data: { asset: "0xa", amount: BigInt(i + 1), to: "0xb" },
+    version: BigInt(i + 1),
+    sequenceNumber: 0n,
+    eventIndex: 3,
+  }));
+}
+
+/** A chain client's transfers(), over a MemoryAdapter whose events already are records. */
+function fake(records: StreamdEvent<Transfer>[]): TransferClient<SubscriptionOptions & { asset?: string }> & { destroy(): void } {
+  const client = new StreamdClient({ adapter: new MemoryAdapter(records) });
+  return {
+    transfers: (callback, options) => {
+      const { asset: _asset, ...rest } = options ?? {};
+      return client.on({ kind: "module", eventType: DEPOSIT }, callback as EventCallback, rest);
+    },
+    destroy: () => client.destroy(),
+  };
+}
+
+async function storedTransfers(db: PGlite): Promise<string[]> {
+  const { rows } = await db.query<{ id: string }>(
+    "SELECT version || ':' || event_index || ':' || amount AS id FROM streamd_transfers ORDER BY version",
+  );
+  return rows.map((r) => r.id);
+}
+
+const ids = (records: StreamdEvent<Transfer>[]) => records.map((r) => `${r.version}:${r.eventIndex}:${r.data.amount}`);
+
+describe("storeTransfers", () => {
+  it("resumes with every record once under its own cursor name, and absorbs a replayed range", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.write([], { name: "t", cursor: "event-cursor" });
+    const options = { name: "t", batchSize: 2, pollInterval: 5, asset: "0xa" };
+    const run = async (count: number, seen: string[] = []) => {
+      const client = fake(transfers(count));
+      const sub = await caughtUp((onCaughtUp) =>
+        storeTransfers(client, store, { ...options, onCaughtUp, where: (e) => (seen.push(eventId(e)), true) }),
+      );
+      sub.unsubscribe();
+      client.destroy();
+      return seen;
+    };
+
+    await run(5);
+    expect(await storedTransfers(db)).toEqual(ids(transfers(5)));
+    expect(await store.readCursor("transfers:t")).toBe("5");
+    expect(await store.readCursor("t")).toBe("event-cursor");
+
+    expect((await run(9))[0]).toBe("6:3");
+    expect(await storedTransfers(db)).toEqual(ids(transfers(9)));
+
+    // As after a crash between a record's write and the cursor saved after its page.
+    await store.write([], { name: "transfers:t", cursor: "0" });
+    expect(await run(9)).toEqual(transfers(9).map(eventId));
+    expect(await storedTransfers(db)).toEqual(ids(transfers(9)));
+  });
+
+  it("ends on a failed write without moving the saved cursor past it", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.writeTransfers([]);
+    await db.exec(`
+      CREATE FUNCTION full() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.version >= 3 THEN RAISE EXCEPTION 'disk full'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER boom BEFORE INSERT ON streamd_transfers FOR EACH ROW EXECUTE FUNCTION full();
+    `);
+    const client = fake(transfers(6));
+    const error = await new Promise<Error>((resolve) => {
+      void storeTransfers(client, store, { name: "t", batchSize: 2, pollInterval: 5, onError: resolve });
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    client.destroy();
+    expect((error.cause as Error).message).toContain("disk full");
+    expect(await storedTransfers(db)).toEqual(ids(transfers(2)));
+    expect(await store.readCursor("transfers:t")).toBe("2");
+    // @ts-expect-error asset is a string on this client
+    await expect(storeTransfers(client, store, { name: "t", asset: 5 }).then((s) => s.unsubscribe())).resolves.toBeUndefined();
+    // @ts-expect-error name is required
+    await expect(storeTransfers(client, store, {})).rejects.toThrow("needs a name");
   });
 });

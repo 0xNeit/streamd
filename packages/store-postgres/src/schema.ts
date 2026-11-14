@@ -39,6 +39,28 @@ const SCHEMA = [
   "CREATE TABLE IF NOT EXISTS streamd_cursors (name text PRIMARY KEY, cursor text NOT NULL)",
 ];
 
+// Its own schema, created only by what writes or prunes transfers, so the
+// event tables stay all a reader needs.
+export const TRANSFER_SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS streamd_transfers (
+    version numeric(20, 0) NOT NULL,
+    event_index integer NOT NULL,
+    asset text NOT NULL,
+    amount numeric(78, 0) NOT NULL,
+    from_address text,
+    to_address text,
+    symbol text,
+    decimals integer,
+    transfer text NOT NULL,
+    PRIMARY KEY (version, event_index)
+  )`,
+  "CREATE INDEX IF NOT EXISTS streamd_transfers_asset ON streamd_transfers (asset, version, event_index)",
+  `CREATE INDEX IF NOT EXISTS streamd_transfers_from ON streamd_transfers (from_address, version, event_index)
+    WHERE from_address IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS streamd_transfers_to ON streamd_transfers (to_address, version, event_index)
+    WHERE to_address IS NOT NULL`,
+];
+
 // Kept among the cursors, as the SQLite store does, so a database created
 // before pruning existed needs no migration: the row appears on the first prune.
 export const PRUNED_BEFORE = "streamd:pruned-before";

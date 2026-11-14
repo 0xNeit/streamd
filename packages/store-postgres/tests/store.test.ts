@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { PGlite } from "@electric-sql/pglite";
 import { StreamdError, parseEvent } from "@streamd/core";
-import type { StreamdEvent } from "@streamd/core";
+import type { StreamdEvent, Transfer } from "@streamd/core";
 import { PostgresEventStore } from "../src/index.js";
 import type { PostgresClient } from "../src/index.js";
 
@@ -269,5 +269,85 @@ describe("PostgresEventStore cursors", () => {
       await expect(store.deleteCursor(bad as string)).rejects.toBeInstanceOf(StreamdError);
     }
     expect(await edge(db)).toBe("2");
+  });
+});
+
+function tr(version: bigint, eventIndex: number, data: Partial<Transfer> = {}): StreamdEvent<Transfer> {
+  return {
+    type: "0x1::fungible_asset::Deposit",
+    data: { asset: "0xa", amount: 5n, ...data },
+    version,
+    sequenceNumber: 0n,
+    eventIndex,
+  };
+}
+
+async function transferRows(db: PGlite): Promise<Record<string, unknown>[]> {
+  const { rows } = await db.query<Record<string, unknown>>(
+    `SELECT version::text, event_index, asset, amount::text, from_address, to_address, symbol, decimals, transfer
+     FROM streamd_transfers ORDER BY version, event_index`,
+  );
+  return rows;
+}
+
+describe("PostgresEventStore transfers", () => {
+  const U256_MAX = 2n ** 256n - 1n;
+
+  it("stores records in columns with exact amounts, the later write winning, and prunes them with the events", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.writeTransfers(
+      [tr(1n, 2, { amount: U256_MAX, from: "0xf", to: "0xt", symbol: "APT", decimals: 8 }), tr(2n, 0), tr(3n, 0)],
+      { name: "transfers:t", cursor: "c1" },
+    );
+    await store.writeTransfers([tr(2n, 0, { amount: 1n }), tr(2n, 0, { amount: 9n, to: "0xt" })]);
+    const [first, second] = await transferRows(db);
+    expect(first).toEqual({
+      version: "1",
+      event_index: 2,
+      asset: "0xa",
+      amount: U256_MAX.toString(),
+      from_address: "0xf",
+      to_address: "0xt",
+      symbol: "APT",
+      decimals: 8,
+      transfer: expect.any(String),
+    });
+    expect(parseEvent(first!.transfer as string).data).toMatchObject({ amount: U256_MAX.toString(), symbol: "APT" });
+    expect(second).toMatchObject({ amount: "9", from_address: null, to_address: "0xt", symbol: null, decimals: null });
+    expect(await store.readCursor("transfers:t")).toBe("c1");
+
+    await store.writeTransfers([tr(4n, 0, { symbol: "A\u0000B" })]);
+    const [nul] = (await transferRows(db)).filter((r) => r.version === "4");
+    expect(nul!.symbol).toBe("A\uFFFDB");
+    expect(parseEvent(nul!.transfer as string).data).toMatchObject({ symbol: "A\u0000B" });
+
+    await store.write([ev(1n), ev(3n)]);
+    await store.prune({ beforeVersion: 3n });
+    expect((await transferRows(db)).map((r) => r.version)).toEqual(["3", "4"]);
+    expect((await rows(db)).map((e) => e.version)).toEqual([3n]);
+  });
+
+  it("refuses a malformed record before sending anything", async () => {
+    const queries: string[] = [];
+    const client: PostgresClient = {
+      query: async (text) => (queries.push(text), { rows: [] }),
+    };
+    const store = new PostgresEventStore(client);
+    const bad: Partial<Transfer>[] = [
+      { amount: -1n },
+      { amount: U256_MAX + 1n },
+      { amount: 5 as unknown as bigint },
+      { asset: "" },
+      { from: 7 as unknown as string },
+      { decimals: -1 },
+    ];
+    for (const data of bad) {
+      await expect(store.writeTransfers([tr(1n, 0), tr(2n, 0, data)], { name: "t", cursor: "c" })).rejects.toThrow(
+        StreamdError,
+      );
+    }
+    await expect(store.writeTransfers([{ ...tr(1n, 0), data: null as unknown as Transfer }])).rejects.toThrow(StreamdError);
+    expect(queries).toEqual([]);
   });
 });
