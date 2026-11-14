@@ -34,6 +34,19 @@ function typeList(types: readonly string[]): Where {
   return { sql: `type IN (${types.map(() => "?").join(", ")})`, params: types.map(requireEventType) };
 }
 
+/**
+ * A `module` descriptor's types: each exactly, and one written without type
+ * arguments also with any. The column's BINARY collation orders by bytes, so
+ * `T<...` lies in [`T<`, `T=`) and the type index serves the range.
+ */
+function moduleTypes(types: readonly string[]): Where {
+  const exact = typeList(types);
+  const bare = (exact.params as string[]).filter((t) => !t.includes("<"));
+  if (bare.length === 0) return exact;
+  const ranges = bare.map(() => " OR (type >= ? AND type < ?)").join("");
+  return { sql: `(${exact.sql}${ranges})`, params: [...exact.params, ...bare.flatMap((t) => [`${t}<`, `${t}=`])] };
+}
+
 function descriptorWhere(descriptor: EventDescriptor): Where {
   switch (descriptor?.kind) {
     case "module": {
@@ -41,7 +54,7 @@ function descriptorWhere(descriptor: EventDescriptor): Where {
       if (Array.isArray(eventType) && eventType.length === 0) {
         throw new StreamdError("Module descriptor requires at least one eventType");
       }
-      return typeList(Array.isArray(eventType) ? eventType : [eventType as string]);
+      return moduleTypes(Array.isArray(eventType) ? eventType : [eventType as string]);
     }
     case "account": {
       if (descriptor.received === true) throw new StreamdError("StoreAdapter keys account events by sender, so it cannot serve received ones");

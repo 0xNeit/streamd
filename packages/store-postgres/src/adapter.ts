@@ -27,6 +27,23 @@ function types(list: readonly string[]): Where {
   return (bind) => `type IN (SELECT jsonb_array_elements_text(${bind(JSON.stringify(checked))}::text::jsonb))`;
 }
 
+/**
+ * A `module` descriptor's types: each exactly, and one written without type
+ * arguments also with any, as a byte-ordered range [`T<`, `T=`) under the C
+ * collation, which `streamd_events_type_c` serves whatever the column's is.
+ */
+function moduleTypes(list: readonly string[]): Where {
+  const exact = types(list);
+  const bare = list.filter((t) => !t.includes("<"));
+  if (bare.length === 0) return exact;
+  return (bind) => {
+    const ranges = bare.map(
+      (t) => ` OR (type COLLATE "C" >= ${bind(`${t}<`)} AND type COLLATE "C" < ${bind(`${t}=`)})`,
+    );
+    return `(${exact(bind)}${ranges.join("")})`;
+  };
+}
+
 function descriptorWhere(descriptor: EventDescriptor): Where {
   switch (descriptor?.kind) {
     case "module": {
@@ -34,7 +51,7 @@ function descriptorWhere(descriptor: EventDescriptor): Where {
       if (Array.isArray(eventType) && eventType.length === 0) {
         throw new StreamdError("Module descriptor requires at least one eventType");
       }
-      return types(Array.isArray(eventType) ? eventType : [eventType as string]);
+      return moduleTypes(Array.isArray(eventType) ? eventType : [eventType as string]);
     }
     case "account": {
       if (descriptor.received === true) {
