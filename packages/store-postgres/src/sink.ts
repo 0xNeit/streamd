@@ -1,11 +1,33 @@
 import { StreamdError } from "@streamd/core";
-import type { EventDescriptor, StreamdClient, Subscription, SubscriptionOptions } from "@streamd/core";
-import type { PostgresEventStore } from "./store.js";
+import type {
+  EventCallback,
+  EventDescriptor,
+  StreamdClient,
+  StreamdEvent,
+  Subscription,
+  SubscriptionOptions,
+  Transfer,
+} from "@streamd/core";
+import type { PostgresEventStore, StoreCheckpoint } from "./store.js";
 
 export interface StoreEventsOptions extends SubscriptionOptions {
   /** The name the subscription's cursor is saved under, so a restart resumes from it. */
   name: string;
 }
+
+/** Anything with a chain client's `transfers()`: `AptosClient` and `SuiClient` both fit. */
+export interface TransferClient<O extends SubscriptionOptions = SubscriptionOptions> {
+  transfers(callback: EventCallback<Transfer>, options?: O): Subscription;
+}
+
+/** The client's own `transfers()` options, plus the `name` its cursor is saved under. */
+export type StoreTransfersOptions<O extends SubscriptionOptions = SubscriptionOptions> = O & { name: string };
+
+// Transfer cursors are saved apart from event cursors of the same name.
+const TRANSFER_CURSOR_PREFIX = "transfers:";
+
+type Write = (events: StreamdEvent[], checkpoint: StoreCheckpoint) => Promise<void>;
+type Subscribe = (deliver: (events: StreamdEvent[]) => Promise<void>, options: SubscriptionOptions) => Subscription;
 
 /**
  * An `onBatch` subscription writing each batch to `store` together with the
@@ -25,6 +47,46 @@ export async function storeEvents(
   options: StoreEventsOptions,
 ): Promise<Subscription> {
   const { name, ...listener } = options;
+  return sink(
+    store,
+    name,
+    listener,
+    (events, checkpoint) => store.write(events, checkpoint),
+    (deliver, resolved) => client.onBatch(descriptor, deliver, resolved),
+  );
+}
+
+/**
+ * `transfers()` on `client`, writing each record to `streamd_transfers`
+ * together with the subscription's cursor, as `storeEvents` writes events:
+ * the same resume, catch-up save and failure rules, one statement per
+ * record. The cursor is saved under `transfers:` and `options.name`, so it
+ * never meets an event cursor of the same name; give each filter its own name.
+ */
+export async function storeTransfers<O extends SubscriptionOptions>(
+  client: TransferClient<O>,
+  store: PostgresEventStore,
+  options: StoreTransfersOptions<NoInfer<O>>,
+): Promise<Subscription> {
+  const { name, ...listener } = options;
+  if (typeof name !== "string" || name === "") throw new StreamdError("storeTransfers needs a name to save its cursor under");
+  // ponytail: one statement per record, since transfers() delivers one at a time; a batch delivery on it would cut that.
+  return sink(
+    store,
+    TRANSFER_CURSOR_PREFIX + name,
+    listener,
+    (records, checkpoint) => store.writeTransfers(records as StreamdEvent<Transfer>[], checkpoint),
+    (deliver, resolved) => client.transfers((record) => deliver([record]), resolved as O),
+  );
+}
+
+async function sink(
+  store: PostgresEventStore,
+  name: string,
+  listener: SubscriptionOptions,
+  write: Write,
+  subscribe: Subscribe,
+): Promise<Subscription> {
   const cursor = listener.cursor ?? (await store.readCursor(name));
   // These run off the poller's stack, so route throws as it does: to onError,
   // and a throw from onError itself to an uncaught error on a microtask.
@@ -37,11 +99,11 @@ export async function storeEvents(
       });
     }
   };
-  const subscription: Subscription = client.onBatch(
-    descriptor,
+  let saving = false;
+  const subscription: Subscription = subscribe(
     async (events) => {
       try {
-        await store.write(events, { name, cursor: subscription.cursor });
+        await write(events, { name, cursor: subscription.cursor });
       } catch (err) {
         // Pausing stops the cursor moving past this batch and still lets the
         // rejection reach onError, which an ended subscription would drop. It
@@ -53,8 +115,12 @@ export async function storeEvents(
       }
       // The poller moves its cursor past this page once this promise settles;
       // a timer runs after that. Saving that cursor means a relative or head
-      // start never re-resolves after the first batch.
+      // start never re-resolves after the first batch. One pending save covers
+      // every write of a page.
+      if (saving) return;
+      saving = true;
       setTimeout(() => {
+        saving = false;
         // The cursor saved with the batch stands; resuming there only redelivers it.
         store.write([], { name, cursor: subscription.cursor }).catch(() => {});
       }, 0);
