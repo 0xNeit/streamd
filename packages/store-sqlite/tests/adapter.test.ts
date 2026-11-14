@@ -156,14 +156,14 @@ describe("StoreAdapter", () => {
   it("passes checkAdapter for every descriptor kind, transaction lookups included", async () => {
     const adapter = hashedStore();
     // Mints are handle events, which carry no hash, so a handle walk has none to look up by.
-    const byHash = new Map([[swaps, "pass"], [fromA, "pass"], [mintHandle, "skip"]]);
+    const byHash = (descriptor: EventDescriptor) => (descriptor === mintHandle ? "skip" : "pass");
     for (const descriptor of [swaps, fromA, mintHandle]) {
       for (const options of [{ limit: 2 }, { limit: 3, fromVersion: 4n }]) {
         const report = await checkAdapter(adapter, descriptor, options);
         expect(report.results.filter((r) => r.status === "fail")).toEqual([]);
         expect(report.pagesFetched).toBe(3);
         const status = (name: string) => report.results.find((r) => r.name === name);
-        expect(status("transaction-events")?.status).toBe(byHash.get(descriptor));
+        expect(status("transaction-events")?.status).toBe(byHash(descriptor));
         expect(status("transaction-events-by-version")?.status).toBe("pass");
         for (const name of ["block", "block-heights", "view"]) {
           expect(status(name)).toMatchObject({ status: "skip", message: "not implemented (optional)" });
