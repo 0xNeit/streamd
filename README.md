@@ -18,7 +18,7 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `swaps`, `getSwaps`, `balances`, `balanceAt`, `eventsOf`, `eventsAt`,
+`transfers`, `getTransfers`, `swaps`, `getSwaps`, `sales`, `getSales`, `balances`, `balanceAt`, `eventsOf`, `eventsAt`,
 `expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
@@ -1667,7 +1667,7 @@ for (const e of deposits) console.log(e.senderName ?? e.sender);
   and an `onTransaction` group carries its events' name.
 - **Where.** Every call that takes `withState` takes it: `getEvents`, `getEventPages`,
   `iterateEvents`, `getTransactions`, `replay`, `on`, `onBatch`, `once`, `stream`,
-  `onTransaction`, `watch`, `transfers`, `getTransfers`, `swaps` and `getSwaps`. Not `reduce`, `balances`, or the
+  `onTransaction`, `watch`, `transfers`, `getTransfers`, `swaps`, `getSwaps`, `sales` and `getSales`. Not `reduce`, `balances`, or the
   one-shot transaction calls (`eventsOf`, `eventsAt`, `previewEvents` and the assertions).
 - **After `where`.** It runs after `decode`, `where` and `withState`, and for queries after
   `limit` and `orderBy`, so only the events you get back cost a lookup.
@@ -1832,6 +1832,59 @@ const thala = await streamd.getSwaps({ fromVersion: -10_000n, protocol: ["thala-
 - **Limits.** PancakeSwap's `user` and Tapp's `creator` are not read. Hyperion's earlier `SwapEvent` and `SwapEventV2` are not read. An event whose fields do not
   have its struct's shape is skipped. A swaps subscription is not a listener for `off()` or
   `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+
+## NFT sales
+
+`sales(callback, options?)` follows NFT marketplace sales as they land, and
+`getSales(filter?)` returns them for a past range. Each arrives as an event whose `data` is a
+`Sale { marketplace, kind, token, collection?, seller, buyer, price, royalty?, fee? }`, one per
+token sold:
+
+```ts
+const sub = streamd.sales(({ data }) => console.log(`${data.marketplace} ${data.kind}: ${data.token} for ${data.price}`));
+
+const wapal = await streamd.getSales({ fromVersion: 7028273582n, toVersion: 7028273582n, marketplace: "wapal" });
+```
+
+- **Sources.** One scan over these fill events, all legacy handle events, each decoded from its
+  on-chain struct, with no view read:
+
+  | `marketplace` | Package | Events | `kind` |
+  | --- | --- | --- | --- |
+  | `"wapal"` | `0x584b50b999c78ade62f8359c91b5165ff390338d45f8e55969a04e65d76258c9` | `events::ListingFilledEvent`, `events::TokenOfferFilledEvent`, `events::CollectionOfferFilledEvent` | `listing`, `token-offer`, `collection-offer` |
+  | `"tradeport"` | `0xe11c12ec495f3989c35e1c6a0af414451223305b579291fc8f3d9d0575a23c26` | `listings_v2::BuyEvent`, `biddings_v2::AcceptTokenBidEvent`, `biddings_v2::AcceptCollectionBidEvent`, and the same three in `listings` and `biddings` for legacy tokens | `listing`, `token-offer`, `collection-offer` |
+
+  `marketplace`, one or a list, narrows the scanned types; an unknown name throws.
+- **Activity.** Aptos NFT trading has nearly stopped: the last fills on both marketplaces are
+  around version 7,030,000,000 (September 2026), and Tradeport cancelled its open bids at
+  7125917832. Those versions are older than the public fullnode keeps, so read them through
+  [the archive](#history-the-fullnode-has-pruned); `sales()` delivers only if trading resumes.
+- **The order book names the marketplace.** Tradeport's aggregator buys Wapal listings, and such
+  a fill emits only Wapal's event, so it is a `wapal` sale; one transaction can hold sales on
+  both. A fee the aggregator adds on top is in no event and not in `price`.
+- **Buyer and seller** come from the event, in long form, never from the sender: an offer fill
+  is sent by the seller, an aggregated buy by the buyer. A Tradeport legacy-token collection bid
+  leaves the token in Tradeport's store for the buyer to claim later, so that sale's transaction
+  withdraws the token from the seller without depositing it to the buyer.
+- **Price** is what the buyer paid, in base units, royalty and fee inside: on Wapal `price`
+  equals `royalty` plus `fee` (the marketplace's commission) plus the seller's proceeds. Tradeport's
+  events report only the price, so its records have no `royalty` or `fee`. Neither
+  marketplace's events name the coin: Tradeport takes only APT, and every Wapal fill seen paid
+  APT, but Wapal's orders are generic over the coin type, so no currency field is reported.
+- **Tokens.** `token` is a token object's address in long form, or a legacy token's id as
+  `<creator>::<collection>::<name>::<property_version>`, the forms `Transfer.asset` reports.
+  `collection` is the collection object's address, present only when the event names one (Wapal,
+  token objects). The `token` option keeps sales of one token, in either form; a collection is
+  matched with `where: whereField("collection", ...)`, which only Wapal records can satisfy.
+- **Identity.** A record is the fill event with `data` replaced, so it keeps the event's
+  `(version, eventIndex)`, `transactionHash`, `timestamp`, `sender` and `guid`, and a bulk buy gives
+  one record per token, in event order.
+- **Limits.** Rarible's marketplace (`0x465a0051e8535859d4794f0af24dbf35c5349bedadab26404b20b825035ee790`)
+  is not read: no fill of it could be found. Neither are Topaz, BlueMove, Souffl3 (no activity found)
+  or Strike (token-for-token offers that are no single sale). Wapal's events come from its
+  marketplace package, so a storefront that created its own fee schedule on that package is
+  reported as `wapal` too. An event whose fields do not have its struct's shape is skipped. A
+  sales subscription is not a listener for `off()` or `listenerCount()`.
 
 ## Live balances
 
