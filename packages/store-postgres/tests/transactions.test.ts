@@ -19,8 +19,8 @@ const HASH = "0x" + "ab".repeat(32);
 const UPPER = "0x" + "AB".repeat(32);
 const OTHER = "0x" + "cd".repeat(32);
 // Base58 is case-sensitive: these two are different digests.
-const DIGEST = "8BvQkTVYwMN5ynq3uKzU1p9bC6sxHwZr7GfRjLdEa2Xt";
-const SWAPPED = "8bVqKtvyWmn5YNQ3UkZu1P9Bc6SXhWzR7gFrJlDeA2xT";
+const DIGEST = "5QCqxf87tpC2WqD2hvZu1dPnrDa6ukeSztVDtjH3UteV";
+const SWAPPED = "5qcQXF87TPc2wQd2HVzU1DpNRdA6UKEsZTvdTJh3uTEv";
 const SWAP = "0x1::dex::Swap";
 const FEE = "0x1::transaction_fee::FeeStatement";
 const COIN = "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>";
