@@ -1861,11 +1861,11 @@ events from that transaction. An account walk only claims the account's own tran
 
 To check a custom adapter against that contract, run `checkAdapter` from any
 test runner or a plain script. It walks a few pages (`maxPages`, default 3),
-then makes two more fetches and one call to each optional method present, and
-reports a result per rule (`page-shape`, `order`, `cursor-advance`,
-`through-version`, `cursor-precedence`, `foreign-cursor`, `head-version`, ...) instead of
-throwing. It only reads, but against a real source those reads are network
-calls:
+then makes two more fetches and one call to each optional method it checks that
+is present (two to `getBlock`), so at most `maxPages + 10` calls, and reports a
+result per rule (`page-shape`, `order`, `cursor-advance`, `through-version`,
+`cursor-precedence`, `foreign-cursor`, `head-version`, ...) instead of throwing.
+It only reads, but against a real source those reads are network calls:
 
 ```ts
 import { checkAdapter } from "@streamd/core";
@@ -1873,14 +1873,36 @@ import { checkAdapter } from "@streamd/core";
 const report = await checkAdapter(
   myIndexAdapter,
   { kind: "module", eventType: "0x1::fungible_asset::Deposit" },
-  { fromVersion: 1_000_000n, blockHeight: 500_000n },
+  {
+    fromVersion: 1_000_000n,
+    view: { request: { function: "0x1::timestamp::now_microseconds" } },
+  },
 );
 if (!report.ok) console.table(report.results.filter((r) => r.status === "fail"));
 ```
 
 `fromVersion` is where the walk starts (omit it to start where the adapter
-does, usually the head), and `blockHeight` lets it check `getBlock`; a rule
-whose method or input is missing is `skip`.
+does, usually the head). A rule whose method or input is missing is `skip`, with
+the reason in `message`. The optional methods are judged against what the walk saw:
+
+- `block-heights` - `getBlockHeights` resolves `{ oldest, newest }` with `oldest <= newest`,
+  as `fromTime` reads it.
+- `block` - `getBlock` at `blockHeight`, or at `newest` when that is not given, returns that
+  height with `firstVersion <= lastVersion`. `oldest` is never read, since a node may report
+  an oldest block it has already pruned.
+- `block-sequence` - the block before ends at the version just below where that block starts,
+  and block time does not fall: what `fromBlock`/`toBlock` and the `fromTime` search assume.
+- `transaction-events` - `getTransactionEvents` on the first walked event carrying a
+  `transactionHash` finds that transaction at the event's version, well formed, in
+  `eventIndex` order, and holding the event (a `handle` event matches on `sequenceNumber`,
+  since `FullnodeScanAdapter` indexes handle events by it).
+- `transaction-events-by-version` - the same for `getTransactionEventsByVersion` on that
+  event's version (or the first walked event's), and both lookups list the same events.
+  Both lookup rules skip `resource` and `object` descriptors, whose changes are not
+  transaction events.
+- `view` - with a `view: { request, version? }` option, `view` resolves an array at
+  `version`, else the first walked event's version, else the head. No view function exists
+  on every chain, so without the option the rule skips. The values themselves are not judged.
 
 To check that two sources agree, `compareAdapters(a, b, descriptor, range)` walks both over
 the same version range and reports, by `eventId`, what only `a` returned (`missing`), what
