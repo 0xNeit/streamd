@@ -230,20 +230,23 @@ export function requireResourceType(value: unknown): string {
   return value;
 }
 
+/**
+ * Which event types a `module` descriptor selects: each listed type exactly,
+ * and a type written without type arguments also with any, since a generic
+ * struct's events always carry them.
+ */
 export function moduleTypeFilter(
   eventType: ModuleEventDescriptor["eventType"],
 ): (type: string) => boolean {
-  if (Array.isArray(eventType)) {
-    if (eventType.length === 0) {
-      throw new StreamdError(
-        "Module descriptor requires at least one eventType",
-      );
-    }
-    const types = new Set(eventType.map(requireEventType));
-    return (type) => types.has(type);
+  if (Array.isArray(eventType) && eventType.length === 0) {
+    throw new StreamdError("Module descriptor requires at least one eventType");
   }
-  const single = requireEventType(eventType);
-  return (type) => type === single;
+  const types = new Set((Array.isArray(eventType) ? eventType : [eventType]).map(requireEventType));
+  return (type) => {
+    if (types.has(type)) return true;
+    const open = type.indexOf("<");
+    return open > 0 && types.has(type.slice(0, open));
+  };
 }
 
 export function requireAdapter(value: unknown, label: string): EventAdapter {

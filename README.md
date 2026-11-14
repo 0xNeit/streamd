@@ -1073,6 +1073,20 @@ When `module.eventType` is an array of Move types, `FullnodeScanAdapter` serves
 all of them in a single transaction scan per page, delivering matches in
 `(version, eventIndex)` order.
 
+A type is matched as the source reports it. One written without type arguments also
+matches its struct with any, so a generic event can be followed across every
+instantiation: `0x190d...e12::liquidity_pool::SwapEvent` matches
+`0x190d...e12::liquidity_pool::SwapEvent<0x1::aptos_coin::AptosCoin, ...>` for every pool, but
+not `SwapEventV2`. A struct is either generic or not, so a non-generic type matches exactly what it
+did before, and a type with arguments matches only that instantiation. This holds on
+`FullnodeScanAdapter`, `MemoryAdapter`, both store adapters, `SuiAdapter` (whose node filter
+works this way) and in `eventsOf`, `eventsAt`, `previewEvents` and the test assertions. An
+`account` descriptor's `eventTypes`, the `ofType` predicate and a `RoutingAdapter` route are still
+matched as before, and `defineEvents` types `event.type` as the key you wrote, so a generic
+struct's events carry their type arguments past a `switch` on it. A persisted page cache
+(`CachingAdapter` with a `PageStore`) written by an earlier release may hold an empty settled
+page for such a type; clear it, or use a new namespace, before following generic events.
+
 A `handle` descriptor takes one form or the other, never both. The creation-number
 form names the handle by its guid, so `accountAddress` is the account that created
 the handle, and `creationNumber` is a `bigint` up to `u64::MAX`. It reads the same
@@ -1774,18 +1788,34 @@ const thala = await streamd.getSwaps({ fromVersion: -10_000n, protocol: ["thala-
   | `"thala-clamm"` | `0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920` (ThalaSwap CLAMM) | `pool::SwapEvent` |
   | `"thala-v2"` | `0x007730cd28ee1cdc9e999336cbc430f99e7c44397c0aa77516f6f23a78559bb5` (ThalaSwap v2) | `pool::SwapEvent` |
   | `"cellana"` | `0x4bf51972879e3b95c4781a5cdcb9e1ee24ef483e7d22f2d903626f126df62bd1` | `liquidity_pool::SwapEvent` |
+  | `"tapp"` | `0x487e905f899ccb6d46fdaec56ba1e0c4cf119862a16c409904b8c78fab1f5e8a` (Tapp router) | `router::Swapped` |
+  | `"liquidswap"` | `0x190d44266241744264b964a37b8f09863167a12d3e70cda39376cfb4e3561e12` (v0), `0x0163df34fccbf003ce219d3f1d9e70d140b60622cb9dd47599c25fb2f797ba6e` (v0.5) | `liquidity_pool::SwapEvent<X, Y, Curve>` |
+  | `"pancakeswap"` | `0xc7efb4076dbe143cbcd98cfaaa929ecfc8f299203dfff63b95ccb6bfe19850fa` | `swap::SwapEvent<X, Y>` |
+  | `"thala-v1"` | `0x48271d39d0b05bd6efca2278f22277d6fcc375504f9839fd73f74ace240861af` (ThalaSwap v1) | `stable_pool::SwapEvent<..>`, `weighted_pool::SwapEvent<..>` |
 
-  `protocol`, one or a list, narrows the scanned types; an unknown name throws.
+  `protocol`, one or a list, narrows the scanned types; an unknown name throws. The last three
+  emit legacy handle events generic over the pool's coin types, followed for every pool by
+  naming the struct without type arguments (see [Choosing events](#choosing-events)).
 - **Trader.** None of these events names the swapper, and routers and aggregators call the
   pools on a user's behalf, so `trader` is the transaction's sender in long form (for a
   sponsored transaction, the user, not the fee payer). It is absent when the source reports no
   sender.
 - **Direction.** Hyperion and Cellana name the token in and out. Thala CLAMM reports its two
-  assets and `zero_for_one`; ThalaSwap v2 its asset list and `idx_in`/`idx_out`.
+  assets and `zero_for_one`; ThalaSwap v2 and Tapp an asset list and the in and out indexes into
+  it; ThalaSwap v1 indexes its first four type arguments, the pool's coins. LiquidSwap and
+  PancakeSwap report an in and an out amount for each of the pair's two coins: one side in and
+  the other out, or the event is skipped.
+- **Pools.** `poolId` is the pool object's address in long form. LiquidSwap, PancakeSwap and
+  ThalaSwap v1 pools are not objects (all of one package's pools sit under one account), so
+  their `poolId` is the pool's resource type with the event's type arguments, addresses in long
+  form: `<package>::liquidity_pool::LiquidityPool<X, Y, Curve>`,
+  `<package>::swap::TokenPairMetadata<X, Y>`, `<package>::stable_pool::StablePool<..>` or
+  `<package>::weighted_pool::WeightedPool<..>`.
 - **Assets.** A fungible asset is its metadata address in long form, as `Transfer.asset`
   reports it. Cellana names a coin by its type (`0x1::aptos_coin::AptosCoin`, addresses inside
-  in long form), so APT is `0x...0a` on Hyperion and Thala and may be the coin type on Cellana:
-  no coin is mapped to its paired fungible asset. `asset` keeps swaps with that asset on
+  in long form), and LiquidSwap, PancakeSwap and ThalaSwap v1 pools hold coins, named the same
+  way. So APT is `0x...0a` on Hyperion, Thala CLAMM, ThalaSwap v2 and Tapp, and the coin type on
+  the coin pools: no coin is mapped to its paired fungible asset. `asset` keeps swaps with that asset on
   either side and takes what `transfers`'s `asset` takes.
 - **Amounts.** `amountIn` and `amountOut` are the event's base units: what the pool took in and
   paid out, its own fee inside `amountIn`, not split out. A fee taken before the pool is not in
@@ -1799,9 +1829,7 @@ const thala = await streamd.getSwaps({ fromVersion: -10_000n, protocol: ["thala-
   `(version, eventIndex)`, `transactionHash`, `timestamp`, `sender` and `entryFunction`;
   cursors, dedup, `where` (`fromSender`, `whereField("poolId", ...)`), `limit` and the other
   options work as for any event.
-- **Limits.** Tapp, LiquidSwap, PancakeSwap and ThalaSwap v1 are not read yet; the last three
-  emit swap events generic over coin types, which a `module` type list does not match.
-  Hyperion's earlier `SwapEvent` and `SwapEventV2` are not read. An event whose fields do not
+- **Limits.** PancakeSwap's `user` and Tapp's `creator` are not read. Hyperion's earlier `SwapEvent` and `SwapEventV2` are not read. An event whose fields do not
   have its struct's shape is skipped. A swaps subscription is not a listener for `off()` or
   `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 

@@ -64,6 +64,28 @@ describe("PostgresStoreAdapter", () => {
     );
   });
 
+  it("matches a module type written without type arguments against the struct with any", async () => {
+    // Neighbours either side of the range: a longer name, a digit sorting below "<", and "=" itself.
+    const generic = [
+      ev(1n, 0, `${SWAP}<0x1::a::A, 0x1::b::B>`),
+      ev(1n, 1, `${SWAP}Fee<0x1::a::A>`),
+      ev(1n, 2, `${SWAP}2<0x1::a::A>`),
+      ev(1n, 3, `${SWAP}=x`),
+      ev(2n, 0, `${SWAP}<0x1::b::B, 0x1::d::LP<0x1::a::A, 0x1::b::B>>`),
+      ev(2n, 1, SWAP),
+      ev(2n, 2, MINT),
+    ];
+    const db = new PGlite();
+    await new PostgresEventStore(db).write(generic);
+    const adapter = new PostgresStoreAdapter(db);
+    const read = async (eventType: string | string[]) =>
+      ids((await adapter.fetchEvents({ kind: "module", eventType } as EventDescriptor, { limit: 100 })).events);
+    expect(await read(SWAP)).toEqual(["1:0", "2:0", "2:1"]);
+    expect(await read(`${SWAP}<0x1::a::A, 0x1::b::B>`)).toEqual(["1:0"]);
+    expect(await read([MINT, SWAP])).toEqual(["1:0", "2:0", "2:1", "2:2"]);
+    expect(await read([`${SWAP}Fee<0x1::a::A>`, MINT])).toEqual(["1:1", "2:2"]);
+  });
+
   it("pages with fromVersion, toVersion, limit, offset and cursor", async () => {
     const adapter = await seeded();
     const first = await adapter.fetchEvents(swaps, { fromVersion: 3n, toVersion: 8n, limit: 2 });

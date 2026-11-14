@@ -118,15 +118,148 @@ describe("toSwap", () => {
   });
 });
 
+/**
+ * Swap events from eight mainnet transactions (8049528130, 8049530377,
+ * 8049576438, 8049645607, 8049648262, 8049659568, 8049659842, 8049696228),
+ * captured through `FullnodeScanAdapter` with each generic struct named
+ * without type arguments, written by `serializeEvent`, `entryFunction` dropped.
+ */
+const GENERIC = readFileSync(join(import.meta.dir, "fixtures/swaps-generic.jsonl"), "utf8")
+  .trim()
+  .split("\n")
+  .map((line) => parseEvent(line));
+
+describe("toSwap on generic-event DEXes and Tapp", () => {
+  const LIQUIDSWAP_V05 = "0x0163df34fccbf003ce219d3f1d9e70d140b60622cb9dd47599c25fb2f797ba6e";
+  const THALA_V1 = "0x48271d39d0b05bd6efca2278f22277d6fcc375504f9839fd73f74ace240861af";
+  const NULL = `${THALA_V1}::base_pool::Null`;
+  const LZ_USDC = "0xf22bede237a07e121b56d91a491eb7bcdfd1f5907926a9e58338f964a01b17fa::asset::USDC";
+  const THAPT = "0xfaf4e633ae9eb31366c9ca24214231760926576c7b625313b3688b5e900731f6::staking::ThalaAPT";
+  const DOODOO = "0x73eb84966be67e4697fc5ae75173ca6c35089e802650f75422ab49a8729704ec::coin::DooDoo";
+  const LSD = "0x53a30a6e5936c0a4c5140daed34de39d17ca7fcae08f947c02e979cef98a3719::coin::LSD";
+  const generic = (version: number, eventIndex: number) => {
+    const event = GENERIC.find((e) => e.version === BigInt(version) && e.eventIndex === eventIndex);
+    if (event === undefined) throw new Error(`no fixture at ${version}:${eventIndex}`);
+    return event;
+  };
+  const swapOf = (version: number, eventIndex: number) => toSwap(generic(version, eventIndex))?.data;
+
+  it("reads PancakeSwap's pair event, x in, naming the pair by its type", () => {
+    expect(swapOf(8049528130, 2)).toEqual({
+      protocol: "pancakeswap",
+      poolId: `0xc7efb4076dbe143cbcd98cfaaa929ecfc8f299203dfff63b95ccb6bfe19850fa::swap::TokenPairMetadata<${APT_COIN}, ${LZ_USDC}>`,
+      trader: "0x6fe8d6a9c2bae15c093a82cb767fa26e73d1766b75a0eb03394b0cd3c80d1816",
+      assetIn: APT_COIN,
+      amountIn: 1999666000n,
+      assetOut: LZ_USDC,
+      amountOut: 9747769n,
+    });
+  });
+
+  it("reads LiquidSwap v0 and v0.5 pools, y in and x in, one record per hop", () => {
+    expect(swapOf(8049530377, 3)).toEqual({
+      protocol: "liquidswap",
+      poolId:
+        "0x190d44266241744264b964a37b8f09863167a12d3e70cda39376cfb4e3561e12::liquidity_pool::LiquidityPool" +
+        `<${LZ_USDC}, ${APT_COIN}, 0x190d44266241744264b964a37b8f09863167a12d3e70cda39376cfb4e3561e12::curves::Uncorrelated>`,
+      trader: "0xd0ace0a0d9ad410b18a124890f97cd16cce6f1b52bf869f21064b1d9946a5be8",
+      assetIn: APT_COIN,
+      amountIn: 999675000n,
+      assetOut: LZ_USDC,
+      amountOut: 4869051n,
+    });
+    // A three-hop route through v0.5, reported at 0x163d.. and read in long form.
+    const route = [5, 10, 15].map((i) => swapOf(8049576438, i)!);
+    expect(route.map((r) => [r.protocol, r.assetIn, r.amountIn, r.assetOut, r.amountOut])).toEqual([
+      ["liquidswap", APT_COIN, 105219158n, DOODOO, 3547119804n],
+      ["liquidswap", DOODOO, 3547119804n, LSD, 54743975650n],
+      ["liquidswap", LSD, 54743975650n, LZ_USDC, 509996n],
+    ]);
+    expect(route[2]!.poolId).toBe(
+      `${LIQUIDSWAP_V05}::liquidity_pool::LiquidityPool<${LSD}, ${LZ_USDC}, ${LIQUIDSWAP_V05}::curves::Uncorrelated>`,
+    );
+  });
+
+  it("reads ThalaSwap v1 stable and weighted pools by index into their coins", () => {
+    expect(swapOf(8049645607, 2)).toEqual({
+      protocol: "thala-v1",
+      poolId: `${THALA_V1}::stable_pool::StablePool<${THAPT}, ${APT_COIN}, ${NULL}, ${NULL}>`,
+      trader: ARB,
+      assetIn: APT_COIN,
+      amountIn: 7100511n,
+      assetOut: THAPT,
+      amountOut: 7123764n,
+    });
+    const weighted = `${THALA_V1}::weighted_pool::WeightedPool<${LZ_USDC}, ${APT_COIN}, ${NULL}, ${NULL}, ` +
+      `${THALA_V1}::weighted_pool::Weight_50, ${THALA_V1}::weighted_pool::Weight_50, ${NULL}, ${NULL}>`;
+    expect(swapOf(8049659842, 4)).toMatchObject({ poolId: weighted, assetIn: APT_COIN, amountIn: 459588966n, assetOut: LZ_USDC, amountOut: 2189901n });
+    expect(swapOf(8049696228, 15)).toMatchObject({ poolId: weighted, assetIn: LZ_USDC, amountIn: 2483471n, assetOut: APT_COIN, amountOut: 520140206n });
+  });
+
+  it("reads Tapp's Swapped in both directions", () => {
+    const pool = "0x82e0b52f95ae57b35220726a32c3415919389aa5b8baa33a058d7125797535cc";
+    expect(swapOf(8049648262, 20)).toEqual({
+      protocol: "tapp",
+      poolId: pool,
+      trader: "0x7937d0aec1021bcac34cd217b6aea3b78197d9cf2ebad9bc4aa749db640115f8",
+      assetIn: USDT,
+      amountIn: 2128536n,
+      assetOut: USDC,
+      amountOut: 2126600n,
+    });
+    expect(swapOf(8049659568, 18)).toMatchObject({ poolId: pool, assetIn: USDC, amountIn: 4825036n, assetOut: USDT, amountOut: 4828402n });
+  });
+
+  it("skips pair events not one side in and the other out, Null slots and indexes out of range", () => {
+    const pancake = generic(8049528130, 2);
+    const liquid = generic(8049530377, 3);
+    const thala = generic(8049645607, 2);
+    const tapp = generic(8049648262, 20);
+    const data = (event: StreamdEvent) => event.data as Record<string, unknown>;
+    const broken = [
+      { ...pancake, data: { ...data(pancake), amount_y_in: "5" } },
+      { ...pancake, data: { ...data(pancake), amount_y_out: "0" } },
+      { ...liquid, data: { ...data(liquid), x_in: "7" } },
+      { ...liquid, data: { ...data(liquid), x_out: "-1" } },
+      { ...liquid, type: liquid.type.replace(/<.*$/, "") },
+      { ...thala, type: thala.type.replace(/<.*$/, "") },
+      { ...thala, data: { ...data(thala), idx_in: "2" } },
+      { ...thala, data: { ...data(thala), idx_out: "4" } },
+      { ...tapp, data: { ...data(tapp), asset_in_index: "2" } },
+      { ...tapp, data: { ...data(tapp), assets: "0xa" } },
+    ];
+    for (const event of broken) expect(toSwap(event)).toBeUndefined();
+  });
+
+  it("serves the generic records through getSwaps over a MemoryAdapter", async () => {
+    const client = testClient({ adapter: new MemoryAdapter([...EVENTS, ...GENERIC]) });
+    const thala = await client.getSwaps({ fromVersion: 0n, protocol: "thala-v1" });
+    expect(thala.map((e) => `${e.version}:${e.eventIndex}`)).toEqual([
+      "8049645607:2", "8049645607:4", "8049645607:6", "8049659842:4", "8049696228:15",
+    ]);
+    const coins = await client.getSwaps({ fromVersion: 8049500000n, asset: "0x1::aptos_coin::AptosCoin" });
+    expect(new Set(coins.map((e) => e.data.protocol))).toEqual(new Set(["pancakeswap", "liquidswap", "thala-v1"]));
+    client.destroy();
+  });
+});
+
 describe("swapDescriptor", () => {
   it("lists every protocol's event type by default, and narrows to those named", () => {
-    expect(swapDescriptor().eventType).toHaveLength(4);
+    expect(swapDescriptor().eventType).toHaveLength(10);
     expect(swapDescriptor("cellana").eventType).toEqual([
       "0x4bf51972879e3b95c4781a5cdcb9e1ee24ef483e7d22f2d903626f126df62bd1::liquidity_pool::SwapEvent",
     ]);
     expect(swapDescriptor(["hyperion", "thala-v2", "hyperion"]).eventType).toEqual([
       "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c::pool_v3::SwapEventV3",
       "0x7730cd28ee1cdc9e999336cbc430f99e7c44397c0aa77516f6f23a78559bb5::pool::SwapEvent",
+    ]);
+  });
+
+  it("names generic structs without type arguments, and both of ThalaSwap v1's pool kinds", () => {
+    expect(swapDescriptor(["thala-v1", "pancakeswap"]).eventType).toEqual([
+      "0xc7efb4076dbe143cbcd98cfaaa929ecfc8f299203dfff63b95ccb6bfe19850fa::swap::SwapEvent",
+      "0x48271d39d0b05bd6efca2278f22277d6fcc375504f9839fd73f74ace240861af::stable_pool::SwapEvent",
+      "0x48271d39d0b05bd6efca2278f22277d6fcc375504f9839fd73f74ace240861af::weighted_pool::SwapEvent",
     ]);
   });
 

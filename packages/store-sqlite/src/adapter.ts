@@ -34,14 +34,29 @@ function typeList(types: readonly string[]): Where {
   return { sql: `type IN (${types.map(() => "?").join(", ")})`, params: types.map(requireEventType) };
 }
 
-function descriptorWhere(descriptor: EventDescriptor): Where {
+/**
+ * A `module` descriptor's types: each exactly, and one written without type
+ * arguments also with any. The column's BINARY collation orders by bytes, so
+ * `T<...` lies in [`T<`, `T=`). The range is added only when a probe finds a
+ * row in it, so a non-generic type keeps the plan that seeks the type index.
+ */
+function moduleTypes(db: SqliteDatabase, types: readonly string[]): Where {
+  const exact = typeList(types);
+  const probe = db.prepare("SELECT 1 FROM streamd_events WHERE type >= ? AND type < ? LIMIT 1");
+  const generic = (exact.params as string[]).filter((t) => !t.includes("<") && probe.get(`${t}<`, `${t}=`) != null);
+  if (generic.length === 0) return exact;
+  const ranges = generic.map(() => " OR (type >= ? AND type < ?)").join("");
+  return { sql: `(${exact.sql}${ranges})`, params: [...exact.params, ...generic.flatMap((t) => [`${t}<`, `${t}=`])] };
+}
+
+function descriptorWhere(db: SqliteDatabase, descriptor: EventDescriptor): Where {
   switch (descriptor?.kind) {
     case "module": {
       const { eventType } = descriptor;
       if (Array.isArray(eventType) && eventType.length === 0) {
         throw new StreamdError("Module descriptor requires at least one eventType");
       }
-      return typeList(Array.isArray(eventType) ? eventType : [eventType as string]);
+      return moduleTypes(db, Array.isArray(eventType) ? eventType : [eventType as string]);
     }
     case "account": {
       if (descriptor.received === true) throw new StreamdError("StoreAdapter keys account events by sender, so it cannot serve received ones");
@@ -150,7 +165,7 @@ export class StoreAdapter implements EventAdapter {
   }
 
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
-    let where = descriptorWhere(descriptor);
+    let where = descriptorWhere(this.db, descriptor);
     // Never migrates, since it may be read-only: a database no write has
     // migrated yet holds no resource rows to serve.
     if (descriptor.kind === "resource" && !eventColumns(this.db).has("account_address")) where = { sql: "0", params: [] };

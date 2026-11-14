@@ -64,7 +64,15 @@ export type TransferListenerOptions = SubscriptionOptions & TransferOptions;
 export type TransferFilter = EventFilter & TransferOptions;
 
 /** A DEX whose swap events `swaps` and `getSwaps` read. */
-export type SwapProtocol = "hyperion" | "thala-clamm" | "thala-v2" | "cellana";
+export type SwapProtocol =
+  | "hyperion"
+  | "thala-clamm"
+  | "thala-v2"
+  | "cellana"
+  | "tapp"
+  | "liquidswap"
+  | "pancakeswap"
+  | "thala-v1";
 
 /**
  * One swap through one pool, the `data` of the records `swaps` and
@@ -72,13 +80,18 @@ export type SwapProtocol = "hyperion" | "thala-clamm" | "thala-v2" | "cellana";
  */
 export interface Swap {
   protocol: SwapProtocol;
-  /** The pool object's address, in long form. */
+  /**
+   * The pool object's address, in long form. A coin pool that is no object
+   * (LiquidSwap, PancakeSwap, ThalaSwap v1) is named by its resource type
+   * instead, such as `<package>::liquidity_pool::LiquidityPool<X, Y, Curve>`,
+   * addresses in long form.
+   */
   poolId: string;
   /** The transaction's sender, in long form; absent when the source reports none. */
   trader?: string;
   /**
-   * What the pool took in: a fungible-asset metadata address, or on Cellana a
-   * coin type, in long form, as `Transfer.asset` reports them.
+   * What the pool took in: a fungible-asset metadata address, or a coin type
+   * (Cellana and the coin pools), in long form, as `Transfer.asset` reports them.
    */
   assetIn: string;
   /** Base units, as the swap event reports them. */

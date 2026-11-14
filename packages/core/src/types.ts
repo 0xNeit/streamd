@@ -26,7 +26,10 @@ export interface ModuleEventDescriptor<TData = unknown> {
    * One Move event type or a non-empty list of them (e.g.
    * `"0x1::coin::WithdrawEvent"` or
    * `["0x1::fungible_asset::Withdraw", "0x1::fungible_asset::Deposit"]`),
-   * served by a single transaction scan on `FullnodeScanAdapter`.
+   * served by a single transaction scan on `FullnodeScanAdapter`. A type is
+   * matched as the source reports it; one written without type arguments
+   * (`"0xabc::pool::SwapEvent"`) also matches the struct with any
+   * (`"0xabc::pool::SwapEvent<0x1::aptos_coin::AptosCoin, 0xabc::usd::USD>"`).
    */
   eventType: MoveEventType | readonly MoveEventType[];
 }
