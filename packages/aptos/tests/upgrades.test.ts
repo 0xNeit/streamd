@@ -374,14 +374,15 @@ describe("upgradeSource", () => {
   it("ignores other event types, and delivers a page fetched again in full", async () => {
     const reads: bigint[] = [];
     const stray = { ...publish(7, 0, A), type: "0xbad::code::PublishPackage" };
-    const events = [stray, publish(8, 0, A), publish(8, 3, A), publish(9, 0, A)];
+    // Ending on the duplicate, so a page refetched after its last record still has that record first.
+    const events = [stray, publish(8, 0, A), publish(8, 3, A)];
     const source = upgradeSource({ fetchEvents: async () => ({ events, nextCursor: "", hasMore: false }) }, async () => A, async (_a, v) => (reads.push(v), V1));
     const first = await source.fetchEvents(UPGRADE_DESCRIPTOR, range);
     // A caller retrying the page, after a failed where or a pause, gets it all again.
     const again = await source.fetchEvents(UPGRADE_DESCRIPTOR, range);
-    expect(first.events.map((e) => e.version)).toEqual([8n, 9n]);
-    expect(again.events.map((e) => e.version)).toEqual([8n, 9n]);
-    expect(reads.sort((x, y) => Number(x - y))).toEqual([7n, 7n, 8n, 8n, 8n, 8n, 9n, 9n]);
+    expect(first.events.map((e) => e.version)).toEqual([8n]);
+    expect(again.events.map((e) => e.version)).toEqual([8n]);
+    expect(reads.sort((x, y) => Number(x - y))).toEqual([7n, 7n, 8n, 8n]);
   });
 
   it("stops a page given up on from reading more once the next page starts", async () => {

@@ -2228,7 +2228,7 @@ const past = await streamd.getUpgrades("0x1", { fromVersion: 7454757100n, toVers
   so no other module can forge a record. `isUpgrade` is the event's `is_upgrade`: false for a
   package's first publish.
 - **The diff.** Every module at the address is read at the version before the publish and at
-  its own, through the client's `aptos` (`getAccountModules` with `ledgerVersion`), and their
+  its own, through the client's `aptos` (`getAccountModulesPage` at `ledgerVersion`, every page), and their
   ABIs compared: structs marked `#[event]` (`is_event`), functions with `is_entry`, and functions
   with `is_view`, each named `address::module::name` with the address in long form. A name only
   after the publish is `added`, only before it `removed`, and in both with a different
@@ -2242,11 +2242,11 @@ const past = await streamd.getUpgrades("0x1", { fromVersion: 7454757100n, toVers
   variants? }` (`variants` for an enum) and a `FunctionSignature` `{ name, visibility,
   typeParameters, params, returns }`, types as the fullnode writes them. Public functions that
   are neither entry nor view, plain structs and bytecode-only changes are not reported.
-- **Reads.** Two module listings per publish (one at version 0), read two at a time outside
-  `maxConcurrentRequests`, as `transfers()` reads stores. `requestTimeout` bounds the whole page,
-  its scan and every listing in it together, and a page given up on stops reading once the next
-  page arrives. A
-  failed read fails the poll, which retries as for `on()`, or rejects `getUpgrades`; a module
+- **Reads.** Two module listings per publish (one at version 0), each of one or more pages,
+  read two at a time outside `maxConcurrentRequests`, as `transfers()` reads stores.
+  `requestTimeout` bounds the whole page, its scan and every listing in it together. A page given
+  up on stops reading once the next page arrives, and otherwise finishes its reads; a listing
+  whose cursor repeats fails. A failed read fails the poll, which retries as for `on()`, or rejects `getUpgrades`; a module
   without a readable ABI is refused rather than reported as removed. The reads do not go
   through the adapter, so `ArchiveFallbackAdapter` does not answer them: a publish older than
   the node's retained state fails with its 410 unless the client's `aptos` is an archive node.
