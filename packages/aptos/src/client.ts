@@ -273,9 +273,18 @@ export class AptosClient extends StreamdClient {
   private upgradesOf(address: string): (source: EventAdapter) => EventAdapter {
     if (typeof address !== "string") throw new StreamdError("upgrades needs an address or Aptos name");
     const who = this.accountOf(address)!;
+    // Paged by hand: the SDK's getAccountModules stops at 1000 modules in all, and a
+    // short listing would read as removed signatures.
     const read = async (at: string, version: bigint) => {
       try {
-        return await this.aptos.getAccountModules({ accountAddress: at, options: { ledgerVersion: version } });
+        const modules = [];
+        let cursor: string | undefined;
+        do {
+          const page = await this.aptos.getAccountModulesPage({ accountAddress: at, options: { ledgerVersion: version, cursor, limit: 1000 } });
+          modules.push(...page.modules);
+          cursor = page.cursor;
+        } while (cursor !== undefined);
+        return modules;
       } catch (err) {
         throw toStreamdError(err, `modules of ${at} at version ${version}`);
       }

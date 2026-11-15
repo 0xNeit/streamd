@@ -175,9 +175,10 @@ const V2 = [mod("pool", [{ name: "swap", is_entry: true }, { name: "price", is_v
 function reader(answer: (address: string, version: bigint) => MoveModuleBytecode[] | Promise<MoveModuleBytecode[]>, aptos: Aptos = makeAptos()) {
   const reads: [string, bigint][] = [];
   Object.assign(aptos, {
-    getAccountModules: async ({ accountAddress, options }: { accountAddress: string; options: { ledgerVersion: bigint } }) => {
+    getAccountModulesPage: async ({ accountAddress, options }: { accountAddress: string; options: { ledgerVersion: bigint; cursor?: string } }) => {
+      if (options.cursor !== undefined) throw new Error("one page only");
       reads.push([accountAddress, options.ledgerVersion]);
-      return answer(accountAddress, options.ledgerVersion);
+      return { modules: await answer(accountAddress, options.ledgerVersion), cursor: undefined };
     },
   });
   return { aptos, reads };
@@ -258,6 +259,26 @@ describe("getUpgrades", () => {
     const stuck = reader(() => new Promise<never>(() => {}));
     const slow = testClient({ adapter: new MemoryAdapter([publish(10, 0, A)]), aptos: stuck.aptos, requestTimeout: 20 });
     await expect(slow.getUpgrades(A, { fromVersion: 0n })).rejects.toThrow("timed out");
+  });
+
+  it("reads every page of a long module listing", async () => {
+    const aptos = makeAptos();
+    const cursors: (string | undefined)[] = [];
+    const pages: Record<string, { modules: MoveModuleBytecode[]; cursor: string | undefined }> = {
+      start: { modules: V1, cursor: "next" },
+      next: { modules: [mod("extra", [{ name: "go", is_entry: true }])], cursor: undefined },
+    };
+    Object.assign(aptos, {
+      getAccountModulesPage: async ({ options }: { options: { cursor?: string; limit?: number } }) => {
+        cursors.push(options.cursor);
+        expect(options.limit).toBe(1000);
+        return pages[options.cursor ?? "start"]!;
+      },
+    });
+    const client = testClient({ adapter: new MemoryAdapter([publish(0, 0, A, false)]), aptos });
+    const [record] = await client.getUpgrades(A, { fromVersion: 0n });
+    expect(record!.data.entryFunctions.added.map((f) => f.name)).toEqual([`${A}::extra::go`, `${A}::pool::swap`]);
+    expect(cursors).toEqual([undefined, "next"]);
   });
 
   it("refuses an address that is not a string at the call", () => {
