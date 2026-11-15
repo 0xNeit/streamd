@@ -4112,6 +4112,86 @@ The range is required and at most 100,000 versions; `--max-pages` (default 10) c
 `--limit` sets the page size. It exits 0 when the nodes agree, 1 when they disagree, a node fails
 or no window was compared, and 2 for bad usage.
 
+### Monitor several nodes
+
+`streamd monitor` reads every node once per round and prints, for each, how far its head is
+behind the best one, how many of its calls failed or were refused with `429` over a sliding
+window, and whether its recent events match the first node's, as a JSON line or as Prometheus
+text:
+
+```sh
+streamd monitor --node-url https://api.mainnet.aptoslabs.com/v1 \
+  --node-url https://fullnode.mainnet.aptoslabs.com/v1 --node-url https://my-node.example/v1
+streamd monitor --node-url "$A" --node-url "$B" --format prometheus --listen 9464
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--node-url <url>` | a node to monitor, at least twice; node `0` is the first and the reference |
+| `--interval <ms>` | time from one round's start to the next, and each call's timeout (default `10000`) |
+| `--window <duration>` | how far back the window sums reach, `30s`, `5m`, `1h` or `1d` (default `5m`) |
+| `--range <n>` | versions compared with node `0` per round (default `100`, at most `10000`) |
+| `--format <name>` | `json` or `prometheus` (default `json`) |
+| `--listen <[host:]port>` | also serve the latest round's Prometheus text at `/metrics`, on `127.0.0.1` unless a host is given |
+| `--limit <n>` | exit after `n` rounds |
+
+Each round, every node reads its head version and its head block's time, then each node that
+answered is compared with node `0` through [`compareAdapters`](#data-sources-and-their-limits)
+over the newest `--range` versions both have, ending at the lower of the two heads, so a slow node
+narrows only its own comparison. The events compared are those of the event types given (or
+`--account`, or a handle or resource, as `tail` takes them), by default
+`0x1::transaction_fee::FeeStatement`, which every user transaction emits; `--chain sui` has no
+default and needs one. A round never overlaps the next, and a call that takes longer than
+`--interval` fails as a timeout, so one silent node cannot stall the monitor.
+
+- **Lag** is behind the best node of the round: `lagVersions` from head versions, `lagMs` in chain
+  time from head blocks' timestamps (`null` when a node's block cannot be read). The leader reads
+  `0`. The two come from separate reads, so they agree closely, not exactly.
+- **Requests, errors and `429`s** count every call the monitor made to a node, head, block and
+  comparison reads alike. Each node's requests go out once, without the SDK's own retries, and a timed-out one
+  is abandoned on Aptos, so a `429` reaches the monitor rather than being waited out. A node that answers `429` to any call, comparison reads included, is set aside
+  for its `Retry-After`, or for one interval when it names none, as Aptos fullnode errors never
+  do, so at least the next round skips it and reports `error: "429"`.
+- **The window** holds the rounds that started less than `--window` ago, at most 10,000.
+
+A JSON line per round, versions as decimal strings:
+
+```json
+{"round":3,"time":"2026-11-14T22:00:00.000Z","nodes":[
+  {"node":0,"up":true,"error":null,"head":"8053398912","lagVersions":"0","lagMs":0,"compare":null,
+   "window":{"rounds":3,"up":3,"requests":12,"errors":0,"rateLimited":0,"errorRate":0,"maxLagVersions":"0","maxLagMs":0}},
+  {"node":1,"up":true,"error":null,"head":"8053398907","lagVersions":"5","lagMs":130,
+   "compare":{"fromVersion":"8053398808","toVersion":"8053398907","window":{"fromVersion":"8053398808","toVersion":"8053398907"},"matched":61,"missing":0,"extra":0,"different":0},
+   "window":{"rounds":3,"up":3,"requests":12,"errors":0,"rateLimited":0,"errorRate":0,"maxLagVersions":"12","maxLagMs":400,"matched":180,"disagreements":0}}]}
+```
+
+(one line in practice). `error` is `null` for a node that answered its head read, else
+`"timeout"`, the HTTP status (`"429"`, `"503"`) or `"failed"`: never the error's message, which
+can carry the node's URL, so nodes are named by position, as `--stats` names them. `compare` is
+this round's comparison with node `0`, `null` for node `0` and for a node not compared; its
+`window` is the versions both walks covered, `null` when one failed. `window.disagreements` sums
+`missing`, `extra` and `different` over the window. To see the events themselves, run
+[`streamd compare`](#compare-two-nodes) over the range reported. A node so far behind that node `0`
+has pruned its range makes node `0`'s walk fail with `410`, counted as an error on node `0`.
+
+`--format prometheus` prints each round as text exposition, rounds separated by a blank line, and
+`--listen` serves the latest at `GET /metrics` whatever `--format` prints. The endpoint has no
+authentication; it serves only counts, versions and node positions, but a host other than
+`127.0.0.1` makes it reachable by anyone on that network. Gauges labelled
+`node`: `streamd_monitor_up`, `streamd_monitor_head_version`, `streamd_monitor_lag_versions`,
+`streamd_monitor_lag_seconds`, `streamd_monitor_window_requests`, `streamd_monitor_window_errors`,
+`streamd_monitor_window_rate_limited`, and for nodes from `1` up `streamd_monitor_window_matched`
+and `streamd_monitor_window_disagreements`, a series left out when its value is unknown; then
+`toPrometheus` over each node's lifetime counts (`streamd_adapter_requests_total`
+and the rest, by `node` and `method`), from which Prometheus computes its own rates.
+
+`--api-key` goes to node `0` only; `APTOS_API_KEY` is not used, since every node is a URL given.
+`--archive`, `--cache` and `--stats` are refused: each would hide or repeat what the monitor
+measures. The defaults cost each node about four reads per 10 seconds, and node `0` one more walk
+per other node, within the anonymous Aptos fullnode limit for a few nodes. Exit codes: `0` on Ctrl-C, `SIGTERM`, or after `--limit` rounds; `1` when
+`--listen` cannot bind or stdout fails; `2` for invalid arguments. A node that is down never ends
+the command.
+
 ### Store events
 
 `streamd store` follows the same descriptors as `tail` into a SQLite file, through
