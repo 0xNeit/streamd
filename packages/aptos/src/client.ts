@@ -13,12 +13,13 @@ import { activityDescriptor, activitySource } from "./activity.js";
 import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
+import { startProposals } from "./governance.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { saleDescriptor, saleSource } from "./sales.js";
 import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Sale, SaleFilter, SaleListenerOptions, Swap, SwapFilter, SwapListenerOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, Swap, SwapFilter, SwapListenerOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -189,6 +190,23 @@ export class AptosClient extends StreamdClient {
     const descriptor = saleDescriptor(marketplace);
     const query = new EventQuery(saleSource(this.adapter, token), this.limiter, this.names);
     return query.getEvents<Sale>(descriptor, rest);
+  }
+
+  /**
+   * Keep every on-chain governance proposal current: its creation (proposer,
+   * execution hash, metadata, expiry and thresholds), the stake for and
+   * against, each vote with its voter and stake pool, and its resolution,
+   * folded from the `voting` and `aptos_governance` events. Five walks run:
+   * the four legacy handles at `0x1`, emitted until the module-event
+   * migration, and one scan over the module events that replaced them, each
+   * reading its history from `fromVersion` (as for `getEvents` when omitted:
+   * a handle from its first event, a `FullnodeScanAdapter` scan from the
+   * head) and then following live. `proposalState()` gives a proposal's
+   * state at a time. Nothing is read by view. Like `reduce()`, it is not a
+   * listener for `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  proposals(options?: ProposalsOptions): Proposals {
+    return startProposals((d, r, i, o) => this.reduce(d, r, i, o), this.onError, options);
   }
 
   /**

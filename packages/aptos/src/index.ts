@@ -13,6 +13,7 @@ export { AptosClient } from "./client.js";
 export type { AptosClientConfig } from "./client.js";
 export { primaryName, resolveName } from "./names.js";
 export { formatAmount } from "./transfers.js";
+export { proposalState } from "./governance.js";
 export type {
   Activity,
   ActivityFilter,
@@ -29,6 +30,12 @@ export type {
   ExpectEventsOptions,
   ExpectPreviewOptions,
   PreviewEventsOptions,
+  Proposal,
+  ProposalResolution,
+  Proposals,
+  ProposalsOptions,
+  ProposalState,
+  ProposalVote,
   Sale,
   SaleFilter,
   SaleKind,

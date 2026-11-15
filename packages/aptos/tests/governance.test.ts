@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { StreamdError } from "@streamd/core";
-import type { StreamdEvent } from "@streamd/core";
-import { applyGovernanceEvent, proposalState } from "../src/governance.js";
+import { MemoryAdapter, StreamdError, descriptorKey } from "@streamd/core";
+import type { EventAdapter, EventDescriptor, StreamdEvent } from "@streamd/core";
+import { GOVERNANCE_WALKS, applyGovernanceEvent, proposalState } from "../src/governance.js";
+import { proposalState as exported } from "../src/index.js";
 import type { Proposal } from "../src/types.js";
+import { testClient } from "./helpers.js";
 
 const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
 const POOL_A = long("a");
@@ -154,5 +156,132 @@ describe("proposalState", () => {
   it("is undefined without the creation, and reads the wall clock by default", () => {
     expect(proposalState({ id: 1n, yesVotes: 1n, noVotes: 0n, votes: [] }, 0n)).toBeUndefined();
     expect(proposalState(withVotes(created(), 90n, 10n))).toBe("succeeded");
+  });
+});
+
+/** One `MemoryAdapter` per walk, in `GOVERNANCE_WALKS` order, so each handle serves only its own events. */
+function walks(...sets: StreamdEvent[][]): { adapter: EventAdapter; memories: MemoryAdapter[]; asked: EventDescriptor[] } {
+  const memories = GOVERNANCE_WALKS.map((_, i) => new MemoryAdapter(sets[i] ?? []));
+  const keys = GOVERNANCE_WALKS.map(descriptorKey);
+  const asked: EventDescriptor[] = [];
+  const adapter: EventAdapter = {
+    fetchEvents: (d, o) => (asked.push(d), memories[keys.indexOf(descriptorKey(d))]!.fetchEvents(d, o)),
+  };
+  return { adapter, memories, asked };
+}
+const until = async (done: () => boolean) => {
+  for (let i = 0; i < 300 && !done(); i++) await new Promise((r) => setTimeout(r, 2));
+};
+const LEGACY = [
+  [votingCreate(10, "0", [], true)],
+  [ev(10, 0, "0x1::aptos_governance::CreateProposalEvent", { proposer: "0xc", stake_pool: "0xa", proposal_id: "0", execution_hash: "0x", proposal_metadata: { data: [] } }, true)],
+  [vote(11, "0", "0xa", "70", true, true), vote(12, "0", "0xb", "40", false, true)],
+  [resolve(30, "0", "70", "40", true)],
+];
+
+describe("proposals", () => {
+  it("folds the legacy handles and the module scan into one map, as no listener", async () => {
+    const { adapter, asked } = walks(...LEGACY, [votingCreate(40, "1"), governanceCreate(40, "1"), vote(41, "1", "0xa", "5", true), resolve(42, "0", "1", "1", true)]);
+    const client = testClient({ adapter });
+    const tracker = client.proposals();
+    expect(client.listenerCount()).toBe(0);
+    const value = await tracker.ready;
+    expect([...value.keys()]).toEqual([0n, 1n]);
+    expect(tracker.get(0n)).toMatchObject({ proposer: long("c"), yesVotes: 70n, noVotes: 40n, resolution: { steps: 1 } });
+    expect(tracker.get(1n)).toMatchObject({ createdAt: 40n, yesVotes: 5n, votes: [{ stakePool: POOL_A }] });
+    expect(exported(tracker.get(0n)!, 1001n)).toBe("succeeded");
+    expect(new Set(asked.map(descriptorKey))).toEqual(new Set(GOVERNANCE_WALKS.map(descriptorKey)));
+    expect(tracker.active).toBe(true);
+    tracker.unsubscribe();
+    expect(tracker.active).toBe(false);
+    client.destroy();
+  });
+
+  it("follows live, reporting each change through onChange", async () => {
+    const { adapter, memories } = walks(...LEGACY);
+    const client = testClient({ adapter });
+    const changes: [bigint, bigint, bigint][] = [];
+    const tracker = client.proposals({ pollInterval: 1, onChange: (p, e) => changes.push([p.id, p.yesVotes, e.version]) });
+    await tracker.ready;
+    expect(changes).toEqual([]);
+    memories[4]!.push(vote(50, "0", "0xd", "3", true), ev(50, 1, "0x1::voting::Vote", { proposal_id: "0", num_votes: "3" }));
+    await until(() => changes.length > 0);
+    expect(changes).toEqual([[0n, 73n, 50n]]);
+    expect(tracker.value.get(0n)!.votes.at(-1)).toMatchObject({ voter: long("d"), version: 50n });
+    tracker.unsubscribe();
+    client.destroy();
+  });
+
+  it("resolves an empty map when there are no governance events", async () => {
+    const client = testClient({ adapter: walks().adapter });
+    expect((await client.proposals().ready).size).toBe(0);
+    client.destroy();
+  });
+
+  it("folds nothing below fromVersion", async () => {
+    const client = testClient({ adapter: walks(...LEGACY).adapter });
+    const tracker = client.proposals({ fromVersion: 12n });
+    await tracker.ready;
+    expect(tracker.get(0n)).toMatchObject({ yesVotes: 0n, noVotes: 40n, resolution: { version: 30n } });
+    expect(tracker.get(0n)!.createdAt).toBeUndefined();
+    client.destroy();
+  });
+
+  it("refuses an unknown option at the call", () => {
+    const client = testClient({ adapter: walks().adapter });
+    expect(() => client.proposals({ where: () => true } as never)).toThrow("Unsupported proposals option: where");
+    client.destroy();
+  });
+
+  it("stops every walk when one fails, in the backfill or live, reporting once", async () => {
+    const { adapter, memories } = walks(...LEGACY);
+    let down: "backfill" | "live" | undefined = "backfill";
+    const broken: EventAdapter = {
+      fetchEvents: (d, o) =>
+        down !== undefined && descriptorKey(d) === descriptorKey(GOVERNANCE_WALKS[3]!)
+          ? Promise.reject(new StreamdError(`node down in the ${down}`))
+          : adapter.fetchEvents(d, o),
+    };
+    const client = testClient({ adapter: broken });
+    const errors: string[] = [];
+    const failing = client.proposals({ onError: (e) => errors.push(e.message) });
+    await expect(failing.ready).rejects.toThrow("node down in the backfill");
+    expect(errors).toEqual(["node down in the backfill"]);
+    expect(failing.active).toBe(false);
+
+    down = undefined;
+    const tracker = client.proposals({ pollInterval: 1, maxErrors: 1, onError: (e) => errors.push(e.message) });
+    await tracker.ready;
+    down = "live";
+    await until(() => errors.length > 1);
+    expect(errors.slice(1)).toEqual(["Polling stopped on invalid input: node down in the live"]);
+    expect(tracker.active).toBe(false);
+    memories[2]!.push(vote(60, "0", "0xd", "3", true, true));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(tracker.get(0n)!.votes.length).toBe(2);
+    client.destroy();
+  });
+
+  it("stops on a malformed event, naming it", async () => {
+    const client = testClient({ adapter: walks([], [], [vote(11, "0", "0xa", "x", true, true)]).adapter });
+    const errors: Error[] = [];
+    const tracker = client.proposals({ onError: (e) => errors.push(e) });
+    await expect(tracker.ready).rejects.toThrow();
+    expect(errors.map((e) => (e.cause as Error).message)).toEqual(["0x1::aptos_governance::VoteEvent at 11:0 does not have its struct's fields"]);
+    expect(tracker.active).toBe(false);
+    client.destroy();
+  });
+
+  it("stops every walk on abort and on destroy", async () => {
+    const controller = new AbortController();
+    const client = testClient({ adapter: walks(...LEGACY).adapter });
+    const tracker = client.proposals({ signal: controller.signal });
+    await tracker.ready;
+    controller.abort();
+    expect(tracker.active).toBe(false);
+    const other = client.proposals();
+    await other.ready;
+    client.destroy();
+    expect(other.active).toBe(false);
   });
 });

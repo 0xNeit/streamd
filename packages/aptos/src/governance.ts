@@ -1,8 +1,16 @@
 import { StreamdError, eventId } from "@streamd/core";
-import type { CreationNumberEventDescriptor, EventDescriptor, HandleEventDescriptor, StreamdEvent } from "@streamd/core";
+import type {
+  CreationNumberEventDescriptor,
+  EventDescriptor,
+  HandleEventDescriptor,
+  ReduceOptions,
+  Reducer,
+  Reduction,
+  StreamdEvent,
+} from "@streamd/core";
 import { address, amount } from "./records.js";
 import type { Fields } from "./records.js";
-import type { Proposal, ProposalState } from "./types.js";
+import type { Proposal, Proposals, ProposalsOptions, ProposalState } from "./types.js";
 
 const GOVERNANCE_EVENTS = "0x1::aptos_governance::GovernanceEvents";
 const governanceHandle = (fieldName: string): HandleEventDescriptor => ({
@@ -196,4 +204,91 @@ export function proposalState(
   const closed = nowSecs > expirationSecs || (early !== undefined && (yes >= early || no >= early));
   if (!closed) return "pending";
   return yes > no && yes + no >= minVoteThreshold ? "succeeded" : "failed";
+}
+
+const ALLOWED: readonly string[] = [
+  "fromVersion",
+  "pollInterval",
+  "batchSize",
+  "maxErrors",
+  "maxBackoff",
+  "maxPollInterval",
+  "retries",
+  "signal",
+  "onError",
+  "onChange",
+] satisfies readonly (keyof ProposalsOptions)[];
+
+/** `client.reduce()`, as the tracker calls it. */
+export type Reduce = (
+  descriptor: EventDescriptor,
+  reducer: Reducer<null>,
+  initial: null,
+  options: ReduceOptions<null>,
+) => Reduction<null>;
+
+/**
+ * `AptosClient.proposals()`: one reduction per walk, all folding into one
+ * map. Folding is order-free across walks (sums and field sets per proposal),
+ * so each walk backfills and follows on its own cursor; one stopping stops all,
+ * since the map would otherwise go on without that walk's events.
+ */
+export function startProposals(
+  reduce: Reduce,
+  clientOnError: ((error: Error) => void) | undefined,
+  options: ProposalsOptions = {},
+): Proposals {
+  const refused = Object.keys(options).find((k) => !ALLOWED.includes(k));
+  if (refused !== undefined) {
+    throw new StreamdError(`Unsupported proposals option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
+  }
+  const { onChange, onError, ...rest } = options;
+  const report = (err: Error) => (onError ?? clientOnError)?.(err);
+  const proposals = new Map<bigint, Proposal>();
+  const walks: Reduction<null>[] = [];
+  const stop = () => walks.forEach((walk) => walk.unsubscribe());
+
+  for (const descriptor of GOVERNANCE_WALKS) {
+    const fromHandle = descriptor.kind === "handle";
+    let changed: Proposal | undefined;
+    const walk = reduce(
+      descriptor,
+      (state, event) => {
+        changed = applyGovernanceEvent(proposals, event, fromHandle);
+        return state;
+      },
+      null,
+      {
+        ...rest,
+        onChange: (_, event) => {
+          if (changed !== undefined) onChange?.(changed, event);
+        },
+        onError: (err) => {
+          if (walks.some((w) => !w.active)) stop();
+          report(err);
+        },
+      },
+    );
+    walks.push(walk);
+  }
+
+  const ready = Promise.all(walks.map((walk) => walk.ready)).then(
+    () => proposals as ReadonlyMap<bigint, Proposal>,
+    (err: unknown) => {
+      stop();
+      throw err;
+    },
+  );
+  ready.catch(() => {});
+
+  return {
+    value: proposals,
+    get: (id) => proposals.get(id),
+    ready,
+    get active() {
+      return walks.every((walk) => walk.active);
+    },
+    unsubscribe: stop,
+    [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: stop,
+  } as Proposals;
 }

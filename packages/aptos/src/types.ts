@@ -2,6 +2,7 @@ import type { MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos
 import type {
   EventFilter,
   EventPredicate,
+  ReduceOptions,
   StreamdEvent,
   SubscriptionOptions,
   Transfer,
@@ -270,4 +271,30 @@ export interface Proposal {
   /** In the order they landed. */
   votes: ProposalVote[];
   resolution?: ProposalResolution;
+}
+
+/**
+ * Options for `AptosClient.proposals`: `fromVersion` bounds every walk, and
+ * the live options tune each of them, as for `reduce()`.
+ */
+export interface ProposalsOptions
+  extends Pick<
+    ReduceOptions,
+    "fromVersion" | "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "maxPollInterval" | "retries" | "signal" | "onError"
+  > {
+  /** Called after each live event changes a proposal, with that proposal. A throw goes to `onError`. */
+  onChange?: (proposal: Proposal, event: StreamdEvent) => void;
+}
+
+/** A running `proposals()`: every proposal seen so far, kept current as events arrive. */
+export interface Proposals {
+  /** Every proposal seen, by id; the map and its records are updated in place. */
+  readonly value: ReadonlyMap<bigint, Proposal>;
+  get(id: bigint): Proposal | undefined;
+  /** Resolves once every walk has read its history and is following; rejects if one fails or it is stopped first. */
+  readonly ready: Promise<ReadonlyMap<bigint, Proposal>>;
+  /** False once stopped: unsubscribed, aborted, or a walk failed or gave up, which stops them all. */
+  readonly active: boolean;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
 }
