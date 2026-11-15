@@ -20,7 +20,8 @@ function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
 const byIdentity = (a: StreamdEvent, b: StreamdEvent) =>
   a.version === b.version ? a.eventIndex - b.eventIndex : a.version < b.version ? -1 : 1;
 
-function deltas(transfers: Transfer[], who: string): BalanceDelta[] {
+/** `who`'s net per asset over `transfers`, in order of first appearance, zero nets left out. */
+export function deltas(transfers: Transfer[], who: string): BalanceDelta[] {
   const sums = new Map<string, bigint>();
   for (const { asset, amount, from, to } of transfers) {
     const delta = (to === who ? amount : 0n) - (from === who ? amount : 0n);

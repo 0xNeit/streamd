@@ -51,7 +51,8 @@ export async function previewEvents(
   return corePreviewEvents(adapter, limiter, simulation(transaction, options), descriptor, options);
 }
 
-function simulation(
+/** `transaction` and its signer keys as a simulation request, refused before anything is sent. */
+export function simulation(
   transaction: unknown,
   keys: Pick<PreviewEventsOptions, "signerPublicKey" | "secondarySignersPublicKeys" | "feePayerPublicKey">,
 ): AptosTransactionSimulation {

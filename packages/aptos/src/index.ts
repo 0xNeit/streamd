@@ -15,6 +15,7 @@ export { primaryName, resolveName } from "./names.js";
 export { formatAmount } from "./transfers.js";
 export { proposalState } from "./governance.js";
 export type {
+  AccountBalanceChange,
   Activity,
   ActivityFilter,
   ActivityListenerOptions,
@@ -32,6 +33,8 @@ export type {
   EventsOfOptions,
   ExpectEventsOptions,
   ExpectPreviewOptions,
+  ExplainOptions,
+  GasUsage,
   PreviewEventsOptions,
   Proposal,
   ProposalResolution,
@@ -53,6 +56,7 @@ export type {
   SwapListenerOptions,
   SwapOptions,
   SwapProtocol,
+  TransactionExplanation,
   Transfer,
   TransferFilter,
   TransferListenerOptions,

@@ -1,0 +1,248 @@
+import { describe, expect, it } from "bun:test";
+import { AccountAddress, Aptos, AptosConfig, Ed25519PrivateKey, Network, parseTypeTag } from "@aptos-labs/ts-sdk";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { StreamdError, parseEvent } from "@streamd/core";
+import type { EventAdapter, StreamdEvent, TransactionEvents, ViewRequest } from "@streamd/core";
+import { toSale } from "../src/sales.js";
+import { toSwap } from "../src/swaps.js";
+import { testClient } from "./helpers.js";
+
+const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
+const APT = long("a");
+const USDC = long("c0c");
+const ALICE = long("a11ce");
+const BOB = long("b0b");
+const SPONSOR = long("5e");
+const HASH = `0x${"ab".repeat(32)}`;
+const STORES: Record<string, { asset: string; owner: string }> = {
+  [long("a1")]: { asset: APT, owner: ALICE },
+  [long("b1")]: { asset: APT, owner: BOB },
+  [long("a2")]: { asset: USDC, owner: ALICE },
+  [long("b2")]: { asset: USDC, owner: BOB },
+};
+const INFO: Record<string, [string, number]> = { [APT]: ["APT", 8], [USDC]: ["USDC", 6] };
+const FEE = { total_charge_gas_units: "5414", execution_gas_units: "35", io_gas_units: "55", storage_fee_octas: "532400", storage_fee_refund_octas: "1000" };
+
+const ev = (version: bigint, eventIndex: number, type: string, data: unknown, extra: Partial<StreamdEvent> = {}): StreamdEvent => ({
+  type,
+  data,
+  version,
+  sequenceNumber: 0n,
+  eventIndex,
+  sender: "0xA11CE",
+  timestamp: 1_700_000_000_000_000n,
+  entryFunction: { function: "0x1::aptos_account::transfer", typeArguments: [], arguments: [] },
+  ...extra,
+});
+const fa = (v: bigint, i: number, side: string, store: string, amount: string) =>
+  ev(v, i, `0x1::fungible_asset::${side}`, { store: long(store), amount }, { transactionHash: HASH });
+const fee = (v: bigint, i: number) => ev(v, i, "0x1::transaction_fee::FeeStatement", FEE, { transactionHash: HASH });
+
+/** Serves one committed transaction and one simulation, with views over `STORES` and `INFO` that record the version read. */
+function adapter(found: TransactionEvents, simulated?: TransactionEvents, head = 99n) {
+  const views: [string, bigint][] = [];
+  const base: EventAdapter = {
+    fetchEvents: async () => ({ events: [], nextCursor: undefined, hasMore: false }),
+    getHeadVersion: async () => head,
+    getTransactionEvents: async () => found,
+    ...(simulated !== undefined && { simulateTransactionEvents: async () => simulated }),
+    view: async (request: ViewRequest, version: bigint) => {
+      views.push([request.function, version]);
+      const name = request.function.split("::").pop()!;
+      if (name === "symbol" || name === "decimals") {
+        const info = INFO[String(request.functionArguments![0])]!;
+        return [name === "symbol" ? info[0] : String(info[1])];
+      }
+      const store = STORES[String(request.functionArguments![0])];
+      if (store === undefined) throw new StreamdError("aborted");
+      return request.function === "0x1::object::owner" ? [store.owner] : [{ inner: store.asset }];
+    },
+  };
+  return { base, views };
+}
+
+const transfer: TransactionEvents = {
+  version: 10n,
+  success: true,
+  vmStatus: "Executed successfully",
+  gasUnitPrice: 100n,
+  events: [fa(10n, 0, "Withdraw", "a1", "250000000"), fa(10n, 1, "Deposit", "b1", "250000000"), fee(10n, 2)],
+};
+
+/** A localnet SDK whose transport fails every request, so a test that reaches the network fails. */
+function offline(): Aptos {
+  const client = { provider: async () => Promise.reject(new Error("no network in tests")) };
+  return new Aptos(new AptosConfig({ network: Network.LOCAL, fullnode: "http://fake/v1", client: client as never, clientConfig: { http2: false } }));
+}
+
+/** A transfer built offline: explicit ABI and options mean the build makes no request. */
+const simulation = (aptos: Aptos) =>
+  aptos.transaction.build.simple({
+    sender: ALICE,
+    data: {
+      function: "0x1::aptos_account::transfer",
+      functionArguments: [BOB, 1],
+      abi: { typeParameters: [], parameters: [parseTypeTag("address"), parseTypeTag("u64")] },
+    },
+    options: { accountSequenceNumber: 0, gasUnitPrice: 100, maxGasAmount: 1000, expireTimestamp: 9_999_999_999 },
+  });
+
+describe("explain a committed transaction", () => {
+  it("reports status, envelope, gas and fee, transfers with asset details and balance changes", async () => {
+    const { base } = adapter(transfer);
+    const explanation = await testClient({ adapter: base }).explain(HASH);
+    expect(explanation).toEqual({
+      simulated: false,
+      version: 10n,
+      transactionHash: HASH,
+      success: true,
+      vmStatus: "Executed successfully",
+      sender: ALICE,
+      timestamp: 1_700_000_000_000_000n,
+      entryFunction: { function: "0x1::aptos_account::transfer", typeArguments: [], arguments: [] },
+      gas: { units: 5414n, executionUnits: 35n, ioUnits: 55n, storageFee: 532400n, storageRefund: 1000n, unitPrice: 100n, fee: 541400n },
+      transfers: [{ asset: APT, amount: 250000000n, from: ALICE, to: BOB, symbol: "APT", decimals: 8 }],
+      balanceChanges: [
+        { account: ALICE, asset: APT, delta: -250000000n, symbol: "APT", decimals: 8 },
+        { account: BOB, asset: APT, delta: 250000000n, symbol: "APT", decimals: 8 },
+      ],
+      swaps: [],
+      sales: [],
+      events: transfer.events,
+    });
+  });
+
+  it("nets each account over several transfers, skipping zero nets, and reads no asset details when asked not to", async () => {
+    const found: TransactionEvents = {
+      ...transfer,
+      events: [
+        fa(10n, 0, "Withdraw", "a1", "5"),
+        fa(10n, 1, "Deposit", "b1", "5"),
+        fa(10n, 2, "Withdraw", "b1", "5"),
+        fa(10n, 3, "Deposit", "a1", "5"),
+        fa(10n, 4, "Withdraw", "b2", "7"),
+        fa(10n, 5, "Deposit", "a2", "7"),
+      ],
+    };
+    const { base, views } = adapter(found);
+    const explanation = await testClient({ adapter: base }).explain(HASH, { withAssetInfo: false });
+    expect(explanation.transfers).toHaveLength(3);
+    expect(explanation.balanceChanges).toEqual([
+      { account: ALICE, asset: USDC, delta: 7n },
+      { account: BOB, asset: USDC, delta: -7n },
+    ]);
+    expect(explanation.gas).toBeUndefined();
+    expect(views.some(([fn]) => fn.endsWith("::symbol"))).toBe(false);
+  });
+
+  it("leaves the fee out when the source reports no gas price, and names a sponsored transaction's fee payer", async () => {
+    const { gasUnitPrice: _, ...unpriced } = transfer;
+    const { base } = adapter({ ...unpriced, feePayer: SPONSOR });
+    const explanation = await testClient({ adapter: base }).explain(HASH, { withAssetInfo: false });
+    expect(explanation.gas).toEqual({ units: 5414n, executionUnits: 35n, ioUnits: 55n, storageFee: 532400n, storageRefund: 1000n });
+    expect(explanation.feePayer).toBe(SPONSOR);
+  });
+
+  it("explains a failed transaction with its gas instead of rejecting", async () => {
+    const { base } = adapter({ version: 11n, success: false, vmStatus: "Move abort in 0x1::coin: EINSUFFICIENT_BALANCE(0x10006)", gasUnitPrice: 100n, events: [fee(11n, 0)] });
+    const explanation = await testClient({ adapter: base }).explain(HASH);
+    expect(explanation).toMatchObject({ success: false, vmStatus: "Move abort in 0x1::coin: EINSUFFICIENT_BALANCE(0x10006)", transfers: [], balanceChanges: [] });
+    expect(explanation.gas!.fee).toBe(541400n);
+  });
+
+  it("decodes the swaps and sales among its events", async () => {
+    const swap = parseEvent(readFileSync(join(import.meta.dir, "fixtures/swaps.jsonl"), "utf8").split("\n")[0]!);
+    const sale = parseEvent(readFileSync(join(import.meta.dir, "fixtures/sales.jsonl"), "utf8").split("\n")[0]!);
+    const { base } = adapter({ ...transfer, events: [{ ...swap, eventIndex: 0 }, { ...sale, version: swap.version, eventIndex: 1 }] });
+    const explanation = await testClient({ adapter: base }).explain(HASH);
+    expect(explanation.swaps).toEqual([toSwap(swap)!.data]);
+    expect(explanation.swaps[0]!.protocol).toBe("cellana");
+    expect(explanation.sales).toEqual([toSale(sale)!.data]);
+    expect(explanation.sales[0]!.marketplace).toBe("wapal");
+  });
+
+  it("names the sender, fee payer, counterparties, buyers and sellers under withNames", async () => {
+    const { base } = adapter({ ...transfer, feePayer: SPONSOR });
+    const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig: { http2: false } }));
+    const reads: string[] = [];
+    aptos.getPrimaryName = async ({ address }) => {
+      reads.push(address.toString());
+      return address.toString() === BOB ? "bob" : undefined;
+    };
+    aptos.getTargetAddress = async ({ name }) => (name === "bob.apt" ? AccountAddress.from(BOB) : undefined);
+    const explanation = await testClient({ adapter: base, aptos }).explain(HASH, { withNames: true, withAssetInfo: false });
+    expect(explanation.names).toEqual({ [ALICE]: null, [SPONSOR]: null, [BOB]: "bob.apt" });
+    expect(reads.sort()).toEqual([ALICE, BOB, SPONSOR].sort());
+  });
+
+  it("waits for the transaction to commit, as eventsOf does", async () => {
+    let lookups = 0;
+    const { base } = adapter(transfer);
+    base.getTransactionEvents = async () => (++lookups < 3 ? undefined : transfer);
+    const explanation = await testClient({ adapter: base, defaults: { pollInterval: 1 } }).explain(HASH, { withAssetInfo: false });
+    expect(lookups).toBe(3);
+    expect(explanation.version).toBe(10n);
+    base.getTransactionEvents = async () => undefined;
+    await expect(testClient({ adapter: base }).explain(HASH, { timeout: 50 })).rejects.toThrow("not found after 50ms");
+  });
+});
+
+describe("explain a simulation", () => {
+
+  it("reads its views at the newest state below the simulated version, with no hash", async () => {
+    const sim = (v: bigint) => ({ ...transfer, version: v, events: transfer.events.map((e) => ({ ...e, version: v, transactionHash: undefined })) });
+    const aptos = offline();
+    const ahead = adapter(transfer, sim(120n), 99n);
+    const explanation = await testClient({ adapter: ahead.base, aptos }).explain(await simulation(aptos));
+    expect(explanation).toMatchObject({ simulated: true, version: 120n, success: true });
+    expect("transactionHash" in explanation).toBe(false);
+    expect(explanation.transfers).toEqual([{ asset: APT, amount: 250000000n, from: ALICE, to: BOB, symbol: "APT", decimals: 8 }]);
+    expect(new Set(ahead.views.map(([, v]) => v))).toEqual(new Set([99n]));
+
+    const behind = adapter(transfer, sim(50n), 99n);
+    await testClient({ adapter: behind.base, aptos }).explain(await simulation(aptos), { withAssetInfo: false });
+    expect(new Set(behind.views.map(([, v]) => v))).toEqual(new Set([49n]));
+  });
+
+  it("explains a failed simulation and passes the signer key on", async () => {
+    const aptos = offline();
+    const { base } = adapter(transfer, { version: 5n, success: false, vmStatus: "Out of gas", events: [] });
+    let asked: unknown;
+    const simulate = base.simulateTransactionEvents!;
+    base.simulateTransactionEvents = (s) => ((asked = s), simulate(s));
+    const key = new Ed25519PrivateKey(`ed25519-priv-0x${"11".repeat(32)}`).publicKey();
+    const explanation = await testClient({ adapter: base, aptos }).explain(await simulation(aptos), { signerPublicKey: key });
+    expect(explanation).toMatchObject({ simulated: true, success: false, vmStatus: "Out of gas", transfers: [] });
+    expect(explanation.gas).toBeUndefined();
+    expect((asked as { signerPublicKey: unknown }).signerPublicKey).toBe(key);
+  });
+});
+
+describe("explain refusals", () => {
+  it("refuses bad input before any read", async () => {
+    const { base } = adapter(transfer);
+    let lookups = 0;
+    base.getTransactionEvents = async () => (lookups++, transfer);
+    const client = testClient({ adapter: base });
+    await expect(client.explain("0x1234")).rejects.toThrow("Not a valid transaction hash");
+    const key = new Ed25519PrivateKey(`ed25519-priv-0x${"11".repeat(32)}`).publicKey();
+    await expect(client.explain(HASH, { signerPublicKey: key })).rejects.toThrow("Signer keys are for simulating");
+    await expect(client.explain(HASH, { timeout: -1 })).rejects.toThrow("Invalid timeout");
+    await expect(client.explain(HASH, { withNames: true })).rejects.toThrow("withNames");
+    await expect(client.explain({} as never)).rejects.toThrow("Not a built transaction");
+    const { view: _, ...viewless } = base;
+    await expect(testClient({ adapter: viewless }).explain(HASH)).rejects.toThrow("explain needs an adapter that implements view");
+    const aptos = offline();
+    await expect(testClient({ adapter: base, aptos }).explain(await simulation(aptos))).rejects.toThrow("simulateTransactionEvents");
+    expect(lookups).toBe(0);
+  });
+
+  it("rejects when a store read fails for another reason than a missing store", async () => {
+    const { base } = adapter(transfer);
+    base.view = async () => {
+      throw new Error("socket hang up");
+    };
+    await expect(testClient({ adapter: base }).explain(HASH)).rejects.toThrow("socket hang up");
+  });
+});
