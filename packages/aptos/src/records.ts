@@ -1,4 +1,4 @@
-import { StreamdError, UNSIGNED_INTEGER, normalizeAddress } from "@streamd/core";
+import { StreamdError, UNSIGNED_INTEGER, eventId, normalizeAddress } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, MoveEventType, StreamdEvent } from "@streamd/core";
 
 export type Fields = Record<string, unknown>;
@@ -9,6 +9,23 @@ export const object = (field: unknown) =>
   typeof field === "object" && field !== null ? address((field as Fields).inner) : undefined;
 export const amount = (field: unknown) =>
   typeof field === "string" && UNSIGNED_INTEGER.test(field) ? BigInt(field) : undefined;
+
+export const malformed = (event: StreamdEvent) =>
+  new StreamdError(`${event.type} at ${eventId(event)} does not have its struct's fields`);
+
+/** `amount`, or a `malformed` throw. */
+export function u(field: unknown, event: StreamdEvent): bigint {
+  const value = amount(field);
+  if (value === undefined) throw malformed(event);
+  return value;
+}
+
+/** `address`, or a `malformed` throw. */
+export function addr(field: unknown, event: StreamdEvent): string {
+  const value = address(field);
+  if (value === undefined) throw malformed(event);
+  return value;
+}
 
 /**
  * `adapter` as a source of records: each page's events become `toRecord`'s

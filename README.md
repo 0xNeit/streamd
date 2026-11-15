@@ -18,7 +18,7 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `proposals`, `balances`, `balanceAt`,
+`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `proposals`, `stakePools`, `balances`, `balanceAt`,
 `eventsOf`, `eventsAt`, `expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
@@ -2040,6 +2040,78 @@ for (const p of governance.value.values()) console.log(p.id, proposalState(p), p
   event of a known type without its fields stops every walk, reported once through `onError`,
   since the map would otherwise go on missing that walk's events. There is no cursor to resume
   from: a restart reads the history again. Like `reduce()`, it is not a listener for `off()` or
+  `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+
+## Stake pools
+
+`stakePools(options?)` keeps every Aptos stake pool it sees current: what each pool was paid at
+every epoch change, its delegation pool commission changes, and each delegator's stake moves.
+`value` is a map by long-form pool address of
+`StakePool { address, rewards, commissionPercentage?, commissionChanges, delegators }`:
+
+```ts
+import { formatAmount } from "@streamd/aptos";
+
+const pools = streamd.stakePools({
+  // Three hours back, so at least one epoch change: a scan of every transaction since, which needs an API key.
+  fromTime: BigInt(Date.now() - 3 * 3600 * 1000) * 1000n,
+  onChange: (pool, event) => console.log(pool.address, event.type, pool.rewards.at(-1)),
+});
+await pools.ready;
+for (const pool of pools.value.values()) {
+  const last = pool.rewards.at(-1);
+  if (last !== undefined) console.log(pool.address, `epoch ${last.epoch}`, formatAmount(last.rewards + last.fees, 8), "APT");
+}
+```
+
+- **Sources.** One scan over eight module types, folded by one `reduce()`:
+
+  | Event | Gives |
+  | --- | --- |
+  | `0x1::stake::DistributeRewards` | `EpochRewards.rewards`, zero included |
+  | `0x1::stake::DistributeTransactionFee` | `EpochRewards.fees` (`0n` when the pool was paid none) |
+  | `0x1::reconfiguration::NewEpoch` | `EpochRewards.epoch`, the epoch that ended (`NewEpoch.epoch - 1`) |
+  | `0x1::delegation_pool::CommissionPercentageChange` | one `CommissionChange { percentage, owner, version }`, the latest as `commissionPercentage` |
+  | `0x1::delegation_pool::AddStake`, `UnlockStake`, `ReactivateStake`, `WithdrawStake` | one `Delegator { address, added, addStakeFees, unlocked, reactivated, withdrawn, firstAddedAt?, lastVersion }` per delegator, summed |
+
+  Only the module defining an event type can emit it, so every event read is the framework's
+  own. Amounts are octas, commission hundredths of a percent (`1000n` is 10%), and the
+  commission is the one for the pool's next lockup cycle, as the change sets it.
+- **Epoch changes.** `stake::on_new_epoch` emits a fee (when non-zero) and a reward for every
+  active pool, then `NewEpoch` last, in one transaction (a `validator_transaction` on mainnet,
+  which runs randomness). Payments are held until that `NewEpoch` names the epoch, then appended
+  to each pool's `rewards` as one `EpochRewards { epoch, rewards, fees, version }`; a pool's
+  total stake (`0x1::stake::get_stake`, all four parts) rises by exactly `rewards + fees` there.
+  A source that delivers payments with no `NewEpoch` in their transaction stops the monitor.
+- **Joins.** `firstAddedAt` is the first `AddStake` seen: a join when the monitor read the pool
+  from before the delegator's first stake. `added` counts the amount added, `addStakeFees` the
+  fee taken from it, so the delegator's active stake rose by the difference.
+- **Narrowing.** `pool` (an address or a non-empty list) keeps only those pools; the scan is the
+  same, since every pool's events share these types. Other pools' events are still checked, so
+  a malformed one stops the monitor.
+- **Who appears.** Anyone can create a delegation pool and stake to it from as many addresses
+  as they like, so `value` holds a record for every pool and delegator seen, validators or not;
+  only pools in the active validator set get `rewards` entries.
+- **History needs the right sources.** No public source serves module events by type, so the
+  scan reads every transaction from `fromVersion` or `fromTime` (as `getEvents` does when both
+  are omitted: a `FullnodeScanAdapter` from the head). Epochs change about every two hours on
+  mainnet, so a monitor started at the head sees its first rewards within two hours; a start
+  further back reads every transaction since, which takes an API key past a few minutes of
+  mainnet history. Legacy handle events (`DistributeRewardsEvent`, `AddStakeEvent` and the rest,
+  before the module-event migration) are not read.
+- **Not covered.** Commission set through `staking_contract` (non-delegation pools), operator
+  commission paid out (`DistributeCommission`), `stake::AddStake` and `UnlockStake` of pools
+  without delegators, delegated voting, validator set joins and leaves, and lockup changes.
+- **Following.** `ready` resolves with the map once the history is folded and the scan is
+  following. The map and its records are updated in place, and nothing is evicted: `rewards`
+  grows by one entry per pool per epoch (about twelve a day) and `delegators` by one per
+  delegator seen, so narrow a long-running monitor with `pool`. `onChange(pool, event)` fires for
+  each live event that changed a pool: once per pool an epoch change paid, with its `NewEpoch`.
+  Options: `pool`, `fromVersion`, `fromTime`, `onChange`, `onError`, `signal`, `pollInterval`,
+  `batchSize`, `maxErrors`, `maxBackoff`, `maxPollInterval` and `retries`; anything else throws.
+- **Stops.** A failed backfill, `maxErrors` reached, or an event of a known type without its
+  fields stops it, reported through `onError`. There is no cursor to resume from: a restart
+  reads the history again. Like `reduce()`, it is not a listener for `off()` or
   `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 
 ## Live balances

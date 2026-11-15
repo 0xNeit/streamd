@@ -1,4 +1,4 @@
-import { RequestLimiter, StreamdError, eventId } from "@streamd/core";
+import { RequestLimiter, StreamdError } from "@streamd/core";
 import type {
   CreationNumberEventDescriptor,
   EventAdapter,
@@ -9,7 +9,7 @@ import type {
   Reduction,
   StreamdEvent,
 } from "@streamd/core";
-import { address, amount, pageSource } from "./records.js";
+import { addr, amount, malformed, pageSource, u } from "./records.js";
 import type { Fields } from "./records.js";
 import type { Proposal, Proposals, ProposalsOptions, ProposalState } from "./types.js";
 
@@ -53,21 +53,6 @@ export const GOVERNANCE_WALKS: readonly EventDescriptor[] = [
     ],
   },
 ];
-
-const malformed = (event: StreamdEvent) =>
-  new StreamdError(`${event.type} at ${eventId(event)} does not have its struct's fields`);
-
-function u(field: unknown, event: StreamdEvent): bigint {
-  const value = amount(field);
-  if (value === undefined) throw malformed(event);
-  return value;
-}
-
-function addr(field: unknown, event: StreamdEvent): string {
-  const value = address(field);
-  if (value === undefined) throw malformed(event);
-  return value;
-}
 
 /** A Move `Option<u128>`, written `{ vec: [] }` or `{ vec: [value] }`. */
 function optionalU(field: unknown, event: StreamdEvent): bigint | undefined {
