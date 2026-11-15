@@ -251,7 +251,7 @@ export class AptosClient extends StreamdClient {
    * every module at the address at the version before the publish and at its
    * own, through the client's `aptos` (not the adapter, so an archive behind
    * it is not asked, and a version the node pruned fails the poll with its
-   * 410), outside `maxConcurrentRequests` and bounded by `requestTimeout`. A
+   * 410), outside `maxConcurrentRequests`, within the page's `requestTimeout`. A
    * failed read fails the poll, which retries as for `on()`. `address` may be
    * an Aptos name, resolved once. Like `swaps()`, it is not a listener for
    * `off()` or `listenerCount()`.
@@ -280,7 +280,7 @@ export class AptosClient extends StreamdClient {
         throw toStreamdError(err, `modules of ${at} at version ${version}`);
       }
     };
-    return (source) => upgradeSource(source, who, read, this.requestTimeout);
+    return (source) => upgradeSource(source, who, read);
   }
 
   /**

@@ -6,7 +6,8 @@ import type { Fields } from "./records.js";
 import type { AbiChanges, EventStructSignature, FunctionSignature, PackageUpgrade } from "./types.js";
 
 /** Only `0x1::code` can emit it, so its `code_address` is the framework's word. */
-export const UPGRADE_DESCRIPTOR: ModuleEventDescriptor = { kind: "module", eventType: "0x1::code::PublishPackage" };
+const PUBLISH = "0x1::code::PublishPackage";
+export const UPGRADE_DESCRIPTOR: ModuleEventDescriptor = { kind: "module", eventType: PUBLISH };
 
 /** Every module at `address` as of `version`, as the fullnode lists them. */
 export type ModuleReader = (address: string, version: bigint) => Promise<MoveModuleBytecode[]>;
@@ -132,33 +133,39 @@ export function diffModules(
  * address `account` gives: each publish there is diffed between the modules
  * `read` returns at the version before it and at its own. The reads run two
  * at a time through a limiter of their own, as the page fetch already holds
- * a slot of the client's, bounded by `requestTimeout`; a failed read fails
- * the page. A second publish there in one transaction on the page adds no
- * record, since the diff already spans the transaction.
+ * a slot of the client's, whose `requestTimeout` bounds the whole page; a
+ * failed read fails the page. A second publish there in one transaction adds
+ * no record, since the diff already spans the transaction.
  */
-export function upgradeSource(
-  adapter: EventAdapter,
-  account: () => Promise<string>,
-  read: ModuleReader,
-  requestTimeout?: number,
-): EventAdapter {
-  const limiter = new RequestLimiter(2, Infinity, requestTimeout);
+export function upgradeSource(adapter: EventAdapter, account: () => Promise<string>, read: ModuleReader): EventAdapter {
+  const limiter = new RequestLimiter(2);
+  // Pages are read one at a time, so one still reading when the next starts was
+  // given up on (timed out or aborted): its queued reads leave, and it reads no more.
+  let page = new AbortController();
+  // The version of the last record a finished page made: a walk ascends, so a
+  // transaction cut across pages shows here.
+  let last: bigint | undefined;
   return pageSource(adapter, async (events) => {
+    page.abort(new StreamdError("Superseded by a later page"));
+    const { signal } = (page = new AbortController());
     if (events.length === 0) return [];
     const at = await account();
     const records: StreamdEvent<PackageUpgrade>[] = [];
-    const seen = new Set<bigint>();
+    let newest = last;
     for (const event of events) {
+      if (event.type !== PUBLISH) continue;
       const d = event.data as Fields | null;
       if (typeof d !== "object" || d === null || typeof d.is_upgrade !== "boolean") throw malformed(event);
-      if (addr(d.code_address, event) !== at || seen.has(event.version)) continue;
-      seen.add(event.version);
+      if (addr(d.code_address, event) !== at || event.version === newest) continue;
+      signal.throwIfAborted();
+      newest = event.version;
       const [before, after] = await Promise.all([
-        event.version === 0n ? [] : limiter.run(() => read(at, event.version - 1n)),
-        limiter.run(() => read(at, event.version)),
+        event.version === 0n ? [] : limiter.run(() => read(at, event.version - 1n), signal, signal),
+        limiter.run(() => read(at, event.version), signal, signal),
       ]);
       records.push({ ...event, data: { address: at, isUpgrade: d.is_upgrade, ...diffModules(before, after) } });
     }
+    last = newest;
     return records;
   });
 }

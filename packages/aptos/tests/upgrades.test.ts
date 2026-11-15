@@ -3,7 +3,7 @@ import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { MemoryAdapter, StreamdError, StreamdNetworkError } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
 import type { MoveModuleBytecode } from "@aptos-labs/ts-sdk";
-import { diffModules } from "../src/upgrades.js";
+import { UPGRADE_DESCRIPTOR, diffModules, upgradeSource } from "../src/upgrades.js";
 import type { PackageUpgrade } from "../src/types.js";
 import { makeAptos, testClient } from "./helpers.js";
 
@@ -224,18 +224,20 @@ describe("getUpgrades", () => {
     const client = testClient({ adapter: new MemoryAdapter(events), aptos });
     const ranged = await client.getUpgrades(A, { fromVersion: 15n, toVersion: 30n });
     expect(ranged.map((r) => r.version)).toEqual([20n, 30n]);
-    const changing = await client.getUpgrades(A, { fromVersion: 0n, where: (e) => (e.data as PackageUpgrade).views.added.length > 0, limit: 1 });
+    const changing = await client.getUpgrades(A, { fromVersion: 0n, where: (e) => (e.data as PackageUpgrade).views.added.length > 0 });
     expect(changing.map((r) => r.version)).toEqual([20n]);
+    const first = await client.getUpgrades(A, { fromVersion: 0n, limit: 1 });
+    expect(first.map((r) => r.version)).toEqual([10n]);
   });
 
   it("refuses a PublishPackage without its fields", async () => {
     const { aptos } = reader(() => V1);
     const bad = { ...publish(3, 0, A), data: { code_address: A } };
     const client = testClient({ adapter: new MemoryAdapter([bad]), aptos });
-    expect(client.getUpgrades(A, { fromVersion: 0n })).rejects.toThrow("does not have its struct's fields");
+    await expect(client.getUpgrades(A, { fromVersion: 0n })).rejects.toThrow("does not have its struct's fields");
     const noAddress = { ...publish(3, 0, A), data: { code_address: "zz", is_upgrade: true } };
     const other = testClient({ adapter: new MemoryAdapter([noAddress]), aptos });
-    expect(other.getUpgrades(A, { fromVersion: 0n })).rejects.toThrow(StreamdError);
+    await expect(other.getUpgrades(A, { fromVersion: 0n })).rejects.toThrow(StreamdError);
   });
 
   it("rejects a failed read as a network error keeping its status", async () => {
@@ -255,7 +257,7 @@ describe("getUpgrades", () => {
     expect(await single.getUpgrades(A, { fromVersion: 0n })).toHaveLength(1);
     const stuck = reader(() => new Promise<never>(() => {}));
     const slow = testClient({ adapter: new MemoryAdapter([publish(10, 0, A)]), aptos: stuck.aptos, requestTimeout: 20 });
-    expect(slow.getUpgrades(A, { fromVersion: 0n })).rejects.toThrow("timed out");
+    await expect(slow.getUpgrades(A, { fromVersion: 0n })).rejects.toThrow("timed out");
   });
 
   it("refuses an address that is not a string at the call", () => {
@@ -289,7 +291,10 @@ describe("upgrades", () => {
       onError: (e) => void errors.push(e),
     });
     const until = async (ok: () => boolean) => {
-      for (let i = 0; i < 200 && !ok(); i++) await new Promise((r) => setTimeout(r, 5));
+      for (let i = 0; !ok(); i++) {
+        if (i === 600) throw new Error("timed out waiting");
+        await new Promise((r) => setTimeout(r, 5));
+      }
     };
     await until(() => got.length === 1);
     expect(errors).toHaveLength(1);
@@ -298,11 +303,53 @@ describe("upgrades", () => {
     expect(got[0]!.data.views.added).toHaveLength(1);
     memory.push(publish(15, 0, A, true), publish(16, 0, B));
     await until(() => got.length === 2);
+    expect(client.listenerCount()).toBe(0);
     sub.unsubscribe();
     expect(got.map((e) => e.version)).toEqual([10n, 15n]);
     expect(got[1]!.data.views).toEqual(none);
     expect(lookups).toEqual(["alice.apt"]);
     expect(reads.some(([a]) => a === B)).toBe(false);
-    expect(client.listenerCount()).toBe(0);
+  });
+});
+
+describe("upgradeSource", () => {
+  const range = { fromVersion: 0n, limit: 10 };
+
+  it("ignores other event types and adds no record for a transaction cut across pages", async () => {
+    const reads: bigint[] = [];
+    const stray = { ...publish(7, 0, A), type: "0xbad::code::PublishPackage" };
+    const pages = [[stray, publish(8, 0, A)], [publish(8, 3, A), publish(9, 0, A)]];
+    let n = 0;
+    const one = upgradeSource({ fetchEvents: async () => ({ events: pages[n++]!, nextCursor: "", hasMore: false }) }, async () => A, async (_a, v) => (reads.push(v), V1));
+    const first = await one.fetchEvents(UPGRADE_DESCRIPTOR, range);
+    const second = await one.fetchEvents(UPGRADE_DESCRIPTOR, range);
+    expect(first.events.map((e) => e.version)).toEqual([8n]);
+    expect(second.events.map((e) => e.version)).toEqual([9n]);
+    expect(reads.sort((x, y) => Number(x - y))).toEqual([7n, 8n, 8n, 9n]);
+  });
+
+  it("stops a page given up on from reading more once the next page starts", async () => {
+    const reads: bigint[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const stuck = [publish(10, 0, A), publish(20, 0, A), publish(30, 0, A)];
+    let n = 0;
+    const source = upgradeSource(
+      { fetchEvents: async () => ({ events: n++ === 0 ? stuck : [], nextCursor: "", hasMore: false }) },
+      async () => A,
+      async (_a, v) => {
+        reads.push(v);
+        if (v < 11n) await gate;
+        return V1;
+      },
+    );
+    const abandoned = source.fetchEvents(UPGRADE_DESCRIPTOR, range);
+    abandoned.catch(() => {});
+    await new Promise((r) => setTimeout(r, 5));
+    await source.fetchEvents(UPGRADE_DESCRIPTOR, range);
+    release();
+    await expect(abandoned).rejects.toThrow("Superseded by a later page");
+    await new Promise((r) => setTimeout(r, 5));
+    expect(reads.sort((x, y) => Number(x - y))).toEqual([9n, 10n]);
   });
 });
