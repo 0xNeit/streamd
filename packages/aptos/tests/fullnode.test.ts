@@ -930,6 +930,25 @@ describe("FullnodeScanAdapter transaction lookup", () => {
     expect((await new FullnodeScanAdapter(quiet.aptos).getTransactionEvents(HASH))!.vmStatus).toBe("");
   });
 
+  it("reports the gas unit price and a sponsored transaction's fee payer, dropping either alone when malformed", async () => {
+    const sponsored = { type: "fee_payer_signature", fee_payer_address: "0xFEE", sender: {} };
+    const read = async (extra: Record<string, unknown>) => {
+      const { aptos } = fakeNode(() => ({ data: { ...committed, ...extra } }));
+      return new FullnodeScanAdapter(aptos).getTransactionEvents(HASH);
+    };
+    expect(await read({ gas_unit_price: "100", signature: sponsored })).toMatchObject({
+      gasUnitPrice: 100n,
+      feePayer: `0x${"fee".padStart(64, "0")}`,
+    });
+    const plain = await read({ gas_unit_price: "100", signature: { type: "ed25519_signature" } });
+    expect(plain!.gasUnitPrice).toBe(100n);
+    expect("feePayer" in plain!).toBe(false);
+    const odd = await read({ gas_unit_price: "-1", signature: { type: "fee_payer_signature", fee_payer_address: 5 } });
+    expect(odd!.events).toHaveLength(2);
+    expect("gasUnitPrice" in odd! || "feePayer" in odd!).toBe(false);
+    expect("gasUnitPrice" in (await read({ gas_unit_price: 100 }))!).toBe(false);
+  });
+
   it("gives undefined for an unknown or pending transaction", async () => {
     const unknown = fakeNode(() => ({
       status: 404,
@@ -990,6 +1009,15 @@ describe("FullnodeScanAdapter transaction lookup by version", () => {
       { type: OTHER, data: { n: "2" }, sequence_number: "4", guid: { creation_number: "3", account_address: SENDER } },
     ],
   };
+
+  it("reports the gas unit price and fee payer as the hash lookup does", async () => {
+    const signature = { type: "fee_payer_signature", fee_payer_address: "0xfee" };
+    const { aptos } = fakeNode(() => ({ data: { ...committed, gas_unit_price: "150", signature } }));
+    expect(await new FullnodeScanAdapter(aptos).getTransactionEventsByVersion(77n)).toMatchObject({
+      gasUnitPrice: 150n,
+      feePayer: `0x${"fee".padStart(64, "0")}`,
+    });
+  });
 
   it("maps the transaction's events as the hash lookup does", async () => {
     const byVersion = fakeNode(() => ({ data: committed }));
@@ -1113,6 +1141,13 @@ describe("FullnodeScanAdapter simulation", () => {
         timestamp: 1700000000000000n,
       },
     ]);
+  });
+
+  it("reports a simulation's gas unit price and fee payer", async () => {
+    const signature = { type: "fee_payer_signature", fee_payer_address: "0xfee" };
+    const { aptos } = fakeNode(() => ({ data: [simulated({ gas_unit_price: "100", signature })] }));
+    const found = await new FullnodeScanAdapter(aptos).simulateTransactionEvents({ transaction: await buildTransfer(aptos) });
+    expect(found).toMatchObject({ gasUnitPrice: 100n, feePayer: `0x${"fee".padStart(64, "0")}` });
   });
 
   it("reports a failed simulation's vm status", async () => {

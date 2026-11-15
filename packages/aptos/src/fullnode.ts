@@ -66,8 +66,22 @@ export interface TransactionWithEvents {
   payload?: RawPayload;
   success?: unknown;
   vm_status?: unknown;
+  gas_unit_price?: unknown;
+  signature?: { type?: unknown; fee_payer_address?: unknown };
   events?: RawEvent[];
   changes?: RawChange[];
+}
+
+/** The gas unit price and a sponsored transaction's fee payer, each dropped alone when malformed. */
+function payment(txn: TransactionWithEvents): Pick<TransactionEvents, "gasUnitPrice" | "feePayer"> {
+  const out: Pick<TransactionEvents, "gasUnitPrice" | "feePayer"> = {};
+  if (typeof txn.gas_unit_price === "string" && /^\d+$/.test(txn.gas_unit_price)) {
+    out.gasUnitPrice = BigInt(txn.gas_unit_price);
+  }
+  const payer = txn.signature?.type === "fee_payer_signature" ? txn.signature.fee_payer_address : undefined;
+  const feePayer = typeof payer === "string" ? normalizeAddress(payer) : undefined;
+  if (feePayer !== undefined) out.feePayer = feePayer;
+  return out;
 }
 
 /** Transactions requested per underlying REST call while scanning. */
@@ -332,6 +346,7 @@ export class FullnodeScanAdapter implements EventAdapter {
         success: txn.success,
         vmStatus: String(txn.vm_status ?? ""),
         events: toStreamdEvents(txn, version, () => true),
+        ...payment(txn),
       };
     } catch (err) {
       throw toStreamdError(err, "transaction by hash");
@@ -361,6 +376,7 @@ export class FullnodeScanAdapter implements EventAdapter {
         success: txn.success,
         vmStatus: String(txn.vm_status ?? ""),
         events: toStreamdEvents(txn, ledgerVersion, () => true),
+        ...payment(txn),
       };
     } catch (err) {
       throw toStreamdError(err, `transaction at version ${ledgerVersion}`);
@@ -408,7 +424,7 @@ export class FullnodeScanAdapter implements EventAdapter {
     } catch {
       throw malformed;
     }
-    return { version, success: txn.success, vmStatus: String(txn.vm_status ?? ""), events };
+    return { version, success: txn.success, vmStatus: String(txn.vm_status ?? ""), events, ...payment(txn) };
   }
 
   /**
