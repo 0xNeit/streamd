@@ -1,6 +1,15 @@
-import { StreamdError, normalizeAddress } from "@streamd/core";
+import { RequestLimiter, StreamdError, normalizeAddress } from "@streamd/core";
+import type { EventAdapter, ModuleEventDescriptor, StreamdEvent } from "@streamd/core";
 import type { MoveModuleBytecode } from "@aptos-labs/ts-sdk";
+import { addr, malformed, pageSource } from "./records.js";
+import type { Fields } from "./records.js";
 import type { AbiChanges, EventStructSignature, FunctionSignature, PackageUpgrade } from "./types.js";
+
+/** Only `0x1::code` can emit it, so its `code_address` is the framework's word. */
+export const UPGRADE_DESCRIPTOR: ModuleEventDescriptor = { kind: "module", eventType: "0x1::code::PublishPackage" };
+
+/** Every module at `address` as of `version`, as the fullnode lists them. */
+export type ModuleReader = (address: string, version: bigint) => Promise<MoveModuleBytecode[]>;
 
 type Raw = Record<string, unknown>;
 
@@ -116,4 +125,40 @@ export function diffModules(
     entryFunctions: changes(b.entryFunctions, a.entryFunctions),
     views: changes(b.views, a.views),
   };
+}
+
+/**
+ * `adapter`'s `PublishPackage` pages as `PackageUpgrade` records for the
+ * address `account` gives: each publish there is diffed between the modules
+ * `read` returns at the version before it and at its own. The reads run two
+ * at a time through a limiter of their own, as the page fetch already holds
+ * a slot of the client's, bounded by `requestTimeout`; a failed read fails
+ * the page. A second publish there in one transaction on the page adds no
+ * record, since the diff already spans the transaction.
+ */
+export function upgradeSource(
+  adapter: EventAdapter,
+  account: () => Promise<string>,
+  read: ModuleReader,
+  requestTimeout?: number,
+): EventAdapter {
+  const limiter = new RequestLimiter(2, Infinity, requestTimeout);
+  return pageSource(adapter, async (events) => {
+    if (events.length === 0) return [];
+    const at = await account();
+    const records: StreamdEvent<PackageUpgrade>[] = [];
+    const seen = new Set<bigint>();
+    for (const event of events) {
+      const d = event.data as Fields | null;
+      if (typeof d !== "object" || d === null || typeof d.is_upgrade !== "boolean") throw malformed(event);
+      if (addr(d.code_address, event) !== at || seen.has(event.version)) continue;
+      seen.add(event.version);
+      const [before, after] = await Promise.all([
+        event.version === 0n ? [] : limiter.run(() => read(at, event.version - 1n)),
+        limiter.run(() => read(at, event.version)),
+      ]);
+      records.push({ ...event, data: { address: at, isUpgrade: d.is_upgrade, ...diffModules(before, after) } });
+    }
+    return records;
+  });
 }

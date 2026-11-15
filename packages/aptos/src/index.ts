@@ -16,6 +16,7 @@ export { primaryName, resolveName } from "./names.js";
 export { formatAmount } from "./transfers.js";
 export { proposalState } from "./governance.js";
 export type {
+  AbiChanges,
   AccountBalanceChange,
   Activity,
   ActivityFilter,
@@ -29,13 +30,16 @@ export type {
   CommissionChange,
   Delegator,
   EpochRewards,
+  EventStructSignature,
   EventExpectation,
   EventsAtOptions,
   EventsOfOptions,
   ExpectEventsOptions,
   ExpectPreviewOptions,
   ExplainOptions,
+  FunctionSignature,
   GasUsage,
+  PackageUpgrade,
   PreviewEventsOptions,
   Proposal,
   ProposalResolution,
