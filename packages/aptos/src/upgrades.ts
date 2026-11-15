@@ -157,7 +157,6 @@ export function upgradeSource(adapter: EventAdapter, account: () => Promise<stri
       const d = event.data as Fields | null;
       if (typeof d !== "object" || d === null || typeof d.is_upgrade !== "boolean") throw malformed(event);
       if (addr(d.code_address, event) !== at || event.version === newest) continue;
-      signal.throwIfAborted();
       newest = event.version;
       const [before, after] = await Promise.all([
         event.version === 0n ? [] : limiter.run(() => read(at, event.version - 1n), signal, signal),
