@@ -332,8 +332,8 @@ describe("stakePools", () => {
 
 describe("stakePools on recorded mainnet events", () => {
   // One epoch change (8061753711, into epoch 18007) for three pools, one with
-  // no fee and zero rewards, a delegation add_stake and an unlock, and a
-  // commission change, with the views read at each version and the one before.
+  // no fee and zero rewards, then a delegation add_stake and an unlock, with
+  // the views read at each version and the one before.
   const fixtures = join(import.meta.dir, "fixtures");
   const events = readFileSync(join(fixtures, "staking.jsonl"), "utf8").trim().split("\n").map((line) => parseEvent(line));
   const views = JSON.parse(readFileSync(join(fixtures, "staking-views.json"), "utf8")) as Record<string, string[]>;
