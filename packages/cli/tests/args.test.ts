@@ -1,6 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { parseCommand, parseTime, UsageError } from "../src/args.js";
-import type { AlertOptions, StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
+import type { AlertOptions, MonitorOptions, StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
 const LONG_ADDR = `0x${"0".repeat(63)}1`;
@@ -1379,6 +1379,85 @@ describe("parseCommand alert", () => {
     [["alert", "--rules", "r", "--to", HOOK, "--cursor-file", ""], /--cursor-file must not be empty/],
     [["alert", "--rules", "r", "--to", "https://u:p@hooks.example.com/"], /--to must not carry credentials/],
     [["alert", "--rules", "r", "--to", HOOK, "--chain", "sui", "--api-key", "k"], /--api-key is not sent to Sui nodes/],
+  ])("rejects %j", (argv, message) => {
+    rejects(argv as string[], message as RegExp);
+  });
+});
+
+describe("parseCommand monitor", () => {
+  const A = "https://a.example/v1";
+  const B = "https://b.example/v1";
+  const base = ["monitor", "--node-url", A, "--node-url", B];
+  const monitor = (...argv: string[]) => (parseCommand([...base, ...argv]) as { options: MonitorOptions }).options;
+
+  it("defaults to FeeStatement, 10s rounds, a 5m window, 100 versions and JSON", () => {
+    expect(parseCommand(base)).toEqual({
+      command: "monitor",
+      options: {
+        descriptor: { kind: "module", eventType: ["0x1::transaction_fee::FeeStatement"] },
+        network: "mainnet",
+        nodeUrl: A,
+        extraNodeUrls: [B],
+        interval: 10_000,
+        window: 300_000,
+        range: 100,
+        format: "json",
+      },
+    });
+  });
+
+  it("reads every flag", () => {
+    expect(
+      monitor("--node-url", A, "--interval", "2000", "--window", "1h", "--range", "500", "--format", "prometheus", "--listen", "9464", "--limit", "3", "--api-key", "k", TYPE),
+    ).toEqual({
+      descriptor: { kind: "module", eventType: [TYPE] },
+      network: "mainnet",
+      nodeUrl: A,
+      extraNodeUrls: [B, A],
+      apiKey: "k",
+      interval: 2000,
+      window: 3_600_000,
+      range: 500,
+      format: "prometheus",
+      listen: { host: "127.0.0.1", port: 9464 },
+      limit: 3,
+    });
+    expect(monitor("--listen", "0.0.0.0:9464").listen).toEqual({ host: "0.0.0.0", port: 9464 });
+    expect(monitor("--window", "30s").window).toBe(30_000);
+    expect(monitor("--account", ADDR).descriptor).toEqual({ kind: "account", accountAddress: LONG_ADDR });
+    expect(parseCommand(["monitor", "--help"])).toEqual({ command: "help" });
+  });
+
+  it("never takes APTOS_API_KEY, since every node is a custom URL", () => {
+    process.env.APTOS_API_KEY = "from-env";
+    try {
+      expect("apiKey" in monitor()).toBe(false);
+    } finally {
+      delete process.env.APTOS_API_KEY;
+    }
+  });
+
+  it("asks Sui for a descriptor and takes one", () => {
+    rejects([...base, "--chain", "sui"], /monitor needs at least one event type, or --account/);
+    expect(monitor("--chain", "sui", "0x3::validator::StakingRequestEvent")).toMatchObject({ chain: "sui", descriptor: { kind: "module" } });
+  });
+
+  it.each([
+    [["monitor", TYPE], /--node-url at least twice/],
+    [["monitor", "--node-url", A, TYPE], /--node-url at least twice/],
+    [[...base, "--window", "0m"], /--window must be a duration/],
+    [[...base, "--window", "5"], /--window must be a duration/],
+    [[...base, "--interval", "0"], /--interval/],
+    [[...base, "--range", "0"], /--range/],
+    [[...base, "--range", "10001"], /--range/],
+    [[...base, "--format", "pretty"], /--format must be json or prometheus/],
+    [[...base, "--listen", "0"], /--listen must be a port/],
+    [[...base, "--listen", "70000"], /--listen must be a port/],
+    [[...base, "--listen", "host:"], /--listen must be a port/],
+    [[...base, "--limit", "0"], /--limit/],
+    [[...base, "--archive", "default"], /--archive/],
+    [[...base, "--stats"], /--stats/],
+    [[...base, "--cache", "c.db"], /--cache/],
   ])("rejects %j", (argv, message) => {
     rejects(argv as string[], message as RegExp);
   });

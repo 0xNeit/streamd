@@ -16,6 +16,7 @@ import type {
   Endpoint,
   ForwardOptions,
   HandlesOptions,
+  MonitorOptions,
   NameOptions,
   ParsedCommand,
   QueryOptions,
@@ -43,6 +44,7 @@ import type { SuiNetworkPreset } from "@streamd/sui";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
 import { runHandles } from "./handles.js";
+import { runMonitor } from "./monitor.js";
 import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
@@ -329,6 +331,19 @@ async function compare(options: CompareOptions): Promise<number> {
   });
 }
 
+async function monitor(options: MonitorOptions): Promise<number> {
+  const controller = new AbortController();
+  process.once("SIGINT", () => controller.abort());
+  process.once("SIGTERM", () => controller.abort());
+  const out = stdout(controller);
+  const code = await runMonitor(options, {
+    nodes: (await chainFor(options)).nodes(),
+    write: out.write,
+    signal: controller.signal,
+  });
+  return out.exitCode(code);
+}
+
 async function suiSource(options: CodegenOptions): Promise<string> {
   const [{ SuiGrpcClient }, { networks: suiNetworks }] = await loadSui();
   const preset = suiNetworks[options.network as SuiNetworkPreset["network"]];
@@ -397,6 +412,7 @@ async function codegen(options: CodegenOptions): Promise<number> {
 async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise<number> {
   if (parsed.command === "codegen") return codegen(parsed.options);
   if (parsed.command === "compare") return compare(parsed.options);
+  if (parsed.command === "monitor") return monitor(parsed.options);
   if (parsed.command === "store") return store(parsed.options);
   if (parsed.command === "alert") return alert(parsed.options);
   if (parsed.command === "check") return check(parsed.options);

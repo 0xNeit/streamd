@@ -30,16 +30,17 @@ export async function suiChain(endpoint: Endpoint, stats?: RequestStats): Promis
   const node = grpc();
   // Transfers and balances read a SuiAdapter directly, so with several nodes, or with
   // stats, they read the first node uncounted.
+  const nodes = () => [new sui.SuiAdapter(node), ...(endpoint.extraNodeUrls?.map((url) => new sui.SuiAdapter(grpc(url))) ?? [])];
   let shared: ReturnType<typeof readThrough> | undefined;
   const reads = () => {
     if (shared !== undefined) return shared;
-    const nodes = [new sui.SuiAdapter(node), ...(endpoint.extraNodeUrls?.map((url) => new sui.SuiAdapter(grpc(url))) ?? [])];
-    const [first, ...others] = stats === undefined ? nodes : nodes.map((n) => stats.track(n, "node"));
+    const [first, ...others] = stats === undefined ? nodes() : nodes().map((n) => stats.track(n, "node"));
     return (shared = readThrough(first!, others));
   };
   return {
     client: () => new sui.SuiClient({ sui: node, adapter: reads() }),
     adapter: (nodeUrl) => (nodeUrl === undefined ? reads() : new sui.SuiAdapter(grpc(nodeUrl))),
+    nodes,
     check: (descriptor) => sui.checkDescriptor(node, descriptor),
     resolveName: (value) => sui.resolveName(node, value),
     primaryName: (address) => sui.primaryName(node, address),

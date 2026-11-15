@@ -243,7 +243,8 @@ export type ParsedCommand =
   | { command: "handles"; options: HandlesOptions }
   | { command: "name"; options: NameOptions }
   | { command: "codegen"; options: CodegenOptions }
-  | { command: "compare"; options: CompareOptions };
+  | { command: "compare"; options: CompareOptions }
+  | { command: "monitor"; options: MonitorOptions };
 
 /** Bad command-line input: reported with usage, exit code 2. */
 export class UsageError extends Error {
@@ -341,6 +342,21 @@ const COMPARE_OPTIONS = {
 
 /** The widest range `compare` walks, so one command stays a bounded job. */
 export const MAX_COMPARE_RANGE = 100_000n;
+
+const MONITOR_OPTIONS = {
+  ...DESCRIPTOR_OPTIONS,
+  ...ENDPOINT_OPTIONS,
+  interval: { type: "string" },
+  window: { type: "string" },
+  range: { type: "string" },
+  format: { type: "string" },
+  listen: { type: "string" },
+  limit: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+/** Emitted by every user transaction, so a range of recent versions always has some to compare. */
+export const MONITOR_DEFAULT_TYPE = "0x1::transaction_fee::FeeStatement";
 
 const RECORD_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
@@ -462,6 +478,7 @@ export const USAGE = `Usage:
   streamd record --from-version <n> --to-version <n> [--out <file>] [--cache <file>] <eventType>...
   streamd codegen [--out <file> [--check]] [--validators] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
+  streamd monitor --node-url <url> --node-url <url>... [options] [<eventType>...]
 
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array,
@@ -488,6 +505,10 @@ check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 compare reads one range from two nodes and prints what one has that the other
 does not, exiting 1 if they disagree.
+monitor reads every --node-url each --interval and prints one record per round
+of each node's head lag, requests, errors and 429s over --window, and how its
+events over a recent range compare with the first node's, as a JSON line or
+Prometheus text (default type: ${MONITOR_DEFAULT_TYPE} on Aptos).
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
 With --check it compares what it would write with --out instead, and exits 1
@@ -535,7 +556,7 @@ Options:
                          field that is not an unsigned integer is an error: query exits 1,
                          tail, forward, store and watch report it and skip the event
   --limit <n>            tail, transfers, watch: exit after printing n; balances: after n changes;
-                         record, query: stop after n; compare: page size
+                         record, query: stop after n; compare: page size; monitor: rounds
   --rules <file>         alert: the rules file (required)
   --to <url>             forward, alert: webhook URL (http or https, required)
   --cursor-file <path>   tail, transfers (following): save and resume from here; watch: each
@@ -576,6 +597,14 @@ Options:
                          --creation-number, --resource and --api-key are refused
   --against <url>        compare: the second node's fullnode URL (required)
   --max-pages <n>        compare: most pages read from each node (default: 10)
+  --interval <ms>        monitor: time between rounds, and each node call's timeout
+                         (default: 10000)
+  --window <duration>    monitor: how far back the window sums reach, as 30s, 5m, 1h or 1d
+                         (default: 5m)
+  --range <n>            monitor: versions compared with the first node per round (default: 100)
+  --format <name>        monitor: json, or prometheus for text exposition (default: json)
+  --listen <[host:]port> monitor: also serve the latest round's Prometheus text at /metrics,
+                         on 127.0.0.1 unless a host is given
   -h, --help             show this help
 `;
 
@@ -1059,6 +1088,49 @@ function parseCompare(args: string[]): ParsedCommand {
   return { command: "compare", options };
 }
 
+const WINDOW = /^([1-9]\d*)([smhd])$/;
+const LISTEN = /^(?:(.+):)?(\d+)$/;
+
+function listenAddress(raw: string): { host: string; port: number } {
+  const match = LISTEN.exec(raw);
+  const port = match === null ? NaN : Number(match[2]);
+  if (!(port >= 1 && port <= 65535)) throw new UsageError(`--listen must be a port or host:port, the port 1 to 65535: ${raw}`);
+  return { host: match![1] ?? "127.0.0.1", port };
+}
+
+function parseMonitor(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: MONITOR_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const sui = chain(values.chain);
+  const base = endpoint(values, sui);
+  if (base.nodeUrl === undefined || base.extraNodeUrls === undefined) {
+    throw new UsageError("monitor needs --node-url at least twice, one per node to compare");
+  }
+  const none = positionals.length === 0 && Object.keys(DESCRIPTOR_OPTIONS).every((flag) => values[flag as keyof DescriptorFlags] === undefined);
+  const window = values.window ?? "5m";
+  const match = WINDOW.exec(window);
+  if (match === null) throw new UsageError(`--window must be a duration such as 30s, 5m, 1h or 1d: ${window}`);
+  const format = values.format ?? "json";
+  if (format !== "json" && format !== "prometheus") throw new UsageError(`--format must be json or prometheus: ${format}`);
+  const options: MonitorOptions = {
+    descriptor: none && !sui ? { kind: "module", eventType: [MONITOR_DEFAULT_TYPE] } : descriptor("monitor", values, positionals, sui),
+    ...base,
+    nodeUrl: base.nodeUrl,
+    extraNodeUrls: base.extraNodeUrls,
+    interval: integer("interval", values.interval, 1, MAX_TIMEOUT) ?? 10_000,
+    window: Number(match[1]) * Number(MS_PER[match[2]!]!),
+    range: integer("range", values.range, 1, 10_000) ?? 100,
+    format,
+  };
+  withKey(options, values["api-key"]);
+  if (values.listen !== undefined) options.listen = listenAddress(values.listen);
+  const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  if (limit !== undefined) options.limit = limit;
+  return { command: "monitor", options };
+}
+
 function parseQuery(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: QUERY_OPTIONS, allowPositionals: true, strict: true }),
@@ -1306,5 +1378,6 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "name") return parseName(rest);
   if (command === "codegen") return parseCodegen(rest);
   if (command === "compare") return parseCompare(rest);
+  if (command === "monitor") return parseMonitor(rest);
   throw new UsageError(`unknown command: ${command}`);
 }

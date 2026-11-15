@@ -165,6 +165,45 @@ describe("chainFor with several nodes", () => {
   });
 });
 
+describe("chainFor nodes", () => {
+  it("gives one unpooled, uncounted adapter per Aptos node, the key on the first", async () => {
+    const chain = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1", extraNodeUrls: ["https://b.example/v1"], apiKey: "k" });
+    const nodes = chain.nodes();
+    expect(nodes).toHaveLength(2);
+    for (const n of nodes) expect(n).toBeInstanceOf(FullnodeScanAdapter);
+    expect(nodes.map(fullnodes)).toEqual([["https://a.example/v1"], ["https://b.example/v1"]]);
+    expect(nodes.map(keys)).toEqual([["k"], [undefined]]);
+  });
+
+  it("sends each node request once, so a 429 reaches the caller with its status", async () => {
+    const chain = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1", extraNodeUrls: ["https://b.example/v1"] });
+    const seen: string[] = [];
+    let status = 429;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      seen.push(String(input));
+      return status === 429
+        ? new Response("slow down", { status, headers: { "retry-after": "1" } })
+        : Response.json({ ledger_version: "42", oldest_ledger_version: "0", block_height: "7", oldest_block_height: "0" });
+    }) as unknown as typeof fetch;
+    const [a] = chain.nodes();
+    const err = await a!.getHeadVersion().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(429);
+    expect(seen).toEqual(["https://a.example/v1"]);
+    status = 200;
+    expect(await a!.getHeadVersion()).toBe(42n);
+    expect(await a!.getBlockHeights!(TYPE)).toEqual({ oldest: 0n, newest: 7n });
+  });
+
+  it("gives one SuiAdapter per gRPC URL", async () => {
+    const chain = await chainFor({ chain: "sui", network: "mainnet", nodeUrl: "https://a.example:443", extraNodeUrls: ["https://b.example:443"] });
+    const [a, b] = chain.nodes();
+    expect(a).toBeInstanceOf(SuiAdapter);
+    expect((await reached(a!))[0]).toStartWith("https://a.example:443/");
+    expect((await reached(b!))[0]).toStartWith("https://b.example:443/");
+  });
+});
+
 describe("chainFor names", () => {
   it("puts an address in long form with no read, on both chains", async () => {
     globalThis.fetch = (async () => {
