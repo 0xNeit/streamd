@@ -194,6 +194,25 @@ export interface CompareOptions extends Endpoint {
   limit?: number;
 }
 
+/** Node 0 is `nodeUrl` and takes the API key; the others are `extraNodeUrls`, compared with it. */
+export interface MonitorOptions extends Endpoint {
+  /** What each round compares; FeeStatement on Aptos when no descriptor is given. */
+  descriptor: EventDescriptor;
+  nodeUrl: string;
+  extraNodeUrls: string[];
+  /** Milliseconds from one round's start to the next, and the timeout of each node call. */
+  interval: number;
+  /** Milliseconds of rounds the window sums cover. */
+  window: number;
+  /** Versions compared per round. */
+  range: number;
+  format: "json" | "prometheus";
+  /** Where the latest round's Prometheus text is served. */
+  listen?: { host: string; port: number };
+  /** Rounds to run before exiting. */
+  limit?: number;
+}
+
 export interface CheckOptions extends Endpoint {
   descriptor: ModuleEventDescriptor;
 }
