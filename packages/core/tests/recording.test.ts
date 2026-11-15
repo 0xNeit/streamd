@@ -405,6 +405,16 @@ describe("recording transaction lookups", () => {
     await expect(replay.getTransactionEvents!(`0x${"aa".repeat(32)}`)).rejects.toBeInstanceOf(StreamdError);
   });
 
+  it("replays a lookup's gas unit price and fee payer", async () => {
+    const found = { version: 3n, success: false, vmStatus: "abort", events: [seeded], gasUnitPrice: 2n ** 64n, feePayer: "0xfee" };
+    const recorder = recordingAdapter({
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      getTransactionEvents: async () => found,
+    });
+    await recorder.getTransactionEvents!(hash);
+    expect(await replayAdapter(JSON.stringify(recorder)).getTransactionEvents!(hash)).toEqual(found);
+  });
+
   it("has no getTransactionEvents when the source or the recording lacks it", () => {
     expect(recordingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).getTransactionEvents)
       .toBeUndefined();
@@ -422,6 +432,9 @@ describe("recording transaction lookups", () => {
       { version: "-1", success: true, vmStatus: "", events: [] },
       { version: "1", success: true, vmStatus: 3, events: [] },
       { version: "1", success: true, vmStatus: "", events: {} },
+      { version: "1", success: true, vmStatus: "", events: [], gasUnitPrice: "-1" },
+      { version: "1", success: true, vmStatus: "", events: [], gasUnitPrice: 100 },
+      { version: "1", success: true, vmStatus: "", events: [], feePayer: 1 },
       undefined,
     ]) {
       expect(() => replayAdapter(bad(result))).toThrow("Invalid recording");

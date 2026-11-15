@@ -236,12 +236,18 @@ function parseTransaction(value: unknown): TransactionEvents | undefined {
   }
   if (typeof value.success !== "boolean") throw new StreamdError('"success" must be a boolean');
   if (typeof value.vmStatus !== "string") throw new StreamdError('"vmStatus" must be a string');
-  return {
+  const found: TransactionEvents = {
     version: decimal(value.version, "version"),
     success: value.success,
     vmStatus: value.vmStatus,
     events: value.events.map((event) => parseEvent(JSON.stringify(event) ?? "")),
   };
+  if (value.gasUnitPrice !== undefined) found.gasUnitPrice = decimal(value.gasUnitPrice, "gasUnitPrice");
+  if (value.feePayer !== undefined) {
+    if (typeof value.feePayer !== "string") throw new StreamdError('"feePayer" must be a string');
+    found.feePayer = value.feePayer;
+  }
+  return found;
 }
 
 function array(result: unknown): unknown[] {

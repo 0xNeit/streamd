@@ -155,10 +155,7 @@ export async function eventsAt(
 /**
  * Polls `adapter` every `pollInterval` ms until the transaction is committed,
  * then returns all its events; `descriptor` only routes the lookup. Rejects
- * with `StreamdTransactionError` for a failed transaction. `timeout` bounds the
- * caller's wait, an in-flight lookup included, but the adapter gets no signal:
- * a hung lookup keeps its `maxConcurrentRequests` slot until it settles or
- * the client's `requestTimeout` passes. `hash` is passed to the adapter as is.
+ * with `StreamdTransactionError` for a failed transaction.
  */
 export async function committedEvents(
   adapter: EventAdapter,
@@ -168,6 +165,34 @@ export async function committedEvents(
   descriptor: EventDescriptor | undefined,
   options: Pick<EventsOfOptions, "timeout" | "signal">,
 ): Promise<StreamdEvent[]> {
+  const found = await committedTransaction(adapter, limiter, pollInterval, hash, descriptor, options);
+  if (!found.success) {
+    throw new StreamdTransactionError(
+      `Transaction ${hash} failed at version ${found.version}: ${found.vmStatus}`,
+      hash,
+      found.version,
+      found.vmStatus,
+    );
+  }
+  return found.events;
+}
+
+/**
+ * Polls `adapter` every `pollInterval` ms until the transaction is committed,
+ * then returns the lookup as the adapter answered it, a failed transaction
+ * included. `timeout` bounds the caller's wait, an in-flight lookup included,
+ * but the adapter gets no signal: a hung lookup keeps its
+ * `maxConcurrentRequests` slot until it settles or the client's
+ * `requestTimeout` passes. `hash` is passed to the adapter as is.
+ */
+export async function committedTransaction(
+  adapter: EventAdapter,
+  limiter: RequestLimiter,
+  pollInterval: number,
+  hash: string,
+  descriptor: EventDescriptor | undefined,
+  options: Pick<EventsOfOptions, "timeout" | "signal">,
+): Promise<TransactionEvents> {
   if (adapter.getTransactionEvents === undefined) {
     throw new StreamdError("eventsOf needs an adapter that implements getTransactionEvents");
   }
@@ -198,16 +223,7 @@ export async function committedEvents(
     clearTimeout(timer);
     detach();
   }
-
-  if (!found.success) {
-    throw new StreamdTransactionError(
-      `Transaction ${hash} failed at version ${found.version}: ${found.vmStatus}`,
-      hash,
-      found.version,
-      found.vmStatus,
-    );
-  }
-  return found.events;
+  return found;
 }
 
 function bigintToString(_key: string, value: unknown): unknown {
