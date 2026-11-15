@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { StreamdError } from "@streamd/core";
 import { buildPublishPayload, parsePublishPayload } from "../src/publish.js";
 
@@ -7,6 +10,7 @@ const GOOD = { function_id: "0x1::code::publish_package_txn", args: [{ type: "he
 
 afterEach(() => {
   delete process.env.FAKE_APTOS;
+  delete process.env.FAKE_APTOS_LOG;
 });
 
 describe("buildPublishPayload", () => {
@@ -41,6 +45,20 @@ describe("buildPublishPayload", () => {
     await expect(buildPublishPayload(FAKE, "/pkg")).rejects.toThrow("wrote no readable publish payload");
     process.env.FAKE_APTOS = "bad-payload";
     await expect(buildPublishPayload(FAKE, "/pkg")).rejects.toThrow("not a 0x1::code::publish_package_txn call");
+  });
+
+  it("runs compiles of one package one after another, and of different packages at once", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "streamd-publish-test-"));
+    try {
+      process.env.FAKE_APTOS_LOG = join(dir, "same.log");
+      await Promise.all([buildPublishPayload(FAKE, "/pkg"), buildPublishPayload(FAKE, "/pkg/../pkg")]);
+      expect(await readFile(join(dir, "same.log"), "utf8")).toBe("start\nend\nstart\nend\n");
+      process.env.FAKE_APTOS_LOG = join(dir, "different.log");
+      await Promise.all([buildPublishPayload(FAKE, "/a"), buildPublishPayload(FAKE, "/b")]);
+      expect(await readFile(join(dir, "different.log"), "utf8")).toBe("start\nstart\nend\nend\n");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("says the CLI must be installed when it is missing", async () => {

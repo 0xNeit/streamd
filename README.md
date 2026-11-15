@@ -54,6 +54,9 @@ TypeScript types:
 - `@streamd/sui` (`packages/sui`) - `SuiClient` and `SuiAdapter`, the same client over Sui events,
   Sui network presets, and `resolveName`, `primaryName` and `ownedBy` over SuiNS and object owners, with
   a `./framework` catalog of `0x2` and `0x3` events. `@mysten/sui` is a peer dependency. See [Sui](#sui).
+- `@streamd/testing` (`packages/testing`) - start or attach to an Aptos localnet, publish Move
+  packages to it and assert their events. Needs the `aptos` CLI. See
+  [Test against a localnet](#test-against-a-localnet).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents` and `useTransfers` take an
   `AptosClient`. See [React hooks](#react-hooks).
@@ -739,6 +742,61 @@ transaction exactly as `eventsOf()` does and rejects as it does: a failed transa
 `StreamdTransactionError`, one not committed in `timeout` with `StreamdTimeoutError`.
 Nothing is looked up until an assertion runs. A malformed hash or `timeout` throws from
 `expectEvents()` itself.
+
+### Test against a localnet
+
+`@streamd/testing` starts an Aptos localnet with the installed `aptos` CLI, publishes a Move
+package to it, and gives you an `AptosClient` on it for `expectEvents`:
+
+```ts
+import { startLocalnet } from "@streamd/testing";
+
+await using localnet = await startLocalnet();
+const account = await localnet.fundedAccount();
+const me = account.accountAddress.toString();
+await localnet.publish("./move/counter", { account, namedAddresses: { counter: me } });
+
+const transaction = await localnet.aptos.transaction.build.simple({
+  sender: account.accountAddress,
+  data: { function: `${me}::counter::bump`, functionArguments: [42] },
+});
+const { hash } = await localnet.aptos.signAndSubmitTransaction({ signer: account, transaction });
+await localnet.client.expectEvents(hash).toEmit({ kind: "module", eventType: `${me}::counter::Bumped` });
+```
+
+- **Start.** `startLocalnet(options?)` runs `aptos node run-localnet` with no Docker, no
+  transaction stream and no Indexer, in a fresh temporary directory, and resolves once the node
+  and faucet are ready (about 16 s on an M-series Mac; `readyTimeout`, default 60000 ms). `cli`
+  names the binary when it is not `aptos` on `PATH`; a missing one rejects with a `StreamdError`
+  saying so. A node that exits first rejects with its last output lines, and one not ready in
+  time is killed and rejects with `StreamdTimeoutError`.
+- **Ports.** Each instance takes eight loopback ports, so several run at once: the ready server,
+  REST API, faucet, inspection, admin, backup service, and the validator and public network
+  listeners. They are free ports the OS picks, or eight consecutive from `basePort`, and
+  `localnet.ports` lists them. The node also opens two random ports of its own, one on every
+  interface.
+- **Attach.** `attachLocalnet({ nodeUrl, faucetUrl? })` uses a node already running, such as
+  `http://127.0.0.1:8080/v1`; it reads the ledger once so an unreachable node fails at once, and
+  `stop()` leaves that node running.
+- **The client.** `localnet.client` is an `AptosClient` on `localnet.aptos` (an `Aptos` on
+  `Network.LOCAL` with `http2: false`). Its `defaults.pollInterval` is 100 ms, so `eventsOf` and
+  `expectEvents` see a commit within about 100 ms; `client` in the options sets any other config.
+  A localnet has no Aptos names, so `withNames` is refused there.
+- **Accounts.** `fundedAccount(amount?)` generates an account and funds it through the faucet,
+  10 APT by default, enough for the SDK's default gas limit.
+- **Publish.** `publish(packageDir, { account, namedAddresses? })` compiles with
+  `aptos move build-publish-payload` and submits `0x1::code::publish_package_txn` from
+  `account` through the SDK, resolving `{ transactionHash, version }` once committed. A compile
+  failure rejects with the compiler's output, a failed transaction with
+  `StreamdTransactionError`. Named addresses must be addresses, not names. The CLI writes
+  `build/` inside the package; compiles of one package from one process run one at a time.
+- **Staying offline.** The compile passes `--skip-fetch-latest-git-deps`, so a framework
+  dependency resolves from the CLI's own cache when its `rev` is the CLI's release tag, such as
+  `rev = "aptos-cli-v9.4.0"` for CLI 9.4.0. Another `rev` is fetched from GitHub on first use.
+- **Stop.** `stop()` (or `await using`) destroys the client, sends the node SIGINT, kills it after
+  20 s, and removes its directory. A node still running when the test process exits is killed.
+- **Its own test.** `bun run test:localnet` in `packages/testing` starts two localnets side by
+  side and asserts a published package's events on each; the normal test run skips it.
 
 ### Preview a transaction's events before signing
 

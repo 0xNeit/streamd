@@ -30,6 +30,13 @@ if (args[0] === "move" && args[1] === "build-publish-payload") {
     console.error(`error[E03002]: unbound module\nargs ${JSON.stringify(args)}`);
     process.exit(1);
   }
+  const log = process.env.FAKE_APTOS_LOG;
+  if (log !== undefined) {
+    const { appendFileSync } = await import("node:fs");
+    appendFileSync(log, "start\n");
+    await Bun.sleep(150);
+    appendFileSync(log, "end\n");
+  }
   const payload =
     mode === "bad-payload"
       ? { function_id: "0x1::aptos_account::transfer", args: [] }

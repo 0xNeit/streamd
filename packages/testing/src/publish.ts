@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { StreamdError, requireAddress } from "@streamd/core";
 import { spawnError } from "./process.js";
 
@@ -13,6 +13,8 @@ export interface PublishPayload {
 
 const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HEX_BYTES = /^0x(?:[0-9a-fA-F]{2})+$/;
+// The CLI compiles into the package's own build/, so two compiles of one package must not overlap.
+const compiling = new Map<string, Promise<unknown>>();
 
 /**
  * Compiles the package at `packageDir` with the CLI and returns its publish
@@ -28,6 +30,18 @@ export async function buildPublishPayload(
     if (!MOVE_IDENTIFIER.test(name)) throw new StreamdError(`Named address ${JSON.stringify(name)} is not a Move identifier`);
     return `${name}=${requireAddress(value)}`;
   });
+  const key = resolve(packageDir);
+  const previous = compiling.get(key) ?? Promise.resolve();
+  const current = previous.catch(() => {}).then(() => compile(cli, packageDir, named));
+  compiling.set(key, current);
+  try {
+    return await current;
+  } finally {
+    if (compiling.get(key) === current) compiling.delete(key);
+  }
+}
+
+async function compile(cli: string, packageDir: string, named: string[]): Promise<PublishPayload> {
   const dir = await mkdtemp(join(tmpdir(), "streamd-publish-"));
   try {
     const out = join(dir, "payload.json");
