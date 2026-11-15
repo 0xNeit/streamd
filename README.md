@@ -2207,6 +2207,59 @@ for (const pool of pools.value.values()) {
   reads the history again. Like `reduce()`, it is not a listener for `off()` or
   `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 
+## Package upgrades
+
+`upgrades(address, callback, options?)` follows package publishes at one address as they land,
+and `getUpgrades(address, filter?)` returns them for a past range. Each arrives as an event whose
+`data` is a `PackageUpgrade { address, isUpgrade, events, entryFunctions, views }`, saying which
+event structs, entry functions and view functions the publish added, changed or removed:
+
+```ts
+const sub = streamd.upgrades("0x1", ({ version, data }) => {
+  for (const { name } of data.entryFunctions.added) console.log(version, "new entry function", name);
+  for (const { before, after } of data.views.changed) console.log(version, before.name, before.returns, "->", after.returns);
+});
+
+const past = await streamd.getUpgrades("0x1", { fromVersion: 7454757100n, toVersion: 7454757960n });
+```
+
+- **Source.** One scan over `0x1::code::PublishPackage`, kept where its `code_address` is
+  `address` (long form; an Aptos name is resolved once). Only `0x1::code` can emit that event,
+  so no other module can forge a record. `isUpgrade` is the event's `is_upgrade`: false for a
+  package's first publish.
+- **The diff.** Every module at the address is read at the version before the publish and at
+  its own, through the client's `aptos` (every page of the fullnode's `/accounts/{address}/modules` at
+  `ledger_version`; the SDK's own module listings drop the version and read the head), and their
+  ABIs compared: structs marked `#[event]` (`is_event`), functions with `is_entry`, and functions
+  with `is_view`, each named `address::module::name` with the address in long form. A name only
+  after the publish is `added`, only before it `removed`, and in both with a different
+  signature `changed` as `{ before, after }`; each list is sorted by name. A struct that gains
+  `#[event]` is an added event, and a public function that becomes a view an added view. The
+  diff spans the whole address, so another package there would show too, though only one is
+  published per transaction in practice; a second publish there in one transaction adds no
+  record when both are on one page, as a `FullnodeScanAdapter` page always holds whole
+  transactions.
+- **Signatures.** An `EventStructSignature` is `{ name, abilities, typeParameters, fields,
+  variants? }` (`variants` for an enum) and a `FunctionSignature` `{ name, visibility,
+  typeParameters, params, returns }`, types as the fullnode writes them. Public functions that
+  are neither entry nor view, plain structs and bytecode-only changes are not reported.
+- **Reads.** Two module listings per publish (one at version 0), each of one or more pages,
+  read two at a time outside `maxConcurrentRequests`, as `transfers()` reads stores.
+  `requestTimeout` bounds the whole page, its scan and every listing in it together. A page given
+  up on stops reading once the next page arrives, and otherwise finishes its reads; a listing
+  whose cursor repeats fails. A failed read fails the poll, which retries as for `on()`, or rejects `getUpgrades`; a module
+  without a readable ABI, or a listing that is not a list, is refused rather than reported as
+  removed, and stops a subscription as invalid input does. The reads do not go
+  through the adapter, so `ArchiveFallbackAdapter` does not answer them: a publish older than
+  the node's retained state fails with its 410 unless the client's `aptos` is an archive node.
+- **History.** No public source serves module events by type, so the scan reads every
+  transaction from `fromVersion` (as `getEvents` does when it is omitted: a
+  `FullnodeScanAdapter` from the head), which takes an API key past a few minutes of mainnet
+  history.
+- **Identity.** A record is the `PublishPackage` event with `data` replaced, keeping its
+  `(version, eventIndex)`, `transactionHash`, `sender` and `entryFunction`; `where` and `limit`
+  apply to records. Like `swaps()`, it is not a listener for `off()` or `listenerCount()`.
+
 ## Live balances
 
 `balances(address, options?)` keeps one wallet's balances current. `address` may be

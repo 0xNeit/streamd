@@ -4,10 +4,12 @@ import type {
   EventAdapter,
   EventCallback,
   EventDescriptor,
+  EventFilter,
   EventOf,
   StreamdConfig,
   StreamdEvent,
   Subscription,
+  SubscriptionOptions,
 } from "@streamd/core";
 import { activityDescriptor, activitySource } from "./activity.js";
 import { APTOS_BALANCES } from "./balances.js";
@@ -21,7 +23,8 @@ import { eventsOf, previewEvents } from "./transaction.js";
 import { saleDescriptor, saleSource } from "./sales.js";
 import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PreviewEventsOptions, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
+import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -238,6 +241,40 @@ export class AptosClient extends StreamdClient {
    */
   stakePools(options?: StakePoolsOptions): StakePools {
     return startStakePools((d, r, i, o) => this.reduce(d, r, i, o), options);
+  }
+
+  /**
+   * Follow package publishes at `address` as they land, one record per
+   * publishing transaction whose `data` is a `PackageUpgrade`: the event
+   * structs, entry functions and view functions it added, changed or removed,
+   * from one scan over `0x1::code::PublishPackage`. Each is found by reading
+   * every module at the address at the version before the publish and at its
+   * own, through the client's `aptos` (not the adapter, so an archive behind
+   * it is not asked, and a version the node pruned fails the poll with its
+   * 410), outside `maxConcurrentRequests`, within the page's `requestTimeout`. A
+   * failed read fails the poll, which retries as for `on()`. `address` may be
+   * an Aptos name, resolved once. Like `swaps()`, it is not a listener for
+   * `off()` or `listenerCount()`.
+   */
+  upgrades(address: string, callback: EventCallback<PackageUpgrade>, options: SubscriptionOptions = {}): Subscription {
+    return this.subscribe(UPGRADE_DESCRIPTOR, callback as EventCallback, options, undefined, options.id, this.upgradesOf(address));
+  }
+
+  /**
+   * Past package publishes at `address`, built as `upgrades()` builds them,
+   * over the range and options `getEvents` takes; `where` and `limit` apply
+   * to the records.
+   */
+  async getUpgrades(address: string, filter: EventFilter = {}): Promise<StreamdEvent<PackageUpgrade>[]> {
+    const source = this.upgradesOf(address)(this.adapter);
+    return new EventQuery(source, this.limiter, this.names).getEvents<PackageUpgrade>(UPGRADE_DESCRIPTOR, filter);
+  }
+
+  private upgradesOf(address: string): (source: EventAdapter) => EventAdapter {
+    if (typeof address !== "string") throw new StreamdError("upgrades needs an address or Aptos name");
+    const who = this.accountOf(address)!;
+    const read = moduleReader(this.aptos);
+    return (source) => upgradeSource(source, who, read);
   }
 
   /**
