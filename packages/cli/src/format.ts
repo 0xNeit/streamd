@@ -71,7 +71,16 @@ export function scrubber(url: string): (text: string) => string {
       if (/pass/i.test(key)) secrets.add(value).add(encodeURIComponent(value));
     }
   } catch {
-    // An unparsed URL still has its whole text replaced below.
+    // An unparsed URL, such as Kafka's list of brokers, still has its whole text replaced below, and its password here.
+    const password = /^[a-z][a-z0-9+.-]*:\/\/[^:@/?#]*:([^@/?#]*)@/i.exec(url)?.[1];
+    if (password !== undefined) {
+      secrets.add(password);
+      try {
+        secrets.add(decodeURIComponent(password));
+      } catch {
+        // Kept raw only.
+      }
+    }
   }
   secrets.delete("");
   const redacted = redactUrl(url);

@@ -1,3 +1,7 @@
+import { WEBHOOK_SIGNATURE_HEADER, raceAbort } from "@streamd/core";
+import { message, scrubber, signature } from "./format.js";
+import type { Attempt, Sink } from "./forward.js";
+
 export type SaslMechanism = "plain" | "scram-sha-256" | "scram-sha-512";
 
 /** Where a `kafka://` or `kafkas://` URL points: its brokers as `host:port`, TLS, and SASL credentials. */
@@ -159,5 +163,86 @@ export async function connectKafka(url: string, timeout: number, load: KafkaLoad
       current = undefined;
       closing?.then((producer) => producer.disconnect()).catch(() => {});
     },
+  };
+}
+
+export interface KafkaSinkOptions {
+  /** Only for scrubbing messages: the client was opened with it. */
+  to: string;
+  topic: string;
+  /** Every record's key, so the default partitioner keeps a forwarder's batches on one partition, in order. */
+  key: string;
+  secret?: string;
+  /** Per-send timeout in ms, connecting included. */
+  timeout: number;
+}
+
+// Refusals that will not change on a retry, by kafkajs's error type and by
+// librdkafka's (Confluent's client) without its ERR_ prefix. Every other
+// error, leader elections, too few in-sync replicas and network failures
+// included, is retried under backoff.
+const FINAL_TYPES = new Set([
+  "UNKNOWN_TOPIC_OR_PARTITION",
+  "UNKNOWN_TOPIC_OR_PART",
+  "UNKNOWN_TOPIC",
+  "TOPIC_AUTHORIZATION_FAILED",
+  "CLUSTER_AUTHORIZATION_FAILED",
+  "TRANSACTIONAL_ID_AUTHORIZATION_FAILED",
+  "SASL_AUTHENTICATION_FAILED",
+  "AUTHENTICATION",
+  "MESSAGE_TOO_LARGE",
+  "MSG_SIZE_TOO_LARGE",
+  "RECORD_LIST_TOO_LARGE",
+  "INVALID_TOPIC_EXCEPTION",
+  "INVALID_RECORD",
+  "INVALID_REQUIRED_ACKS",
+  "POLICY_VIOLATION",
+  "INVALID_ARG",
+]);
+const FINAL_NAMES = new Set(["KafkaJSSASLAuthenticationError", "KafkaJSServerDoesNotSupportApiKey"]);
+
+/** The error and the causes it wraps, as kafkajs wraps a protocol error once its retries run out. */
+function chain(err: unknown): { name?: unknown; type?: unknown }[] {
+  const links: { name?: unknown; type?: unknown; cause?: unknown }[] = [];
+  for (let link = err; typeof link === "object" && link !== null && links.length < 8; link = (link as { cause?: unknown }).cause) {
+    links.push(link);
+  }
+  return links;
+}
+
+function errorType(err: unknown): string | undefined {
+  for (const { type } of chain(err)) if (typeof type === "string") return type.replace(/^ERR_+/, "");
+  return undefined;
+}
+
+/**
+ * Produces each body to `options.topic` as one record, keyed by
+ * `options.key`, with the signature header when signing; the send resolving,
+ * acknowledged by every in-sync replica, is the acknowledgement.
+ */
+export function kafkaSink(client: KafkaLike, options: KafkaSinkOptions): Sink {
+  const scrub = scrubber(options.to);
+  return {
+    async send(body, signal): Promise<Attempt> {
+      const headers: Record<string, string> = {};
+      if (options.secret !== undefined) headers[WEBHOOK_SIGNATURE_HEADER] = signature(body, options.secret);
+      const timeout = AbortSignal.timeout(options.timeout);
+      try {
+        await raceAbort(client.send(options.topic, { key: options.key, value: body, headers }), AbortSignal.any([signal, timeout]));
+        return { ok: true };
+      } catch (err) {
+        if (signal.aborted) return { ok: false, failure: "aborted" };
+        if (timeout.aborted) {
+          // A wedged producer would time out every retry; the next attempt opens a fresh one.
+          client.close();
+          return { ok: false, failure: `send timed out after ${options.timeout}ms`, retryable: true };
+        }
+        const type = errorType(err);
+        const final = (type !== undefined && FINAL_TYPES.has(type)) || chain(err).some(({ name }) => FINAL_NAMES.has(String(name)));
+        const failure = scrub(type === undefined ? message(err) : `${message(err)} (${type})`);
+        return { ok: false, failure, retryable: !final };
+      }
+    },
+    close: () => client.close(),
   };
 }
