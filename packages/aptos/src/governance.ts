@@ -1,6 +1,7 @@
 import { StreamdError, eventId } from "@streamd/core";
 import type {
   CreationNumberEventDescriptor,
+  EventAdapter,
   EventDescriptor,
   HandleEventDescriptor,
   ReduceOptions,
@@ -8,7 +9,7 @@ import type {
   Reduction,
   StreamdEvent,
 } from "@streamd/core";
-import { address, amount } from "./records.js";
+import { address, amount, pageSource } from "./records.js";
 import type { Fields } from "./records.js";
 import type { Proposal, Proposals, ProposalsOptions, ProposalState } from "./types.js";
 
@@ -96,13 +97,13 @@ function text(hex: string): string {
 function metadata(field: unknown, event: StreamdEvent): Record<string, string> {
   const data = typeof field === "object" && field !== null ? (field as Fields).data : undefined;
   if (!Array.isArray(data)) throw malformed(event);
-  const out: Record<string, string> = {};
-  for (const entry of data as unknown[]) {
-    const { key, value } = (entry ?? {}) as Fields;
-    if (typeof key !== "string" || typeof value !== "string") throw malformed(event);
-    out[key] = text(value);
-  }
-  return out;
+  return Object.fromEntries(
+    (data as unknown[]).map((entry) => {
+      const { key, value } = (entry ?? {}) as Fields;
+      if (typeof key !== "string" || typeof value !== "string") throw malformed(event);
+      return [key, text(value)];
+    }),
+  );
 }
 
 function bool(field: unknown, event: StreamdEvent): boolean {
@@ -143,7 +144,11 @@ const vote: Apply = (p, d, e) => {
     shouldPass: bool(d.should_pass, e),
     version: e.version,
   };
-  p.votes.push(cast);
+  // Walks fold independently, so a proposal open across the migration gets its
+  // legacy and module votes in fold order; keep them in version order.
+  let at = p.votes.length;
+  while (at > 0 && p.votes[at - 1]!.version > cast.version) at--;
+  p.votes.splice(at, 0, cast);
   if (cast.shouldPass) p.yesVotes += cast.votes;
   else p.noVotes += cast.votes;
 };
@@ -151,7 +156,10 @@ const vote: Apply = (p, d, e) => {
 const resolve: Apply = (p, d, e) => {
   const [yesVotes, noVotes, early] = [u(d.yes_votes, e), u(d.no_votes, e), bool(d.resolved_early, e)];
   if (p.resolution === undefined) p.resolution = { version: e.version, yesVotes, noVotes, early, steps: 1 };
-  else p.resolution.steps++;
+  else {
+    p.resolution.steps++;
+    if (e.version < p.resolution.version) Object.assign(p.resolution, { version: e.version, yesVotes, noVotes, early });
+  }
 };
 
 const APPLY: Record<string, Apply> = {
@@ -163,6 +171,79 @@ const APPLY: Record<string, Apply> = {
   "0x1::aptos_governance::Vote": vote,
   "0x1::voting::ResolveProposal": resolve,
 };
+
+const VOTING_CREATE = "0x1::voting::CreateProposal";
+const GOVERNANCE_CREATE = "0x1::aptos_governance::CreateProposal";
+const RESOLVE = "0x1::voting::ResolveProposal";
+const FORUM: readonly string[] = ["0x1::governance_proposal::GovernanceProposal"];
+
+/** A `0x1::voting` view of `0x1`'s governance forum at `version`. */
+async function forum(adapter: EventAdapter, fn: string, args: readonly unknown[], version: bigint): Promise<unknown> {
+  const [value] = await adapter.view!(
+    { function: `0x1::voting::${fn}`, typeArguments: FORUM, functionArguments: ["0x1", ...args] },
+    version,
+  );
+  return value;
+}
+
+/** The creation `aptos_governance` emits right after `voting`'s own, in the same transaction. */
+function governed(create: StreamdEvent, next: StreamdEvent | undefined): boolean {
+  return (
+    next !== undefined &&
+    next.type === GOVERNANCE_CREATE &&
+    next.version === create.version &&
+    next.eventIndex === create.eventIndex + 1 &&
+    (next.data as Fields | null)?.proposal_id === (create.data as Fields | null)?.proposal_id
+  );
+}
+
+/**
+ * Whether `0x1`'s forum shows this resolution: the proposal exists there and,
+ * at the event's version, either became resolved (a last step) or took its
+ * next step's execution hash. Asking for the id first keeps a forged id past
+ * the forum's end from aborting the views.
+ */
+async function resolvedHere(adapter: EventAdapter, event: StreamdEvent): Promise<boolean> {
+  const id = (event.data as Fields | null)?.proposal_id;
+  const { version } = event;
+  // Left for the fold to refuse as malformed.
+  if (amount(id) === undefined) return true;
+  const next = amount(await forum(adapter, "next_proposal_id", [], version));
+  if (next === undefined || amount(id)! >= next) return false;
+  if ((await forum(adapter, "is_resolved", [id], version)) === true) {
+    return (await forum(adapter, "is_resolved", [id], version - 1n)) !== true;
+  }
+  const [after, before] = await Promise.all([
+    forum(adapter, "get_execution_hash", [id], version),
+    forum(adapter, "get_execution_hash", [id], version - 1n),
+  ]);
+  return after !== before;
+}
+
+/**
+ * The module walk's source. `0x1::voting` is a library any account can host a
+ * forum on, and its events name no forum, so a creation is kept only beside
+ * `aptos_governance`'s, which only governance emits, and a resolution only
+ * when `0x1`'s forum shows it, by up to four views at its version and the one
+ * before. `aptos_governance` events need no check.
+ */
+export function governanceSource(adapter: EventAdapter): EventAdapter {
+  if (typeof adapter.view !== "function") {
+    throw new StreamdError("proposals needs an adapter that implements view");
+  }
+  return pageSource(adapter, async (events) => {
+    const kept: StreamdEvent[] = [];
+    // ponytail: pairs within one page, which holds whole transactions on
+    // FullnodeScanAdapter; a source splitting a transaction across pages
+    // would drop that creation.
+    for (const [i, event] of events.entries()) {
+      if (event.guid === undefined && event.type === VOTING_CREATE && !governed(event, events[i + 1])) continue;
+      if (event.guid === undefined && event.type === RESOLVE && !(await resolvedHere(adapter, event))) continue;
+      kept.push(event);
+    }
+    return kept;
+  });
+}
 
 /**
  * Folds one governance event into `proposals`, returning the proposal it

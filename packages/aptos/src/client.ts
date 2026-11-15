@@ -1,5 +1,5 @@
 import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -13,7 +13,7 @@ import { activityDescriptor, activitySource } from "./activity.js";
 import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
-import { startProposals } from "./governance.js";
+import { governanceSource, startProposals } from "./governance.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { saleDescriptor, saleSource } from "./sales.js";
@@ -202,11 +202,25 @@ export class AptosClient extends StreamdClient {
    * reading its history from `fromVersion` (as for `getEvents` when omitted:
    * a handle from its first event, a `FullnodeScanAdapter` scan from the
    * head) and then following live. `proposalState()` gives a proposal's
-   * state at a time. Nothing is read by view. Like `reduce()`, it is not a
+   * state at a time. Any account can host a `0x1::voting` forum, so the
+   * module walk keeps a `voting` creation only beside `aptos_governance`'s,
+   * and a resolution only when `0x1`'s forum shows it, read through
+   * `EventAdapter.view` at its version. Like `reduce()`, it is not a
    * listener for `off()` or `listenerCount()`; `destroy()` ends it.
    */
   proposals(options?: ProposalsOptions): Proposals {
-    return startProposals((d, r, i, o) => this.reduce(d, r, i, o), this.onError, options);
+    const wrap = (source: EventAdapter) => governanceSource(source);
+    const verified = {
+      ...this.reduceHost,
+      query: new EventQuery(wrap(this.adapter), this.limiter, this.names),
+      subscribe: (d: EventDescriptor | readonly EventDescriptor[], callback: EventCallback, listener: object) =>
+        this.subscribe(d as EventDescriptor, callback, listener, undefined, undefined, wrap),
+    };
+    return startProposals(
+      (d, r, i, o) => (d.kind === "handle" ? this.reduce(d, r, i, o) : startReduction(verified, d, r, i, o)),
+      this.onError,
+      options,
+    );
   }
 
   /**

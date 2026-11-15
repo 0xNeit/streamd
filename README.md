@@ -1964,7 +1964,7 @@ await governance.ready;
 for (const p of governance.value.values()) console.log(p.id, proposalState(p), p.votes.length);
 ```
 
-- **Sources.** Five walks, each its own `reduce()`, folding into one map; no view is read:
+- **Sources.** Five walks, each its own `reduce()`, folding into one map:
 
   | Walk | Gives |
   | --- | --- |
@@ -1977,7 +1977,19 @@ for (const p of governance.value.values()) console.log(p.id, proposalState(p), p
   The legacy handles carry proposals 0 to 134 (the migration itself, resolved at version
   2812968150); every later proposal emits only module events. `voting::Vote` is not read, since
   `aptos_governance::Vote` is emitted beside it with the voter, pool and direction. A legacy
-  resolution, whose type the module event shares, is folded from its handle only.
+  resolution, whose type the module event shares, is folded from its handle only. Votes are
+  kept in version order and `resolution` is the lowest-version one, whichever walk folds first.
+- **Forged forums are dropped.** `0x1::voting` is a library any account can host its own forum
+  on, and its module events name no forum, so anyone can emit a `voting::CreateProposal` or
+  `ResolveProposal` with a real proposal's id. The module walk keeps a `voting::CreateProposal`
+  only when `aptos_governance::CreateProposal`, which only governance emits, follows it in the
+  same transaction, and a `ResolveProposal` only when `0x1`'s forum shows it at that version: the
+  id is below `next_proposal_id`, and the proposal became resolved there (a last step) or its
+  execution hash changed (an earlier step), by up to four `0x1::voting` views at the version and
+  the one before. So `proposals()` needs an adapter with `view`, and throws at the call without
+  one. The legacy handles are `0x1`'s own and `aptos_governance` events cannot be forged, so
+  neither is checked. Pairing reads one page at a time, which `FullnodeScanAdapter` keeps to whole
+  transactions; a source that splits a transaction across pages would drop that creation.
 - **Counts.** `yesVotes`, `noVotes` and `votes` count the votes seen; a tracker that started
   after a vote has not seen it. A resolution's figures are final, since no vote lands once
   voting closes, and `proposalState` uses them when there is one. A multi-step proposal resolves
