@@ -197,3 +197,11 @@ export function latch(): Latch {
   promise.catch(() => {});
   return { promise, resolve, reject };
 }
+
+const URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
+const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
+
+/** `text` with every URL and bearer token taken out, since node URLs and headers can carry API keys. */
+export function redactSecrets(text: string): string {
+  return text.replace(URL_PATTERN, "<url>").replace(BEARER_PATTERN, "Bearer <redacted>");
+}
