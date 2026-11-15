@@ -3778,11 +3778,12 @@ async function handle(message: KafkaMessage): Promise<void> {
 
 The producer sends with `acks=all`, so a send resolves only once every in-sync replica has the
 record, and the cursor file moves only after that, exactly as after a webhook's `2xx`. The
-producer is idempotent: a resend of a batch that was not acknowledged, on the same connection
-or after a broker restart, carries the same producer id and sequence, and the broker drops the
-copy. At least once still allows a duplicate when a send outlives `--timeout`, which closes the
-producer so the retry opens a fresh one with a new producer id, and when `forward` restarts and
-resends the batch in flight. A resent record's value is byte-identical, so a consumer drops
+producer is idempotent: a resend of a batch that was not acknowledged, whether the client's own
+retry of a stalled request (each request gets a third of `--timeout`, so one retry fits) or a
+later attempt after a dropped connection or a broker restart, carries the same producer id and
+sequence, and the broker drops the copy. At least once still allows a duplicate when a send
+outlives `--timeout`, which closes the producer so the retry opens a fresh one with a new
+producer id, and when `forward` restarts and resends the batch in flight. A resent record's value is byte-identical, so a consumer drops
 copies by the value's SHA-256 or by each event's `version` and `eventIndex`.
 
 What fails at once, exiting `1`: a topic that does not exist (the producer never creates one),
@@ -3797,7 +3798,8 @@ is refused, and the URL and its password are never printed.
 The CLI ships no Kafka client: install one, and it is loaded only when `--to` is a Kafka URL.
 `@confluentinc/kafka-javascript` is the one to choose, maintained by Confluent over
 librdkafka, and streamd drives it through its KafkaJS-compatible API; `kafkajs`, pure
-JavaScript, works too but has had no release since February 2023. When both are installed,
+JavaScript, works too but has had no release since February 2023, and under Node 23 or later
+and Bun it prints a harmless `TimeoutNegativeWarning` on stderr. When both are installed,
 Confluent's is used. Under Confluent's client, librdkafka waits up to 30 seconds for a topic
 missing from the metadata to appear, longer than the default `--timeout`, so a missing topic
 is retried as a timeout until the budget runs out rather than failing at once. Transactions

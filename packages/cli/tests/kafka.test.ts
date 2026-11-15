@@ -51,8 +51,8 @@ const CLIENT = {
   brokers: ["a:9093", "b:9092"],
   ssl: true,
   sasl: { mechanism: "scram-sha-256", username: "u", password: "pw" },
-  connectionTimeout: 5000,
-  requestTimeout: 5000,
+  connectionTimeout: 1666,
+  requestTimeout: 1666,
   retry: { retries: 1 },
   logLevel: 0,
 };
@@ -87,7 +87,7 @@ describe("connectKafka", () => {
     );
     await kafka.send("t", MESSAGE);
     expect(confluent.client).toEqual({
-      kafkaJS: { clientId: "streamd", brokers: ["h:9092"], ssl: false, connectionTimeout: 100, requestTimeout: 100, retry: { retries: 1 }, logLevel: 0 },
+      kafkaJS: { clientId: "streamd", brokers: ["h:9092"], ssl: false, connectionTimeout: 33, requestTimeout: 33, retry: { retries: 1 }, logLevel: 0 },
     });
     expect(confluent.producers).toEqual([{ kafkaJS: { ...PRODUCER, acks: -1 } }]);
     expect(confluent.sends).toEqual([{ topic: "t", messages: [MESSAGE] }]);

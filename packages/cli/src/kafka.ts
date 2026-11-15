@@ -113,13 +113,16 @@ async function optional(load: KafkaLoader, name: string): Promise<unknown> {
  */
 export async function connectKafka(url: string, timeout: number, load: KafkaLoader = (name) => import(name)): Promise<KafkaLike> {
   const { brokers, ssl, sasl } = parseKafkaUrl(url);
+  // A third of --timeout, so the client's one retry of a stalled request fits inside it: that
+  // retry carries the same producer id and sequence, and the broker drops it if the first landed.
+  const attempt = Math.max(1, Math.floor(timeout / 3));
   const client = {
     clientId: "streamd",
     brokers,
     ssl,
     ...(sasl !== undefined && { sasl }),
-    connectionTimeout: timeout,
-    requestTimeout: timeout,
+    connectionTimeout: attempt,
+    requestTimeout: attempt,
     retry: { retries: 1 },
     logLevel: NOTHING,
   };
