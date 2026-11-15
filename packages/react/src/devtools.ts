@@ -96,6 +96,7 @@ const BODY: CSSProperties = {
   marginBottom: 6,
   maxHeight: "60vh",
   maxWidth: "min(960px, calc(100vw - 24px))",
+  boxSizing: "border-box",
   overflow: "auto",
   background: "#111827",
   border: "1px solid #374151",
