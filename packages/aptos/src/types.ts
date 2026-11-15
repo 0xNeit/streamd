@@ -1,7 +1,9 @@
 import type { MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type {
+  EntryFunctionCall,
   EventFilter,
   EventPredicate,
+  NameOptions,
   ReduceOptions,
   StreamdEvent,
   SubscriptionOptions,
@@ -205,6 +207,95 @@ export type SaleListenerOptions = SubscriptionOptions & SaleOptions;
 
 /** Filter for `AptosClient.getSales`. */
 export type SaleFilter = EventFilter & SaleOptions;
+
+/**
+ * The gas a transaction was charged, from its `0x1::transaction_fee::FeeStatement`.
+ * Amounts in octas; the payer is the sender, or the fee payer of a sponsored transaction.
+ */
+export interface GasUsage {
+  /** `total_charge_gas_units`, the transaction's `gas_used`: execution, IO and storage together. */
+  units: bigint;
+  executionUnits: bigint;
+  ioUnits: bigint;
+  /** The storage fee inside `units`, in octas. */
+  storageFee: bigint;
+  /** Octas credited back to the payer for storage the transaction freed. */
+  storageRefund: bigint;
+  /** Octas per unit, when the source reports it. */
+  unitPrice?: bigint;
+  /** `units * unitPrice`, in octas, when the price is known; `storageRefund` comes back on top. */
+  fee?: bigint;
+}
+
+/** One account's net change in one asset across a transaction's transfers. */
+export interface AccountBalanceChange {
+  /** In long form. */
+  account: string;
+  /** In `Transfer.asset`'s form. */
+  asset: string;
+  /** Positive when the account gained. */
+  delta: bigint;
+  /** From the transfers, when they carry asset details. */
+  symbol?: string;
+  decimals?: number;
+}
+
+/**
+ * What one committed or simulated transaction did, as `AptosClient.explain`
+ * reports it and `formatExplanation` renders it.
+ */
+export interface TransactionExplanation {
+  /** True for a simulation, which commits nothing. */
+  simulated: boolean;
+  /** The committed version, or the one the node simulated at. */
+  version: bigint;
+  /** Absent for a simulation: an unsigned transaction's hash is not the one it would commit under. */
+  transactionHash?: string;
+  success: boolean;
+  /** The VM's verdict, such as `"Executed successfully"` or the abort it hit. */
+  vmStatus: string;
+  /** In long form, when the source reports one. */
+  sender?: string;
+  /** Who paid the gas of a sponsored transaction, in long form. */
+  feePayer?: string;
+  /** Microseconds since the Unix epoch. */
+  timestamp?: bigint;
+  entryFunction?: EntryFunctionCall;
+  /** Absent when the transaction has no fee statement. */
+  gas?: GasUsage;
+  /** Paired as `transfers()` pairs them; empty for a failed transaction, whose other events were discarded. */
+  transfers: Transfer[];
+  /**
+   * Net per account and asset over `transfers`, grouped by account in order of
+   * first appearance, each account's assets in theirs, zero nets left out; gas is not in it.
+   */
+  balanceChanges: AccountBalanceChange[];
+  /** Decoded as `swaps()` decodes them. */
+  swaps: Swap[];
+  /** Decoded as `sales()` decodes them. */
+  sales: Sale[];
+  /** Every event, in `eventIndex` order. */
+  events: StreamdEvent[];
+  /**
+   * Under `withNames`, the primary name (`null` for none) of the sender, the
+   * fee payer, every transfer's `from` and `to`, and every sale's buyer and
+   * seller, keyed by long-form address.
+   */
+  names?: Record<string, string | null>;
+}
+
+/** Options for `AptosClient.explain`. */
+export interface ExplainOptions
+  extends Pick<PreviewEventsOptions, "signerPublicKey" | "secondarySignersPublicKeys" | "feePayerPublicKey"> {
+  /** For a hash: how long to wait for the commit, in ms (default 20000), as `eventsOf` waits. */
+  timeout?: number;
+  /** Aborting rejects with the signal's `reason`. */
+  signal?: AbortSignal;
+  /** Adds `symbol` and `decimals` to transfers and balance changes, read by view (default true). */
+  withAssetInfo?: boolean;
+  /** Attaches `names`, through the client's name cache (`true` for the default expiry, or `{ ttl }`). */
+  withNames?: boolean | NameOptions;
+}
 
 /** A built, unsigned Aptos transaction to simulate, with the keys whose checks the node should run. */
 export interface AptosTransactionSimulation extends TransactionSimulation {

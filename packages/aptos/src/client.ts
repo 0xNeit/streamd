@@ -12,6 +12,7 @@ import type {
 import { activityDescriptor, activitySource } from "./activity.js";
 import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
+import { explain } from "./explain.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
 import { governanceSource, startProposals } from "./governance.js";
 import { startStakePools } from "./staking.js";
@@ -20,7 +21,7 @@ import { eventsOf, previewEvents } from "./transaction.js";
 import { saleDescriptor, saleSource } from "./sales.js";
 import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PreviewEventsOptions, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -412,6 +413,33 @@ export class AptosClient extends StreamdClient {
   ): Promise<EventOf<TData>[]> {
     const events = await previewEvents(this.adapter, this.limiter, transaction, descriptor, options);
     return events as unknown as EventOf<TData>[];
+  }
+
+  /**
+   * What one transaction did, as one `TransactionExplanation`: status, sender
+   * and fee payer, entry function, gas from its fee statement, the transfers
+   * it made (paired as `transfers()` pairs them) with each account's net
+   * change per asset, its swaps and sales, and every event. `target` is a
+   * transaction hash, waited for as `eventsOf` waits (`timeout`, `signal`), or
+   * a built, unsigned transaction, simulated as `previewEvents` simulates it,
+   * with its views read at the newest state the node had. A failed
+   * transaction resolves with `success: false`, its gas and no transfers.
+   * Asset details are read unless `withAssetInfo: false`; `withNames` adds
+   * `names`. Store and asset reads go through the client's limiter; a failed
+   * read rejects. `formatExplanation` renders the result as text.
+   */
+  async explain(
+    target: string | SimpleTransaction | MultiAgentTransaction,
+    options: ExplainOptions = {},
+  ): Promise<TransactionExplanation> {
+    const host = {
+      adapter: this.adapter,
+      limiter: this.limiter,
+      names: this.names,
+      pollInterval: this.defaults.pollInterval!,
+      requestTimeout: this.requestTimeout,
+    };
+    return explain(host, target, options);
   }
 
   /**

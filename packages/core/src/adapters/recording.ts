@@ -10,6 +10,7 @@ import type {
 } from "../types.js";
 import { UNSIGNED_INTEGER } from "../decode.js";
 import { StreamdError } from "../errors.js";
+import { normalizeAddress } from "../filter.js";
 import { parseEvent, serializeEvent } from "../serialize.js";
 import { descriptorKey, fetchKey } from "../utils.js";
 import { requireAdapter } from "./validate.js";
@@ -236,12 +237,19 @@ function parseTransaction(value: unknown): TransactionEvents | undefined {
   }
   if (typeof value.success !== "boolean") throw new StreamdError('"success" must be a boolean');
   if (typeof value.vmStatus !== "string") throw new StreamdError('"vmStatus" must be a string');
-  return {
+  const found: TransactionEvents = {
     version: decimal(value.version, "version"),
     success: value.success,
     vmStatus: value.vmStatus,
     events: value.events.map((event) => parseEvent(JSON.stringify(event) ?? "")),
   };
+  if (value.gasUnitPrice !== undefined) found.gasUnitPrice = decimal(value.gasUnitPrice, "gasUnitPrice");
+  if (value.feePayer !== undefined) {
+    const feePayer = typeof value.feePayer === "string" ? normalizeAddress(value.feePayer) : undefined;
+    if (feePayer === undefined) throw new StreamdError('"feePayer" must be an address');
+    found.feePayer = feePayer;
+  }
+  return found;
 }
 
 function array(result: unknown): unknown[] {

@@ -32,6 +32,7 @@ export { formatAmount, startBalances } from "./balances.js";
 export type { BalanceReader, BalancesHost } from "./balances.js";
 export {
   committedEvents,
+  committedTransaction,
   eventsAt,
   eventsOf,
   expectEvents,

@@ -10,11 +10,13 @@ export type { EventHandleInfo } from "./handles.js";
 export type { OwnedByOptions } from "./ownership.js";
 export type { DescriptorCheck, EventTypeCheck, EventTypeStatus } from "./preflight.js";
 export { AptosClient } from "./client.js";
+export { formatExplanation } from "./explain.js";
 export type { AptosClientConfig } from "./client.js";
 export { primaryName, resolveName } from "./names.js";
 export { formatAmount } from "./transfers.js";
 export { proposalState } from "./governance.js";
 export type {
+  AccountBalanceChange,
   Activity,
   ActivityFilter,
   ActivityListenerOptions,
@@ -32,6 +34,8 @@ export type {
   EventsOfOptions,
   ExpectEventsOptions,
   ExpectPreviewOptions,
+  ExplainOptions,
+  GasUsage,
   PreviewEventsOptions,
   Proposal,
   ProposalResolution,
@@ -53,6 +57,7 @@ export type {
   SwapListenerOptions,
   SwapOptions,
   SwapProtocol,
+  TransactionExplanation,
   Transfer,
   TransferFilter,
   TransferListenerOptions,

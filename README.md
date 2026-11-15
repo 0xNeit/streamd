@@ -19,7 +19,7 @@ streamd.on(
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
 `transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `proposals`, `stakePools`, `balances`, `balanceAt`,
-`eventsOf`, `eventsAt`, `expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
+`eventsOf`, `eventsAt`, `explain`, `expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
 adapter.
@@ -791,6 +791,71 @@ await check.notToEmit({ kind: "module", eventType: "0x1::coin::CoinDeposit" });
 Each assertion runs its own simulation. A failed one rejects with `StreamdAssertionError`
 listing every event the simulation emitted, with `transactionHash` undefined; a simulation that
 aborts rejects with `StreamdTransactionError` instead.
+
+### Explain a transaction
+
+`explain(txHash | transaction, options?)` on `AptosClient` sums up what one transaction did,
+and `formatExplanation(explanation)` renders that summary as text. A hash is waited for as
+`eventsOf` waits; a built, unsigned transaction is simulated as `previewEvents` simulates it.
+
+```ts
+import { formatExplanation } from "@streamd/aptos";
+
+const explanation = await streamd.explain("0xaaa0871a...", { withNames: true });
+console.log(explanation.gas?.fee, explanation.balanceChanges);
+process.stdout.write(formatExplanation(explanation));
+// Transaction 0xaaa0871a... at version 8062800017, 2026-11-15T12:05:02.630Z
+// Status: success (Executed successfully)
+// Sender: 0x172d...
+// Function: 0x1::aptos_account::transfer
+// Gas: 5414 units at 100 octas, fee 0.005414 APT (storage 0.005324 APT, refund 0 APT)
+// Transfers:
+//   0.494586 APT from 0x172d... to 0xfe56...
+// Balance changes:
+//   0x172d...: -0.494586 APT
+//   0xfe56...: +0.494586 APT
+// Events: 3
+
+const preview = await streamd.explain(await aptos.transaction.build.simple({ sender, data }));
+```
+
+- **The summary.** A `TransactionExplanation` holds `simulated`, `version`,
+  `transactionHash` (not for a simulation), `success`, `vmStatus`, `sender`, `feePayer` (a
+  sponsored transaction's), `timestamp`, `entryFunction`, `gas`, `transfers`,
+  `balanceChanges`, `swaps`, `sales` and every event in `events`.
+- **Failures.** A failed transaction or simulation resolves with `success: false` and its
+  `vmStatus`, rather than rejecting as `eventsOf` does, since its gas was still charged. The
+  chain keeps only its fee statement, so it has no transfers.
+- **Gas.** From the transaction's `0x1::transaction_fee::FeeStatement`: `units` (the
+  transaction's `gas_used`), `executionUnits`, `ioUnits`, `storageFee` and `storageRefund`
+  in octas, and, when the adapter reports the gas unit price (`FullnodeScanAdapter` does),
+  `unitPrice` and `fee`, `units * unitPrice`. The payer is the sender, or `feePayer`, and
+  gets `storageRefund` back on top. The fee is burned without a withdraw event, so it is not
+  in `transfers` or `balanceChanges`.
+- **Transfers and balance changes.** `transfers` are built and paired exactly as
+  `transfers()` builds them, over the transaction's events. `balanceChanges` is the net
+  `{ account, asset, delta }` per account and asset over them, grouped by account in order
+  of first appearance and each account's assets in theirs, zero nets left out. `symbol` and `decimals` are read by view unless
+  `withAssetInfo: false`.
+- **Swaps and sales.** Decoded from the same events as `swaps()` and `sales()` decode them.
+- **Names.** `withNames` (mainnet and a localnet) adds `names`: the primary name or `null`
+  of the sender, the fee payer, every transfer's `from` and `to` and every sale's buyer and
+  seller, through the client's name cache.
+- **Simulations.** The node simulates on top of its newest state at a version not yet
+  committed, so the store and asset reads run at the newest version below it that the
+  client's adapter reports. A store the simulation would create does not exist there, so
+  that leg is left out: a transfer to an account with no store of the asset shows as a
+  withdraw with no `to`.
+- **Reads.** The lookup or simulation, the head read for a simulation, and every store,
+  asset and name read go through the client's limiter. A failed read rejects. It needs an
+  adapter with `view`, plus `getTransactionEvents` for a hash, or
+  `simulateTransactionEvents` and `getHeadVersion` for a transaction; bad input, signer
+  keys passed with a hash and `timeout` passed with a transaction are refused before any
+  read. Aborting `signal` rejects at once and drops the reads still queued.
+- **The text.** `formatExplanation` writes one fact per line, amounts in the asset's
+  decimals and symbol when known (a swap takes them from its transaction's transfers) and
+  otherwise in base units with the asset, addresses in long form with their names, and
+  control and bidirectional override characters in on-chain text replaced with `?`.
 
 ### Query history
 
@@ -2237,7 +2302,8 @@ a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` tha
 `fromVersion: "earliest"` needs, an optional `getBlock(descriptor, height)` that
 `fromBlock`/`toBlock` need, an optional `getBlockHeights(descriptor)` that `fromTime`
 needs alongside `getBlock`, and an optional `getTransactionEvents(hash, descriptor?)` that
-`eventsOf()` needs, returning `{ version, success, vmStatus, events }` or `undefined` while
+`eventsOf()` needs, returning `{ version, success, vmStatus, events }` (with optional
+`gasUnitPrice` and `feePayer`, which `explain()` reads) or `undefined` while
 the transaction is not committed, an optional
 `getTransactionEventsByVersion(version, descriptor?)` that `eventsAt()` needs, returning the
 same shape or `undefined` when there is no transaction at that version, and an optional

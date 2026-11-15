@@ -1156,6 +1156,10 @@ export interface TransactionEvents {
   /** The VM's verdict, such as `"Executed successfully"` or the abort it hit. */
   vmStatus: string;
   events: StreamdEvent[];
+  /** The price paid per gas unit, in the chain's smallest native unit, when the source reports it. */
+  gasUnitPrice?: bigint;
+  /** The account that paid the gas of a sponsored transaction, in long form, when the source reports one. */
+  feePayer?: string;
 }
 
 /** Options for a chain client's `eventsOf`. */
