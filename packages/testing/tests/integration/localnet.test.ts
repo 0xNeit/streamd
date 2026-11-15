@@ -41,8 +41,10 @@ function listening(port: number): Promise<boolean> {
 
 describe.skipIf(!enabled)("startLocalnet (aptos CLI)", () => {
   it("runs two localnets side by side, publishing to each and asserting its events", async () => {
-    const localnets = await Promise.all([startLocalnet(), startLocalnet()]);
+    const started = await Promise.allSettled([startLocalnet(), startLocalnet()]);
+    const localnets = started.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
     try {
+      for (const result of started) if (result.status === "rejected") throw result.reason;
       expect(localnets[0].nodeUrl).not.toBe(localnets[1].nodeUrl);
       await Promise.all(localnets.map(bumpAndAssert));
     } finally {

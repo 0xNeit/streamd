@@ -20,7 +20,8 @@ export async function startNode(
   stopGrace = STOP_GRACE,
 ): Promise<NodeProcess> {
   // Anything already answering would pass the ready check in place of this node.
-  if (await isReady(readyUrl, AbortSignal.timeout(2000))) {
+  const taken = await fetch(readyUrl, { signal: AbortSignal.timeout(2000) }).then(() => true, () => false);
+  if (taken) {
     throw new StreamdError(`Something is already serving a localnet ready check at ${readyUrl}`);
   }
   const child = spawn(cli, args, { stdio: ["ignore", "pipe", "pipe"] });

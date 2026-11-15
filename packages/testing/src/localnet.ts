@@ -127,7 +127,7 @@ class RunningLocalnet implements Localnet {
     this.aptos = new Aptos(
       new AptosConfig({ network: Network.LOCAL, fullnode: nodeUrl, faucet: faucetUrl, clientConfig: { http2: false } }),
     );
-    this.client = new AptosClient({ defaultPollInterval: 100, ...config, aptos: this.aptos });
+    this.client = new AptosClient({ ...config, defaultPollInterval: config?.defaultPollInterval ?? 100, aptos: this.aptos });
   }
 
   async fundedAccount(amount: number = DEFAULT_FUNDING): Promise<Account> {
