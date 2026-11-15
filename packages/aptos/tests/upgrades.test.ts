@@ -183,7 +183,7 @@ function fakeNode(page: (address: string, version: bigint, start: string | undef
   const client = {
     async provider(req: { url: string; params?: Record<string, unknown> }) {
       const match = /\/accounts\/([^/]+)\/modules$/.exec(req.url.replace(/\?.*$/, ""));
-      if (match === null || typeof req.params?.ledger_version !== "string") throw new Error(`unexpected request ${req.url}`);
+      if (match === null || typeof req.params?.ledger_version !== "string" || req.params.limit !== 1000) throw new Error(`unexpected request ${req.url}`);
       const start = req.params.start as string | undefined;
       requests.push([match[1]!, BigInt(req.params.ledger_version), start]);
       try {
@@ -293,6 +293,16 @@ describe("getUpgrades", () => {
     const [record] = await client.getUpgrades(A, { fromVersion: 0n });
     expect(record!.data.entryFunctions.added.map((f) => f.name)).toEqual([`${A}::extra::go`, `${A}::pool::swap`]);
     expect(requests).toEqual([[A, 0n, undefined], [A, 0n, "next-0"]]);
+  });
+
+  it("refuses a listing that is not a list, and ends on an empty cursor", async () => {
+    const bad = fakeNode(() => ({ modules: {} as never }));
+    const client = testClient({ adapter: new MemoryAdapter([publish(0, 0, A, false)]), aptos: bad.aptos });
+    await expect(client.getUpgrades(A, { fromVersion: 0n })).rejects.toThrow("no module list");
+    const empty = fakeNode(() => ({ modules: V1, cursor: "" }));
+    const other = testClient({ adapter: new MemoryAdapter([publish(0, 0, A, false)]), aptos: empty.aptos });
+    expect(await other.getUpgrades(A, { fromVersion: 0n })).toHaveLength(1);
+    expect(empty.requests).toHaveLength(1);
   });
 
   it("refuses a module listing whose cursor repeats", async () => {

@@ -2248,7 +2248,8 @@ const past = await streamd.getUpgrades("0x1", { fromVersion: 7454757100n, toVers
   `requestTimeout` bounds the whole page, its scan and every listing in it together. A page given
   up on stops reading once the next page arrives, and otherwise finishes its reads; a listing
   whose cursor repeats fails. A failed read fails the poll, which retries as for `on()`, or rejects `getUpgrades`; a module
-  without a readable ABI is refused rather than reported as removed. The reads do not go
+  without a readable ABI, or a listing that is not a list, is refused rather than reported as
+  removed, and stops a subscription as invalid input does. The reads do not go
   through the adapter, so `ArchiveFallbackAdapter` does not answer them: a publish older than
   the node's retained state fails with its 410 unless the client's `aptos` is an archive node.
 - **History.** No public source serves module events by type, so the scan reads every
