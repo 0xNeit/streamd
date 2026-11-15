@@ -306,3 +306,94 @@ export interface Proposals {
   unsubscribe(): void;
   [Symbol.dispose](): void;
 }
+
+/** What one pool was paid at one epoch change, in octas. */
+export interface EpochRewards {
+  /** The epoch the rewards were earned in: the one this change ended. */
+  epoch: bigint;
+  /** `stake::DistributeRewards`, zero included. */
+  rewards: bigint;
+  /** `stake::DistributeTransactionFee`; `0n` when the pool was paid none. */
+  fees: bigint;
+  /** The epoch change's version. */
+  version: bigint;
+}
+
+/** One `delegation_pool::CommissionPercentageChange`. */
+export interface CommissionChange {
+  /** The next lockup cycle's commission, in hundredths of a percent (`1000n` is 10%). */
+  percentage: bigint;
+  /** Long form. */
+  owner: string;
+  version: bigint;
+}
+
+/** One delegator's stake moves in a delegation pool, as far as they have been seen, in octas. */
+export interface Delegator {
+  /** Long form. */
+  address: string;
+  /** `delegation_pool::AddStake` amounts, fees included. */
+  added: bigint;
+  addStakeFees: bigint;
+  unlocked: bigint;
+  reactivated: bigint;
+  withdrawn: bigint;
+  /** The first `AddStake` seen: a join, when the monitor saw the pool from before it. */
+  firstAddedAt?: bigint;
+  /** The latest move's version. */
+  lastVersion: bigint;
+}
+
+/** One stake pool as far as its events have been seen. */
+export interface StakePool {
+  /** Long form. */
+  address: string;
+  /** One entry per epoch change seen, oldest first. */
+  rewards: EpochRewards[];
+  /** The latest `CommissionChange`'s percentage; absent for a pool with none seen. */
+  commissionPercentage?: bigint;
+  commissionChanges: CommissionChange[];
+  /** By long-form address; empty for a pool that is not a delegation pool. */
+  delegators: Map<string, Delegator>;
+}
+
+/**
+ * Options for `AptosClient.stakePools`: `pool` narrows to some pools, the
+ * start options bound the history, and the live options tune the walk, as for `reduce()`.
+ */
+export interface StakePoolsOptions
+  extends Pick<
+    ReduceOptions,
+    | "fromVersion"
+    | "fromTime"
+    | "pollInterval"
+    | "batchSize"
+    | "maxErrors"
+    | "maxBackoff"
+    | "maxPollInterval"
+    | "retries"
+    | "signal"
+    | "onError"
+  > {
+  /** A pool address or a non-empty list of them; other pools' events are ignored. */
+  pool?: string | readonly string[];
+  /**
+   * Called after each live event changes a pool, with that pool: once per
+   * pool an epoch change paid, with its `NewEpoch` event. A throw goes to `onError`.
+   */
+  onChange?: (pool: StakePool, event: StreamdEvent) => void;
+}
+
+/** A running `stakePools()`: every pool seen so far, kept current as events arrive. */
+export interface StakePools {
+  /** Every pool seen, by long-form address; the map and its records are updated in place. */
+  readonly value: ReadonlyMap<string, StakePool>;
+  /** By address, in any form. */
+  get(address: string): StakePool | undefined;
+  /** Resolves once the history is folded and following has started; rejects if it fails or is stopped first. */
+  readonly ready: Promise<ReadonlyMap<string, StakePool>>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
+}
