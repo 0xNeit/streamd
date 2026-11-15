@@ -76,14 +76,17 @@ function optionalU(field: unknown, event: StreamdEvent): bigint | undefined {
 }
 
 const HEX_BYTES = /^0x(?:[0-9a-fA-F]{2})*$/;
+const CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
+/** The bytes as text, or `hex` as written when they are not printable UTF-8 (a BCS `bool` flag is `0x01`). */
 function text(hex: string): string {
   if (!HEX_BYTES.test(hex)) return hex;
   const bytes = new Uint8Array((hex.length - 2) / 2);
   for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(2 + i * 2, 4 + i * 2), 16);
   try {
-    return utf8.decode(bytes);
+    const decoded = utf8.decode(bytes);
+    return CONTROL.test(decoded) ? hex : decoded;
   } catch {
     return hex;
   }

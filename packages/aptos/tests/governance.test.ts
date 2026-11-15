@@ -1,5 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { MemoryAdapter, StreamdError, descriptorKey } from "@streamd/core";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { MemoryAdapter, StreamdError, descriptorKey, parseEvent } from "@streamd/core";
 import type { EventAdapter, EventDescriptor, StreamdEvent } from "@streamd/core";
 import { GOVERNANCE_WALKS, applyGovernanceEvent, proposalState } from "../src/governance.js";
 import { proposalState as exported } from "../src/index.js";
@@ -110,10 +112,11 @@ describe("applyGovernanceEvent", () => {
     expect(map.size).toBe(0);
   });
 
-  it("keeps metadata that is not UTF-8 as written", () => {
+  it("keeps metadata that is not printable UTF-8 as written", () => {
     const create = votingCreate(10, "1");
-    (create.data as { metadata: unknown }).metadata = { data: [{ key: "k", value: "0xff" }, { key: "odd", value: "0xabc" }] };
-    expect(fold([[create, false]]).get(1n)!.metadata).toEqual({ k: "0xff", odd: "0xabc" });
+    const data = [{ key: "k", value: "0xff" }, { key: "odd", value: "0xabc" }, { key: "flag", value: "0x01" }, { key: "empty", value: "0x" }];
+    (create.data as { metadata: unknown }).metadata = { data };
+    expect(fold([[create, false]]).get(1n)!.metadata).toEqual({ k: "0xff", odd: "0xabc", flag: "0x01", empty: "" });
   });
 
   it("throws for a known event without its fields, changing nothing", () => {
@@ -283,5 +286,51 @@ describe("proposals", () => {
     await other.ready;
     client.destroy();
     expect(other.active).toBe(false);
+  });
+});
+
+describe("proposals on recorded mainnet events", () => {
+  // Read through the archive: proposal 134 (legacy handles, the module-event migration) with
+  // its first and last votes, and module-era 205 (seven resolution steps) and 206, each with
+  // its creation pair, its proposer's vote and the resolutions its proposer sent. The expected
+  // values are what the 0x1::voting views returned at the head on 2026-11-15.
+  const lines = readFileSync(join(import.meta.dir, "fixtures/governance.jsonl"), "utf8").trim().split("\n");
+  const byWalk: StreamdEvent[][] = GOVERNANCE_WALKS.map(() => []);
+  const walkOf: Record<string, number> = { "5": 0, "9": 1, "11": 2, "7": 3 };
+  for (const line of lines) {
+    const event = parseEvent(line);
+    byWalk[event.guid === undefined ? 4 : walkOf[String(event.guid.creationNumber)]!]!.push(event);
+  }
+  const VIEWS = {
+    134: { expirationSecs: 1748777742n, early: 57891609148426939n, yes: 31349781482383443n, no: 226631333512n, proposer: "0x201cf09644cd5d88aa6db2d1670011325eea2c3198ddfd0c1aa549be0003bb24", steps: 1 },
+    205: { expirationSecs: 1790904050n, early: 60469361680466003n, yes: 38035733758228756n, no: 83960229647n, proposer: "0xdb009ab1a3259c4b27a0d8ff9d0e913e13e4c8b657fc73768f4e9bb811c7a1d8", steps: 7 },
+    206: { expirationSecs: 1791301397n, early: 60480623643350086n, yes: 36674003480944999n, no: 85668843140n, proposer: "0xdb009ab1a3259c4b27a0d8ff9d0e913e13e4c8b657fc73768f4e9bb811c7a1d8", steps: 2 },
+  } as const;
+
+  it("matches the voting views for each proposal", async () => {
+    const client = testClient({ adapter: walks(...byWalk).adapter });
+    const tracker = client.proposals();
+    const value = await tracker.ready;
+    expect([...value.keys()]).toEqual([134n, 205n, 206n]);
+    for (const [id, view] of Object.entries(VIEWS)) {
+      const p = value.get(BigInt(id))!;
+      expect(p).toMatchObject({
+        proposer: view.proposer,
+        expirationSecs: view.expirationSecs,
+        minVoteThreshold: 30000000000000000n,
+        earlyResolutionVoteThreshold: view.early,
+        resolution: { yesVotes: view.yes, noVotes: view.no, early: false, steps: view.steps },
+      });
+      expect(p.metadata!.metadata_location).toStartWith("https://raw.githubusercontent.com/");
+      expect(p.metadata!.IS_MULTI_STEP_PROPOSAL_KEY).toBe("0x01");
+      expect(proposalState(p, 1794737473n)).toBe("succeeded");
+    }
+    expect(value.get(134n)!.executionHash).toBe("0x60ee085d13021a9d4e5202e0b975bbaedae70715e94eadf7c1c4c56311726c75");
+    expect(value.get(134n)!.votes.map((v) => v.votes)).toEqual([1133893608n, 1230600340n]);
+    expect(value.get(205n)!.resolution!.version).toBe(7454755509n);
+    expect(value.get(206n)!.votes).toEqual([
+      { voter: VIEWS[206].proposer, stakePool: "0x0324df1e27c4129a58d73851ae0e9366064dc666a73e747051e203694a4cb257", votes: 1440741395772259n, shouldPass: true, version: 7469427001n },
+    ]);
+    client.destroy();
   });
 });

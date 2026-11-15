@@ -257,9 +257,12 @@ export interface Proposal {
   /** Long form, from `aptos_governance::CreateProposal`. */
   proposer?: string;
   stakePool?: string;
-  /** The rest of the creation fields come from `voting::CreateProposal`. */
+  /**
+   * The rest of the creation fields come from `voting::CreateProposal`. The
+   * hash is the first step's: a multi-step proposal's view moves on to later steps.
+   */
   executionHash?: string;
-  /** Each value's bytes as UTF-8 text, or as the fullnode writes them (hex) when they are not UTF-8. */
+  /** As created. Each value's bytes as text, or as the fullnode writes them (hex) when they are not printable UTF-8. */
   metadata?: Record<string, string>;
   expirationSecs?: bigint;
   minVoteThreshold?: bigint;
