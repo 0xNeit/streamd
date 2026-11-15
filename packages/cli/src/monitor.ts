@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
-import { StreamdNetworkError, adapterMetrics } from "@streamd/core";
-import type { AdapterMetrics, EventAdapter } from "@streamd/core";
+import { StreamdNetworkError, adapterMetrics, compareAdapters } from "@streamd/core";
+import type { AdapterComparison, AdapterMetrics, EventAdapter } from "@streamd/core";
 import type { MonitorOptions } from "./args.js";
 
 export interface MonitorIO {
@@ -16,6 +16,10 @@ export interface MonitorIO {
 
 /** The most rounds the window keeps, however long it is, so a long window cannot grow without bound. */
 export const MAX_WINDOW_ROUNDS = 10_000;
+
+// One page covers the default range of a type emitted once per transaction.
+const COMPARE_PAGE = 100;
+const COMPARE_PAGES = 10;
 
 const CALLS = ["getHeadVersion", "getBlockHeights", "getBlock", "fetchEvents"] as const;
 
@@ -64,6 +68,8 @@ interface Reading {
   head?: bigint;
   /** The head block's time, in microseconds. */
   timestamp?: bigint;
+  /** This round's comparison with node 0, over `fromVersion` to `toVersion`. */
+  compare?: { fromVersion: bigint; toVersion: bigint; report: AdapterComparison };
 }
 
 /** One node's share of one round, kept for the window. */
@@ -71,6 +77,8 @@ interface Row extends Totals {
   up: boolean;
   lagVersions?: bigint;
   lagMs?: number;
+  matched: number;
+  disagreements: number;
 }
 
 interface Round {
@@ -93,6 +101,24 @@ function totals(metrics: AdapterMetrics): Totals {
     sum.rateLimited += m.rateLimited;
   }
   return sum;
+}
+
+const disagreements = (report: AdapterComparison) => report.missing.length + report.extra.length + report.different.length;
+
+function comparison(compare: Reading["compare"]) {
+  if (compare === undefined) return null;
+  const { fromVersion, toVersion, report } = compare;
+  return {
+    fromVersion: fromVersion.toString(),
+    toVersion: toVersion.toString(),
+    window: report.window === undefined
+      ? null
+      : { fromVersion: report.window.fromVersion.toString(), toVersion: report.window.toVersion.toString() },
+    matched: report.matched,
+    missing: report.missing.length,
+    extra: report.extra.length,
+    different: report.different.length,
+  };
 }
 
 class Monitor {
@@ -144,10 +170,35 @@ class Monitor {
     }
   }
 
+  /**
+   * Each up node against node 0, over the newest `range` versions both have
+   * committed, so a slow node narrows only its own comparison.
+   */
+  private async compare(readings: Reading[]): Promise<void> {
+    const reference = readings[0]!.head;
+    if (reference === undefined) return;
+    const { descriptor, range } = this.options;
+    await Promise.all(readings.map(async (reading, i) => {
+      if (i === 0 || reading.head === undefined) return;
+      const toVersion = reading.head < reference ? reading.head : reference;
+      const fromVersion = toVersion - BigInt(range) + 1n > 0n ? toVersion - BigInt(range) + 1n : 0n;
+      const report = await compareAdapters(this.nodes[0]!.metrics.adapter, this.nodes[i]!.metrics.adapter, descriptor, {
+        fromVersion,
+        toVersion,
+        limit: COMPARE_PAGE,
+        maxPages: COMPARE_PAGES,
+        // Only the counts are reported, so none is cut.
+        maxReported: Number.MAX_SAFE_INTEGER,
+      });
+      reading.compare = { fromVersion, toVersion, report };
+    }));
+  }
+
   /** Reads every node once and returns the round's record. */
   async round(index: number): Promise<string> {
     const at = this.now();
     const readings = await Promise.all(this.nodes.map((node) => this.read(node, at)));
+    await this.compare(readings);
     const heads = readings.flatMap((r) => (r.head === undefined ? [] : [r.head]));
     const times = readings.flatMap((r) => (r.timestamp === undefined ? [] : [r.timestamp]));
     const top = heads.reduce((a, b) => (b > a ? b : a), -1n);
@@ -160,6 +211,8 @@ class Monitor {
         requests: now.requests - node.totals.requests,
         errors: now.errors - node.totals.errors,
         rateLimited: now.rateLimited - node.totals.rateLimited,
+        matched: r.compare?.report.matched ?? 0,
+        disagreements: r.compare === undefined ? 0 : disagreements(r.compare.report),
       };
       node.totals = now;
       if (r.head !== undefined) row.lagVersions = top - r.head;
@@ -179,6 +232,7 @@ class Monitor {
       head: readings[i]!.head?.toString() ?? null,
       lagVersions: row.lagVersions?.toString() ?? null,
       lagMs: row.lagMs ?? null,
+      compare: comparison(readings[i]!.compare),
       window: this.window(i),
     }));
     return `${JSON.stringify({ round: index, time: new Date(at).toISOString(), nodes })}\n`;
@@ -187,7 +241,7 @@ class Monitor {
   /** Node `i`'s sums over the rounds in the window. */
   private window(i: number) {
     const rows = this.history.map((h) => h.rows[i]!);
-    const sum = (field: keyof Totals) => rows.reduce((total, row) => total + row[field], 0);
+    const sum = (field: keyof Totals | "matched" | "disagreements") => rows.reduce((total, row) => total + row[field], 0);
     const requests = sum("requests");
     const errors = sum("errors");
     const lags = rows.flatMap((row) => (row.lagVersions === undefined ? [] : [row.lagVersions]));
@@ -201,6 +255,7 @@ class Monitor {
       errorRate: requests === 0 ? 0 : Math.round((errors / requests) * 10_000) / 10_000,
       maxLagVersions: lags.length === 0 ? null : lags.reduce((a, b) => (b > a ? b : a)).toString(),
       maxLagMs: ms.length === 0 ? null : Math.max(...ms),
+      ...(i > 0 && { matched: sum("matched"), disagreements: sum("disagreements") }),
     };
   }
 }

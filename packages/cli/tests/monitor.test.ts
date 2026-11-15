@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { StreamdNetworkError } from "@streamd/core";
+import { MemoryAdapter, StreamdNetworkError } from "@streamd/core";
 import type { EventAdapter } from "@streamd/core";
 import { runMonitor } from "../src/monitor.js";
 import type { MonitorOptions } from "../src/args.js";
@@ -61,12 +61,16 @@ describe("runMonitor", () => {
     expect(lines[0]).toMatchObject({ round: 1, time: new Date(1_000_000).toISOString() });
     expect(lines[0]!.nodes).toEqual([
       {
-        node: 0, up: true, error: null, head: "100", lagVersions: "0", lagMs: 0,
-        window: { rounds: 1, up: 1, requests: 3, errors: 0, rateLimited: 0, errorRate: 0, maxLagVersions: "0", maxLagMs: 0 },
+        node: 0, up: true, error: null, head: "100", lagVersions: "0", lagMs: 0, compare: null,
+        window: { rounds: 1, up: 1, requests: 4, errors: 0, rateLimited: 0, errorRate: 0, maxLagVersions: "0", maxLagMs: 0 },
       },
       {
         node: 1, up: true, error: null, head: "90", lagVersions: "10", lagMs: 250,
-        window: { rounds: 1, up: 1, requests: 3, errors: 0, rateLimited: 0, errorRate: 0, maxLagVersions: "10", maxLagMs: 250 },
+        compare: { fromVersion: "81", toVersion: "90", window: null, matched: 0, missing: 0, extra: 0, different: 0 },
+        window: {
+          rounds: 1, up: 1, requests: 4, errors: 0, rateLimited: 0, errorRate: 0, maxLagVersions: "10", maxLagMs: 250,
+          matched: 0, disagreements: 0,
+        },
       },
     ]);
   });
@@ -96,7 +100,7 @@ describe("runMonitor", () => {
   it("leaves lagMs null when a node cannot read its head block, counting the failed read", async () => {
     const { lines } = await run([node([10n], [1_000n]), node([10n], [undefined])], { limit: 1 });
     expect(lines[0]!.nodes[1]).toMatchObject({ up: true, lagVersions: "0", lagMs: null });
-    expect(lines[0]!.nodes[1].window).toMatchObject({ requests: 3, errors: 1, errorRate: 0.3333 });
+    expect(lines[0]!.nodes[1].window).toMatchObject({ requests: 4, errors: 1, errorRate: 0.25 });
   });
 
   it("sets a node aside after a 429 for its retryAfter, then reads it again", async () => {
@@ -104,7 +108,7 @@ describe("runMonitor", () => {
     const { lines } = await run([node([7n]), limited], { limit: 5, window: 60_000 });
     expect(lines.map((l) => l.nodes[1].error)).toEqual(["429", "429", "429", null, null]);
     expect(limited.calls).toBe(3);
-    expect(lines[4]!.nodes[1].window).toMatchObject({ rounds: 5, up: 2, requests: 7, errors: 1, rateLimited: 1 });
+    expect(lines[4]!.nodes[1].window).toMatchObject({ rounds: 5, up: 2, requests: 9, errors: 1, rateLimited: 1 });
   });
 
   it("waits one interval after a 429 that names no wait", async () => {
@@ -119,7 +123,7 @@ describe("runMonitor", () => {
     expect(lines.map((l) => l.nodes[1].window.rounds)).toEqual([1, 2, 2, 2]);
     expect(lines.map((l) => l.nodes[1].lagVersions)).toEqual(["0", "15", "0", "0"]);
     expect(lines.map((l) => l.nodes[1].window.maxLagVersions)).toEqual(["0", "15", "15", "0"]);
-    expect(lines[3]!.nodes[1].window.requests).toBe(6);
+    expect(lines[3]!.nodes[1].window.requests).toBe(8);
   });
 
   it("starts rounds one interval apart, at once after a slow round", async () => {
@@ -145,5 +149,60 @@ describe("runMonitor", () => {
     const { code, lines } = await done;
     expect(code).toBe(0);
     expect(lines).toHaveLength(0);
+  });
+});
+
+const ev = (v: number, amount = "1", eventIndex = 0) => ({
+  type: TYPE, data: { amount }, version: BigInt(v), sequenceNumber: 0n, eventIndex,
+});
+
+/** A `MemoryAdapter` that reports `head` as its head, holding events up to it. */
+function memory(head: bigint, events: ReturnType<typeof ev>[]): EventAdapter {
+  const adapter = new MemoryAdapter(events);
+  return {
+    fetchEvents: (d, o) => adapter.fetchEvents(d, o),
+    getHeadVersion: async () => head,
+  };
+}
+
+describe("runMonitor disagreement", () => {
+  const all = Array.from({ length: 30 }, (_, i) => ev(i + 1));
+
+  it("compares each up node with node 0 over the newest range both have, counting the window", async () => {
+    const a = memory(30n, all);
+    const same = memory(30n, all);
+    const behind = memory(25n, all.filter((e) => e.version <= 25n && e.version !== 22n).map((e) => (e.version === 24n ? ev(24, "9") : e)));
+    const { lines } = await run([a, same, behind], { limit: 2, range: 10 });
+    const [, b, c] = lines[1]!.nodes;
+    expect(b.compare).toEqual({ fromVersion: "21", toVersion: "30", window: { fromVersion: "21", toVersion: "30" }, matched: 10, missing: 0, extra: 0, different: 0 });
+    expect(c.compare).toEqual({ fromVersion: "16", toVersion: "25", window: { fromVersion: "16", toVersion: "25" }, matched: 8, missing: 1, extra: 0, different: 1 });
+    expect(b.window).toMatchObject({ matched: 20, disagreements: 0 });
+    expect(c.window).toMatchObject({ matched: 16, disagreements: 4 });
+    expect(lines[1]!.nodes[0].compare).toBeNull();
+    expect("matched" in lines[1]!.nodes[0].window).toBe(false);
+  });
+
+  it("starts a range at version 0 when the head is younger than it", async () => {
+    const { lines } = await run([memory(3n, all.slice(0, 3)), memory(3n, all.slice(0, 3))], { limit: 1 });
+    expect(lines[0]!.nodes[1].compare).toMatchObject({ fromVersion: "0", toVersion: "3", matched: 3 });
+  });
+
+  it("compares nothing when node 0 is down, and skips a node that is down", async () => {
+    const down = node([new StreamdNetworkError("down", 503)]);
+    const first = await run([down, memory(30n, all)], { limit: 1 });
+    expect(first.lines[0]!.nodes[1].compare).toBeNull();
+    const second = await run([memory(30n, all), down, memory(30n, all)], { limit: 1 });
+    expect(second.lines[0]!.nodes.map((n: any) => n.compare?.matched ?? null)).toEqual([null, null, 10]);
+  });
+
+  it("counts a failing compare walk as an error on the node that failed", async () => {
+    const failing: EventAdapter = {
+      fetchEvents: async () => Promise.reject(new StreamdNetworkError("down", 500)),
+      getHeadVersion: async () => 30n,
+    };
+    const { lines } = await run([memory(30n, all), failing], { limit: 1, range: 10 });
+    expect(lines[0]!.nodes[1]).toMatchObject({ up: true, compare: { window: null, matched: 0 } });
+    expect(lines[0]!.nodes[1].window).toMatchObject({ requests: 2, errors: 1, disagreements: 0 });
+    expect(lines[0]!.nodes[0].window).toMatchObject({ requests: 2, errors: 0 });
   });
 });
