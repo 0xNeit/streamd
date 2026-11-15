@@ -838,7 +838,7 @@ const preview = await streamd.explain(await aptos.transaction.build.simple({ sen
   of first appearance and each account's assets in theirs, zero nets left out. `symbol` and `decimals` are read by view unless
   `withAssetInfo: false`.
 - **Swaps and sales.** Decoded from the same events as `swaps()` and `sales()` decode them.
-- **Names.** `withNames` (mainnet and a localnet) adds `names`: the primary name or `null`
+- **Names.** `withNames` (mainnet only) adds `names`: the primary name or `null`
   of the sender, the fee payer, every transfer's `from` and `to` and every sale's buyer and
   seller, through the client's name cache.
 - **Simulations.** The node simulates on top of its newest state at a version not yet
@@ -1778,9 +1778,10 @@ for (const e of deposits) console.log(e.senderName ?? e.sender);
   counting toward `maxErrors`. A name is cosmetic, but quietly leaving it off would make
   "absent" mean two things, and every later event from that sender would try again at once
   rather than back off from a node that is rate-limiting.
-- **Networks.** `AptosClient` serves names on mainnet and a localnet. On testnet, devnet and
+- **Networks.** `AptosClient` serves names on mainnet. On testnet, devnet, a localnet and
   custom networks such as the Movement presets, `withNames` is refused at the call with a
-  `StreamdError`. A plain `StreamdClient` refuses it too: it has no name service.
+  `StreamdError`. A localnet has no ANS published, so every lookup would fail. A plain
+  `StreamdClient` refuses it too: it has no name service.
 - **Sui.** `SuiClient` serves SuiNS primary names the same way, through `@streamd/sui`'s
   `primaryName`.
 
