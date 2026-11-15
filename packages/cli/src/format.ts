@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import type { StreamdEvent } from "@streamd/core";
 
 export { serializeEvent as formatEvent } from "@streamd/core";
@@ -79,4 +80,9 @@ export function scrubber(url: string): (text: string) => string {
     for (const secret of secrets) out = out.split(secret).join("***");
     return out;
   };
+}
+
+/** The `sha256=<hex>` HMAC of `body`, as the webhook header and a stream entry's field carry it. */
+export function signature(body: string, secret: string): string {
+  return `sha256=${createHmac("sha256", secret).update(body, "utf8").digest("hex")}`;
 }

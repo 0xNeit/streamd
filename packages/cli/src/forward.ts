@@ -1,11 +1,11 @@
-import { createHmac } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseRetryAfter, serializeEvent } from "@streamd/core";
 import type { StreamdClient, Subscription } from "@streamd/core";
 import { SIGNATURE_HEADER, type ForwardOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { filterPredicate } from "./filter.js";
-import { message } from "./format.js";
+import { message, signature } from "./format.js";
+import { connectRedis, redisSink, type RedisLike } from "./redis.js";
 
 export interface ForwardIO {
   client: Pick<StreamdClient, "onBatch">;
@@ -17,6 +17,8 @@ export interface ForwardIO {
   retryDelay?: number;
   /** The source's head version; read once, and only for a `toVersion` run. */
   headVersion(): Promise<bigint>;
+  /** Opens the Redis client for a Redis `--to` (default `connectRedis`). */
+  redis?(url: string, timeout: number): RedisLike | Promise<RedisLike>;
 }
 
 const MAX_RETRY_DELAY = 60_000;
@@ -40,11 +42,6 @@ export interface Attempt {
 export interface Sink {
   send(body: string, signal: AbortSignal): Promise<Attempt>;
   close?(): unknown;
-}
-
-/** The `sha256=<hex>` HMAC of `body`, as the webhook header and a stream entry's field carry it. */
-export function signature(body: string, secret: string): string {
-  return `sha256=${createHmac("sha256", secret).update(body, "utf8").digest("hex")}`;
 }
 
 /** POSTs to the webhook; a 2xx acknowledges. */
@@ -118,14 +115,14 @@ export async function deliver(
 }
 
 /**
- * Follows `options.descriptor`, POSTing each batch to the webhook, and
- * resolves to the process exit code: 0 when the signal aborts or a
- * `toVersion` range is done, 1 when a delivery fails past its retries,
- * polling gives up, the cursor file cannot be read or written, or the bound
- * is above the head.
+ * Follows `options.descriptor`, delivering each batch to the webhook or the
+ * Redis stream, and resolves to the process exit code: 0 when the signal
+ * aborts or a `toVersion` range is done, 1 when a delivery fails past its
+ * retries, the Redis client cannot be opened, polling gives up, the cursor
+ * file cannot be read or written, or the bound is above the head.
  *
  * Delivery is at least once: the cursor file only ever holds a position
- * whose events the webhook has acknowledged.
+ * whose events the destination has acknowledged.
  */
 export async function runForward(options: ForwardOptions, io: ForwardIO): Promise<number> {
   let saved: string | undefined;
@@ -152,7 +149,18 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     }
   }
 
-  const sink = webhookSink(options);
+  let sink: Sink;
+  try {
+    const { stream } = options;
+    sink =
+      stream === undefined
+        ? webhookSink(options)
+        : redisSink(await (io.redis ?? connectRedis)(options.to, options.timeout), { ...options, stream });
+  } catch (err) {
+    // The message only: the client's own errors are not known to leave the URL out.
+    io.error(`streamd: cannot open the Redis client: ${message(err).split(options.to).join("the Redis URL")}`);
+    return 1;
+  }
   return new Promise<number>((resolve) => {
     let sub: Subscription | undefined;
     let done = false;
@@ -176,6 +184,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
       if (done) return;
       done = true;
       sub?.unsubscribe();
+      sink.close?.();
       io.signal.removeEventListener("abort", onAbort);
       resolve(checkpoint() ? code : 1);
     };
