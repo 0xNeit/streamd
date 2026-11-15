@@ -3,7 +3,7 @@ import { AptosClient, FullnodeScanAdapter } from "@streamd/aptos";
 import { SuiAdapter, SuiClient } from "@streamd/sui";
 import { ArchiveFallbackAdapter, PoolAdapter, StreamdNetworkError } from "@streamd/core";
 import type { EventPage } from "@streamd/core";
-import { chainFor, readThrough } from "../src/chain.js";
+import { chainFor, readThrough, sendOnce } from "../src/chain.js";
 import { isMissingModule } from "../src/sui.js";
 
 const realFetch = globalThis.fetch;
@@ -162,6 +162,62 @@ describe("chainFor with several nodes", () => {
   it("keeps the client on one fullnode adapter with one --node-url", async () => {
     const chain = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1" });
     expect((chain.client() as unknown as { adapter: unknown }).adapter).toBeInstanceOf(FullnodeScanAdapter);
+  });
+});
+
+describe("chainFor nodes", () => {
+  it("gives one unpooled, uncounted adapter per Aptos node, the key on the first", async () => {
+    const chain = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1", extraNodeUrls: ["https://b.example/v1"], apiKey: "k" });
+    const nodes = chain.nodes();
+    expect(nodes).toHaveLength(2);
+    for (const n of nodes) expect(n).toBeInstanceOf(FullnodeScanAdapter);
+    expect(nodes.map(fullnodes)).toEqual([["https://a.example/v1"], ["https://b.example/v1"]]);
+    expect(nodes.map(keys)).toEqual([["k"], [undefined]]);
+  });
+
+  it("sends each node request once, so a 429 reaches the caller with its status", async () => {
+    const chain = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1", extraNodeUrls: ["https://b.example/v1"] });
+    const seen: string[] = [];
+    let status = 429;
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      seen.push(String(input));
+      return status === 429
+        ? new Response("slow down", { status, headers: { "retry-after": "1" } })
+        : Response.json({ ledger_version: "42", oldest_ledger_version: "0", block_height: "7", oldest_block_height: "0" });
+    }) as unknown as typeof fetch;
+    const [a] = chain.nodes();
+    const err = await a!.getHeadVersion().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(429);
+    expect(seen).toEqual(["https://a.example/v1"]);
+    status = 200;
+    expect(await a!.getHeadVersion()).toBe(42n);
+    expect(await a!.getBlockHeights!(TYPE)).toEqual({ oldest: 0n, newest: 7n });
+  });
+
+  it("encodes params, drops unset headers, falls back to text, and abandons a request after the timeout", async () => {
+    const requests: Request[] = [];
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      requests.push(new Request(String(input), init));
+      if (init?.signal) await new Promise((_, reject) => init.signal!.addEventListener("abort", () => reject(init.signal!.reason)));
+      return new Response("not json", { status: 502, statusText: "Bad Gateway" });
+    }) as unknown as typeof fetch;
+    const { provider } = sendOnce();
+    const response = await provider({ url: "https://a.example/v1/x", method: "POST", params: { start: 5n, skip: undefined }, headers: { a: "1", b: undefined }, body: { k: 1 } });
+    expect(response).toMatchObject({ status: 502, statusText: "Bad Gateway", data: "not json" });
+    expect(requests[0]!.url).toBe("https://a.example/v1/x?start=5");
+    expect(requests[0]!.headers.get("a")).toBe("1");
+    expect(requests[0]!.headers.has("b")).toBe(false);
+    expect(await requests[0]!.text()).toBe('{"k":1}');
+    await expect(sendOnce(20).provider({ url: "https://a.example/v1", method: "GET" })).rejects.toMatchObject({ name: "TimeoutError" });
+  });
+
+  it("gives one SuiAdapter per gRPC URL", async () => {
+    const chain = await chainFor({ chain: "sui", network: "mainnet", nodeUrl: "https://a.example:443", extraNodeUrls: ["https://b.example:443"] });
+    const [a, b] = chain.nodes();
+    expect(a).toBeInstanceOf(SuiAdapter);
+    expect((await reached(a!))[0]).toStartWith("https://a.example:443/");
+    expect((await reached(b!))[0]).toStartWith("https://b.example:443/");
   });
 });
 

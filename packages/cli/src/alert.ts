@@ -4,7 +4,7 @@ import type { AlertRule } from "./alert-rules.js";
 import type { AlertOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { filterPredicate } from "./filter.js";
-import { deliver } from "./forward.js";
+import { deliver, webhookSink } from "./forward.js";
 import { message } from "./format.js";
 
 export interface AlertIO {
@@ -195,6 +195,7 @@ export function runAlert(options: AlertOptions, rules: readonly AlertRule[], io:
     }
   };
 
+  const sink = webhookSink(options);
   return new Promise<number>((resolve) => {
     let done = false;
     const finish = (code: number) => {
@@ -230,7 +231,7 @@ export function runAlert(options: AlertOptions, rules: readonly AlertRule[], io:
               continue;
             }
             window = next.window;
-            if (next.fire && !(await deliver(alertBody(rule, window, event), options, io))) {
+            if (next.fire && !(await deliver(alertBody(rule, window, event), sink, options.retries, io))) {
               if (!io.signal.aborted) report(`rule ${name}: the alert for the window at ${window.start} was not delivered`);
               ok = false;
               break;

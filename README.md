@@ -18,8 +18,8 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `swaps`, `getSwaps`, `sales`, `getSales`, `balances`, `balanceAt`, `eventsOf`, `eventsAt`,
-`expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
+`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `proposals`, `stakePools`, `balances`, `balanceAt`,
+`eventsOf`, `eventsAt`, `explain`, `expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
 adapter.
@@ -792,6 +792,71 @@ Each assertion runs its own simulation. A failed one rejects with `StreamdAssert
 listing every event the simulation emitted, with `transactionHash` undefined; a simulation that
 aborts rejects with `StreamdTransactionError` instead.
 
+### Explain a transaction
+
+`explain(txHash | transaction, options?)` on `AptosClient` sums up what one transaction did,
+and `formatExplanation(explanation)` renders that summary as text. A hash is waited for as
+`eventsOf` waits; a built, unsigned transaction is simulated as `previewEvents` simulates it.
+
+```ts
+import { formatExplanation } from "@streamd/aptos";
+
+const explanation = await streamd.explain("0xaaa0871a...", { withNames: true });
+console.log(explanation.gas?.fee, explanation.balanceChanges);
+process.stdout.write(formatExplanation(explanation));
+// Transaction 0xaaa0871a... at version 8062800017, 2026-11-15T12:05:02.630Z
+// Status: success (Executed successfully)
+// Sender: 0x172d...
+// Function: 0x1::aptos_account::transfer
+// Gas: 5414 units at 100 octas, fee 0.005414 APT (storage 0.005324 APT, refund 0 APT)
+// Transfers:
+//   0.494586 APT from 0x172d... to 0xfe56...
+// Balance changes:
+//   0x172d...: -0.494586 APT
+//   0xfe56...: +0.494586 APT
+// Events: 3
+
+const preview = await streamd.explain(await aptos.transaction.build.simple({ sender, data }));
+```
+
+- **The summary.** A `TransactionExplanation` holds `simulated`, `version`,
+  `transactionHash` (not for a simulation), `success`, `vmStatus`, `sender`, `feePayer` (a
+  sponsored transaction's), `timestamp`, `entryFunction`, `gas`, `transfers`,
+  `balanceChanges`, `swaps`, `sales` and every event in `events`.
+- **Failures.** A failed transaction or simulation resolves with `success: false` and its
+  `vmStatus`, rather than rejecting as `eventsOf` does, since its gas was still charged. The
+  chain keeps only its fee statement, so it has no transfers.
+- **Gas.** From the transaction's `0x1::transaction_fee::FeeStatement`: `units` (the
+  transaction's `gas_used`), `executionUnits`, `ioUnits`, `storageFee` and `storageRefund`
+  in octas, and, when the adapter reports the gas unit price (`FullnodeScanAdapter` does),
+  `unitPrice` and `fee`, `units * unitPrice`. The payer is the sender, or `feePayer`, and
+  gets `storageRefund` back on top. The fee is burned without a withdraw event, so it is not
+  in `transfers` or `balanceChanges`.
+- **Transfers and balance changes.** `transfers` are built and paired exactly as
+  `transfers()` builds them, over the transaction's events. `balanceChanges` is the net
+  `{ account, asset, delta }` per account and asset over them, grouped by account in order
+  of first appearance and each account's assets in theirs, zero nets left out. `symbol` and `decimals` are read by view unless
+  `withAssetInfo: false`.
+- **Swaps and sales.** Decoded from the same events as `swaps()` and `sales()` decode them.
+- **Names.** `withNames` (mainnet and a localnet) adds `names`: the primary name or `null`
+  of the sender, the fee payer, every transfer's `from` and `to` and every sale's buyer and
+  seller, through the client's name cache.
+- **Simulations.** The node simulates on top of its newest state at a version not yet
+  committed, so the store and asset reads run at the newest version below it that the
+  client's adapter reports. A store the simulation would create does not exist there, so
+  that leg is left out: a transfer to an account with no store of the asset shows as a
+  withdraw with no `to`.
+- **Reads.** The lookup or simulation, the head read for a simulation, and every store,
+  asset and name read go through the client's limiter. A failed read rejects. It needs an
+  adapter with `view`, plus `getTransactionEvents` for a hash, or
+  `simulateTransactionEvents` and `getHeadVersion` for a transaction; bad input, signer
+  keys passed with a hash and `timeout` passed with a transaction are refused before any
+  read. Aborting `signal` rejects at once and drops the reads still queued.
+- **The text.** `formatExplanation` writes one fact per line, amounts in the asset's
+  decimals and symbol when known (a swap takes them from its transaction's transfers) and
+  otherwise in base units with the asset, addresses in long form with their names, and
+  control and bidirectional override characters in on-chain text replaced with `?`.
+
 ### Query history
 
 ```ts
@@ -1011,6 +1076,34 @@ callback)` stops the earliest matching subscription; without a callback it stops
 descriptor, as `removeAllListeners(descriptor)` does. `listenerCount()` counts paused
 subscriptions but not ended ones. `once()` and `stream()` are not listeners here: they end
 with their promise or loop, or `destroy()`.
+
+### List running subscriptions
+
+```ts
+for (const s of streamd.listSubscriptions()) {
+  console.log(s.id, s.descriptor.kind, s.paused, s.cursor, s.lastVersion, s.lastError?.message);
+}
+```
+
+`listSubscriptions()` returns one frozen snapshot per subscription the client is running, in
+start order: `on()`, `onBatch()`, `once()` and `stream()`, each walk of a merged list, and the
+walks behind `reduce()`, `onTransaction()`, `watch()` and the chain helpers (`balances`,
+`transfers` and the rest). Each holds `id`, a frozen copy of the `descriptor`, `listener` (whether
+`listenerCount()` counts it), `active`, `paused`, `cursor`, `lastVersion`, `consecutiveErrors`,
+`lastSuccessAt` and `lastError`, the most recent error it reported as `{ name, message, cause?,
+at }`. `lastError` stays after the subscription recovers; `consecutiveErrors` says whether it is
+still failing. URLs in the error text become `<url>`, and credentials become `<redacted>`: an
+`Authorization` header's `Bearer` or `Basic` value in any case, a `Bearer` or `Basic` token of 8
+or more characters elsewhere, and the value after a whole key-like name (`api_key=`,
+`x-api-key:`, `"token":`, `password=`; compound names such as `refresh_token` are not
+matched), since node URLs and headers can carry API keys; `cause` is the direct cause's
+message only. Ended subscriptions are left out, unless you pass `{ ended: true }`: then the final
+snapshots of the last 20 that ended follow the running ones, newest first, with `ended: true`, so
+a walk that gave up still shows its last error. Every ending counts toward the 20, a resolved
+`once()`, an unsubscribe and each subscription `destroy()` stops included, so on a busy client a
+give-up can be pushed out within seconds. Error text is cut to 2,000 characters before
+redaction. It is read-only: nothing in an entry pauses,
+resumes or moves a subscription.
 
 ### Clean up
 
@@ -1667,7 +1760,8 @@ for (const e of deposits) console.log(e.senderName ?? e.sender);
   and an `onTransaction` group carries its events' name.
 - **Where.** Every call that takes `withState` takes it: `getEvents`, `getEventPages`,
   `iterateEvents`, `getTransactions`, `replay`, `on`, `onBatch`, `once`, `stream`,
-  `onTransaction`, `watch`, `transfers`, `getTransfers`, `swaps`, `getSwaps`, `sales` and `getSales`. Not `reduce`, `balances`, or the
+  `onTransaction`, `watch`, `transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales` and
+  `getSales` (where `activity` also names every counterparty, below). Not `reduce`, `balances`, or the
   one-shot transaction calls (`eventsOf`, `eventsAt`, `previewEvents` and the assertions).
 - **After `where`.** It runs after `decode`, `where` and `withState`, and for queries after
   `limit` and `orderBy`, so only the events you get back cost a lookup.
@@ -1763,6 +1857,65 @@ const mine = await streamd.getTransfers({ fromVersion: -10_000n, account: "alice
   they do not appear. A legacy token offer and its claim land in different
   transactions and come out as a lone withdraw and a lone deposit. A transfers subscription is not a
   listener for `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+
+## Account activity
+
+`activity(address, callback, options?)` follows every transaction an address sent or
+received as one readable entry, and `getActivity(address, filter?)` returns them for a past
+range. Each arrives as an event whose `data` is an `Activity`, and whose envelope is the
+transaction's: `version`, `transactionHash`, `timestamp`, `sender` and `entryFunction`.
+
+```ts
+import { RoutingAdapter } from "@streamd/core";
+import { AptosClient, FullnodeScanAdapter, IndexerAccountAdapter } from "@streamd/aptos";
+
+const streamd = new AptosClient({
+  aptos,
+  adapter: new RoutingAdapter({
+    account: new IndexerAccountAdapter(aptos, { apiKey: process.env.APTOS_API_KEY }),
+    default: new FullnodeScanAdapter(aptos),
+  }),
+});
+
+const history = await streamd.getActivity("alice.apt", { fromVersion: -100_000n, withNames: true });
+for (const { version, entryFunction, data } of history) {
+  console.log(version, data.direction, entryFunction?.function, data.balanceChanges);
+}
+
+const sub = streamd.activity("0x1234...", ({ data }) => console.log(data.transfers), { withAssetInfo: true });
+```
+
+- **The entry.** `direction` is `"sent"` when the address is the transaction's sender and
+  `"received"` for anything else that affected it: a payment in, a sponsored transaction it
+  only paid gas for, a system transaction. `transfers` are the transaction's `Transfer`
+  records whose `from` or `to` is the address, built and paired exactly as `transfers()`
+  builds them (`withAssetInfo` adds `symbol` and `decimals`). `balanceChanges` is the net
+  `{ asset, delta }` per asset over those transfers, positive for a gain, in order of first
+  appearance, with zero nets (a transfer to itself) left out. `events` is every event the
+  transaction emitted, in `eventIndex` order.
+- **Gas.** The fee is burned without a withdraw event, so `balanceChanges` leaves it out:
+  for a sent transaction, the APT balance also fell by `gas_used * gas_unit_price` less any
+  storage refund. The transaction's `0x1::transaction_fee::FeeStatement` is in `events`.
+- **Direct owners.** As with `transfers()`, `from` and `to` are the stores' direct owners,
+  so a store the address holds through an object does not count toward its deltas, and APT
+  moved as a coin (`0x1::aptos_coin::AptosCoin`) and as the fungible asset `0xa` are
+  separate assets.
+- **Names.** `address` may be an Aptos name, resolved once on the first page. Under
+  `withNames`, `senderName` is set as on any event, and `names` maps the long-form address,
+  the sender and every `from` and `to` in `transfers` to a primary name or `null`, through
+  the client's name cache. These lookups run while the page is built, before `where`.
+- **Source.** It reads an `account` descriptor with `received: true`, which the client's
+  adapter must serve: `IndexerAccountAdapter`, routed beside a fullnode for the `view`
+  reads that resolve fungible stores, as above. An adapter without `view` is refused at
+  the call; `FullnodeScanAdapter` alone refuses `received` and says so, a query rejecting
+  and a subscription reporting it. Reads stop at the Indexer's processed version and
+  start no earlier than the fullnode's oldest version, as for `IndexerAccountAdapter`.
+- **Identity.** An entry keeps its transaction's first event's `(version, eventIndex)`, so
+  cursors, dedup, `eventId`, `where`, `limit` and `onCursor` work as for any event. A
+  transaction that emitted no events gives no entry; every user transaction emits its
+  fee statement.
+- **Not here.** Whether the transaction succeeded is not on the entry. An activity subscription is not a listener for `off()` or
+  `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 
 ## DEX swaps
 
@@ -1886,6 +2039,174 @@ const wapal = await streamd.getSales({ fromVersion: 7028273582n, toVersion: 7028
   reported as `wapal` too. An event whose fields do not have its struct's shape is skipped. A
   sales subscription is not a listener for `off()` or `listenerCount()`.
 
+## Governance proposals
+
+`proposals(options?)` keeps every Aptos governance proposal it sees current: what was proposed,
+the stake for and against, each vote, and the resolution. `value` is a map by proposal id of
+`Proposal { id, proposer?, stakePool?, executionHash?, metadata?, expirationSecs?,
+minVoteThreshold?, earlyResolutionVoteThreshold?, createdAt?, yesVotes, noVotes, votes, resolution? }`,
+and `proposalState(proposal, nowSecs?)` gives what `0x1::voting::get_proposal_state` would report:
+
+```ts
+import { proposalState } from "@streamd/aptos";
+
+const governance = streamd.proposals({
+  onChange: (p, event) => console.log(`proposal ${p.id}: ${p.yesVotes} yes, ${p.noVotes} no at ${event.version}`),
+});
+await governance.ready;
+for (const p of governance.value.values()) console.log(p.id, proposalState(p), p.votes.length);
+```
+
+- **Sources.** Five walks, each its own `reduce()`, folding into one map:
+
+  | Walk | Gives |
+  | --- | --- |
+  | `0x1::voting::CreateProposalEvent` (handle, creation number 5 at `0x1`) | `executionHash`, `metadata`, `expirationSecs`, `minVoteThreshold`, `earlyResolutionVoteThreshold`, `createdAt` |
+  | `0x1::aptos_governance::CreateProposalEvent` (`GovernanceEvents.create_proposal_events`) | `proposer`, `stakePool` |
+  | `0x1::aptos_governance::VoteEvent` (`GovernanceEvents.vote_events`) | one `ProposalVote { voter, stakePool, votes, shouldPass, version }` each, summed into `yesVotes` or `noVotes` |
+  | `0x1::voting::ResolveProposal` (handle, creation number 7) | `resolution { version, yesVotes, noVotes, early, steps }` |
+  | one scan over `voting::CreateProposal`, `aptos_governance::CreateProposal`, `aptos_governance::Vote` and `voting::ResolveProposal` | the same, for proposals after the module-event migration |
+
+  The legacy handles carry proposals 0 to 134 (the migration itself, resolved at version
+  2812968150); every later proposal emits only module events. `voting::Vote` is not read, since
+  `aptos_governance::Vote` is emitted beside it with the voter, pool and direction. A legacy
+  resolution, whose type the module event shares, is folded from its handle only. Votes are
+  kept in version order and `resolution` is the lowest-version one, whichever walk folds first.
+- **Forged forums are dropped.** `0x1::voting` is a library any account can host its own forum
+  on, and its module events name no forum, so anyone can emit a `voting::CreateProposal` or
+  `ResolveProposal` with a real proposal's id. The module walk keeps a `voting::CreateProposal`
+  only when `aptos_governance::CreateProposal`, which only governance emits, follows it in the
+  same transaction, and a `ResolveProposal` only when `0x1`'s forum shows it at that version: the
+  id is below `next_proposal_id` at the version before (no proposal resolves in the transaction
+  that creates it), and the proposal became resolved there (a last step) or its execution hash
+  changed (an earlier step), by up to four `0x1::voting` views at the version and the one before,
+  at most two at a time, outside `maxConcurrentRequests` (the page asking for them holds a slot)
+  and each timed by `requestTimeout`. A failed view fails the page, which retries. So
+  `proposals()` needs an adapter with `view`, and throws at the call without one. The legacy handles are `0x1`'s own and `aptos_governance` events cannot be forged, so
+  neither is checked. Pairing reads one page at a time, which `FullnodeScanAdapter` keeps to whole
+  transactions; a source that splits a transaction across pages would drop that creation.
+- **Counts.** `yesVotes`, `noVotes` and `votes` count the votes seen; a tracker that started
+  after a vote has not seen it. A resolution's figures are final, since no vote lands once
+  voting closes, and `proposalState` uses them when there is one. A multi-step proposal resolves
+  once per step, so `resolution.version` is the first step's and `steps` counts them; mainnet's
+  proposal 205 took seven. No event marks the last step, so `resolution` is present once any
+  step resolved: mainnet's multi-step proposals 68 and 88 resolved one step each and never ran
+  the rest, so `0x1::voting::is_resolved` is false for them.
+- **State.** `proposalState` is `"pending"` until `expirationSecs` passes or either side reaches
+  `earlyResolutionVoteThreshold`, then `"succeeded"` when yes beats no and the two reach
+  `minVoteThreshold`, else `"failed"`; `undefined` when the creation was not seen. `nowSecs`
+  (Unix seconds) defaults to the wall clock; pass the ledger timestamp to match the chain exactly.
+- **As created.** `executionHash` and `metadata` are the creation's: a multi-step proposal's
+  `get_execution_hash` view moves on to later steps. `metadata` values are text, or hex as the
+  fullnode writes them when the bytes are not printable UTF-8, such as the `0x01` of
+  `IS_MULTI_STEP_PROPOSAL_KEY`. Addresses are in long form. A vote through a delegation pool
+  names the pool's own voter, not the delegator.
+- **History needs the right sources.** Each walk reads from `fromVersion`, as `getEvents` does
+  when it is omitted: a handle from its first event, and a `FullnodeScanAdapter` module scan from
+  the head. Mainnet's legacy events are all older than the public fullnode keeps, and its handle
+  endpoint answers that pruned history with an empty page rather than `410`, so
+  `ArchiveFallbackAdapter` never falls back for it: route `handle` to the archive instead. No
+  public source serves module events by type, so the module walk is a transaction scan; history
+  before the head needs `fromVersion` and a source that can scan or index that far (a store from
+  `streamd store`, an archive with an API key for a narrow range):
+
+  ```ts
+  const streamd = new AptosClient({
+    aptos,
+    adapter: new RoutingAdapter({
+      handle: new FullnodeScanAdapter(new Aptos(new AptosConfig(networks.aptosMainnetArchive))),
+      default: new FullnodeScanAdapter(aptos),
+    }),
+  });
+  ```
+
+  The legacy handles hold 199,058 votes, about 2,000 archive pages, well past the archive's
+  anonymous rate, so give it an API key.
+- **Following.** Each walk polls on its own cursor after its backfill, so five requests go out
+  per `pollInterval`, four of them to legacy handles that no longer grow on mainnet;
+  `maxPollInterval` lets the quiet ones back off. `ready` resolves with the map once every walk
+  is following. The map and its records are updated in place; `onChange` fires for each live
+  event that changed a proposal. Options: `fromVersion`, `onChange`, `onError`, `signal`,
+  `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`, `maxPollInterval` and `retries`;
+  anything else throws.
+- **Stops together.** A walk that fails its backfill, gives up after `maxErrors`, or meets an
+  event of a known type without its fields stops every walk, reported once through `onError`,
+  since the map would otherwise go on missing that walk's events. There is no cursor to resume
+  from: a restart reads the history again. Like `reduce()`, it is not a listener for `off()` or
+  `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+
+## Stake pools
+
+`stakePools(options?)` keeps every Aptos stake pool it sees current: what each pool was paid at
+every epoch change, its delegation pool commission changes, and each delegator's stake moves.
+`value` is a map by long-form pool address of
+`StakePool { address, rewards, commissionPercentage?, commissionChanges, delegators }`:
+
+```ts
+import { formatAmount } from "@streamd/aptos";
+
+const pools = streamd.stakePools({
+  // Three hours back, so at least one epoch change: a scan of every transaction since, which needs an API key.
+  fromTime: BigInt(Date.now() - 3 * 3600 * 1000) * 1000n,
+  onChange: (pool, event) => console.log(pool.address, event.type, pool.rewards.at(-1)),
+});
+await pools.ready;
+for (const pool of pools.value.values()) {
+  const last = pool.rewards.at(-1);
+  if (last !== undefined) console.log(pool.address, `epoch ${last.epoch}`, formatAmount(last.rewards + last.fees, 8), "APT");
+}
+```
+
+- **Sources.** One scan over eight module types, folded by one `reduce()`:
+
+  | Event | Gives |
+  | --- | --- |
+  | `0x1::stake::DistributeRewards` | `EpochRewards.rewards`, zero included |
+  | `0x1::stake::DistributeTransactionFee` | `EpochRewards.fees` (`0n` when the pool was paid none) |
+  | `0x1::reconfiguration::NewEpoch` | `EpochRewards.epoch`, the epoch that ended (`NewEpoch.epoch - 1`) |
+  | `0x1::delegation_pool::CommissionPercentageChange` | one `CommissionChange { percentage, owner, version }`, the latest as `commissionPercentage` |
+  | `0x1::delegation_pool::AddStake`, `UnlockStake`, `ReactivateStake`, `WithdrawStake` | one `Delegator { address, added, addStakeFees, unlocked, reactivated, withdrawn, firstAddedAt?, lastVersion }` per delegator, summed |
+
+  Only the module defining an event type can emit it, so every event read is the framework's
+  own. Amounts are octas, commission hundredths of a percent (`1000n` is 10%), and the
+  commission is the one for the pool's next lockup cycle, as the change sets it.
+- **Epoch changes.** `stake::on_new_epoch` emits a fee (when non-zero) and a reward for every
+  active pool, then `NewEpoch` last, in one transaction (a `validator_transaction` on mainnet,
+  which runs randomness). Payments are held until that `NewEpoch` names the epoch, then appended
+  to each pool's `rewards` as one `EpochRewards { epoch, rewards, fees, version }`; a pool's
+  total stake (`0x1::stake::get_stake`, all four parts) rises by exactly `rewards + fees` there.
+  A source that delivers payments with no `NewEpoch` in their transaction stops the monitor.
+- **Joins.** `firstAddedAt` is the first `AddStake` seen: a join when the monitor read the pool
+  from before the delegator's first stake. `added` counts the amount added, `addStakeFees` the
+  fee taken from it, so the delegator's active stake rose by the difference.
+- **Narrowing.** `pool` (an address or a non-empty list) keeps only those pools; the scan is the
+  same, since every pool's events share these types. Other pools' events are still checked, so
+  a malformed one stops the monitor.
+- **Who appears.** Anyone can create a delegation pool and stake to it from as many addresses
+  as they like, so `value` holds a record for every pool and delegator seen, validators or not;
+  only pools in the active validator set get `rewards` entries.
+- **History needs the right sources.** No public source serves module events by type, so the
+  scan reads every transaction from `fromVersion` or `fromTime` (as `getEvents` does when both
+  are omitted: a `FullnodeScanAdapter` from the head). Epochs change about every two hours on
+  mainnet, so a monitor started at the head sees its first rewards within two hours; a start
+  further back reads every transaction since, which takes an API key past a few minutes of
+  mainnet history. Legacy handle events (`DistributeRewardsEvent`, `AddStakeEvent` and the rest,
+  before the module-event migration) are not read.
+- **Not covered.** Commission set through `staking_contract` (non-delegation pools), operator
+  commission paid out (`DistributeCommission`), `stake::AddStake` and `UnlockStake` of pools
+  without delegators, delegated voting, validator set joins and leaves, and lockup changes.
+- **Following.** `ready` resolves with the map once the history is folded and the scan is
+  following. The map and its records are updated in place, and nothing is evicted: `rewards`
+  grows by one entry per pool per epoch (about twelve a day) and `delegators` by one per
+  delegator seen, so narrow a long-running monitor with `pool`. `onChange(pool, event)` fires for
+  each live event that changed a pool: once per pool an epoch change paid, with its `NewEpoch`.
+  Options: `pool`, `fromVersion`, `fromTime`, `onChange`, `onError`, `signal`, `pollInterval`,
+  `batchSize`, `maxErrors`, `maxBackoff`, `maxPollInterval` and `retries`; anything else throws.
+- **Stops.** A failed backfill, `maxErrors` reached, or an event of a known type without its
+  fields stops it, reported through `onError`. There is no cursor to resume from: a restart
+  reads the history again. Like `reduce()`, it is not a listener for `off()` or
+  `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+
 ## Live balances
 
 `balances(address, options?)` keeps one wallet's balances current. `address` may be
@@ -1981,7 +2302,8 @@ a negative `fromVersion` needs, an optional `getEarliestVersion(descriptor)` tha
 `fromVersion: "earliest"` needs, an optional `getBlock(descriptor, height)` that
 `fromBlock`/`toBlock` need, an optional `getBlockHeights(descriptor)` that `fromTime`
 needs alongside `getBlock`, and an optional `getTransactionEvents(hash, descriptor?)` that
-`eventsOf()` needs, returning `{ version, success, vmStatus, events }` or `undefined` while
+`eventsOf()` needs, returning `{ version, success, vmStatus, events }` (with optional
+`gasUnitPrice` and `feePayer`, which `explain()` reads) or `undefined` while
 the transaction is not committed, an optional
 `getTransactionEventsByVersion(version, descriptor?)` that `eventsAt()` needs, returning the
 same shape or `undefined` when there is no transaction at that version, and an optional
@@ -3321,6 +3643,39 @@ function Feed() {
   so give the `Aptos` client an API key.
 - `client` in any hook's options overrides the provider's.
 
+### Devtools
+
+```tsx
+import { adapterMetrics } from "@streamd/core";
+import { StreamdDevtools } from "@streamd/react";
+
+const metrics = adapterMetrics(new FullnodeScanAdapter(aptos));
+const streamd = new AptosClient({ aptos, adapter: metrics.adapter });
+
+<StreamdProvider client={streamd}>
+  <App />
+  {import.meta.env.DEV && <StreamdDevtools metrics={metrics} />}
+</StreamdProvider>
+```
+
+`<StreamdDevtools />` is a small panel fixed to the bottom-right corner, closed until its
+`streamd (n running)` button is clicked. It lists every subscription from
+`client.listSubscriptions({ ended: true })`: id, descriptor, state (`live`, `retrying` while polls are failing,
+`paused`, `ended`), cursor (shortened, the full value on hover), last version, the error count
+with the last error, and how long ago the last good poll was. The last 20 subscriptions that
+ended stay listed as `ended`, with their final snapshot, so a walk that gave up still shows why. With `metrics`, one `adapterMetrics` wrapper or a record of them by a label
+you choose (`{ fullnode: a, archive: b }`), it adds requests, errors, rate-limited calls and
+p50, p95 and max latency per method.
+
+- **Props.** `client` (else the provider's), `metrics`, `interval` (how often it re-reads, in
+  ms, default 1000; anything but a positive number throws) and `defaultOpen` (default `false`).
+- **Read-only.** It offers no pause, resume, stop or cursor control.
+- **Secrets.** It shows no node URL or adapter setting: sources are named by your labels, and
+  error text is redacted as `listSubscriptions()` redacts it.
+- **Footprint.** Inline styles, no styling library and no dependency beyond React. It renders
+  nothing during server rendering or before mount. It is meant for development builds; gate it
+  as above.
+
 ## Command line
 
 `@streamd/cli` installs a `streamd` executable. `streamd tail` follows matching events and
@@ -3542,7 +3897,10 @@ streamd forward --to https://hooks.example.com/aptos \
 
 | Option | Meaning |
 | --- | --- |
-| `--to <url>` | webhook URL, `http` or `https` (required) |
+| `--to <url>` | webhook URL, `http` or `https` (required), or a Redis, NATS or Kafka URL (below) |
+| `--stream <key>` | the Redis stream to add each batch to (required with a Redis `--to`) |
+| `--subject <name>` | the NATS subject to publish each batch to (required with a NATS `--to`) |
+| `--topic <name>` | the Kafka topic to produce each batch to (required with a Kafka `--to`) |
 | `--cursor-file <path>` | where the position is saved (default `streamd-forward.cursor`) |
 | `--retries <n>` | retries per batch after the first attempt (default `5`) |
 | `--timeout <ms>` | per-request timeout (default `10000`) |
@@ -3596,6 +3954,156 @@ Any other status, redirects included, fails at once. The webhook receives only t
 the content type, your `--header` values and any signature, and neither the URL, header
 values nor the secret are printed.
 
+**To a Redis stream.** Give `--to` a Redis URL, `redis://[user:password@]host[:port][/db]` or
+`rediss://` for TLS, and `--stream` the stream key. Each batch becomes one entry, added with
+`XADD <stream> * body <json>`, where `body` is exactly the webhook body. With a secret the entry
+also carries `signature`, the same `sha256=<hex>` the webhook header would, so a consumer checks
+it with `verifyWebhook`:
+
+```sh
+streamd forward --to redis://localhost:6379 --stream aptos:deposits \
+  --cursor-file deposits.cursor 0x1::coin::DepositEvent
+```
+
+```ts
+import { verifyWebhook } from "@streamd/core";
+
+// One entry's fields as a record, from XREAD, XREADGROUP or XRANGE.
+async function handle(fields: Record<string, string>): Promise<void> {
+  if (!(await verifyWebhook(fields.body, fields.signature, process.env.STREAMD_WEBHOOK_SECRET!))) return;
+  const events = JSON.parse(fields.body);
+  // ...
+}
+```
+
+The reply to `XADD`, the new entry's id, is the acknowledgement, and the cursor file moves only
+after it, exactly as after a webhook's `2xx`. It means the primary accepted the entry; streamd does
+not wait for replicas or the append-only file. Connection failures, timeouts and transient
+replies such as `LOADING`, `READONLY` or `OOM` are retried with the same backoff and `--retries`
+budget; `ERR`, `WRONGTYPE`, `NOPERM`, `NOAUTH` and `WRONGPASS` fail at once. Bun's client
+reports a refused handshake, such as a wrong password, as a closed connection, so under Bun that
+is retried through the budget before exiting `1`. `--timeout` bounds
+each `XADD`, and a timed-out one drops the connection so the retry opens a fresh one; it may
+still have landed, which at least once allows. A Redis restart mid-run is retried the same way,
+reconnecting on the next attempt. `--header` is refused, since an entry has no headers, and the
+URL and its password are never printed. Nothing trims the stream: cap it with `XTRIM` once your
+consumers have read past an entry.
+
+Under Bun this uses Bun's own Redis client. Under Node it needs `ioredis` installed
+(`npm i ioredis`), loaded only when `--to` is a Redis URL. Redis Cluster and Sentinel URLs are
+not supported.
+
+**To NATS JetStream.** Give `--to` a NATS URL, `nats://host[:port]` (port `4222` by default)
+with `user:password@` or a `token@` before the host when the server asks for them, and
+`--subject` the subject to publish to, which a JetStream stream must capture. Each batch becomes
+one message whose payload is exactly the webhook body, with two headers: `Nats-Msg-Id`, the
+SHA-256 of the body in hex, and with a secret `x-streamd-signature`, the same `sha256=<hex>` the
+webhook header carries:
+
+```sh
+nats stream add DEPOSITS --subjects 'aptos.deposits' --defaults
+streamd forward --to nats://localhost:4222 --subject aptos.deposits \
+  --cursor-file deposits.cursor 0x1::coin::DepositEvent
+```
+
+```ts
+import { WEBHOOK_SIGNATURE_HEADER, verifyWebhook } from "@streamd/core";
+import type { JsMsg } from "@nats-io/jetstream";
+
+async function handle(msg: JsMsg): Promise<void> {
+  const signature = msg.headers?.get(WEBHOOK_SIGNATURE_HEADER);
+  if (!(await verifyWebhook(msg.data, signature, process.env.STREAMD_WEBHOOK_SECRET!))) return msg.term();
+  const events = JSON.parse(msg.string());
+  // ...
+  msg.ack();
+}
+```
+
+The stream's PubAck, the reply naming the stream and the message's sequence, is the
+acknowledgement, and the cursor file moves only after it, exactly as after a webhook's `2xx`. A
+PubAck marked `duplicate` counts too: the message id is the body's hash, so when a batch is sent
+again, after a retry of a publish that landed or a restart that resends the batch in flight,
+JetStream drops the copy inside the stream's duplicate window (two minutes by default) and
+consumers see it once. Outside the window a resend is delivered again, which at least once
+allows.
+
+What fails at once, exiting `1`: no stream capturing the subject (the server's `503` no
+responders reply), a JetStream error with a `4xx` code (such as a message over the stream's size
+limit), a reply that is not a PubAck (something other than a stream answered), and the server's
+`Authorization Violation`, `Permissions Violation` and `Maximum Payload Violation` errors (lower
+`--batch-size` for the last). Everything else is retried with the same backoff and `--retries`
+budget: refused or dropped connections, other server errors, JetStream errors with a `5xx` code,
+and no reply within `--timeout`, which bounds connecting and publishing together and drops the
+connection so the retry opens a fresh one. A NATS restart mid-run is retried the same way,
+reconnecting on the next attempt.
+
+The CLI speaks the NATS protocol itself, so nothing needs installing under Bun or Node. It
+connects in plaintext only: `tls://` is refused, and so is a server that requires TLS, as are
+NKEY, JWT and `.creds` authentication and lists of several servers. `--header` is refused, the
+server needs headers (NATS 2.2 or later), and the URL, its password and its token are never
+printed.
+
+**To a Kafka topic.** Give `--to` a Kafka URL, `kafka://host[:port]` (port `9092` by default),
+several brokers separated by commas (`kafka://b1:9092,b2:9092`), or `kafkas://` for TLS, and
+`--topic` a topic that already exists. For SASL put `user:password@` before the brokers and name
+the mechanism: `?sasl=plain`, `?sasl=scram-sha-256` or `?sasl=scram-sha-512` (there is no
+default, and PLAIN sends the password as it is, so pair it with `kafkas://`). Each batch becomes
+one record whose value is exactly the webhook body. Its key is the descriptor, such as
+`["module",["0x1::coin::DepositEvent"]]`, the same for every batch of one forwarder, so the
+default partitioner keeps them on one partition, in order. With a secret the record carries the
+header `x-streamd-signature`, the same `sha256=<hex>` the webhook header carries:
+
+```sh
+kafka-topics.sh --create --topic aptos.deposits --bootstrap-server localhost:9092
+streamd forward --to kafka://localhost:9092 --topic aptos.deposits \
+  --cursor-file deposits.cursor 0x1::coin::DepositEvent
+```
+
+```ts
+import { WEBHOOK_SIGNATURE_HEADER, verifyWebhook } from "@streamd/core";
+import type { KafkaMessage } from "kafkajs";
+
+async function handle(message: KafkaMessage): Promise<void> {
+  const signature = message.headers?.[WEBHOOK_SIGNATURE_HEADER]?.toString();
+  if (!(await verifyWebhook(message.value!, signature, process.env.STREAMD_WEBHOOK_SECRET!))) return;
+  const events = JSON.parse(message.value!.toString());
+  // ...
+}
+```
+
+The producer sends with `acks=all`, so a send resolves only once every in-sync replica has the
+record, and the cursor file moves only after that, exactly as after a webhook's `2xx`. The
+producer is idempotent: a resend of a batch that was not acknowledged, whether the client's own
+retry of a stalled request (each request gets a third of `--timeout`, so one retry fits) or a
+later attempt after a dropped connection or a broker restart, carries the same producer id and
+sequence, and the broker drops the copy. That holds under `kafkajs`; under Confluent's client
+only librdkafka's own retries are covered, and a later attempt is a new record. At least once
+still allows a duplicate when a send outlives `--timeout`, which closes the producer so the retry opens a fresh one with a new
+producer id, and when `forward` restarts and resends the batch in flight. A resent record's value is byte-identical, so a consumer drops
+copies by the value's SHA-256 or by each event's `version` and `eventIndex`.
+
+What fails at once, exiting `1`: a topic that does not exist (the producer never creates one,
+and a broker answering "unknown topic or partition" for longer than one metadata refresh, as it
+can briefly during a partition reassignment, counts too, so the supervisor restarts it),
+authorization or SASL authentication failures, a record over the broker's or topic's size limit
+(lower `--batch-size`), an invalid topic or record, a topic policy violation, and a broker too
+old for the request. Everything else is retried with the same backoff and `--retries` budget:
+refused or dropped connections, leader elections, too few in-sync replicas, request timeouts,
+and a send still unfinished at `--timeout`, which bounds connecting and sending together. A
+broker restart mid-run is retried the same way, reconnecting on the next attempt. `--header`
+is refused, and the URL and its password are never printed.
+
+The CLI ships no Kafka client: install one, and it is loaded only when `--to` is a Kafka URL.
+`@confluentinc/kafka-javascript` is the one to choose, maintained by Confluent over
+librdkafka, and streamd drives it through its KafkaJS-compatible API; `kafkajs`, pure
+JavaScript, works too but has had no release since February 2023, and under Node 23 or later
+and Bun it prints a harmless `TimeoutNegativeWarning` on stderr. When both are installed,
+Confluent's is used. Under Confluent's client, librdkafka waits up to 30 seconds for a topic
+missing from the metadata to appear, longer than the default `--timeout`, so a missing topic
+is retried as a timeout until the budget runs out rather than failing at once. Transactions
+(exactly once), OAUTHBEARER, client certificates, a custom CA and IPv6 broker addresses (kafkajs
+cannot reach them; use a hostname) are not supported.
+
 `--to-version` turns `forward` into a backfill job. It needs `--from-version` or `--from-time`
 (a saved cursor still wins), and the bound must already be history: the head is read once, and a
 bound above it fails. Nothing above the bound is sent. The run ends with exit `0` when the walk
@@ -3608,11 +4116,10 @@ streamd forward --to https://hooks.example.com/backfill --from-version 300000000
   --to-version 3001000000 --batch-size 100 0x1::coin::CoinDeposit
 ```
 
-Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST without moving the
-cursor; `1` when a batch fails past its retries, the subscription stops on an error, the
-cursor file cannot be read or written, or `--to-version` is above the head; `2` for invalid
-arguments. Run it under a supervisor
-that restarts on `1`.
+Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST, `XADD`, publish or send
+without moving the cursor; `1` when a batch fails past its retries or fails at once, the Redis
+or Kafka client cannot be loaded, the subscription stops on an error, the cursor file cannot be read or
+written, or `--to-version` is above the head; `2` for invalid arguments. Run it under a supervisor that restarts on `1`.
 
 ### Alert on thresholds
 
@@ -4051,6 +4558,86 @@ there as missing and extra.
 The range is required and at most 100,000 versions; `--max-pages` (default 10) caps each walk and
 `--limit` sets the page size. It exits 0 when the nodes agree, 1 when they disagree, a node fails
 or no window was compared, and 2 for bad usage.
+
+### Monitor several nodes
+
+`streamd monitor` reads every node once per round and prints, for each, how far its head is
+behind the best one, how many of its calls failed or were refused with `429` over a sliding
+window, and whether its recent events match the first node's, as a JSON line or as Prometheus
+text:
+
+```sh
+streamd monitor --node-url https://api.mainnet.aptoslabs.com/v1 \
+  --node-url https://fullnode.mainnet.aptoslabs.com/v1 --node-url https://my-node.example/v1
+streamd monitor --node-url "$A" --node-url "$B" --format prometheus --listen 9464
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--node-url <url>` | a node to monitor, at least twice; node `0` is the first and the reference |
+| `--interval <ms>` | time from one round's start to the next, and each call's timeout (default `10000`) |
+| `--window <duration>` | how far back the window sums reach, `30s`, `5m`, `1h` or `1d` (default `5m`) |
+| `--range <n>` | versions compared with node `0` per round (default `100`, at most `10000`) |
+| `--format <name>` | `json` or `prometheus` (default `json`) |
+| `--listen <[host:]port>` | also serve the latest round's Prometheus text at `/metrics`, on `127.0.0.1` unless a host is given |
+| `--limit <n>` | exit after `n` rounds |
+
+Each round, every node reads its head version and its head block's time, then each node that
+answered is compared with node `0` through [`compareAdapters`](#data-sources-and-their-limits)
+over the newest `--range` versions both have, ending at the lower of the two heads, so a slow node
+narrows only its own comparison. The events compared are those of the event types given (or
+`--account`, or a handle or resource, as `tail` takes them), by default
+`0x1::transaction_fee::FeeStatement`, which every user transaction emits; `--chain sui` has no
+default and needs one. A round never overlaps the next, and a call that takes longer than
+`--interval` fails as a timeout, so one silent node cannot stall the monitor.
+
+- **Lag** is behind the best node of the round: `lagVersions` from head versions, `lagMs` in chain
+  time from head blocks' timestamps (`null` when a node's block cannot be read). The leader reads
+  `0`. The two come from separate reads, so they agree closely, not exactly.
+- **Requests, errors and `429`s** count every call the monitor made to a node, head, block and
+  comparison reads alike. Each node's requests go out once, without the SDK's own retries, and a timed-out one
+  is abandoned on Aptos, so a `429` reaches the monitor rather than being waited out. A node that answers `429` to any call, comparison reads included, is set aside
+  for its `Retry-After`, or for one interval when it names none, as Aptos fullnode errors never
+  do, so at least the next round skips it and reports `error: "429"`.
+- **The window** holds the rounds that started less than `--window` ago, at most 10,000.
+
+A JSON line per round, versions as decimal strings:
+
+```json
+{"round":3,"time":"2026-11-14T22:00:00.000Z","nodes":[
+  {"node":0,"up":true,"error":null,"head":"8053398912","lagVersions":"0","lagMs":0,"compare":null,
+   "window":{"rounds":3,"up":3,"requests":12,"errors":0,"rateLimited":0,"errorRate":0,"maxLagVersions":"0","maxLagMs":0}},
+  {"node":1,"up":true,"error":null,"head":"8053398907","lagVersions":"5","lagMs":130,
+   "compare":{"fromVersion":"8053398808","toVersion":"8053398907","window":{"fromVersion":"8053398808","toVersion":"8053398907"},"matched":61,"missing":0,"extra":0,"different":0},
+   "window":{"rounds":3,"up":3,"requests":12,"errors":0,"rateLimited":0,"errorRate":0,"maxLagVersions":"12","maxLagMs":400,"matched":180,"disagreements":0}}]}
+```
+
+(one line in practice). `error` is `null` for a node that answered its head read, else
+`"timeout"`, the HTTP status (`"429"`, `"503"`) or `"failed"`: never the error's message, which
+can carry the node's URL, so nodes are named by position, as `--stats` names them. `compare` is
+this round's comparison with node `0`, `null` for node `0` and for a node not compared; its
+`window` is the versions both walks covered, `null` when one failed. `window.disagreements` sums
+`missing`, `extra` and `different` over the window. To see the events themselves, run
+[`streamd compare`](#compare-two-nodes) over the range reported. A node so far behind that node `0`
+has pruned its range makes node `0`'s walk fail with `410`, counted as an error on node `0`.
+
+`--format prometheus` prints each round as text exposition, rounds separated by a blank line, and
+`--listen` serves the latest at `GET /metrics` whatever `--format` prints. The endpoint has no
+authentication; it serves only counts, versions and node positions, but a host other than
+`127.0.0.1` makes it reachable by anyone on that network. Gauges labelled
+`node`: `streamd_monitor_up`, `streamd_monitor_head_version`, `streamd_monitor_lag_versions`,
+`streamd_monitor_lag_seconds`, `streamd_monitor_window_requests`, `streamd_monitor_window_errors`,
+`streamd_monitor_window_rate_limited`, and for nodes from `1` up `streamd_monitor_window_matched`
+and `streamd_monitor_window_disagreements`, a series left out when its value is unknown; then
+`toPrometheus` over each node's lifetime counts (`streamd_adapter_requests_total`
+and the rest, by `node` and `method`), from which Prometheus computes its own rates.
+
+`--api-key` goes to node `0` only; `APTOS_API_KEY` is not used, since every node is a URL given.
+`--archive`, `--cache` and `--stats` are refused: each would hide or repeat what the monitor
+measures. The defaults cost each node about four reads per 10 seconds, and node `0` one more walk
+per other node, within the anonymous Aptos fullnode limit for a few nodes. Exit codes: `0` on Ctrl-C, `SIGTERM`, or after `--limit` rounds; `1` when
+`--listen` cannot bind or stdout fails; `2` for invalid arguments. A node that is down never ends
+the command.
 
 ### Store events
 

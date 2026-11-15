@@ -40,14 +40,21 @@
         "@aptos-labs/ts-sdk": "^6.3.1",
         "@electric-sql/pglite": "^0.5.16",
         "@mysten/sui": "2.39.1",
+        "kafkajs": "2.2.4",
       },
       "peerDependencies": {
         "@aptos-labs/ts-sdk": ">=1.0.0",
+        "@confluentinc/kafka-javascript": ">=1",
         "@mysten/sui": "2.39.1",
+        "ioredis": ">=5",
+        "kafkajs": ">=2",
         "pg": ">=8",
       },
       "optionalPeers": [
+        "@confluentinc/kafka-javascript",
         "@mysten/sui",
+        "ioredis",
+        "kafkajs",
         "pg",
       ],
     },
@@ -258,6 +265,8 @@
     "json-buffer": ["json-buffer@3.0.1", "", {}, "sha512-4bV5BfR2mqfQTJm+V5tPPdf+ZpuhiIvTuAB5g8kcrXOZpTT/QwwVRWBywX1ozr6lEuPdbHxwaJlm9G6mI2sfSQ=="],
 
     "jwt-decode": ["jwt-decode@4.0.0", "", {}, "sha512-+KJGIyHgkGuIq3IEBNftfhW/LfWhXUIY6OmyVWjliu5KH1y0fw7VQ8YndE2O4qZdMSd9SqbnC8GOcZEy0Om7sA=="],
+
+    "kafkajs": ["kafkajs@2.2.4", "", {}, "sha512-j/YeapB1vfPT2iOIUn/vxdyKEuhuY2PxMBvf5JWux6iSaukAccrMtXEY/Lb7OvavDhOWME589bpLrEdnVHjfjA=="],
 
     "keyv": ["keyv@4.5.4", "", { "dependencies": { "json-buffer": "3.0.1" } }, "sha512-oxVHkHR/EJf2CNXnWxRLW6mg7JyCCUcG0DtEGmL2ctUo1PNTin1PUil+r/+4r5MpVgC/fn1kjsx7mjSujKqIpw=="],
 

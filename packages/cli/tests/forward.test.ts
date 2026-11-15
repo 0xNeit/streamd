@@ -1,11 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runForward } from "../src/forward.js";
-import type { ForwardIO } from "../src/forward.js";
+import { deliver, runForward } from "../src/forward.js";
+import type { Attempt, ForwardIO, Sink } from "../src/forward.js";
 import type { ForwardOptions } from "../src/args.js";
+import type { KafkaLike, KafkaMessage } from "../src/kafka.js";
+import type { NatsLike, NatsReply } from "../src/nats.js";
+import type { RedisLike } from "../src/redis.js";
 import { MemoryAdapter, StreamdClient, StreamdError, verifyWebhook } from "@streamd/core";
 import type { EventAdapter, StreamdEvent } from "@streamd/core";
 
@@ -511,5 +514,590 @@ describe("runForward decode", () => {
     expect(await runForward(options({ fromVersion: 0n, toVersion: 3n, decode: ["amount"] }), h.io)).toBe(0);
     expect(received.flatMap(versions)).toEqual(["1", "3"]);
     expect(h.errors.join()).toContain('Cannot decode field "amount" of 2:0');
+  });
+});
+
+describe("deliver", () => {
+  function sink(results: Attempt[]) {
+    const bodies: string[] = [];
+    const fake: Sink = {
+      send: async (body) => {
+        bodies.push(body);
+        return results.shift() ?? { ok: true };
+      },
+    };
+    return { fake, bodies };
+  }
+  const io = (signal = new AbortController().signal, errors: string[] = []) => ({
+    error: (m: string) => void errors.push(m),
+    signal,
+    retryDelay: 1,
+  });
+
+  it("retries a retryable failure, then reports the ack", async () => {
+    const { fake, bodies } = sink([{ ok: false, failure: "down", retryable: true }]);
+    const errors: string[] = [];
+    expect(await deliver("[1]", fake, 3, io(undefined, errors))).toBe(true);
+    expect(bodies).toEqual(["[1]", "[1]"]);
+    expect(errors).toEqual(["streamd: delivery failed (attempt 1/4): down; retrying in 1ms"]);
+  });
+
+  it("gives up past the retry bound", async () => {
+    const down = { ok: false, failure: "down", retryable: true };
+    const { fake, bodies } = sink([down, down, down]);
+    const errors: string[] = [];
+    expect(await deliver("[]", fake, 1, io(undefined, errors))).toBe(false);
+    expect(bodies).toHaveLength(2);
+    expect(errors.at(-1)).toBe("streamd: delivery failed: down");
+  });
+
+  it("fails at once on a failure that is not retryable", async () => {
+    const { fake, bodies } = sink([{ ok: false, failure: "refused" }]);
+    expect(await deliver("[]", fake, 5, io())).toBe(false);
+    expect(bodies).toHaveLength(1);
+  });
+
+  it("waits retryAfter instead of the backoff", async () => {
+    const { fake } = sink([{ ok: false, failure: "busy", retryable: true, retryAfter: 30 }]);
+    const errors: string[] = [];
+    const started = Date.now();
+    expect(await deliver("[]", fake, 1, io(undefined, errors))).toBe(true);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(25);
+    expect(errors[0]).toEndWith("retrying in 30ms");
+  });
+
+  it("stops during the wait on abort", async () => {
+    const controller = new AbortController();
+    const { fake, bodies } = sink([{ ok: false, failure: "busy", retryable: true, retryAfter: 10_000 }]);
+    setTimeout(() => controller.abort(), 5);
+    expect(await deliver("[]", fake, 3, io(controller.signal))).toBe(false);
+    expect(bodies).toHaveLength(1);
+  });
+});
+
+describe("runForward to Redis", () => {
+  const PASSWORD = "pw-s3cret";
+  const REDIS = `redis://streamd:${PASSWORD}@127.0.0.1:6379/0`;
+  type Reply = (n: number) => Promise<unknown>;
+
+  function fakeRedis(reply: Reply = async (n) => `${n}-0`) {
+    const calls: { command: string; args: string[] }[] = [];
+    const state = { closed: 0, opened: [] as unknown[] };
+    const client: RedisLike = {
+      send: (command, args) => {
+        calls.push({ command, args });
+        return reply(calls.length);
+      },
+      close: () => void state.closed++,
+    };
+    const open = (url: string, timeout: number) => {
+      state.opened.push([url, timeout]);
+      return client;
+    };
+    return { calls, state, open };
+  }
+
+  const redisOptions = (extra: Partial<ForwardOptions> = {}) => options({ to: REDIS, stream: "aptos:deposits", ...extra });
+
+  async function forwardTo(fake: ReturnType<typeof fakeRedis>, events: StreamdEvent[], extra: Partial<ForwardOptions>, done: () => boolean) {
+    const h = harness(new MemoryAdapter(events));
+    const run = runForward(redisOptions(extra), { ...h.io, redis: fake.open });
+    await until(done);
+    h.controller.abort();
+    return { ...h, code: await run };
+  }
+
+  it("adds one entry per batch with the webhook body, and checkpoints after the reply", async () => {
+    const fake = fakeRedis();
+    const { code, errors } = await forwardTo(fake, [ev(1), ev(2)], {}, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.state.opened).toEqual([[REDIS, 2000]]);
+    expect(fake.calls).toEqual([
+      {
+        command: "XADD",
+        args: [
+          "aptos:deposits",
+          "*",
+          "body",
+          '[{"type":"0x1::coin::DepositEvent","data":{"amount":"10"},"version":"1","sequenceNumber":"0","eventIndex":0},' +
+            '{"type":"0x1::coin::DepositEvent","data":{"amount":"20"},"version":"2","sequenceNumber":"0","eventIndex":0}]',
+        ],
+      },
+    ]);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("2\n");
+    expect(fake.state.closed).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  it("adds a signature field that verifyWebhook accepts", async () => {
+    const fake = fakeRedis();
+    await forwardTo(fake, [{ ...ev(1), data: { memo: "café" } }], { secret: "key" }, () => existsSync(cursorFile()));
+    const [stream, id, bodyField, body, signatureField, signature] = fake.calls[0]!.args;
+    expect([stream, id, bodyField, signatureField]).toEqual(["aptos:deposits", "*", "body", "signature"]);
+    expect(await verifyWebhook(body!, signature, "key")).toBe(true);
+    expect(await verifyWebhook(body!, signature, "other")).toBe(false);
+  });
+
+  it("writes no cursor until the reply arrives", async () => {
+    let ack!: () => void;
+    const fake = fakeRedis(() => new Promise((resolve) => (ack = () => resolve("1-0"))));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(redisOptions(), { ...h.io, redis: fake.open });
+    await until(() => fake.calls.length === 1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(existsSync(cursorFile())).toBe(false);
+    ack();
+    await until(() => existsSync(cursorFile()));
+    h.controller.abort();
+    expect(await run).toBe(0);
+  });
+
+  it.each([
+    ["a lost connection", new Error("Connection closed")],
+    ["a transient reply", new Error("LOADING Redis is loading the dataset in memory")],
+    ["an out-of-memory reply", new Error("OOM command not allowed when used memory > 'maxmemory'.")],
+  ])("retries %s, then delivers", async (_label, failure) => {
+    const fake = fakeRedis(async (n) => {
+      if (n === 1) throw failure;
+      return "1-0";
+    });
+    const { code, errors } = await forwardTo(fake, [ev(1)], {}, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.calls).toHaveLength(2);
+    expect(errors).toEqual([`streamd: delivery failed (attempt 1/4): ${failure.message}; retrying in 1ms`]);
+  });
+
+  it.each([["WRONGTYPE Operation against a key holding the wrong kind of value"], ["NOPERM this user has no permissions"], ["ERR syntax error"]])(
+    "fails at once on %s, exiting 1 with no cursor",
+    async (reply) => {
+      const fake = fakeRedis(async () => {
+        throw new Error(reply);
+      });
+      const h = harness(new MemoryAdapter([ev(1)]));
+      expect(await runForward(redisOptions(), { ...h.io, redis: fake.open })).toBe(1);
+      expect(fake.calls).toHaveLength(1);
+      expect(existsSync(cursorFile())).toBe(false);
+      expect(h.errors).toEqual([`streamd: delivery failed: ${reply}`]);
+      expect(fake.state.closed).toBe(1);
+    },
+  );
+
+  it("times out a hung XADD, closing the connection, then retries", async () => {
+    const fake = fakeRedis((n) => (n === 1 ? new Promise(() => {}) : Promise.resolve("1-0")));
+    const { code, errors } = await forwardTo(fake, [ev(1)], { timeout: 20 }, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.calls).toHaveLength(2);
+    expect(errors).toEqual(["streamd: delivery failed (attempt 1/4): XADD timed out after 20ms; retrying in 1ms"]);
+    // Once for the timeout, once at the end.
+    expect(fake.state.closed).toBe(2);
+  });
+
+  it("abandons an in-flight XADD on abort without advancing", async () => {
+    writeFileSync(cursorFile(), "0\n");
+    const fake = fakeRedis(() => new Promise(() => {}));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(redisOptions(), { ...h.io, redis: fake.open });
+    await until(() => fake.calls.length === 1);
+    h.controller.abort();
+    expect(await run).toBe(0);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("0\n");
+    expect(h.errors).toEqual([]);
+  });
+
+  it("never prints the URL or its password", async () => {
+    const fake = fakeRedis(async () => {
+      throw new Error(`WRONGPASS for ${REDIS} with ${PASSWORD}`);
+    });
+    const h = harness(new MemoryAdapter([ev(1)]));
+    expect(await runForward(redisOptions(), { ...h.io, redis: fake.open })).toBe(1);
+    expect(h.errors).toHaveLength(1);
+    expect(h.errors[0]).toStartWith("streamd: delivery failed: WRONGPASS for redis://streamd:***@127.0.0.1:6379/0");
+    expect(h.errors.join("\n")).not.toContain(PASSWORD);
+  });
+
+  it("exits 1 when the client cannot be opened, before subscribing", async () => {
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const open = async (url: string) => {
+      throw new Error(`no driver for ${url}`);
+    };
+    expect(await runForward(redisOptions(), { ...h.io, redis: open })).toBe(1);
+    expect(h.errors).toEqual(["streamd: cannot open the Redis client: no driver for redis://streamd:***@127.0.0.1:6379/0"]);
+    expect(existsSync(cursorFile())).toBe(false);
+  });
+
+  it("exits 0 without subscribing when aborted while the client opens", async () => {
+    const fake = fakeRedis();
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const open = async (url: string, timeout: number) => {
+      h.controller.abort();
+      return fake.open(url, timeout);
+    };
+    expect(await runForward(redisOptions(), { ...h.io, redis: open })).toBe(0);
+    expect(fake.calls).toEqual([]);
+    expect(fake.state.closed).toBe(1);
+  });
+
+  it("resumes from the cursor file and delivers through the same rule as webhooks", async () => {
+    writeFileSync(cursorFile(), "1\n");
+    const fake = fakeRedis();
+    await forwardTo(fake, [ev(1), ev(2)], { fromVersion: 1n }, () => readFileSync(cursorFile(), "utf8") === "2\n");
+    expect(fake.calls).toHaveLength(1);
+    expect(JSON.parse(fake.calls[0]!.args[3]!)).toEqual([
+      { type: TYPE, data: { amount: "20" }, version: "2", sequenceNumber: "0", eventIndex: 0 },
+    ]);
+  });
+});
+
+describe("runForward to NATS", () => {
+  const PASSWORD = "pw-s3cret";
+  const TOKEN = "tok-s3cret";
+  const NATS = `nats://streamd:${PASSWORD}@127.0.0.1:4222`;
+  const BODY =
+    '[{"type":"0x1::coin::DepositEvent","data":{"amount":"10"},"version":"1","sequenceNumber":"0","eventIndex":0}]';
+  type Reply = (n: number) => Promise<NatsReply>;
+  const ack = (seq: number, extra = ""): NatsReply => ({ data: `{"stream":"DEPOSITS","seq":${seq}${extra}}` });
+
+  function fakeNats(reply: Reply = async (n) => ack(n)) {
+    const calls: { subject: string; headers: Record<string, string>; body: string }[] = [];
+    const state = { closed: 0, opened: [] as string[] };
+    const client: NatsLike = {
+      // Like connectNats, a publish rejects once its signal aborts.
+      request: (subject, headers, body, signal) => {
+        calls.push({ subject, headers, body });
+        return Promise.race([
+          reply(calls.length),
+          new Promise<never>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })),
+        ]);
+      },
+      close: () => void state.closed++,
+    };
+    const open = (url: string) => {
+      state.opened.push(url);
+      return client;
+    };
+    return { calls, state, open };
+  }
+
+  const natsOptions = (extra: Partial<ForwardOptions> = {}) => options({ to: NATS, subject: "aptos.deposits", ...extra });
+
+  async function forwardTo(fake: ReturnType<typeof fakeNats>, events: StreamdEvent[], extra: Partial<ForwardOptions>, done: () => boolean) {
+    const h = harness(new MemoryAdapter(events));
+    const run = runForward(natsOptions(extra), { ...h.io, nats: fake.open });
+    await until(done);
+    h.controller.abort();
+    return { ...h, code: await run };
+  }
+
+  async function failsAtOnce(fake: ReturnType<typeof fakeNats>, extra: Partial<ForwardOptions> = {}) {
+    const h = harness(new MemoryAdapter([ev(1)]));
+    expect(await runForward(natsOptions(extra), { ...h.io, nats: fake.open })).toBe(1);
+    expect(fake.calls).toHaveLength(1);
+    expect(existsSync(cursorFile())).toBe(false);
+    expect(fake.state.closed).toBe(1);
+    return h.errors;
+  }
+
+  it("publishes one message per batch with the webhook body and its hash as the msg id, then checkpoints", async () => {
+    const fake = fakeNats();
+    const { code, errors } = await forwardTo(fake, [ev(1)], {}, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.state.opened).toEqual([NATS]);
+    expect(fake.calls).toEqual([
+      {
+        subject: "aptos.deposits",
+        headers: { "Nats-Msg-Id": createHash("sha256").update(BODY).digest("hex") },
+        body: BODY,
+      },
+    ]);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("1\n");
+    expect(fake.state.closed).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  it("adds a signature header that verifyWebhook accepts", async () => {
+    const fake = fakeNats();
+    await forwardTo(fake, [{ ...ev(1), data: { memo: "caf\u00e9" } }], { secret: "key" }, () => existsSync(cursorFile()));
+    const { headers, body } = fake.calls[0]!;
+    expect(Object.keys(headers)).toEqual(["Nats-Msg-Id", "x-streamd-signature"]);
+    expect(await verifyWebhook(body, headers["x-streamd-signature"]!, "key")).toBe(true);
+    expect(await verifyWebhook(body, headers["x-streamd-signature"]!, "other")).toBe(false);
+  });
+
+  it("writes no cursor until the PubAck arrives, and counts a duplicate PubAck as delivered", async () => {
+    let release!: () => void;
+    const fake = fakeNats(() => new Promise((resolve) => (release = () => resolve(ack(1, ',"duplicate":true')))));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(natsOptions(), { ...h.io, nats: fake.open });
+    await until(() => fake.calls.length === 1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(existsSync(cursorFile())).toBe(false);
+    release();
+    await until(() => existsSync(cursorFile()));
+    h.controller.abort();
+    expect(await run).toBe(0);
+    expect(h.errors).toEqual([]);
+  });
+
+  it.each([
+    ["a lost connection", async () => Promise.reject(new Error("NATS connection closed")), "NATS connection closed"],
+    ["a stale connection", async () => Promise.reject(new Error("NATS -ERR 'Stale Connection'")), "NATS -ERR 'Stale Connection'"],
+    [
+      "a 503 JetStream error",
+      async () => ({ data: '{"error":{"code":503,"err_code":10008,"description":"JetStream system temporarily unavailable"}}' }),
+      "JetStream error 503 (10008): JetStream system temporarily unavailable",
+    ],
+  ])("retries %s, then delivers with the same msg id", async (_label, first, failure) => {
+    const fake = fakeNats((n) => (n === 1 ? first() : Promise.resolve(ack(1))));
+    const { code, errors } = await forwardTo(fake, [ev(1)], {}, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1]!.headers).toEqual(fake.calls[0]!.headers);
+    expect(errors).toEqual([`streamd: delivery failed (attempt 1/4): ${failure}; retrying in 1ms`]);
+  });
+
+  it.each([
+    [{ status: 503, description: "No Responders", data: "" }, "no responders on aptos.deposits: no JetStream stream captures it"],
+    [
+      { data: '{"error":{"code":400,"err_code":10060,"description":"expected stream does not match"}}' },
+      "JetStream error 400 (10060): expected stream does not match",
+    ],
+    [{ data: "pong" }, "the reply on aptos.deposits is not a JetStream PubAck"],
+    [{ data: '{"stream":"S"}' }, "the reply on aptos.deposits is not a JetStream PubAck"],
+  ])("fails at once on the reply %j, exiting 1 with no cursor", async (reply, failure) => {
+    const errors = await failsAtOnce(fakeNats(async () => reply));
+    expect(errors).toEqual([`streamd: delivery failed: ${failure}`]);
+  });
+
+  it.each([
+    ["NATS -ERR 'Authorization Violation'"],
+    ["NATS -ERR 'Permissions Violation for Publish to \"aptos.deposits\"'"],
+    ["NATS -ERR 'Maximum Payload Violation'"],
+    ["the NATS server requires TLS, which this sink does not speak"],
+    ["the NATS server does not support headers (NATS 2.2 or later)"],
+  ])("fails at once on %s", async (text) => {
+    const errors = await failsAtOnce(fakeNats(() => Promise.reject(new Error(text))));
+    expect(errors).toEqual([`streamd: delivery failed: ${text}`]);
+  });
+
+  it("times out a hung publish, closing the connection, then retries", async () => {
+    const fake = fakeNats((n) => (n === 1 ? new Promise(() => {}) : Promise.resolve(ack(1))));
+    const { code, errors } = await forwardTo(fake, [ev(1)], { timeout: 20 }, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.calls).toHaveLength(2);
+    expect(errors).toEqual(["streamd: delivery failed (attempt 1/4): publish timed out after 20ms; retrying in 1ms"]);
+    expect(fake.state.closed).toBe(2);
+  });
+
+  it("abandons an in-flight publish on abort without advancing", async () => {
+    writeFileSync(cursorFile(), "0\n");
+    const fake = fakeNats(() => new Promise(() => {}));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(natsOptions(), { ...h.io, nats: fake.open });
+    await until(() => fake.calls.length === 1);
+    h.controller.abort();
+    expect(await run).toBe(0);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("0\n");
+    expect(h.errors).toEqual([]);
+    expect(fake.state.closed).toBe(1);
+  });
+
+  it("never prints the URL, its password or a token", async () => {
+    const fake = fakeNats(() => Promise.reject(new Error(`NATS -ERR 'Authorization Violation' for ${NATS} with ${PASSWORD}`)));
+    expect((await failsAtOnce(fake))[0]).toBe(
+      "streamd: delivery failed: NATS -ERR 'Authorization Violation' for nats://streamd:***@127.0.0.1:4222 with ***",
+    );
+    const tokenUrl = `nats://${TOKEN}@127.0.0.1:4222`;
+    const leaky = fakeNats(() => Promise.reject(new Error(`connect failed to ${tokenUrl} using ${TOKEN}`)));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    expect(await runForward(natsOptions({ to: tokenUrl, retries: 0 }), { ...h.io, nats: leaky.open })).toBe(1);
+    expect(h.errors).toEqual(["streamd: delivery failed: connect failed to nats://***@127.0.0.1:4222 using ***"]);
+  });
+
+  it("resumes from the cursor file", async () => {
+    writeFileSync(cursorFile(), "1\n");
+    const fake = fakeNats();
+    await forwardTo(fake, [ev(1), ev(2)], { fromVersion: 1n }, () => readFileSync(cursorFile(), "utf8") === "2\n");
+    expect(fake.calls).toHaveLength(1);
+    expect(JSON.parse(fake.calls[0]!.body)).toEqual([
+      { type: TYPE, data: { amount: "20" }, version: "2", sequenceNumber: "0", eventIndex: 0 },
+    ]);
+  });
+});
+
+describe("runForward to Kafka", () => {
+  const PASSWORD = "pw-s3cret";
+  const KAFKA = `kafka://streamd:${PASSWORD}@127.0.0.1:9092,b2:9092?sasl=plain`;
+  const KEY = '["module",["0x1::coin::DepositEvent"]]';
+  const BODY =
+    '[{"type":"0x1::coin::DepositEvent","data":{"amount":"10"},"version":"1","sequenceNumber":"0","eventIndex":0}]';
+  type Reply = (n: number) => Promise<void>;
+
+  /** An error shaped like kafkajs's or librdkafka's, `type` naming the protocol error. */
+  const kafkaError = (text: string, type?: string, extra: Record<string, unknown> = {}) =>
+    Object.assign(new Error(text), type === undefined ? {} : { type }, extra);
+
+  function fakeKafka(reply: Reply = async () => {}) {
+    const calls: { topic: string; message: KafkaMessage }[] = [];
+    const state = { closed: 0, opened: [] as [string, number][] };
+    const client: KafkaLike = {
+      send: (topic, message) => {
+        calls.push({ topic, message });
+        return reply(calls.length);
+      },
+      close: () => void state.closed++,
+    };
+    const open = async (url: string, timeout: number) => {
+      state.opened.push([url, timeout]);
+      return client;
+    };
+    return { calls, state, open };
+  }
+
+  const kafkaOptions = (extra: Partial<ForwardOptions> = {}) => options({ to: KAFKA, topic: "aptos.deposits", ...extra });
+
+  async function forwardTo(fake: ReturnType<typeof fakeKafka>, events: StreamdEvent[], extra: Partial<ForwardOptions>, done: () => boolean) {
+    const h = harness(new MemoryAdapter(events));
+    const run = runForward(kafkaOptions(extra), { ...h.io, kafka: fake.open });
+    await until(done);
+    h.controller.abort();
+    return { ...h, code: await run };
+  }
+
+  async function failsAtOnce(fake: ReturnType<typeof fakeKafka>) {
+    const h = harness(new MemoryAdapter([ev(1)]));
+    expect(await runForward(kafkaOptions(), { ...h.io, kafka: fake.open })).toBe(1);
+    expect(fake.calls).toHaveLength(1);
+    expect(existsSync(cursorFile())).toBe(false);
+    expect(fake.state.closed).toBe(1);
+    return h.errors;
+  }
+
+  it("produces one record per batch, the body as value and the descriptor as key, then checkpoints", async () => {
+    const fake = fakeKafka();
+    const { code, errors } = await forwardTo(fake, [ev(1)], {}, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.state.opened).toEqual([[KAFKA, 2000]]);
+    expect(fake.calls).toEqual([{ topic: "aptos.deposits", message: { key: KEY, value: BODY, headers: {} } }]);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("1\n");
+    expect(fake.state.closed).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  it("adds a signature header that verifyWebhook accepts, and keeps the key across batches", async () => {
+    const fake = fakeKafka();
+    await forwardTo(fake, [{ ...ev(1), data: { memo: "café" } }, ev(2)], { secret: "key", batchSize: 1 }, () =>
+      existsSync(cursorFile()),
+    );
+    expect(fake.calls.map((c) => c.message.key)).toEqual([KEY, KEY]);
+    const { headers, value } = fake.calls[0]!.message;
+    expect(Object.keys(headers)).toEqual(["x-streamd-signature"]);
+    expect(await verifyWebhook(value, headers["x-streamd-signature"]!, "key")).toBe(true);
+    expect(await verifyWebhook(value, headers["x-streamd-signature"]!, "other")).toBe(false);
+  });
+
+  it("writes no cursor until the send resolves", async () => {
+    let release!: () => void;
+    const fake = fakeKafka(() => new Promise((resolve) => (release = resolve)));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(kafkaOptions(), { ...h.io, kafka: fake.open });
+    await until(() => fake.calls.length === 1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(existsSync(cursorFile())).toBe(false);
+    release();
+    await until(() => existsSync(cursorFile()));
+    h.controller.abort();
+    expect(await run).toBe(0);
+    expect(h.errors).toEqual([]);
+  });
+
+  it.each([
+    ["a connection error", kafkaError("Connection error: connect ECONNREFUSED 127.0.0.1:9092"), "Connection error: connect ECONNREFUSED 127.0.0.1:9092"],
+    [
+      "too few in-sync replicas",
+      kafkaError("Messages are written to the log, but to fewer in-sync replicas than required", "NOT_ENOUGH_REPLICAS_AFTER_APPEND"),
+      "Messages are written to the log, but to fewer in-sync replicas than required (NOT_ENOUGH_REPLICAS_AFTER_APPEND)",
+    ],
+    ["a leader election", kafkaError("Broker: Leader not available", "ERR_LEADER_NOT_AVAILABLE"), "Broker: Leader not available (LEADER_NOT_AVAILABLE)"],
+    ["a request timeout", kafkaError("Request timed out", "REQUEST_TIMED_OUT"), "Request timed out (REQUEST_TIMED_OUT)"],
+  ])("retries %s, then delivers the same record", async (_label, first, failure) => {
+    const fake = fakeKafka((n) => (n === 1 ? Promise.reject(first) : Promise.resolve()));
+    const { code, errors } = await forwardTo(fake, [ev(1)], {}, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1]).toEqual(fake.calls[0]!);
+    expect(errors).toEqual([`streamd: delivery failed (attempt 1/4): ${failure}; retrying in 1ms`]);
+  });
+
+  it.each([
+    [kafkaError("This server does not host this topic-partition", "UNKNOWN_TOPIC_OR_PARTITION"), "This server does not host this topic-partition (UNKNOWN_TOPIC_OR_PARTITION)"],
+    [
+      kafkaError("This server does not host this topic-partition", undefined, {
+        name: "KafkaJSNumberOfRetriesExceeded",
+        cause: kafkaError("This server does not host this topic-partition", "UNKNOWN_TOPIC_OR_PARTITION"),
+      }),
+      "This server does not host this topic-partition (UNKNOWN_TOPIC_OR_PARTITION)",
+    ],
+    [kafkaError("Local: Unknown topic", "ERR__UNKNOWN_TOPIC"), "Local: Unknown topic (UNKNOWN_TOPIC)"],
+    [
+      kafkaError("Broker: Topic authorization failed", "ERR_UNKNOWN", {
+        cause: { cause: kafkaError("Broker: Topic authorization failed", "ERR_TOPIC_AUTHORIZATION_FAILED") },
+      }),
+      "Broker: Topic authorization failed (TOPIC_AUTHORIZATION_FAILED)",
+    ],
+    [kafkaError("Not authorized to access cluster", "CLUSTER_AUTHORIZATION_FAILED"), "Not authorized to access cluster (CLUSTER_AUTHORIZATION_FAILED)"],
+    [kafkaError("Broker does not support InitProducerId", undefined, { name: "KafkaJSServerDoesNotSupportApiKey" }), "Broker does not support InitProducerId"],
+    [kafkaError("Broker: Unknown topic or partition", "ERR_UNKNOWN_TOPIC_OR_PART"), "Broker: Unknown topic or partition (UNKNOWN_TOPIC_OR_PART)"],
+    [kafkaError("Not authorized to access topics: [Topic authorization failed]", "TOPIC_AUTHORIZATION_FAILED"), "Not authorized to access topics: [Topic authorization failed] (TOPIC_AUTHORIZATION_FAILED)"],
+    [kafkaError("The request included a message larger than the max message size the server will accept", "MESSAGE_TOO_LARGE"), "The request included a message larger than the max message size the server will accept (MESSAGE_TOO_LARGE)"],
+    [kafkaError("Broker: Message size too large", "ERR_MSG_SIZE_TOO_LARGE"), "Broker: Message size too large (MSG_SIZE_TOO_LARGE)"],
+    [kafkaError("SASL PLAIN authentication failed: Authentication failed", undefined, { name: "KafkaJSSASLAuthenticationError" }), "SASL PLAIN authentication failed: Authentication failed"],
+  ])("fails at once on %p, exiting 1 with no cursor", async (err, failure) => {
+    const errors = await failsAtOnce(fakeKafka(() => Promise.reject(err)));
+    expect(errors).toEqual([`streamd: delivery failed: ${failure}`]);
+  });
+
+  it("times out a hung send, closing the producer, then retries", async () => {
+    const fake = fakeKafka((n) => (n === 1 ? new Promise(() => {}) : Promise.resolve()));
+    const { code, errors } = await forwardTo(fake, [ev(1)], { timeout: 20 }, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.calls).toHaveLength(2);
+    expect(errors).toEqual(["streamd: delivery failed (attempt 1/4): send timed out after 20ms; retrying in 1ms"]);
+    expect(fake.state.closed).toBe(2);
+  });
+
+  it("abandons an in-flight send on abort without advancing", async () => {
+    writeFileSync(cursorFile(), "0\n");
+    const fake = fakeKafka(() => new Promise(() => {}));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(kafkaOptions(), { ...h.io, kafka: fake.open });
+    await until(() => fake.calls.length === 1);
+    h.controller.abort();
+    expect(await run).toBe(0);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("0\n");
+    expect(h.errors).toEqual([]);
+    expect(fake.state.closed).toBe(1);
+  });
+
+  it("exits 1 when the client cannot be opened, naming the fix", async () => {
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const open = () => Promise.reject(new Error(`--to kafka:// needs a Kafka client installed for ${KAFKA}`));
+    expect(await runForward(kafkaOptions(), { ...h.io, kafka: open })).toBe(1);
+    expect(h.errors).toEqual(["streamd: cannot open the Kafka client: --to kafka:// needs a Kafka client installed for the URL"]);
+    expect(h.errors.join()).not.toContain(PASSWORD);
+  });
+
+  it("never prints the URL or its password", async () => {
+    const fake = fakeKafka(() => Promise.reject(kafkaError(`SASL failed for ${KAFKA} as streamd:${PASSWORD} (${encodeURIComponent(PASSWORD)})`, "SASL_AUTHENTICATION_FAILED")));
+    expect((await failsAtOnce(fake))[0]).toBe("streamd: delivery failed: SASL failed for the URL as streamd:*** (***) (SASL_AUTHENTICATION_FAILED)");
+  });
+
+  it("resumes from the cursor file", async () => {
+    writeFileSync(cursorFile(), "1\n");
+    const fake = fakeKafka();
+    await forwardTo(fake, [ev(1), ev(2)], { fromVersion: 1n }, () => readFileSync(cursorFile(), "utf8") === "2\n");
+    expect(fake.calls).toHaveLength(1);
+    expect(JSON.parse(fake.calls[0]!.message.value)).toEqual([
+      { type: TYPE, data: { amount: "20" }, version: "2", sequenceNumber: "0", eventIndex: 0 },
+    ]);
   });
 });

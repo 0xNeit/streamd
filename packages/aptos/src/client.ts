@@ -1,5 +1,5 @@
 import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -9,15 +9,19 @@ import type {
   StreamdEvent,
   Subscription,
 } from "@streamd/core";
+import { activityDescriptor, activitySource } from "./activity.js";
 import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
+import { explain } from "./explain.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
+import { governanceSource, startProposals } from "./governance.js";
+import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { saleDescriptor, saleSource } from "./sales.js";
 import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import type { Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Sale, SaleFilter, SaleListenerOptions, Swap, SwapFilter, SwapListenerOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PreviewEventsOptions, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -88,6 +92,50 @@ export class AptosClient extends StreamdClient {
   }
 
   /**
+   * Follow every transaction `address` sent or received as it lands, one
+   * record per transaction whose `data` is an `Activity`: its direction, the
+   * transfers the address took part in, its net balance change per asset and
+   * every event, the envelope carrying the transaction's hash, sender,
+   * timestamp and entry function. Reads an `account` descriptor with
+   * `received: true`, which the client's adapter must serve
+   * (`IndexerAccountAdapter`, routed beside a fullnode for `view`); transfers
+   * are built and paired as `transfers()` builds them. `address` may be an
+   * Aptos name, resolved once. Under `withNames`, `names` holds the primary
+   * name of the address, the sender and every counterparty. Like
+   * `transfers()`, it is not a listener for `off()` or `listenerCount()`.
+   */
+  activity(
+    address: string,
+    callback: EventCallback<Activity>,
+    options: ActivityListenerOptions = {},
+  ): Subscription {
+    const { withAssetInfo, ...rest } = options;
+    const [descriptor, who, name] = this.activityOf(address, rest.withNames);
+    return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, (source) =>
+      activitySource(source, who, withAssetInfo, this.requestTimeout, name),
+    );
+  }
+
+  /**
+   * Past activity of `address`, built as `activity()` builds it, over the
+   * range and options `getEvents` takes; `where` and `limit` apply to the records.
+   */
+  async getActivity(address: string, filter: ActivityFilter = {}): Promise<StreamdEvent<Activity>[]> {
+    const { withAssetInfo, ...rest } = filter;
+    const [descriptor, who, name] = this.activityOf(address, rest.withNames);
+    const source = activitySource(this.adapter, who, withAssetInfo, this.requestTimeout, name);
+    return new EventQuery(source, this.limiter, this.names).getEvents<Activity>(descriptor, rest);
+  }
+
+  /** The descriptor, lazy address and name lookup an activity call reads with, refusing bad input at the call. */
+  private activityOf(address: string, withNames: unknown) {
+    if (typeof address !== "string") throw new StreamdError("activity needs an address or Aptos name");
+    const ttl = this.names.ttl(withNames);
+    const name = ttl === undefined ? undefined : (a: string) => this.names.name(a, ttl);
+    return [activityDescriptor(addressOrName(address) ?? address), this.accountOf(address)!, name] as const;
+  }
+
+  /**
    * Follow DEX swaps as they land, one record per pool hop, each delivered as
    * an event whose `data` is a `Swap`, from one scan over the swap events of
    * Hyperion (`pool_v3::SwapEventV3`), Thala CLAMM and ThalaSwap v2
@@ -144,6 +192,52 @@ export class AptosClient extends StreamdClient {
     const descriptor = saleDescriptor(marketplace);
     const query = new EventQuery(saleSource(this.adapter, token), this.limiter, this.names);
     return query.getEvents<Sale>(descriptor, rest);
+  }
+
+  /**
+   * Keep every on-chain governance proposal current: its creation (proposer,
+   * execution hash, metadata, expiry and thresholds), the stake for and
+   * against, each vote with its voter and stake pool, and its resolution,
+   * folded from the `voting` and `aptos_governance` events. Five walks run:
+   * the four legacy handles at `0x1`, emitted until the module-event
+   * migration, and one scan over the module events that replaced them, each
+   * reading its history from `fromVersion` (as for `getEvents` when omitted:
+   * a handle from its first event, a `FullnodeScanAdapter` scan from the
+   * head) and then following live. `proposalState()` gives a proposal's
+   * state at a time. Any account can host a `0x1::voting` forum, so the
+   * module walk keeps a `voting` creation only beside `aptos_governance`'s,
+   * and a resolution only when `0x1`'s forum shows it, read through
+   * `EventAdapter.view` at its version. Like `reduce()`, it is not a
+   * listener for `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  proposals(options?: ProposalsOptions): Proposals {
+    const wrap = (source: EventAdapter) => governanceSource(source, this.requestTimeout);
+    const verified = {
+      ...this.reduceHost,
+      query: new EventQuery(wrap(this.adapter), this.limiter, this.names),
+      subscribe: (d: EventDescriptor | readonly EventDescriptor[], callback: EventCallback, options: object) =>
+        this.subscribe(d as EventDescriptor, callback, options, undefined, undefined, wrap),
+    };
+    return startProposals(
+      (d, r, i, o) => (d.kind === "handle" ? this.reduce(d, r, i, o) : startReduction(verified, d, r, i, o)),
+      this.onError,
+      options,
+    );
+  }
+
+  /**
+   * Keep every stake pool current from one scan over the staking module
+   * events: the rewards and transaction fees each pool was paid at every
+   * epoch change, its delegation pool commission changes, and each
+   * delegator's adds (the first a join), unlocks, reactivations and
+   * withdrawals. The history is read from `fromVersion` or `fromTime` (as for
+   * `getEvents` when omitted: a `FullnodeScanAdapter` scan starts at the
+   * head, and epochs change about every two hours), then followed live;
+   * `pool` narrows to some pools. Like `reduce()`, it is not a listener for
+   * `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  stakePools(options?: StakePoolsOptions): StakePools {
+    return startStakePools((d, r, i, o) => this.reduce(d, r, i, o), options);
   }
 
   /**
@@ -319,6 +413,33 @@ export class AptosClient extends StreamdClient {
   ): Promise<EventOf<TData>[]> {
     const events = await previewEvents(this.adapter, this.limiter, transaction, descriptor, options);
     return events as unknown as EventOf<TData>[];
+  }
+
+  /**
+   * What one transaction did, as one `TransactionExplanation`: status, sender
+   * and fee payer, entry function, gas from its fee statement, the transfers
+   * it made (paired as `transfers()` pairs them) with each account's net
+   * change per asset, its swaps and sales, and every event. `target` is a
+   * transaction hash, waited for as `eventsOf` waits (`timeout`, `signal`), or
+   * a built, unsigned transaction, simulated as `previewEvents` simulates it,
+   * with its views read at the newest state the node had. A failed
+   * transaction resolves with `success: false`, its gas and no transfers.
+   * Asset details are read unless `withAssetInfo: false`; `withNames` adds
+   * `names`. Store and asset reads go through the client's limiter; a failed
+   * read rejects. `formatExplanation` renders the result as text.
+   */
+  async explain(
+    target: string | SimpleTransaction | MultiAgentTransaction,
+    options: ExplainOptions = {},
+  ): Promise<TransactionExplanation> {
+    const host = {
+      adapter: this.adapter,
+      limiter: this.limiter,
+      names: this.names,
+      pollInterval: this.defaults.pollInterval!,
+      requestTimeout: this.requestTimeout,
+    };
+    return explain(host, target, options);
   }
 
   /**

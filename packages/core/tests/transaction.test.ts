@@ -5,6 +5,7 @@ import {
   StreamdError,
   StreamdTimeoutError,
   StreamdTransactionError,
+  committedTransaction,
   eventsAt,
   eventsOf,
   expectEvents,
@@ -71,6 +72,15 @@ describe("eventsOf in core", () => {
     const err = await eventsOf(adapter, limiter, 0, ID, undefined, {}).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdTransactionError);
     expect(err).toMatchObject({ transactionHash: ID, version: 7n, vmStatus: "MoveAbort 101" });
+  });
+
+  it("committedTransaction resolves a failed transaction with its events, where eventsOf rejects", async () => {
+    const fee = ev(B, 0, "7");
+    const found = { version: 7n, success: false, vmStatus: "MoveAbort 101", events: [fee], gasUnitPrice: 100n };
+    const { adapter, seen } = lookups(1, found);
+    expect(await committedTransaction(adapter, limiter, 0, ID, undefined, {})).toEqual(found);
+    expect(seen).toEqual([ID, ID]);
+    await expect(eventsOf(adapter, limiter, 0, ID, undefined, {})).rejects.toBeInstanceOf(StreamdTransactionError);
   });
 
   it("times out on a transaction never found", async () => {

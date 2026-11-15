@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { parseCommand, parseTime, UsageError } from "../src/args.js";
-import type { AlertOptions, StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
+import { parseKafkaUrl } from "../src/kafka.js";
+import type { AlertOptions, MonitorOptions, StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
 const LONG_ADDR = `0x${"0".repeat(63)}1`;
@@ -237,6 +238,196 @@ describe("parseCommand forward", () => {
       );
     },
   );
+  describe("to Redis", () => {
+    const REDIS = "redis://streamd:pw-s3cret@127.0.0.1:6379/2";
+
+    it("reads a Redis URL and its stream", () => {
+      expect(forward("--to", REDIS, "--stream", "aptos:deposits", TYPE)).toEqual({
+        descriptor: { kind: "module", eventType: [TYPE] },
+        network: "mainnet",
+        to: REDIS,
+        stream: "aptos:deposits",
+        cursorFile: "streamd-forward.cursor",
+        retries: 5,
+        timeout: 10000,
+        headers: {},
+      });
+      expect(forward("--to", "rediss://redis.example", "--stream", "s", "--secret", "k", TYPE)).toMatchObject({
+        to: "rediss://redis.example",
+        stream: "s",
+        secret: "k",
+      });
+      expect(forward("--to", "REDISS://h:6380/", "--stream", "s", TYPE).to).toBe("rediss://h:6380/");
+    });
+
+    it.each([
+      [["--to", REDIS, TYPE], /^--to redis:\/\/ needs --stream <key>$/],
+      [["--to", REDIS, "--stream", "", TYPE], /^--to redis:\/\/ needs --stream <key>$/],
+      [["--to", "https://hooks.example.com/in", "--stream", "s", TYPE], /^--stream needs a redis:\/\/ or rediss:\/\/ --to$/],
+      [["--to", REDIS, "--stream", "s", "--header", "X: pw-s3cret", TYPE], /^--header is for webhooks/],
+      [["--to", "redis://:pw-s3cret@/", "--stream", "s", TYPE], /^--to must be a valid redis:\/\/ or rediss:\/\/ URL with a host$/],
+      [["--to", "redis://h/streams/pw-s3cret", "--stream", "s", TYPE], /^--to redis:\/\/ takes only a database number/],
+      [["--to", "redis://h/0?password=pw-s3cret", "--stream", "s", TYPE], /^--to redis:\/\/ takes only a database number/],
+      [["--to", "redis://h/0#pw-s3cret", "--stream", "s", TYPE], /^--to redis:\/\/ takes only a database number/],
+      [["--to", "redis-pw-s3cret", "--stream", "s", TYPE], /^--to must be an http or https URL$/],
+    ])("rejects %j without echoing the URL", (argv, pattern) => {
+      let error: unknown;
+      try {
+        forward(...(argv as string[]));
+      } catch (err) {
+        error = err;
+      }
+      expect((error as Error).message).toMatch(pattern as RegExp);
+      expect(String(error)).not.toContain("pw-s3cret");
+    });
+
+    it("keeps alert webhook-only", () => {
+      rejects(["alert", "--rules", "r.json", "--to", REDIS], /^--to must be an http or https URL$/);
+      rejects(["alert", "--rules", "r.json", "--to", "https://h.example", "--stream", "s"], /Unknown option '--stream'/);
+    });
+  });
+
+  describe("to NATS", () => {
+    const NATS = "nats://streamd:pw-s3cret@127.0.0.1:4222";
+
+    it("reads a NATS URL and its subject", () => {
+      expect(forward("--to", NATS, "--subject", "aptos.deposits", TYPE)).toEqual({
+        descriptor: { kind: "module", eventType: [TYPE] },
+        network: "mainnet",
+        to: NATS,
+        subject: "aptos.deposits",
+        cursorFile: "streamd-forward.cursor",
+        retries: 5,
+        timeout: 10000,
+        headers: {},
+      });
+      expect(forward("--to", "nats://tok-s3cret@nats.example", "--subject", "s", "--secret", "k", TYPE)).toMatchObject({
+        to: "nats://tok-s3cret@nats.example",
+        subject: "s",
+        secret: "k",
+      });
+      expect(forward("--to", "NATS://h:4223/", "--subject", "a.b", TYPE).to).toBe("nats://h:4223/");
+    });
+
+    it.each([
+      [["--to", NATS, TYPE], /^--to nats:\/\/ needs --subject <name>$/],
+      [["--to", NATS, "--subject", "", TYPE], /^--to nats:\/\/ needs --subject <name>$/],
+      [["--to", NATS, "--subject", "a.*", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", NATS, "--subject", "a.>", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", NATS, "--subject", "a b", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", NATS, "--subject", "a..b", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", NATS, "--subject", ".a", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", NATS, "--subject", "a\tb", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", "https://hooks.example.com/in", "--subject", "s", TYPE], /^--subject needs a nats:\/\/ --to$/],
+      [["--to", "redis://h", "--stream", "s", "--subject", "s", TYPE], /^--subject needs a nats:\/\/ --to$/],
+      [["--to", NATS, "--subject", "s", "--stream", "s", TYPE], /^--stream needs a redis:\/\/ or rediss:\/\/ --to$/],
+      [["--to", NATS, "--subject", "s", "--header", "X: pw-s3cret", TYPE], /^--header is for webhooks/],
+      [["--to", "tls://u:pw-s3cret@h:4222", "--subject", "s", TYPE], /^--to tls:\/\/ is not supported/],
+      [["--to", "nats+tls://u:pw-s3cret@h:4222", "--subject", "s", TYPE], /^--to tls:\/\/ is not supported/],
+      [["--to", "nats://:pw-s3cret@/", "--subject", "s", TYPE], /^--to must be a valid nats:\/\/ URL with a host$/],
+      [["--to", "nats://h/pw-s3cret", "--subject", "s", TYPE], /^--to nats:\/\/ takes no path, query or fragment$/],
+      [["--to", "nats://h?pass=pw-s3cret", "--subject", "s", TYPE], /^--to nats:\/\/ takes no path, query or fragment$/],
+      [["--to", "nats://h#pw-s3cret", "--subject", "s", TYPE], /^--to nats:\/\/ takes no path, query or fragment$/],
+      [["--to", "nats://u:pw-s3cret%zz@h", "--subject", "s", TYPE], /^--to nats:\/\/ has a malformed percent-escape/],
+      [["--to", "nats://pw-s3cret%zz@h", "--subject", "s", TYPE], /^--to nats:\/\/ has a malformed percent-escape/],
+    ])("rejects %j without echoing the URL", (argv, pattern) => {
+      let error: unknown;
+      try {
+        forward(...(argv as string[]));
+      } catch (err) {
+        error = err;
+      }
+      expect((error as Error).message).toMatch(pattern as RegExp);
+      expect(String(error)).not.toContain("pw-s3cret");
+    });
+
+    it("keeps alert webhook-only", () => {
+      rejects(["alert", "--rules", "r.json", "--to", NATS], /^--to must be an http or https URL$/);
+      rejects(["alert", "--rules", "r.json", "--to", "https://h.example", "--subject", "s"], /Unknown option '--subject'/);
+    });
+  });
+
+  describe("to Kafka", () => {
+    const KAFKA = "kafka://streamd:pw-s3cret@10.0.0.1:9093,b2.example?sasl=scram-sha-512";
+
+    it("reads a Kafka URL and its topic", () => {
+      expect(forward("--to", KAFKA, "--topic", "aptos.deposits", TYPE)).toEqual({
+        descriptor: { kind: "module", eventType: [TYPE] },
+        network: "mainnet",
+        to: KAFKA,
+        topic: "aptos.deposits",
+        cursorFile: "streamd-forward.cursor",
+        retries: 5,
+        timeout: 10000,
+        headers: {},
+      });
+      expect(forward("--to", "KAFKAS://10.0.0.2:9092", "--topic", "a_b-C.9", "--secret", "k", TYPE)).toMatchObject({
+        to: "kafkas://10.0.0.2:9092",
+        topic: "a_b-C.9",
+        secret: "k",
+      });
+      expect(forward("--to", "kafka://h", "--topic", "t".repeat(249), TYPE).topic).toHaveLength(249);
+    });
+
+    it.each([
+      [["--to", KAFKA, TYPE], /^--to kafka:\/\/ needs --topic <name>$/],
+      [["--to", KAFKA, "--topic", "", TYPE], /^--to kafka:\/\/ needs --topic <name>$/],
+      [["--to", KAFKA, "--topic", "..", TYPE], /^--topic must be 1 to 249/],
+      [["--to", KAFKA, "--topic", ".", TYPE], /^--topic must be 1 to 249/],
+      [["--to", KAFKA, "--topic", "a b", TYPE], /^--topic must be 1 to 249/],
+      [["--to", KAFKA, "--topic", "a/b", TYPE], /^--topic must be 1 to 249/],
+      [["--to", KAFKA, "--topic", "t".repeat(250), TYPE], /^--topic must be 1 to 249/],
+      [["--to", "https://hooks.example.com/in", "--topic", "t", TYPE], /^--topic needs a kafka:\/\/ or kafkas:\/\/ --to$/],
+      [["--to", "nats://h", "--subject", "s", "--topic", "t", TYPE], /^--topic needs a kafka:\/\/ or kafkas:\/\/ --to$/],
+      [["--to", KAFKA, "--topic", "t", "--subject", "s", TYPE], /^--subject needs a nats:\/\/ --to$/],
+      [["--to", KAFKA, "--topic", "t", "--stream", "s", TYPE], /^--stream needs a redis:\/\/ or rediss:\/\/ --to$/],
+      [["--to", KAFKA, "--topic", "t", "--header", "X: pw-s3cret", TYPE], /^--header is for webhooks/],
+      [["--to", "kafka://u:pw-s3cret@h", "--topic", "t", TYPE], /^--to kafka:\/\/ with credentials needs \?sasl=plain/],
+      [["--to", "kafka://u:pw-s3cret@h?sasl=gssapi", "--topic", "t", TYPE], /^--to kafka:\/\/ with credentials needs \?sasl=plain/],
+      [["--to", "kafka://pw-s3cret@h?sasl=plain", "--topic", "t", TYPE], /^--to kafka:\/\/ credentials must be user:password@$/],
+      [["--to", "kafka://h?sasl=plain", "--topic", "t", TYPE], /^--to kafka:\/\/ \?sasl= needs user:password@/],
+      [["--to", "kafka://u:pw-s3cret@h?sasl=plain&pass=pw-s3cret", "--topic", "t", TYPE], /^--to kafka:\/\/ takes no query but/],
+      [["--to", "kafka://u:pw-s3cret@h/pw-s3cret", "--topic", "t", TYPE], /^--to kafka:\/\/ takes no path or fragment/],
+      [["--to", "kafka://u:pw-s3cret@h#pw-s3cret", "--topic", "t", TYPE], /^--to kafka:\/\/ takes no path or fragment/],
+      [["--to", "kafka://u:pw-s3cret@?sasl=plain", "--topic", "t", TYPE], /^--to must be a valid kafka:\/\/ URL with host\[:port\] brokers$/],
+      [["--to", "kafka://u:pw-s3cret@h:?sasl=plain", "--topic", "t", TYPE], /^--to must be a valid kafka:\/\/ URL/],
+      [["--to", "kafka://u:pw-s3cret@h:70000?sasl=plain", "--topic", "t", TYPE], /^--to must be a valid kafka:\/\/ URL/],
+      [["--to", "kafka://u:pw-s3cret@h,,h2?sasl=plain", "--topic", "t", TYPE], /^--to must be a valid kafka:\/\/ URL/],
+      [["--to", "kafka://u:pw-s3cret%zz@h?sasl=plain", "--topic", "t", TYPE], /^--to kafka:\/\/ has a malformed percent-escape/],
+    ])("rejects %j without echoing the URL", (argv, pattern) => {
+      let error: unknown;
+      try {
+        forward(...(argv as string[]));
+      } catch (err) {
+        error = err;
+      }
+      expect((error as Error).message).toMatch(pattern as RegExp);
+      expect(String(error)).not.toContain("pw-s3cret");
+    });
+
+    it("keeps alert webhook-only", () => {
+      rejects(["alert", "--rules", "r.json", "--to", KAFKA], /^--to must be an http or https URL$/);
+      rejects(["alert", "--rules", "r.json", "--to", "https://h.example", "--topic", "t"], /Unknown option '--topic'/);
+    });
+  });
+});
+
+describe("parseKafkaUrl", () => {
+  it("reads brokers, TLS and SASL", () => {
+    expect(parseKafkaUrl("kafka://h")).toEqual({ brokers: ["h:9092"], ssl: false });
+    expect(() => parseKafkaUrl("kafka://[::1]:9092")).toThrow("--to must be a valid kafka:// URL with host[:port] brokers");
+    expect(parseKafkaUrl("kafkas://a:1,h,b.example:9094/")).toEqual({
+      brokers: ["a:1", "h:9092", "b.example:9094"],
+      ssl: true,
+    });
+    for (const mechanism of ["plain", "scram-sha-256", "scram-sha-512"] as const) {
+      expect(parseKafkaUrl(`kafka://us%40er:p%3Aw@h?sasl=${mechanism.toUpperCase()}`).sasl).toEqual({
+        mechanism,
+        username: "us@er",
+        password: "p:w",
+      });
+    }
+  });
 });
 
 describe("parseCommand codegen", () => {
@@ -1379,6 +1570,86 @@ describe("parseCommand alert", () => {
     [["alert", "--rules", "r", "--to", HOOK, "--cursor-file", ""], /--cursor-file must not be empty/],
     [["alert", "--rules", "r", "--to", "https://u:p@hooks.example.com/"], /--to must not carry credentials/],
     [["alert", "--rules", "r", "--to", HOOK, "--chain", "sui", "--api-key", "k"], /--api-key is not sent to Sui nodes/],
+  ])("rejects %j", (argv, message) => {
+    rejects(argv as string[], message as RegExp);
+  });
+});
+
+describe("parseCommand monitor", () => {
+  const A = "https://a.example/v1";
+  const B = "https://b.example/v1";
+  const base = ["monitor", "--node-url", A, "--node-url", B];
+  const monitor = (...argv: string[]) => (parseCommand([...base, ...argv]) as { options: MonitorOptions }).options;
+
+  it("defaults to FeeStatement, 10s rounds, a 5m window, 100 versions and JSON", () => {
+    expect(parseCommand(base)).toEqual({
+      command: "monitor",
+      options: {
+        descriptor: { kind: "module", eventType: ["0x1::transaction_fee::FeeStatement"] },
+        network: "mainnet",
+        nodeUrl: A,
+        extraNodeUrls: [B],
+        interval: 10_000,
+        window: 300_000,
+        range: 100,
+        format: "json",
+      },
+    });
+  });
+
+  it("reads every flag", () => {
+    expect(
+      monitor("--node-url", A, "--interval", "2000", "--window", "1h", "--range", "500", "--format", "prometheus", "--listen", "9464", "--limit", "3", "--api-key", "k", TYPE),
+    ).toEqual({
+      descriptor: { kind: "module", eventType: [TYPE] },
+      network: "mainnet",
+      nodeUrl: A,
+      extraNodeUrls: [B, A],
+      apiKey: "k",
+      interval: 2000,
+      window: 3_600_000,
+      range: 500,
+      format: "prometheus",
+      listen: { host: "127.0.0.1", port: 9464 },
+      limit: 3,
+    });
+    expect(monitor("--listen", "0.0.0.0:9464").listen).toEqual({ host: "0.0.0.0", port: 9464 });
+    expect(monitor("--listen", "[::1]:9464").listen).toEqual({ host: "::1", port: 9464 });
+    expect(monitor("--window", "30s").window).toBe(30_000);
+    expect(monitor("--account", ADDR).descriptor).toEqual({ kind: "account", accountAddress: LONG_ADDR });
+    expect(parseCommand(["monitor", "--help"])).toEqual({ command: "help" });
+  });
+
+  it("never takes APTOS_API_KEY, since every node is a custom URL", () => {
+    process.env.APTOS_API_KEY = "from-env";
+    try {
+      expect("apiKey" in monitor()).toBe(false);
+    } finally {
+      delete process.env.APTOS_API_KEY;
+    }
+  });
+
+  it("asks Sui for a descriptor and takes one", () => {
+    rejects([...base, "--chain", "sui"], /monitor needs at least one event type, or --account/);
+    expect(monitor("--chain", "sui", "0x3::validator::StakingRequestEvent")).toMatchObject({ chain: "sui", descriptor: { kind: "module" } });
+  });
+
+  it.each([
+    [["monitor", TYPE], /--node-url at least twice/],
+    [["monitor", "--node-url", A, TYPE], /--node-url at least twice/],
+    [[...base, "--window", "0m"], /--window must be a duration/],
+    [[...base, "--window", "5"], /--window must be a duration/],
+    [[...base, "--interval", "0"], /--interval/],
+    [[...base, "--range", "0"], /--range/],
+    [[...base, "--range", "10001"], /--range/],
+    [[...base, "--format", "pretty"], /--format must be json or prometheus/],
+    [[...base, "--listen", "0"], /--listen must be a port/],
+    [[...base, "--listen", "70000"], /--listen must be a port/],
+    [[...base, "--listen", "host:"], /--listen must be a port/],
+    [[...base, "--limit", "0"], /--limit/],
+    [[...base, "--archive", "default"], /--archive/],
+    [[...base, "--stats"], /--stats/],
+    [[...base, "--cache", "c.db"], /--cache/],
   ])("rejects %j", (argv, message) => {
     rejects(argv as string[], message as RegExp);
   });

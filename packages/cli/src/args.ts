@@ -3,6 +3,7 @@ import { WEBHOOK_SIGNATURE_HEADER, normalizeAddress, requireAddress, requireEven
 import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
 import type { ModuleRef } from "./codegen.js";
 import { FILTER_OPTIONS, parseDecode, parseFilter } from "./filter.js";
+import { parseKafkaUrl } from "./kafka.js";
 import type { CliFilter, FilterFlags } from "./filter.js";
 
 export type Network = "mainnet" | "testnet" | "devnet" | "movement-mainnet" | "movement-testnet";
@@ -49,8 +50,14 @@ export const SECRET_ENV = "STREAMD_WEBHOOK_SECRET";
 export const API_KEY_ENV = "APTOS_API_KEY";
 
 export interface ForwardOptions extends SourceOptions {
-  /** Webhook URL; may carry a token, so it is never printed. */
+  /** Webhook URL, or a `redis://`, `rediss://`, `nats://`, `kafka://` or `kafkas://` URL; may carry a token or password, so it is never printed. */
   to: string;
+  /** The Redis stream each batch is added to; set exactly when `to` is a Redis URL. */
+  stream?: string;
+  /** The NATS subject each batch is published to; set exactly when `to` is a NATS URL. */
+  subject?: string;
+  /** The Kafka topic each batch is produced to; set exactly when `to` is a Kafka URL. */
+  topic?: string;
   cursorFile: string;
   /** Retries per batch after the first attempt. */
   retries: number;
@@ -194,6 +201,25 @@ export interface CompareOptions extends Endpoint {
   limit?: number;
 }
 
+/** Node 0 is `nodeUrl` and takes the API key; the others are `extraNodeUrls`, compared with it. */
+export interface MonitorOptions extends Endpoint {
+  /** What each round compares; FeeStatement on Aptos when no descriptor is given. */
+  descriptor: EventDescriptor;
+  nodeUrl: string;
+  extraNodeUrls: string[];
+  /** Milliseconds from one round's start to the next, and the timeout of each node call. */
+  interval: number;
+  /** Milliseconds of rounds the window sums cover. */
+  window: number;
+  /** Versions compared per round. */
+  range: number;
+  format: "json" | "prometheus";
+  /** Where the latest round's Prometheus text is served. */
+  listen?: { host: string; port: number };
+  /** Rounds to run before exiting. */
+  limit?: number;
+}
+
 export interface CheckOptions extends Endpoint {
   descriptor: ModuleEventDescriptor;
 }
@@ -224,7 +250,8 @@ export type ParsedCommand =
   | { command: "handles"; options: HandlesOptions }
   | { command: "name"; options: NameOptions }
   | { command: "codegen"; options: CodegenOptions }
-  | { command: "compare"; options: CompareOptions };
+  | { command: "compare"; options: CompareOptions }
+  | { command: "monitor"; options: MonitorOptions };
 
 /** Bad command-line input: reported with usage, exit code 2. */
 export class UsageError extends Error {
@@ -290,6 +317,9 @@ const FORWARD_OPTIONS = {
   ...DELIVERY_OPTIONS,
   "to-version": { type: "string" },
   "batch-size": { type: "string" },
+  stream: { type: "string" },
+  subject: { type: "string" },
+  topic: { type: "string" },
 } as const;
 
 const ALERT_OPTIONS = {
@@ -322,6 +352,21 @@ const COMPARE_OPTIONS = {
 
 /** The widest range `compare` walks, so one command stays a bounded job. */
 export const MAX_COMPARE_RANGE = 100_000n;
+
+const MONITOR_OPTIONS = {
+  ...DESCRIPTOR_OPTIONS,
+  ...ENDPOINT_OPTIONS,
+  interval: { type: "string" },
+  window: { type: "string" },
+  range: { type: "string" },
+  format: { type: "string" },
+  listen: { type: "string" },
+  limit: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+/** Emitted by every user transaction, so a range of recent versions always has some to compare. */
+export const MONITOR_DEFAULT_TYPE = "0x1::transaction_fee::FeeStatement";
 
 const RECORD_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
@@ -428,6 +473,9 @@ export const USAGE = `Usage:
   streamd tail --account <address> --resource <type> [options]
   streamd forward --to <url> [options] <eventType>...
   streamd forward --to <url> --account <address> [...]
+  streamd forward --to redis://<host> --stream <key> [options] <eventType>...
+  streamd forward --to nats://<host> --subject <name> [options] <eventType>...
+  streamd forward --to kafka://<host> --topic <name> [options] <eventType>...
   streamd alert --rules <file> --to <url> [options]
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
@@ -443,10 +491,13 @@ export const USAGE = `Usage:
   streamd record --from-version <n> --to-version <n> [--out <file>] [--cache <file>] <eventType>...
   streamd codegen [--out <file> [--check]] [--validators] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
+  streamd monitor --node-url <url> --node-url <url>... [options] [<eventType>...]
 
 tail follows matching events and prints each as one JSON line on stdout.
-forward POSTs each batch of matching events to a webhook as a JSON array,
-saving its position to a cursor file once the webhook acknowledges it.
+forward POSTs each batch of matching events to a webhook as a JSON array, or
+adds it to a Redis stream, publishes it to a NATS JetStream subject or produces
+it to a Kafka topic, saving
+its position to a cursor file once the destination acknowledges it.
 alert follows the rules in a JSON file, each a descriptor, filter, window and
 count or sum threshold, and POSTs a signed alert to a webhook the first time a
 window of chain time crosses its threshold, saving each rule's position and
@@ -469,6 +520,10 @@ check says whether each event type can be emitted, and exits 1 if one cannot.
 record runs a bounded query and writes a recording for replayAdapter tests.
 compare reads one range from two nodes and prints what one has that the other
 does not, exiting 1 if they disagree.
+monitor reads every --node-url each --interval and prints one record per round
+of each node's head lag, requests, errors and 429s over --window, and how its
+events over a recent range compare with the first node's, as a JSON line or
+Prometheus text (default type: ${MONITOR_DEFAULT_TYPE} on Aptos).
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
 With --check it compares what it would write with --out instead, and exits 1
@@ -516,9 +571,20 @@ Options:
                          field that is not an unsigned integer is an error: query exits 1,
                          tail, forward, store and watch report it and skip the event
   --limit <n>            tail, transfers, watch: exit after printing n; balances: after n changes;
-                         record, query: stop after n; compare: page size
+                         record, query: stop after n; compare: page size; monitor: rounds
   --rules <file>         alert: the rules file (required)
-  --to <url>             forward, alert: webhook URL (http or https, required)
+  --to <url>             forward, alert: webhook URL (http or https, required); forward also
+                         takes redis://[user:password@]host[:port][/db] or rediss:// (TLS),
+                         Bun's own client under Bun, ioredis under Node (npm i ioredis);
+                         or nats://[user:password@ | token@]host[:port], plaintext only;
+                         or kafka://[user:password@]host[:port][,host[:port]]...[?sasl=<m>]
+                         or kafkas:// (TLS), <m> plain, scram-sha-256 or scram-sha-512, through
+                         @confluentinc/kafka-javascript or kafkajs (npm i either)
+  --stream <key>         forward: the Redis stream each batch is added to (with redis://)
+  --subject <name>       forward: the NATS subject each batch is published to, which a
+                         JetStream stream must capture (with nats://)
+  --topic <name>         forward: the Kafka topic each batch is produced to, which must exist
+                         (with kafka:// or kafkas://)
   --cursor-file <path>   tail, transfers (following): save and resume from here; watch: each
                          address's position, as one JSON object; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
@@ -528,8 +594,9 @@ Options:
   --timeout <ms>         forward, alert: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx: wait for commit (default: 20000)
   --header <h>           forward, alert: request header 'Name: value', repeatable
-  --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER}
-                         (or set ${SECRET_ENV}, which keeps it out of ps)
+  --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
+                         a Redis entry's signature field or a NATS or Kafka header (or set
+                         ${SECRET_ENV}, which keeps it out of ps)
   --db <file>            store: SQLite file to write (this or --postgres)
   --postgres <url>       store: Postgres database to write, postgres://user@host/db; Bun.SQL
                          under Bun, pg under Node (npm i pg); the URL is never printed, and
@@ -557,6 +624,14 @@ Options:
                          --creation-number, --resource and --api-key are refused
   --against <url>        compare: the second node's fullnode URL (required)
   --max-pages <n>        compare: most pages read from each node (default: 10)
+  --interval <ms>        monitor: time between rounds, and each node call's timeout
+                         (default: 10000)
+  --window <duration>    monitor: how far back the window sums reach, as 30s, 5m, 1h or 1d
+                         (default: 5m)
+  --range <n>            monitor: versions compared with the first node per round (default: 100)
+  --format <name>        monitor: json, or prometheus for text exposition (default: json)
+  --listen <[host:]port> monitor: also serve the latest round's Prometheus text at /metrics,
+                         on 127.0.0.1 unless a host is given
   -h, --help             show this help
 `;
 
@@ -709,6 +784,49 @@ function archive(raw: string, network: Network, sui: boolean): string {
   if (httpUrl(raw) === undefined) throw new UsageError(`--archive must be an http or https URL, or default: ${raw}`);
   return raw;
 }
+
+// A Redis URL is the one place credentials are expected, so it is checked here and never echoed.
+function redisUrl(raw: string): string {
+  const url = URL.canParse(raw) ? new URL(raw) : undefined;
+  if (url === undefined || url.hostname === "") throw new UsageError("--to must be a valid redis:// or rediss:// URL with a host");
+  if (url.search !== "" || url.hash !== "" || !/^(\/\d*)?$/.test(url.pathname)) {
+    throw new UsageError("--to redis:// takes only a database number as its path, with no query or fragment");
+  }
+  // Lowercased, so a client matching the scheme case-sensitively never takes REDISS:// as plaintext.
+  return url.protocol + raw.slice(url.protocol.length);
+}
+
+// Like a Redis URL, a NATS URL carries credentials, so it is checked here and never echoed.
+function natsUrl(raw: string): string {
+  const url = URL.canParse(raw) ? new URL(raw) : undefined;
+  if (url === undefined || url.hostname === "") throw new UsageError("--to must be a valid nats:// URL with a host");
+  if (url.search !== "" || url.hash !== "" || !/^\/?$/.test(url.pathname)) {
+    throw new UsageError("--to nats:// takes no path, query or fragment");
+  }
+  try {
+    decodeURIComponent(url.username);
+    decodeURIComponent(url.password);
+  } catch {
+    throw new UsageError("--to nats:// has a malformed percent-escape in its user or password");
+  }
+  return url.protocol + raw.slice(url.protocol.length);
+}
+
+// Kafka's legal topic names: 1 to 249 of these, never "." or "..".
+const TOPIC = /^[A-Za-z0-9._-]{1,249}$/;
+
+function kafkaUrl(raw: string): string {
+  try {
+    parseKafkaUrl(raw);
+  } catch (err) {
+    throw new UsageError((err as Error).message);
+  }
+  const scheme = raw.indexOf(":");
+  return raw.slice(0, scheme).toLowerCase() + raw.slice(scheme);
+}
+
+// Publishing needs a literal subject: dot-separated tokens, no wildcards, no whitespace or controls.
+const SUBJECT = /^[^\s\u0000-\u001f\u007f.*>]+(\.[^\s\u0000-\u001f\u007f.*>]+)*$/;
 
 function webhookUrl(raw: string | undefined, command: string): string {
   if (raw === undefined) throw new UsageError(`${command} needs --to <url>`);
@@ -873,10 +991,44 @@ function parseForward(args: string[]): ParsedCommand {
     parseArgs({ args, options: FORWARD_OPTIONS, allowPositionals: true, strict: true }),
   );
   if (values.help) return { command: "help" };
+  if (values.to !== undefined && /^(tls|nats\+tls):/i.test(values.to)) {
+    throw new UsageError("--to tls:// is not supported: the NATS sink speaks plaintext only, so use nats://");
+  }
+  const redis = values.to !== undefined && /^rediss?:/i.test(values.to);
+  const nats = values.to !== undefined && /^nats:/i.test(values.to);
+  const kafka = values.to !== undefined && /^kafkas?:/i.test(values.to);
+  const brokerUrl = redis ? redisUrl(values.to!) : nats ? natsUrl(values.to!) : kafka ? kafkaUrl(values.to!) : undefined;
   const options: ForwardOptions = {
     ...source("forward", values, positionals),
-    ...delivery("forward", values, DEFAULT_CURSOR_FILE),
+    ...delivery("forward", values, DEFAULT_CURSOR_FILE, brokerUrl),
   };
+  if (kafka) {
+    if (values.header !== undefined) throw new UsageError("--header is for webhooks: the Kafka sink sets only its own headers");
+    if (values.topic === undefined || values.topic === "") throw new UsageError("--to kafka:// needs --topic <name>");
+    if (!TOPIC.test(values.topic) || values.topic === "." || values.topic === "..") {
+      throw new UsageError(`--topic must be 1 to 249 of A-Z, a-z, 0-9, ".", "_" and "-", not "." or "..": ${JSON.stringify(values.topic)}`);
+    }
+    options.topic = values.topic;
+  } else if (values.topic !== undefined) {
+    throw new UsageError("--topic needs a kafka:// or kafkas:// --to");
+  }
+  if (nats) {
+    if (values.header !== undefined) throw new UsageError("--header is for webhooks: the NATS sink sets only its own headers");
+    if (values.subject === undefined || values.subject === "") throw new UsageError("--to nats:// needs --subject <name>");
+    if (!SUBJECT.test(values.subject)) {
+      throw new UsageError(`--subject must be dot-separated tokens with no spaces or wildcards: ${JSON.stringify(values.subject)}`);
+    }
+    options.subject = values.subject;
+  } else if (values.subject !== undefined) {
+    throw new UsageError("--subject needs a nats:// --to");
+  }
+  if (redis) {
+    if (values.header !== undefined) throw new UsageError("--header is for webhooks: a Redis stream entry carries no headers");
+    if (values.stream === undefined || values.stream === "") throw new UsageError("--to redis:// needs --stream <key>");
+    options.stream = values.stream;
+  } else if (values.stream !== undefined) {
+    throw new UsageError("--stream needs a redis:// or rediss:// --to");
+  }
   const toVersion = version(values["to-version"], "to-version");
   if (toVersion !== undefined) {
     if (options.fromVersion === undefined && options.fromTime === undefined) {
@@ -901,10 +1053,14 @@ interface DeliveryFlags {
   secret?: string;
 }
 
-/** The webhook, its headers, signing, retry budget and cursor file, as forward and alert take them. */
-function delivery(command: string, values: DeliveryFlags, cursorFile: string) {
+/**
+ * The destination, its headers, signing, retry budget and cursor file, as
+ * forward and alert take them; `to` is a webhook unless the caller has
+ * already checked another kind.
+ */
+function delivery(command: string, values: DeliveryFlags, cursorFile: string, to = webhookUrl(values.to, command)) {
   const options: Pick<ForwardOptions, "to" | "cursorFile" | "retries" | "timeout" | "headers" | "secret"> = {
-    to: webhookUrl(values.to, command),
+    to,
     cursorFile: values["cursor-file"] ?? cursorFile,
     retries: integer("retries", values.retries, 0, MAX_RETRIES) ?? DEFAULT_RETRIES,
     timeout: integer("timeout", values.timeout, 1, MAX_TIMEOUT) ?? DEFAULT_TIMEOUT,
@@ -1038,6 +1194,50 @@ function parseCompare(args: string[]): ParsedCommand {
   const limit = integer("limit", values.limit, 1, 1000);
   if (limit !== undefined) options.limit = limit;
   return { command: "compare", options };
+}
+
+const WINDOW = /^([1-9]\d*)([smhd])$/;
+const LISTEN = /^(?:(.+):)?(\d+)$/;
+
+function listenAddress(raw: string): { host: string; port: number } {
+  const match = LISTEN.exec(raw);
+  const port = match === null ? NaN : Number(match[2]);
+  if (!(port >= 1 && port <= 65535)) throw new UsageError(`--listen must be a port or host:port, the port 1 to 65535: ${raw}`);
+  // An IPv6 host is written in brackets, which listen() does not take.
+  return { host: match![1]?.replace(/^\[(.*)\]$/, "$1") ?? "127.0.0.1", port };
+}
+
+function parseMonitor(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: MONITOR_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const sui = chain(values.chain);
+  const base = endpoint(values, sui);
+  if (base.nodeUrl === undefined || base.extraNodeUrls === undefined) {
+    throw new UsageError("monitor needs --node-url at least twice, one per node to compare");
+  }
+  const none = positionals.length === 0 && Object.keys(DESCRIPTOR_OPTIONS).every((flag) => values[flag as keyof DescriptorFlags] === undefined);
+  const window = values.window ?? "5m";
+  const match = WINDOW.exec(window);
+  if (match === null) throw new UsageError(`--window must be a duration such as 30s, 5m, 1h or 1d: ${window}`);
+  const format = values.format ?? "json";
+  if (format !== "json" && format !== "prometheus") throw new UsageError(`--format must be json or prometheus: ${format}`);
+  const options: MonitorOptions = {
+    descriptor: none && !sui ? { kind: "module", eventType: [MONITOR_DEFAULT_TYPE] } : descriptor("monitor", values, positionals, sui),
+    ...base,
+    nodeUrl: base.nodeUrl,
+    extraNodeUrls: base.extraNodeUrls,
+    interval: integer("interval", values.interval, 1, MAX_TIMEOUT) ?? 10_000,
+    window: Number(match[1]) * Number(MS_PER[match[2]!]!),
+    range: integer("range", values.range, 1, 10_000) ?? 100,
+    format,
+  };
+  withKey(options, values["api-key"]);
+  if (values.listen !== undefined) options.listen = listenAddress(values.listen);
+  const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  if (limit !== undefined) options.limit = limit;
+  return { command: "monitor", options };
 }
 
 function parseQuery(args: string[]): ParsedCommand {
@@ -1287,5 +1487,6 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "name") return parseName(rest);
   if (command === "codegen") return parseCodegen(rest);
   if (command === "compare") return parseCompare(rest);
+  if (command === "monitor") return parseMonitor(rest);
   throw new UsageError(`unknown command: ${command}`);
 }

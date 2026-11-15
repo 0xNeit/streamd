@@ -1,8 +1,13 @@
 import type { MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type {
+  EntryFunctionCall,
   EventFilter,
   EventPredicate,
+  NameOptions,
+  ReduceOptions,
+  StreamdEvent,
   SubscriptionOptions,
+  Transfer,
   TransactionSimulation,
 } from "@streamd/core";
 
@@ -62,6 +67,49 @@ export type TransferListenerOptions = SubscriptionOptions & TransferOptions;
 
 /** Filter for `StreamdClient.getTransfers`. */
 export type TransferFilter = EventFilter & TransferOptions;
+
+/** One asset's net movement in or out of an account within one transaction, in base units. */
+export interface BalanceDelta {
+  /** In `Transfer.asset`'s form. */
+  asset: string;
+  /** Positive when the account gained. */
+  delta: bigint;
+}
+
+/**
+ * One transaction that affected an account, the `data` of the records
+ * `activity` and `getActivity` deliver; the record's envelope carries the
+ * transaction's hash, sender, timestamp and entry function.
+ */
+export interface Activity {
+  /** `sent` when the account is the transaction's sender; anything else that affected it is `received`. */
+  direction: "sent" | "received";
+  /** The transaction's transfers whose `from` or `to` is the account, paired as `transfers()` pairs them. */
+  transfers: Transfer[];
+  /**
+   * Net per asset over `transfers`, in order of first appearance, zero nets
+   * left out. Gas is not in it: the fee is burned without a withdraw event.
+   */
+  balanceChanges: BalanceDelta[];
+  /** Every event the transaction emitted, in `eventIndex` order. */
+  events: StreamdEvent[];
+  /**
+   * Under `withNames`, the primary name (`null` for none) of the account, the
+   * sender and every `from` and `to` in `transfers`, keyed by long-form address.
+   */
+  names?: Record<string, string | null>;
+}
+
+export interface ActivityOptions {
+  /** Adds `symbol` and `decimals` to the records in `transfers`, as `TransferOptions.withAssetInfo`. */
+  withAssetInfo?: boolean;
+}
+
+/** Options for `AptosClient.activity`. */
+export type ActivityListenerOptions = SubscriptionOptions & ActivityOptions;
+
+/** Filter for `AptosClient.getActivity`. */
+export type ActivityFilter = EventFilter & ActivityOptions;
 
 /** A DEX whose swap events `swaps` and `getSwaps` read. */
 export type SwapProtocol =
@@ -160,6 +208,95 @@ export type SaleListenerOptions = SubscriptionOptions & SaleOptions;
 /** Filter for `AptosClient.getSales`. */
 export type SaleFilter = EventFilter & SaleOptions;
 
+/**
+ * The gas a transaction was charged, from its `0x1::transaction_fee::FeeStatement`.
+ * Amounts in octas; the payer is the sender, or the fee payer of a sponsored transaction.
+ */
+export interface GasUsage {
+  /** `total_charge_gas_units`, the transaction's `gas_used`: execution, IO and storage together. */
+  units: bigint;
+  executionUnits: bigint;
+  ioUnits: bigint;
+  /** The storage fee inside `units`, in octas. */
+  storageFee: bigint;
+  /** Octas credited back to the payer for storage the transaction freed. */
+  storageRefund: bigint;
+  /** Octas per unit, when the source reports it. */
+  unitPrice?: bigint;
+  /** `units * unitPrice`, in octas, when the price is known; `storageRefund` comes back on top. */
+  fee?: bigint;
+}
+
+/** One account's net change in one asset across a transaction's transfers. */
+export interface AccountBalanceChange {
+  /** In long form. */
+  account: string;
+  /** In `Transfer.asset`'s form. */
+  asset: string;
+  /** Positive when the account gained. */
+  delta: bigint;
+  /** From the transfers, when they carry asset details. */
+  symbol?: string;
+  decimals?: number;
+}
+
+/**
+ * What one committed or simulated transaction did, as `AptosClient.explain`
+ * reports it and `formatExplanation` renders it.
+ */
+export interface TransactionExplanation {
+  /** True for a simulation, which commits nothing. */
+  simulated: boolean;
+  /** The committed version, or the one the node simulated at. */
+  version: bigint;
+  /** Absent for a simulation: an unsigned transaction's hash is not the one it would commit under. */
+  transactionHash?: string;
+  success: boolean;
+  /** The VM's verdict, such as `"Executed successfully"` or the abort it hit. */
+  vmStatus: string;
+  /** In long form, when the source reports one. */
+  sender?: string;
+  /** Who paid the gas of a sponsored transaction, in long form. */
+  feePayer?: string;
+  /** Microseconds since the Unix epoch. */
+  timestamp?: bigint;
+  entryFunction?: EntryFunctionCall;
+  /** Absent when the transaction has no fee statement. */
+  gas?: GasUsage;
+  /** Paired as `transfers()` pairs them; empty for a failed transaction, whose other events were discarded. */
+  transfers: Transfer[];
+  /**
+   * Net per account and asset over `transfers`, grouped by account in order of
+   * first appearance, each account's assets in theirs, zero nets left out; gas is not in it.
+   */
+  balanceChanges: AccountBalanceChange[];
+  /** Decoded as `swaps()` decodes them. */
+  swaps: Swap[];
+  /** Decoded as `sales()` decodes them. */
+  sales: Sale[];
+  /** Every event, in `eventIndex` order. */
+  events: StreamdEvent[];
+  /**
+   * Under `withNames`, the primary name (`null` for none) of the sender, the
+   * fee payer, every transfer's `from` and `to`, and every sale's buyer and
+   * seller, keyed by long-form address.
+   */
+  names?: Record<string, string | null>;
+}
+
+/** Options for `AptosClient.explain`. */
+export interface ExplainOptions
+  extends Pick<PreviewEventsOptions, "signerPublicKey" | "secondarySignersPublicKeys" | "feePayerPublicKey"> {
+  /** For a hash: how long to wait for the commit, in ms (default 20000), as `eventsOf` waits. */
+  timeout?: number;
+  /** Aborting rejects with the signal's `reason`. */
+  signal?: AbortSignal;
+  /** Adds `symbol` and `decimals` to transfers and balance changes, read by view (default true). */
+  withAssetInfo?: boolean;
+  /** Attaches `names`, through the client's name cache (`true` for the default expiry, or `{ ttl }`). */
+  withNames?: boolean | NameOptions;
+}
+
 /** A built, unsigned Aptos transaction to simulate, with the keys whose checks the node should run. */
 export interface AptosTransactionSimulation extends TransactionSimulation {
   /** From `aptos.transaction.build.simple`, or `build.multiAgent` for secondary signers. */
@@ -173,4 +310,181 @@ export interface AptosTransactionSimulation extends TransactionSimulation {
   secondarySignersPublicKeys?: (PublicKey | undefined)[];
   /** The fee payer's public key, for a sponsored transaction; omitted, its check is skipped. */
   feePayerPublicKey?: PublicKey;
+}
+
+/** One `aptos_governance::Vote`: a stake pool's voter spending some of the pool's voting power. */
+export interface ProposalVote {
+  /** Long form. A delegation pool's vote names the pool's own signer, not the delegator. */
+  voter: string;
+  /** Long form. */
+  stakePool: string;
+  votes: bigint;
+  shouldPass: boolean;
+  version: bigint;
+}
+
+/**
+ * What `voting::ResolveProposal` reported. Present once any step resolved: a
+ * multi-step proposal is resolved on chain (`is_resolved`) only after its last
+ * step, which no event marks, so one whose later steps never ran has a
+ * resolution here and `is_resolved` false.
+ */
+export interface ProposalResolution {
+  /** The first resolution's version. */
+  version: bigint;
+  /** Final: no vote lands once voting has closed. */
+  yesVotes: bigint;
+  noVotes: bigint;
+  early: boolean;
+  /** Resolution events seen: a multi-step proposal resolves once per step. */
+  steps: number;
+}
+
+/** As `0x1::voting::get_proposal_state` reports it: `PENDING`, `SUCCEEDED` or `FAILED`. */
+export type ProposalState = "pending" | "succeeded" | "failed";
+
+/**
+ * One governance proposal as far as its events have been seen. The creation
+ * fields are absent when the creation was not seen, and `yesVotes`, `noVotes`
+ * and `votes` count only the votes seen.
+ */
+export interface Proposal {
+  id: bigint;
+  /** Long form, from `aptos_governance::CreateProposal`. */
+  proposer?: string;
+  stakePool?: string;
+  /**
+   * The rest of the creation fields come from `voting::CreateProposal`. The
+   * hash is the first step's: a multi-step proposal's view moves on to later steps.
+   */
+  executionHash?: string;
+  /** As created. Each value's bytes as text, or as the fullnode writes them (hex) when they are not printable UTF-8. */
+  metadata?: Record<string, string>;
+  expirationSecs?: bigint;
+  minVoteThreshold?: bigint;
+  earlyResolutionVoteThreshold?: bigint;
+  /** The creation's version. */
+  createdAt?: bigint;
+  yesVotes: bigint;
+  noVotes: bigint;
+  /** In the order they landed. */
+  votes: ProposalVote[];
+  resolution?: ProposalResolution;
+}
+
+/**
+ * Options for `AptosClient.proposals`: `fromVersion` bounds every walk, and
+ * the live options tune each of them, as for `reduce()`.
+ */
+export interface ProposalsOptions
+  extends Pick<
+    ReduceOptions,
+    "fromVersion" | "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "maxPollInterval" | "retries" | "signal" | "onError"
+  > {
+  /** Called after each live event changes a proposal, with that proposal. A throw goes to `onError`. */
+  onChange?: (proposal: Proposal, event: StreamdEvent) => void;
+}
+
+/** A running `proposals()`: every proposal seen so far, kept current as events arrive. */
+export interface Proposals {
+  /** Every proposal seen, by id; the map and its records are updated in place. */
+  readonly value: ReadonlyMap<bigint, Proposal>;
+  get(id: bigint): Proposal | undefined;
+  /** Resolves once every walk has read its history and is following; rejects if one fails or it is stopped first. */
+  readonly ready: Promise<ReadonlyMap<bigint, Proposal>>;
+  /** False once stopped: unsubscribed, aborted, or a walk failed or gave up, which stops them all. */
+  readonly active: boolean;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
+}
+
+/** What one pool was paid at one epoch change, in octas. */
+export interface EpochRewards {
+  /** The epoch the rewards were earned in: the one this change ended. */
+  epoch: bigint;
+  /** `stake::DistributeRewards`, zero included. */
+  rewards: bigint;
+  /** `stake::DistributeTransactionFee`; `0n` when the pool was paid none. */
+  fees: bigint;
+  /** The epoch change's version. */
+  version: bigint;
+}
+
+/** One `delegation_pool::CommissionPercentageChange`. */
+export interface CommissionChange {
+  /** The next lockup cycle's commission, in hundredths of a percent (`1000n` is 10%). */
+  percentage: bigint;
+  /** Long form. */
+  owner: string;
+  version: bigint;
+}
+
+/** One delegator's stake moves in a delegation pool, as far as they have been seen, in octas. */
+export interface Delegator {
+  /** Long form. */
+  address: string;
+  /** `delegation_pool::AddStake` amounts, fees included. */
+  added: bigint;
+  addStakeFees: bigint;
+  unlocked: bigint;
+  reactivated: bigint;
+  withdrawn: bigint;
+  /** The first `AddStake` seen: a join, when the monitor saw the pool from before it. */
+  firstAddedAt?: bigint;
+  /** The latest move's version. */
+  lastVersion: bigint;
+}
+
+/** One stake pool as far as its events have been seen. */
+export interface StakePool {
+  /** Long form. */
+  address: string;
+  /** One entry per epoch change seen, oldest first. */
+  rewards: EpochRewards[];
+  /** The latest `CommissionChange`'s percentage; absent for a pool with none seen. */
+  commissionPercentage?: bigint;
+  commissionChanges: CommissionChange[];
+  /** By long-form address; empty for a pool that is not a delegation pool. */
+  delegators: Map<string, Delegator>;
+}
+
+/**
+ * Options for `AptosClient.stakePools`: `pool` narrows to some pools, the
+ * start options bound the history, and the live options tune the walk, as for `reduce()`.
+ */
+export interface StakePoolsOptions
+  extends Pick<
+    ReduceOptions,
+    | "fromVersion"
+    | "fromTime"
+    | "pollInterval"
+    | "batchSize"
+    | "maxErrors"
+    | "maxBackoff"
+    | "maxPollInterval"
+    | "retries"
+    | "signal"
+    | "onError"
+  > {
+  /** A pool address or a non-empty list of them; other pools' events are ignored, though a malformed one still stops the monitor. */
+  pool?: string | readonly string[];
+  /**
+   * Called after each live event changes a pool, with that pool: once per
+   * pool an epoch change paid, with its `NewEpoch` event. A throw goes to `onError`.
+   */
+  onChange?: (pool: StakePool, event: StreamdEvent) => void;
+}
+
+/** A running `stakePools()`: every pool seen so far, kept current as events arrive. */
+export interface StakePools {
+  /** Every pool seen, by long-form address; the map and its records are updated in place. */
+  readonly value: ReadonlyMap<string, StakePool>;
+  /** By address, in any form. */
+  get(address: string): StakePool | undefined;
+  /** Resolves once the history is folded and following has started; rejects if it fails or is stopped first. */
+  readonly ready: Promise<ReadonlyMap<string, StakePool>>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
 }

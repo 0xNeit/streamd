@@ -1,4 +1,5 @@
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import type { Client, ClientRequest, ClientResponse } from "@aptos-labs/ts-sdk";
 import { AptosClient, FullnodeScanAdapter, checkDescriptor, networks, primaryName, resolveName } from "@streamd/aptos";
 import { ArchiveFallbackAdapter, CachingAdapter, PoolAdapter } from "@streamd/core";
 import type { CachingAdapterOptions, EventAdapter, ModuleEventDescriptor, StreamdClient } from "@streamd/core";
@@ -12,6 +13,11 @@ export interface Chain {
   client(): StreamdClient & Pick<AptosClient, "eventsOf" | "transfers" | "getTransfers" | "balances">;
   /** An adapter over the endpoint's nodes, or over `nodeUrl` alone, which gets no API key. */
   adapter(nodeUrl?: string): HeadAdapter;
+  /**
+   * One adapter per node, unpooled and uncounted, the first with the API key,
+   * each request sent once and, on Aptos, abandoned after `timeout` ms.
+   */
+  nodes(timeout?: number): HeadAdapter[];
   check(descriptor: ModuleEventDescriptor): Promise<TypeChecks>;
   /** The long-form address a name points to; an address comes back in long form with no read. */
   resolveName(nameOrAddress: string): Promise<string>;
@@ -27,9 +33,10 @@ const NETWORKS = {
   "movement-testnet": networks.movementTestnet,
 } as const;
 
-export function aptosConfig(options: Pick<Endpoint, "network" | "nodeUrl" | "apiKey">): AptosConfig {
+export function aptosConfig(options: Pick<Endpoint, "network" | "nodeUrl" | "apiKey">, client?: Client): AptosConfig {
   return new AptosConfig({
     ...NETWORKS[options.network],
+    ...(client !== undefined && { client }),
     ...(options.nodeUrl !== undefined && { fullnode: options.nodeUrl }),
     clientConfig: {
       // The SDK's default HTTP/2 hangs under Bun, with no error.
@@ -37,6 +44,39 @@ export function aptosConfig(options: Pick<Endpoint, "network" | "nodeUrl" | "api
       ...(options.apiKey !== undefined && { API_KEY: options.apiKey }),
     },
   });
+}
+
+/**
+ * A client sending each request once, through fetch, abandoned after
+ * `timeout` ms. The SDK's own client retries a 429 twice, waiting out its
+ * Retry-After, which would hide from `monitor` the throttling it reports and
+ * spend the rate limit doing so.
+ */
+export function sendOnce(timeout?: number): Client {
+  return { provider: (request) => send(request, timeout) } as Client;
+}
+
+async function send(request: ClientRequest<unknown>, timeout: number | undefined): Promise<ClientResponse<unknown>> {
+  const url = new URL(request.url);
+  for (const [key, value] of Object.entries(request.params ?? {})) {
+    if (value !== undefined) url.searchParams.set(key, String(value));
+  }
+  const headers = Object.fromEntries(Object.entries(request.headers ?? {}).filter(([, value]) => value !== undefined));
+  const body = request.body === undefined ? undefined : request.body instanceof Uint8Array ? request.body : JSON.stringify(request.body);
+  const response = await fetch(url, {
+    method: request.method,
+    headers,
+    ...(body !== undefined && { body }),
+    ...(timeout !== undefined && { signal: AbortSignal.timeout(timeout) }),
+  });
+  const text = await response.text();
+  let data: unknown = text;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    // Not JSON, such as a plain-text 429: the SDK reports the status either way.
+  }
+  return { status: response.status, statusText: response.statusText, data, headers: Object.fromEntries(response.headers) };
 }
 
 type HeadAdapter = EventAdapter & { getHeadVersion(): Promise<bigint> };
@@ -54,7 +94,8 @@ export function readThrough(first: HeadAdapter, others: readonly HeadAdapter[] =
 
 function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: RequestStats): Chain {
   const config = aptosConfig(endpoint);
-  const node = (nodeUrl: string) => new FullnodeScanAdapter(new Aptos(aptosConfig({ network: endpoint.network, nodeUrl })));
+  const node = (nodeUrl: string, client?: Client) =>
+    new FullnodeScanAdapter(new Aptos(aptosConfig({ network: endpoint.network, nodeUrl }, client)));
   const archive = () => {
     if (endpoint.archive !== "default") return endpoint.archive === undefined ? undefined : node(endpoint.archive);
     // The key goes to Aptos Labs' archive only when it already goes to Aptos Labs' fullnode.
@@ -62,12 +103,15 @@ function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: R
     const nodeUrl = networks.aptosMainnetArchive.fullnode;
     return new FullnodeScanAdapter(new Aptos(aptosConfig({ network: "mainnet", nodeUrl, ...(apiKey !== undefined && { apiKey }) })));
   };
+  const nodes = (client?: Client) => [
+    new FullnodeScanAdapter(new Aptos(aptosConfig(endpoint, client))),
+    ...(endpoint.extraNodeUrls?.map((url) => node(url, client)) ?? []),
+  ];
   let shared: HeadAdapter | undefined;
   // Built once, so every client and adapter() share each node's counts.
   const reads = () => {
     if (shared !== undefined) return shared;
-    const nodes = [new FullnodeScanAdapter(new Aptos(config)), ...(endpoint.extraNodeUrls?.map(node) ?? [])];
-    const [first, ...others] = stats === undefined ? nodes : nodes.map((n) => stats.track(n, "node"));
+    const [first, ...others] = stats === undefined ? nodes() : nodes().map((n) => stats.track(n, "node"));
     const pruned = archive();
     const adapter = readThrough(first!, others, pruned && stats ? stats.track(pruned, "archive") : pruned);
     // Outermost, so a cached page reaches neither the pool nor the archive; the head passes through.
@@ -76,6 +120,7 @@ function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: R
   return {
     client: () => new AptosClient({ aptos: new Aptos(config), adapter: reads() }),
     adapter: (nodeUrl) => (nodeUrl === undefined ? reads() : node(nodeUrl)),
+    nodes: (timeout) => nodes(sendOnce(timeout)),
     check: (descriptor) => checkDescriptor(new Aptos(config), descriptor),
     resolveName: (value) => resolveName(new Aptos(config), value),
     primaryName: (address) => primaryName(new Aptos(config), address),
