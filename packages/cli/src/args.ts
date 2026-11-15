@@ -49,10 +49,12 @@ export const SECRET_ENV = "STREAMD_WEBHOOK_SECRET";
 export const API_KEY_ENV = "APTOS_API_KEY";
 
 export interface ForwardOptions extends SourceOptions {
-  /** Webhook URL, or a `redis://` or `rediss://` URL; may carry a token or password, so it is never printed. */
+  /** Webhook URL, or a `redis://`, `rediss://` or `nats://` URL; may carry a token or password, so it is never printed. */
   to: string;
   /** The Redis stream each batch is added to; set exactly when `to` is a Redis URL. */
   stream?: string;
+  /** The NATS subject each batch is published to; set exactly when `to` is a NATS URL. */
+  subject?: string;
   cursorFile: string;
   /** Retries per batch after the first attempt. */
   retries: number;
@@ -313,6 +315,7 @@ const FORWARD_OPTIONS = {
   "to-version": { type: "string" },
   "batch-size": { type: "string" },
   stream: { type: "string" },
+  subject: { type: "string" },
 } as const;
 
 const ALERT_OPTIONS = {
@@ -467,6 +470,7 @@ export const USAGE = `Usage:
   streamd forward --to <url> [options] <eventType>...
   streamd forward --to <url> --account <address> [...]
   streamd forward --to redis://<host> --stream <key> [options] <eventType>...
+  streamd forward --to nats://<host> --subject <name> [options] <eventType>...
   streamd alert --rules <file> --to <url> [options]
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
@@ -486,8 +490,8 @@ export const USAGE = `Usage:
 
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array, or
-adds it to a Redis stream, saving its position to a cursor file once the
-webhook or Redis acknowledges it.
+adds it to a Redis stream or publishes it to a NATS JetStream subject, saving
+its position to a cursor file once the destination acknowledges it.
 alert follows the rules in a JSON file, each a descriptor, filter, window and
 count or sum threshold, and POSTs a signed alert to a webhook the first time a
 window of chain time crosses its threshold, saving each rule's position and
@@ -565,8 +569,11 @@ Options:
   --rules <file>         alert: the rules file (required)
   --to <url>             forward, alert: webhook URL (http or https, required); forward also
                          takes redis://[user:password@]host[:port][/db] or rediss:// (TLS),
-                         Bun's own client under Bun, ioredis under Node (npm i ioredis)
+                         Bun's own client under Bun, ioredis under Node (npm i ioredis);
+                         or nats://[user:password@ | token@]host[:port], plaintext only
   --stream <key>         forward: the Redis stream each batch is added to (with redis://)
+  --subject <name>       forward: the NATS subject each batch is published to, which a
+                         JetStream stream must capture (with nats://)
   --cursor-file <path>   tail, transfers (following): save and resume from here; watch: each
                          address's position, as one JSON object; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
@@ -577,8 +584,8 @@ Options:
                          tx: wait for commit (default: 20000)
   --header <h>           forward, alert: request header 'Name: value', repeatable
   --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
-                         or a Redis entry's signature field (or set ${SECRET_ENV}, which
-                         keeps it out of ps)
+                         a Redis entry's signature field or a NATS message's header (or set
+                         ${SECRET_ENV}, which keeps it out of ps)
   --db <file>            store: SQLite file to write (this or --postgres)
   --postgres <url>       store: Postgres database to write, postgres://user@host/db; Bun.SQL
                          under Bun, pg under Node (npm i pg); the URL is never printed, and
@@ -778,6 +785,25 @@ function redisUrl(raw: string): string {
   return url.protocol + raw.slice(url.protocol.length);
 }
 
+// Like a Redis URL, a NATS URL carries credentials, so it is checked here and never echoed.
+function natsUrl(raw: string): string {
+  const url = URL.canParse(raw) ? new URL(raw) : undefined;
+  if (url === undefined || url.hostname === "") throw new UsageError("--to must be a valid nats:// URL with a host");
+  if (url.search !== "" || url.hash !== "" || !/^\/?$/.test(url.pathname)) {
+    throw new UsageError("--to nats:// takes no path, query or fragment");
+  }
+  try {
+    decodeURIComponent(url.username);
+    decodeURIComponent(url.password);
+  } catch {
+    throw new UsageError("--to nats:// has a malformed percent-escape in its user or password");
+  }
+  return url.protocol + raw.slice(url.protocol.length);
+}
+
+// Publishing needs a literal subject: dot-separated tokens, no wildcards, no whitespace or controls.
+const SUBJECT = /^[^\s\u0000-\u001f\u007f.*>]+(\.[^\s\u0000-\u001f\u007f.*>]+)*$/;
+
 function webhookUrl(raw: string | undefined, command: string): string {
   if (raw === undefined) throw new UsageError(`${command} needs --to <url>`);
   // The URL is not echoed: it may carry a token.
@@ -941,11 +967,25 @@ function parseForward(args: string[]): ParsedCommand {
     parseArgs({ args, options: FORWARD_OPTIONS, allowPositionals: true, strict: true }),
   );
   if (values.help) return { command: "help" };
+  if (values.to !== undefined && /^(tls|nats\+tls):/i.test(values.to)) {
+    throw new UsageError("--to tls:// is not supported: the NATS sink speaks plaintext only, so use nats://");
+  }
   const redis = values.to !== undefined && /^rediss?:/i.test(values.to);
+  const nats = values.to !== undefined && /^nats:/i.test(values.to);
   const options: ForwardOptions = {
     ...source("forward", values, positionals),
-    ...delivery("forward", values, DEFAULT_CURSOR_FILE, redis ? redisUrl(values.to!) : undefined),
+    ...delivery("forward", values, DEFAULT_CURSOR_FILE, redis ? redisUrl(values.to!) : nats ? natsUrl(values.to!) : undefined),
   };
+  if (nats) {
+    if (values.header !== undefined) throw new UsageError("--header is for webhooks: the NATS sink sets only its own headers");
+    if (values.subject === undefined || values.subject === "") throw new UsageError("--to nats:// needs --subject <name>");
+    if (!SUBJECT.test(values.subject)) {
+      throw new UsageError(`--subject must be dot-separated tokens with no spaces or wildcards: ${JSON.stringify(values.subject)}`);
+    }
+    options.subject = values.subject;
+  } else if (values.subject !== undefined) {
+    throw new UsageError("--subject needs a nats:// --to");
+  }
   if (redis) {
     if (values.header !== undefined) throw new UsageError("--header is for webhooks: a Redis stream entry carries no headers");
     if (values.stream === undefined || values.stream === "") throw new UsageError("--to redis:// needs --stream <key>");

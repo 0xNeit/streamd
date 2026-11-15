@@ -1,11 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { deliver, runForward } from "../src/forward.js";
 import type { Attempt, ForwardIO, Sink } from "../src/forward.js";
 import type { ForwardOptions } from "../src/args.js";
+import type { NatsLike, NatsReply } from "../src/nats.js";
 import type { RedisLike } from "../src/redis.js";
 import { MemoryAdapter, StreamdClient, StreamdError, verifyWebhook } from "@streamd/core";
 import type { EventAdapter, StreamdEvent } from "@streamd/core";
@@ -741,6 +742,182 @@ describe("runForward to Redis", () => {
     await forwardTo(fake, [ev(1), ev(2)], { fromVersion: 1n }, () => readFileSync(cursorFile(), "utf8") === "2\n");
     expect(fake.calls).toHaveLength(1);
     expect(JSON.parse(fake.calls[0]!.args[3]!)).toEqual([
+      { type: TYPE, data: { amount: "20" }, version: "2", sequenceNumber: "0", eventIndex: 0 },
+    ]);
+  });
+});
+
+describe("runForward to NATS", () => {
+  const PASSWORD = "pw-s3cret";
+  const TOKEN = "tok-s3cret";
+  const NATS = `nats://streamd:${PASSWORD}@127.0.0.1:4222`;
+  const BODY =
+    '[{"type":"0x1::coin::DepositEvent","data":{"amount":"10"},"version":"1","sequenceNumber":"0","eventIndex":0}]';
+  type Reply = (n: number) => Promise<NatsReply>;
+  const ack = (seq: number, extra = ""): NatsReply => ({ data: `{"stream":"DEPOSITS","seq":${seq}${extra}}` });
+
+  function fakeNats(reply: Reply = async (n) => ack(n)) {
+    const calls: { subject: string; headers: Record<string, string>; body: string }[] = [];
+    const state = { closed: 0, opened: [] as string[] };
+    const client: NatsLike = {
+      // Like connectNats, a publish rejects once its signal aborts.
+      request: (subject, headers, body, signal) => {
+        calls.push({ subject, headers, body });
+        return Promise.race([
+          reply(calls.length),
+          new Promise<never>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })),
+        ]);
+      },
+      close: () => void state.closed++,
+    };
+    const open = (url: string) => {
+      state.opened.push(url);
+      return client;
+    };
+    return { calls, state, open };
+  }
+
+  const natsOptions = (extra: Partial<ForwardOptions> = {}) => options({ to: NATS, subject: "aptos.deposits", ...extra });
+
+  async function forwardTo(fake: ReturnType<typeof fakeNats>, events: StreamdEvent[], extra: Partial<ForwardOptions>, done: () => boolean) {
+    const h = harness(new MemoryAdapter(events));
+    const run = runForward(natsOptions(extra), { ...h.io, nats: fake.open });
+    await until(done);
+    h.controller.abort();
+    return { ...h, code: await run };
+  }
+
+  async function failsAtOnce(fake: ReturnType<typeof fakeNats>, extra: Partial<ForwardOptions> = {}) {
+    const h = harness(new MemoryAdapter([ev(1)]));
+    expect(await runForward(natsOptions(extra), { ...h.io, nats: fake.open })).toBe(1);
+    expect(fake.calls).toHaveLength(1);
+    expect(existsSync(cursorFile())).toBe(false);
+    expect(fake.state.closed).toBe(1);
+    return h.errors;
+  }
+
+  it("publishes one message per batch with the webhook body and its hash as the msg id, then checkpoints", async () => {
+    const fake = fakeNats();
+    const { code, errors } = await forwardTo(fake, [ev(1)], {}, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.state.opened).toEqual([NATS]);
+    expect(fake.calls).toEqual([
+      {
+        subject: "aptos.deposits",
+        headers: { "Nats-Msg-Id": createHash("sha256").update(BODY).digest("hex") },
+        body: BODY,
+      },
+    ]);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("1\n");
+    expect(fake.state.closed).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  it("adds a signature header that verifyWebhook accepts", async () => {
+    const fake = fakeNats();
+    await forwardTo(fake, [{ ...ev(1), data: { memo: "caf\u00e9" } }], { secret: "key" }, () => existsSync(cursorFile()));
+    const { headers, body } = fake.calls[0]!;
+    expect(Object.keys(headers)).toEqual(["Nats-Msg-Id", "x-streamd-signature"]);
+    expect(await verifyWebhook(body, headers["x-streamd-signature"]!, "key")).toBe(true);
+    expect(await verifyWebhook(body, headers["x-streamd-signature"]!, "other")).toBe(false);
+  });
+
+  it("writes no cursor until the PubAck arrives, and counts a duplicate PubAck as delivered", async () => {
+    let release!: () => void;
+    const fake = fakeNats(() => new Promise((resolve) => (release = () => resolve(ack(1, ',"duplicate":true')))));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(natsOptions(), { ...h.io, nats: fake.open });
+    await until(() => fake.calls.length === 1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(existsSync(cursorFile())).toBe(false);
+    release();
+    await until(() => existsSync(cursorFile()));
+    h.controller.abort();
+    expect(await run).toBe(0);
+    expect(h.errors).toEqual([]);
+  });
+
+  it.each([
+    ["a lost connection", async () => Promise.reject(new Error("NATS connection closed")), "NATS connection closed"],
+    ["a stale connection", async () => Promise.reject(new Error("NATS -ERR 'Stale Connection'")), "NATS -ERR 'Stale Connection'"],
+    [
+      "a 503 JetStream error",
+      async () => ({ data: '{"error":{"code":503,"err_code":10008,"description":"JetStream system temporarily unavailable"}}' }),
+      "JetStream error 503 (10008): JetStream system temporarily unavailable",
+    ],
+  ])("retries %s, then delivers with the same msg id", async (_label, first, failure) => {
+    const fake = fakeNats((n) => (n === 1 ? first() : Promise.resolve(ack(1))));
+    const { code, errors } = await forwardTo(fake, [ev(1)], {}, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.calls[1]!.headers).toEqual(fake.calls[0]!.headers);
+    expect(errors).toEqual([`streamd: delivery failed (attempt 1/4): ${failure}; retrying in 1ms`]);
+  });
+
+  it.each([
+    [{ status: 503, description: "No Responders", data: "" }, "no responders on aptos.deposits: no JetStream stream captures it"],
+    [
+      { data: '{"error":{"code":400,"err_code":10060,"description":"expected stream does not match"}}' },
+      "JetStream error 400 (10060): expected stream does not match",
+    ],
+    [{ data: "pong" }, "the reply on aptos.deposits is not a JetStream PubAck"],
+    [{ data: '{"stream":"S"}' }, "the reply on aptos.deposits is not a JetStream PubAck"],
+  ])("fails at once on the reply %j, exiting 1 with no cursor", async (reply, failure) => {
+    const errors = await failsAtOnce(fakeNats(async () => reply));
+    expect(errors).toEqual([`streamd: delivery failed: ${failure}`]);
+  });
+
+  it.each([
+    ["NATS -ERR 'Authorization Violation'"],
+    ["NATS -ERR 'Permissions Violation for Publish to \"aptos.deposits\"'"],
+    ["NATS -ERR 'Maximum Payload Violation'"],
+    ["the NATS server requires TLS, which this sink does not speak"],
+    ["the NATS server does not support headers (NATS 2.2 or later)"],
+  ])("fails at once on %s", async (text) => {
+    const errors = await failsAtOnce(fakeNats(() => Promise.reject(new Error(text))));
+    expect(errors).toEqual([`streamd: delivery failed: ${text}`]);
+  });
+
+  it("times out a hung publish, closing the connection, then retries", async () => {
+    const fake = fakeNats((n) => (n === 1 ? new Promise(() => {}) : Promise.resolve(ack(1))));
+    const { code, errors } = await forwardTo(fake, [ev(1)], { timeout: 20 }, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.calls).toHaveLength(2);
+    expect(errors).toEqual(["streamd: delivery failed (attempt 1/4): publish timed out after 20ms; retrying in 1ms"]);
+    expect(fake.state.closed).toBe(2);
+  });
+
+  it("abandons an in-flight publish on abort without advancing", async () => {
+    writeFileSync(cursorFile(), "0\n");
+    const fake = fakeNats(() => new Promise(() => {}));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(natsOptions(), { ...h.io, nats: fake.open });
+    await until(() => fake.calls.length === 1);
+    h.controller.abort();
+    expect(await run).toBe(0);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("0\n");
+    expect(h.errors).toEqual([]);
+    expect(fake.state.closed).toBe(1);
+  });
+
+  it("never prints the URL, its password or a token", async () => {
+    const fake = fakeNats(() => Promise.reject(new Error(`NATS -ERR 'Authorization Violation' for ${NATS} with ${PASSWORD}`)));
+    expect((await failsAtOnce(fake))[0]).toBe(
+      "streamd: delivery failed: NATS -ERR 'Authorization Violation' for nats://streamd:***@127.0.0.1:4222 with ***",
+    );
+    const tokenUrl = `nats://${TOKEN}@127.0.0.1:4222`;
+    const leaky = fakeNats(() => Promise.reject(new Error(`connect failed to ${tokenUrl} using ${TOKEN}`)));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    expect(await runForward(natsOptions({ to: tokenUrl, retries: 0 }), { ...h.io, nats: leaky.open })).toBe(1);
+    expect(h.errors).toEqual(["streamd: delivery failed: connect failed to nats://***@127.0.0.1:4222 using ***"]);
+  });
+
+  it("resumes from the cursor file", async () => {
+    writeFileSync(cursorFile(), "1\n");
+    const fake = fakeNats();
+    await forwardTo(fake, [ev(1), ev(2)], { fromVersion: 1n }, () => readFileSync(cursorFile(), "utf8") === "2\n");
+    expect(fake.calls).toHaveLength(1);
+    expect(JSON.parse(fake.calls[0]!.body)).toEqual([
       { type: TYPE, data: { amount: "20" }, version: "2", sequenceNumber: "0", eventIndex: 0 },
     ]);
   });
