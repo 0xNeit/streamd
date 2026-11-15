@@ -10,6 +10,7 @@ import type {
 } from "../types.js";
 import { UNSIGNED_INTEGER } from "../decode.js";
 import { StreamdError } from "../errors.js";
+import { normalizeAddress } from "../filter.js";
 import { parseEvent, serializeEvent } from "../serialize.js";
 import { descriptorKey, fetchKey } from "../utils.js";
 import { requireAdapter } from "./validate.js";
@@ -244,8 +245,9 @@ function parseTransaction(value: unknown): TransactionEvents | undefined {
   };
   if (value.gasUnitPrice !== undefined) found.gasUnitPrice = decimal(value.gasUnitPrice, "gasUnitPrice");
   if (value.feePayer !== undefined) {
-    if (typeof value.feePayer !== "string") throw new StreamdError('"feePayer" must be a string');
-    found.feePayer = value.feePayer;
+    const feePayer = typeof value.feePayer === "string" ? normalizeAddress(value.feePayer) : undefined;
+    if (feePayer === undefined) throw new StreamdError('"feePayer" must be an address');
+    found.feePayer = feePayer;
   }
   return found;
 }

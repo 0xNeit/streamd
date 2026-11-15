@@ -146,11 +146,41 @@ describe("explain a committed transaction", () => {
     expect(explanation.feePayer).toBe(SPONSOR);
   });
 
-  it("explains a failed transaction with its gas instead of rejecting", async () => {
+  it("explains a failed transaction with its gas instead of rejecting; the chain keeps only its fee statement", async () => {
     const { base } = adapter({ version: 11n, success: false, vmStatus: "Move abort in 0x1::coin: EINSUFFICIENT_BALANCE(0x10006)", gasUnitPrice: 100n, events: [fee(11n, 0)] });
     const explanation = await testClient({ adapter: base }).explain(HASH);
     expect(explanation).toMatchObject({ success: false, vmStatus: "Move abort in 0x1::coin: EINSUFFICIENT_BALANCE(0x10006)", transfers: [], balanceChanges: [] });
     expect(explanation.gas!.fee).toBe(541400n);
+  });
+
+  it("takes the hash given when the lookup has no events, and rejects a malformed fee statement", async () => {
+    const empty = adapter({ version: 12n, success: true, vmStatus: "Executed successfully", events: [] });
+    const explanation = await testClient({ adapter: empty.base }).explain(HASH);
+    expect(explanation).toMatchObject({ transactionHash: HASH, transfers: [], events: [] });
+    expect("sender" in explanation || "gas" in explanation).toBe(false);
+    const bad = adapter({ ...transfer, events: [ev(10n, 0, "0x1::transaction_fee::FeeStatement", { ...FEE, total_charge_gas_units: "x" })] });
+    await expect(testClient({ adapter: bad.base }).explain(HASH)).rejects.toThrow("does not have its struct's fields");
+  });
+
+  it("rejects with the signal's reason on abort and drops the reads still queued", async () => {
+    const { base, views } = adapter(transfer);
+    const view = base.view!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    base.view = async (...args) => (await gate, view(...args));
+    const controller = new AbortController();
+    const client = testClient({ adapter: base, maxConcurrentRequests: 1 });
+    let started = 0;
+    const inner = base.view;
+    base.view = (...args) => (started++, inner(...args));
+    const pending = client.explain(HASH, { signal: controller.signal });
+    for (let i = 0; i < 50 && started === 0; i++) await new Promise((r) => setTimeout(r, 1));
+    controller.abort(new Error("stop"));
+    await expect(pending).rejects.toThrow("stop");
+    release();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(started).toBe(1);
+    expect(views.length).toBeLessThanOrEqual(1);
   });
 
   it("decodes the swaps and sales among its events", async () => {
@@ -165,7 +195,9 @@ describe("explain a committed transaction", () => {
   });
 
   it("names the sender, fee payer, counterparties, buyers and sellers under withNames", async () => {
-    const { base } = adapter({ ...transfer, feePayer: SPONSOR });
+    const sale = parseEvent(readFileSync(join(import.meta.dir, "fixtures/sales.jsonl"), "utf8").split("\n")[0]!);
+    const { seller, buyer } = toSale(sale)!.data;
+    const { base } = adapter({ ...transfer, feePayer: SPONSOR, events: [...transfer.events, { ...sale, version: 10n, eventIndex: 3 }] });
     const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig: { http2: false } }));
     const reads: string[] = [];
     aptos.getPrimaryName = async ({ address }) => {
@@ -174,8 +206,8 @@ describe("explain a committed transaction", () => {
     };
     aptos.getTargetAddress = async ({ name }) => (name === "bob.apt" ? AccountAddress.from(BOB) : undefined);
     const explanation = await testClient({ adapter: base, aptos }).explain(HASH, { withNames: true, withAssetInfo: false });
-    expect(explanation.names).toEqual({ [ALICE]: null, [SPONSOR]: null, [BOB]: "bob.apt" });
-    expect(reads.sort()).toEqual([ALICE, BOB, SPONSOR].sort());
+    expect(explanation.names).toEqual({ [ALICE]: null, [SPONSOR]: null, [BOB]: "bob.apt", [seller]: null, [buyer]: null });
+    expect(reads.sort()).toEqual([ALICE, BOB, SPONSOR, seller, buyer].sort());
   });
 
   it("waits for the transaction to commit, as eventsOf does", async () => {
@@ -205,6 +237,16 @@ describe("explain a simulation", () => {
     const behind = adapter(transfer, sim(50n), 99n);
     await testClient({ adapter: behind.base, aptos }).explain(await simulation(aptos), { withAssetInfo: false });
     expect(new Set(behind.views.map(([, v]) => v))).toEqual(new Set([49n]));
+  });
+
+  it("leaves out a leg whose store the simulation would create, and refuses a timeout", async () => {
+    const aptos = offline();
+    const events = [fa(120n, 0, "Withdraw", "a1", "5"), fa(120n, 1, "Deposit", "f9", "5")].map((e) => ({ ...e, transactionHash: undefined }));
+    const { base } = adapter(transfer, { version: 120n, success: true, vmStatus: "Executed successfully", events });
+    const explanation = await testClient({ adapter: base, aptos }).explain(await simulation(aptos), { withAssetInfo: false });
+    expect(explanation.transfers).toEqual([{ asset: APT, amount: 5n, from: ALICE, to: undefined }]);
+    expect(explanation.balanceChanges).toEqual([{ account: ALICE, asset: APT, delta: -5n }]);
+    await expect(testClient({ adapter: base, aptos }).explain(await simulation(aptos), { timeout: 5 })).rejects.toThrow("a simulation does not wait");
   });
 
   it("explains a failed simulation and passes the signer key on", async () => {
@@ -238,6 +280,12 @@ describe("explain refusals", () => {
     const aptos = offline();
     await expect(testClient({ adapter: base, aptos }).explain(await simulation(aptos))).rejects.toThrow("simulateTransactionEvents");
     expect(lookups).toBe(0);
+  });
+
+  it("names explain when the adapter cannot look a hash up", async () => {
+    const { base } = adapter(transfer);
+    const { getTransactionEvents: _, ...unlookable } = base;
+    await expect(testClient({ adapter: unlookable }).explain(HASH)).rejects.toThrow("explain needs an adapter that implements getTransactionEvents");
   });
 
   it("rejects when a store read fails for another reason than a missing store", async () => {
@@ -335,12 +383,24 @@ describe("formatExplanation", () => {
     const text = formatExplanation({
       ...base,
       vmStatus: "abort\u001b[2J",
-      transfers: [{ asset: APT, amount: 1n, from: ALICE, to: BOB, symbol: "AP‮T", decimals: 0 }],
+      transfers: [{ asset: APT, amount: 1n, from: ALICE, to: BOB, symbol: "AP\u202eT", decimals: 0 }],
       balanceChanges: [],
       names: { [BOB]: "bob\u009b.apt" },
     });
     expect(text).toContain("Status: success (abort?[2J)");
     expect(text).toContain(`  1 AP?T from ${ALICE} to ${BOB} (bob?.apt)`);
-    expect(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f‮]/.test(text)).toBe(false);
+    expect(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202e]/.test(text)).toBe(false);
+    expect(formatExplanation({ ...base, feePayer: "0x1\u001b]0;x\u0007" })).toContain("Fee payer: 0x1?]0;x?");
+  });
+
+  it("falls back to base units for decimals a u8 cannot hold, and drops a time it cannot render", () => {
+    const text = formatExplanation({
+      ...base,
+      timestamp: 10n ** 30n,
+      transfers: [{ asset: APT, amount: 5n, from: ALICE, to: BOB, symbol: "APT", decimals: 300 }],
+      balanceChanges: [],
+    });
+    expect(text.split("\n")[0]).toBe(`Transaction ${HASH} at version 10`);
+    expect(text).toContain(`  5 ${APT} from ${ALICE} to ${BOB}`);
   });
 });

@@ -265,7 +265,10 @@ export interface TransactionExplanation {
   gas?: GasUsage;
   /** Paired as `transfers()` pairs them; empty for a failed transaction, whose other events were discarded. */
   transfers: Transfer[];
-  /** Net per account and asset over `transfers`, in order of first appearance, zero nets left out; gas is not in it. */
+  /**
+   * Net per account and asset over `transfers`, grouped by account in order of
+   * first appearance, each account's assets in theirs, zero nets left out; gas is not in it.
+   */
   balanceChanges: AccountBalanceChange[];
   /** Decoded as `swaps()` decodes them. */
   swaps: Swap[];

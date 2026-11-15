@@ -947,6 +947,7 @@ describe("FullnodeScanAdapter transaction lookup", () => {
     expect(odd!.events).toHaveLength(2);
     expect("gasUnitPrice" in odd! || "feePayer" in odd!).toBe(false);
     expect("gasUnitPrice" in (await read({ gas_unit_price: 100 }))!).toBe(false);
+    expect("feePayer" in (await read({ signature: { type: "fee_payer_signature", fee_payer_address: "0xzz" } }))!).toBe(false);
   });
 
   it("gives undefined for an unknown or pending transaction", async () => {

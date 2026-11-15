@@ -406,7 +406,7 @@ describe("recording transaction lookups", () => {
   });
 
   it("replays a lookup's gas unit price and fee payer", async () => {
-    const found = { version: 3n, success: false, vmStatus: "abort", events: [seeded], gasUnitPrice: 2n ** 64n, feePayer: "0xfee" };
+    const found = { version: 3n, success: false, vmStatus: "abort", events: [seeded], gasUnitPrice: 2n ** 64n, feePayer: `0x${"fee".padStart(64, "0")}` };
     const recorder = recordingAdapter({
       fetchEvents: async () => ({ events: [], hasMore: false }),
       getTransactionEvents: async () => found,
@@ -435,6 +435,7 @@ describe("recording transaction lookups", () => {
       { version: "1", success: true, vmStatus: "", events: [], gasUnitPrice: "-1" },
       { version: "1", success: true, vmStatus: "", events: [], gasUnitPrice: 100 },
       { version: "1", success: true, vmStatus: "", events: [], feePayer: 1 },
+      { version: "1", success: true, vmStatus: "", events: [], feePayer: "0x1\u001b[2J" },
       undefined,
     ]) {
       expect(() => replayAdapter(bad(result))).toThrow("Invalid recording");

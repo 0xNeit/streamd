@@ -59,9 +59,10 @@ async function transfersOf(
   found: TransactionEvents,
   shift: bigint,
   withAssetInfo: boolean,
+  signal: AbortSignal | undefined,
 ): Promise<Transfer[]> {
   const page: EventPage = { events: found.events, nextCursor: undefined, hasMore: false };
-  const limited = host.limiter.wrap(host.adapter);
+  const limited = host.limiter.wrap(host.adapter, signal, signal);
   const feed: EventAdapter = {
     fetchEvents: async () => page,
     view: (request, version, descriptor) => limited.view!(request, version - shift, descriptor),
@@ -85,8 +86,14 @@ async function lookUp(host: ExplainHost, target: unknown, options: ExplainOption
     }
     const badTimeout = checkTimeout(options.timeout);
     if (badTimeout !== undefined) throw badTimeout;
+    if (adapter.getTransactionEvents === undefined) {
+      throw new StreamdError("explain needs an adapter that implements getTransactionEvents to look a hash up");
+    }
     const found = await committedTransaction(adapter, limiter, host.pollInterval, target, undefined, options);
     return { found, shift: 0n };
+  }
+  if (options.timeout !== undefined) {
+    throw new StreamdError("timeout bounds the wait for a transaction hash; a simulation does not wait");
   }
   const request = simulation(target, options);
   if (adapter.simulateTransactionEvents === undefined || adapter.getHeadVersion === undefined) {
@@ -130,7 +137,7 @@ export async function explain(host: ExplainHost, target: unknown, options: Expla
     const events = found.events;
     const first = events[0];
     const sender = first?.sender === undefined ? undefined : normalizeAddress(first.sender);
-    const transfers = await transfersOf(host, found, shift, options.withAssetInfo !== false);
+    const transfers = await transfersOf(host, found, shift, options.withAssetInfo !== false, options.signal);
     const explanation: TransactionExplanation = {
       simulated: typeof target !== "string",
       version: found.version,
@@ -172,11 +179,15 @@ export function formatExplanation(explanation: TransactionExplanation): string {
   const who = (address: string | undefined) => {
     if (address === undefined) return "an unknown account";
     const name = e.names?.[address];
-    return typeof name === "string" ? `${address} (${clean(name)})` : address;
+    return typeof name === "string" ? `${clean(address)} (${clean(name)})` : clean(address);
   };
   const details = new Map<string, { symbol: string; decimals: number }>();
   for (const t of e.transfers) {
-    if (t.symbol !== undefined && t.decimals !== undefined) details.set(t.asset, { symbol: t.symbol, decimals: t.decimals });
+    const { symbol, decimals } = t;
+    // formatAmount refuses decimals a u8 cannot hold; such details are not used.
+    if (symbol !== undefined && decimals !== undefined && Number.isInteger(decimals) && decimals >= 0 && decimals <= 255) {
+      details.set(t.asset, { symbol, decimals });
+    }
   }
   const amount = (value: bigint, asset: string, signed = false) => {
     const info = details.get(asset);

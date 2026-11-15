@@ -834,8 +834,8 @@ const preview = await streamd.explain(await aptos.transaction.build.simple({ sen
   in `transfers` or `balanceChanges`.
 - **Transfers and balance changes.** `transfers` are built and paired exactly as
   `transfers()` builds them, over the transaction's events. `balanceChanges` is the net
-  `{ account, asset, delta }` per account and asset over them, in order of first
-  appearance, zero nets left out. `symbol` and `decimals` are read by view unless
+  `{ account, asset, delta }` per account and asset over them, grouped by account in order
+  of first appearance and each account's assets in theirs, zero nets left out. `symbol` and `decimals` are read by view unless
   `withAssetInfo: false`.
 - **Swaps and sales.** Decoded from the same events as `swaps()` and `sales()` decode them.
 - **Names.** `withNames` (mainnet and a localnet) adds `names`: the primary name or `null`
@@ -849,8 +849,9 @@ const preview = await streamd.explain(await aptos.transaction.build.simple({ sen
 - **Reads.** The lookup or simulation, the head read for a simulation, and every store,
   asset and name read go through the client's limiter. A failed read rejects. It needs an
   adapter with `view`, plus `getTransactionEvents` for a hash, or
-  `simulateTransactionEvents` and `getHeadVersion` for a transaction; bad input, and signer
-  keys passed with a hash, are refused before any read.
+  `simulateTransactionEvents` and `getHeadVersion` for a transaction; bad input, signer
+  keys passed with a hash and `timeout` passed with a transaction are refused before any
+  read. Aborting `signal` rejects at once and drops the reads still queued.
 - **The text.** `formatExplanation` writes one fact per line, amounts in the asset's
   decimals and symbol when known (a swap takes them from its transaction's transfers) and
   otherwise in base units with the asset, addresses in long form with their names, and
