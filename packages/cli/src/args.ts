@@ -584,8 +584,8 @@ Options:
                          tx: wait for commit (default: 20000)
   --header <h>           forward, alert: request header 'Name: value', repeatable
   --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
-                         or a Redis entry's signature field (or set ${SECRET_ENV}, which
-                         keeps it out of ps)
+                         a Redis entry's signature field or a NATS message's header (or set
+                         ${SECRET_ENV}, which keeps it out of ps)
   --db <file>            store: SQLite file to write (this or --postgres)
   --postgres <url>       store: Postgres database to write, postgres://user@host/db; Bun.SQL
                          under Bun, pg under Node (npm i pg); the URL is never printed, and

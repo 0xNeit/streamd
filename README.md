@@ -3602,8 +3602,9 @@ streamd forward --to https://hooks.example.com/aptos \
 
 | Option | Meaning |
 | --- | --- |
-| `--to <url>` | webhook URL, `http` or `https` (required), or a Redis URL (below) |
+| `--to <url>` | webhook URL, `http` or `https` (required), or a Redis or NATS URL (below) |
 | `--stream <key>` | the Redis stream to add each batch to (required with a Redis `--to`) |
+| `--subject <name>` | the NATS subject to publish each batch to (required with a NATS `--to`) |
 | `--cursor-file <path>` | where the position is saved (default `streamd-forward.cursor`) |
 | `--retries <n>` | retries per batch after the first attempt (default `5`) |
 | `--timeout <ms>` | per-request timeout (default `10000`) |
@@ -3696,6 +3697,56 @@ Under Bun this uses Bun's own Redis client. Under Node it needs `ioredis` instal
 (`npm i ioredis`), loaded only when `--to` is a Redis URL. Redis Cluster and Sentinel URLs are
 not supported.
 
+**To NATS JetStream.** Give `--to` a NATS URL, `nats://host[:port]` (port `4222` by default)
+with `user:password@` or a `token@` before the host when the server asks for them, and
+`--subject` the subject to publish to, which a JetStream stream must capture. Each batch becomes
+one message whose payload is exactly the webhook body, with two headers: `Nats-Msg-Id`, the
+SHA-256 of the body in hex, and with a secret `x-streamd-signature`, the same `sha256=<hex>` the
+webhook header carries:
+
+```sh
+nats stream add DEPOSITS --subjects 'aptos.deposits' --defaults
+streamd forward --to nats://localhost:4222 --subject aptos.deposits \
+  --cursor-file deposits.cursor 0x1::coin::DepositEvent
+```
+
+```ts
+import { WEBHOOK_SIGNATURE_HEADER, verifyWebhook } from "@streamd/core";
+import type { JsMsg } from "@nats-io/jetstream";
+
+async function handle(msg: JsMsg): Promise<void> {
+  const signature = msg.headers?.get(WEBHOOK_SIGNATURE_HEADER);
+  if (!(await verifyWebhook(msg.data, signature, process.env.STREAMD_WEBHOOK_SECRET!))) return msg.term();
+  const events = JSON.parse(msg.string());
+  // ...
+  msg.ack();
+}
+```
+
+The stream's PubAck, the reply naming the stream and the message's sequence, is the
+acknowledgement, and the cursor file moves only after it, exactly as after a webhook's `2xx`. A
+PubAck marked `duplicate` counts too: the message id is the body's hash, so when a batch is sent
+again, after a retry of a publish that landed or a restart that resends the batch in flight,
+JetStream drops the copy inside the stream's duplicate window (two minutes by default) and
+consumers see it once. Outside the window a resend is delivered again, which at least once
+allows.
+
+What fails at once, exiting `1`: no stream capturing the subject (the server's `503` no
+responders reply), a JetStream error with a `4xx` code (such as a message over the stream's size
+limit), a reply that is not a PubAck (something other than a stream answered), and the server's
+`Authorization Violation`, `Permissions Violation` and `Maximum Payload Violation` errors (lower
+`--batch-size` for the last). Everything else is retried with the same backoff and `--retries`
+budget: refused or dropped connections, other server errors, JetStream errors with a `5xx` code,
+and no reply within `--timeout`, which bounds connecting and publishing together and drops the
+connection so the retry opens a fresh one. A NATS restart mid-run is retried the same way,
+reconnecting on the next attempt.
+
+The CLI speaks the NATS protocol itself, so nothing needs installing under Bun or Node. It
+connects in plaintext only: `tls://` is refused, and so is a server that requires TLS, as are
+NKEY, JWT and `.creds` authentication and lists of several servers. `--header` is refused, the
+server needs headers (NATS 2.2 or later), and the URL, its password and its token are never
+printed.
+
 `--to-version` turns `forward` into a backfill job. It needs `--from-version` or `--from-time`
 (a saved cursor still wins), and the bound must already be history: the head is read once, and a
 bound above it fails. Nothing above the bound is sent. The run ends with exit `0` when the walk
@@ -3708,10 +3759,10 @@ streamd forward --to https://hooks.example.com/backfill --from-version 300000000
   --to-version 3001000000 --batch-size 100 0x1::coin::CoinDeposit
 ```
 
-Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST or `XADD` without moving
-the cursor; `1` when a batch fails past its retries, the Redis client cannot be loaded, the
-subscription stops on an error, the cursor file cannot be read or written, or `--to-version` is
-above the head; `2` for invalid arguments. Run it under a supervisor that restarts on `1`.
+Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST, `XADD` or publish
+without moving the cursor; `1` when a batch fails past its retries or fails at once, the Redis
+client cannot be loaded, the subscription stops on an error, the cursor file cannot be read or
+written, or `--to-version` is above the head; `2` for invalid arguments. Run it under a supervisor that restarts on `1`.
 
 ### Alert on thresholds
 
