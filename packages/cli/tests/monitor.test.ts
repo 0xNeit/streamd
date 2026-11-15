@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { MemoryAdapter, StreamdNetworkError } from "@streamd/core";
 import type { EventAdapter } from "@streamd/core";
-import { runMonitor } from "../src/monitor.js";
+import { runMonitor, serveMetrics } from "../src/monitor.js";
 import type { MonitorOptions } from "../src/args.js";
 
 const TYPE = "0x1::transaction_fee::FeeStatement";
@@ -204,5 +204,93 @@ describe("runMonitor disagreement", () => {
     expect(lines[0]!.nodes[1]).toMatchObject({ up: true, compare: { window: null, matched: 0 } });
     expect(lines[0]!.nodes[1].window).toMatchObject({ requests: 2, errors: 1, disagreements: 0 });
     expect(lines[0]!.nodes[0].window).toMatchObject({ requests: 2, errors: 0 });
+  });
+});
+
+describe("runMonitor prometheus", () => {
+  async function text(nodes: EventAdapter[], limit = 1) {
+    let clock = 0;
+    const out: string[] = [];
+    const published: string[] = [];
+    await runMonitor({ ...OPTIONS, format: "prometheus", limit }, {
+      nodes,
+      write: (t) => void out.push(t),
+      publish: (t) => void published.push(t),
+      signal: new AbortController().signal,
+      now: () => clock,
+      sleep: async (ms) => void (clock += ms),
+    });
+    return { out, published };
+  }
+
+  it("prints the monitor's gauges per node, then each node's adapter counters, leaving unknown series out", async () => {
+    const all = Array.from({ length: 10 }, (_, i) => ev(i + 1));
+    const timed: EventAdapter = {
+      ...memory(10n, all),
+      getBlockHeights: async () => ({ oldest: 0n, newest: 4n }),
+      getBlock: async () => ({ height: 4n, firstVersion: 10n, lastVersion: 10n, timestamp: 3_000_000n }),
+    };
+    const { out, published } = await text([timed, memory(10n, all.map((e) => (e.version === 5n ? ev(5, "9") : e))), node([new StreamdNetworkError("down", 503)])]);
+    const [round] = out;
+    expect(round!.endsWith("\n\n")).toBe(true);
+    expect(published).toEqual([round!.slice(0, -1)]);
+    const lines = round!.split("\n");
+    for (const sample of [
+      '# TYPE streamd_monitor_up gauge',
+      'streamd_monitor_up{node="0"} 1',
+      'streamd_monitor_up{node="1"} 1',
+      'streamd_monitor_up{node="2"} 0',
+      'streamd_monitor_head_version{node="0"} 10',
+      'streamd_monitor_lag_versions{node="1"} 0',
+      'streamd_monitor_lag_seconds{node="0"} 0',
+      'streamd_monitor_window_requests{node="2"} 1',
+      'streamd_monitor_window_errors{node="2"} 1',
+      'streamd_monitor_window_rate_limited{node="2"} 0',
+      'streamd_monitor_window_matched{node="1"} 9',
+      'streamd_monitor_window_disagreements{node="1"} 1',
+      'streamd_adapter_requests_total{node="0",method="getHeadVersion"} 1',
+      'streamd_adapter_errors_total{node="2",method="getHeadVersion"} 1',
+    ]) expect(lines).toContain(sample);
+    expect(round).not.toContain('head_version{node="2"}');
+    expect(round).not.toContain('lag_seconds{node="1"}');
+    expect(round).not.toContain('window_matched{node="0"}');
+    expect(lines.filter((l) => l === "# TYPE streamd_monitor_up gauge")).toHaveLength(1);
+  });
+
+  it("separates rounds with a blank line", async () => {
+    const { out } = await text([node([1n]), node([1n])], 2);
+    expect(out.join("").split("\n\n").filter((s) => s !== "")).toHaveLength(2);
+  });
+});
+
+describe("serveMetrics", () => {
+  it("serves the latest text at /metrics, 404 elsewhere, until closed", async () => {
+    let latest = "";
+    const server = await serveMetrics({ host: "127.0.0.1", port: 0 }, () => latest);
+    const { port } = server.address() as { port: number };
+    const url = `http://127.0.0.1:${port}`;
+    try {
+      const empty = await fetch(`${url}/metrics`);
+      expect(empty.status).toBe(200);
+      expect(empty.headers.get("content-type")).toBe("text/plain; version=0.0.4; charset=utf-8");
+      expect(await empty.text()).toBe("");
+      latest = 'streamd_monitor_up{node="0"} 1\n';
+      expect(await (await fetch(`${url}/metrics?x=1`)).text()).toBe(latest);
+      expect((await fetch(`${url}/`)).status).toBe(404);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    }
+    expect(await fetch(`${url}/metrics`).then(() => "open", () => "closed")).toBe("closed");
+  });
+
+  it("rejects when the port is taken", async () => {
+    const first = await serveMetrics({ host: "127.0.0.1", port: 0 }, () => "");
+    const { port } = first.address() as { port: number };
+    try {
+      await expect(serveMetrics({ host: "127.0.0.1", port }, () => "")).rejects.toMatchObject({ code: "EADDRINUSE" });
+    } finally {
+      await new Promise((resolve) => first.close(resolve));
+    }
   });
 });

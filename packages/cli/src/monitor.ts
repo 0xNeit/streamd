@@ -1,5 +1,7 @@
+import { createServer } from "node:http";
+import type { Server } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
-import { StreamdNetworkError, adapterMetrics, compareAdapters } from "@streamd/core";
+import { StreamdNetworkError, adapterMetrics, compareAdapters, toPrometheus } from "@streamd/core";
 import type { AdapterComparison, AdapterMetrics, EventAdapter } from "@streamd/core";
 import type { MonitorOptions } from "./args.js";
 
@@ -12,6 +14,8 @@ export interface MonitorIO {
   now?(): number;
   /** Waits `ms`, or less when `signal` aborts; real timers unless a test replaces them. */
   sleep?(ms: number, signal: AbortSignal): Promise<void>;
+  /** Receives each round's Prometheus text, whatever `format` prints. */
+  publish?(text: string): void;
 }
 
 /** The most rounds the window keeps, however long it is, so a long window cannot grow without bound. */
@@ -194,8 +198,8 @@ class Monitor {
     }));
   }
 
-  /** Reads every node once and returns the round's record. */
-  async round(index: number): Promise<string> {
+  /** Reads every node once and returns the round as a JSON line and as Prometheus text. */
+  async round(index: number): Promise<{ json: string; prometheus: string }> {
     const at = this.now();
     const readings = await Promise.all(this.nodes.map((node) => this.read(node, at)));
     await this.compare(readings);
@@ -221,7 +225,29 @@ class Monitor {
     });
     this.history.push({ at, rows });
     this.history = this.history.filter((h) => at - h.at < this.options.window).slice(-MAX_WINDOW_ROUNDS);
-    return this.json(index, at, readings, rows);
+    return { json: this.json(index, at, readings, rows), prometheus: this.prometheus(readings, rows) };
+  }
+
+  private prometheus(readings: Reading[], rows: Row[]): string {
+    const windows = rows.map((_, i) => this.window(i));
+    const values = (pick: (i: number) => bigint | number | undefined, from = 0) =>
+      rows.flatMap((_, i) => {
+        const value = i < from ? undefined : pick(i);
+        return value === undefined ? [] : [`{node="${i}"} ${value}`];
+      });
+    const families = [
+      gauge("up", "1 when the node answered its head read this round, else 0.", values((i) => (rows[i]!.up ? 1 : 0))),
+      gauge("head_version", "The node's ledger version this round.", values((i) => readings[i]!.head)),
+      gauge("lag_versions", "Versions behind the highest head read this round.", values((i) => rows[i]!.lagVersions)),
+      gauge("lag_seconds", "Chain time behind the newest head block read this round.", values((i) => (rows[i]!.lagMs === undefined ? undefined : rows[i]!.lagMs! / 1000))),
+      gauge("window_requests", "Calls made to the node over the window.", values((i) => windows[i]!.requests)),
+      gauge("window_errors", "Failed calls to the node over the window.", values((i) => windows[i]!.errors)),
+      gauge("window_rate_limited", "Calls the node refused with 429 over the window.", values((i) => windows[i]!.rateLimited)),
+      gauge("window_matched", "Events that matched node 0's over the window.", values((i) => windows[i]!.matched, 1)),
+      gauge("window_disagreements", "Events missing, extra or different from node 0's over the window.", values((i) => windows[i]!.disagreements, 1)),
+    ];
+    const adapters = toPrometheus(this.nodes.map((node, i) => ({ snapshot: node.metrics.snapshot(), labels: { node: String(i) } })));
+    return families.join("") + adapters;
   }
 
   private json(index: number, at: number, readings: Reading[], rows: Row[]): string {
@@ -260,6 +286,33 @@ class Monitor {
   }
 }
 
+function gauge(name: string, help: string, samples: string[]): string {
+  const metric = `streamd_monitor_${name}`;
+  if (samples.length === 0) return "";
+  return `# HELP ${metric} ${help}\n# TYPE ${metric} gauge\n${samples.map((s) => `${metric}${s}\n`).join("")}`;
+}
+
+/**
+ * Serves the text `latest` returns at `GET /metrics`, for a Prometheus scrape;
+ * every other path is 404. Resolves once listening, rejects if it cannot bind.
+ */
+export function serveMetrics(listen: { host: string; port: number }, latest: () => string): Promise<Server> {
+  const server = createServer((request, response) => {
+    if (new URL(request.url ?? "/", "http://localhost").pathname !== "/metrics") {
+      response.writeHead(404).end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/plain; version=0.0.4; charset=utf-8" }).end(latest());
+  });
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(listen.port, listen.host, () => {
+      server.off("error", reject);
+      resolve(server);
+    });
+  });
+}
+
 function aborted(signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) resolve();
@@ -281,10 +334,11 @@ export async function runMonitor(options: MonitorOptions, io: MonitorIO): Promis
   const stopped = aborted(io.signal);
   for (let index = 1; !io.signal.aborted; index++) {
     const started = now();
-    const record = await Promise.race([monitor.round(index), stopped]);
-    if (record === undefined || io.signal.aborted) break;
+    const round = await Promise.race([monitor.round(index), stopped]);
+    if (round === undefined || io.signal.aborted) break;
+    io.publish?.(round.prometheus);
     try {
-      await io.write(record);
+      await io.write(options.format === "json" ? round.json : `${round.prometheus}\n`);
     } catch (err) {
       if (io.signal.aborted) break;
       throw err;
