@@ -3602,7 +3602,8 @@ streamd forward --to https://hooks.example.com/aptos \
 
 | Option | Meaning |
 | --- | --- |
-| `--to <url>` | webhook URL, `http` or `https` (required) |
+| `--to <url>` | webhook URL, `http` or `https` (required), or a Redis URL (below) |
+| `--stream <key>` | the Redis stream to add each batch to (required with a Redis `--to`) |
 | `--cursor-file <path>` | where the position is saved (default `streamd-forward.cursor`) |
 | `--retries <n>` | retries per batch after the first attempt (default `5`) |
 | `--timeout <ms>` | per-request timeout (default `10000`) |
@@ -3656,6 +3657,43 @@ Any other status, redirects included, fails at once. The webhook receives only t
 the content type, your `--header` values and any signature, and neither the URL, header
 values nor the secret are printed.
 
+**To a Redis stream.** Give `--to` a Redis URL, `redis://[user:password@]host[:port][/db]` or
+`rediss://` for TLS, and `--stream` the stream key. Each batch becomes one entry, added with
+`XADD <stream> * body <json>`, where `body` is exactly the webhook body. With a secret the entry
+also carries `signature`, the same `sha256=<hex>` the webhook header would, so a consumer checks
+it with `verifyWebhook`:
+
+```sh
+streamd forward --to redis://localhost:6379 --stream aptos:deposits \
+  --cursor-file deposits.cursor 0x1::coin::DepositEvent
+```
+
+```ts
+import { verifyWebhook } from "@streamd/core";
+
+// One entry's fields as a record, from XREAD, XREADGROUP or XRANGE.
+async function handle(fields: Record<string, string>): Promise<void> {
+  if (!(await verifyWebhook(fields.body, fields.signature, process.env.STREAMD_WEBHOOK_SECRET!))) return;
+  const events = JSON.parse(fields.body);
+  // ...
+}
+```
+
+The reply to `XADD`, the new entry's id, is the acknowledgement, and the cursor file moves only
+after it, exactly as after a webhook's `2xx`. It means the primary accepted the entry; streamd does
+not wait for replicas or the append-only file. Connection failures, timeouts and transient
+replies such as `LOADING`, `READONLY` or `OOM` are retried with the same backoff and `--retries`
+budget; `ERR`, `WRONGTYPE`, `NOPERM`, `NOAUTH` and `WRONGPASS` fail at once. `--timeout` bounds
+each `XADD`, and a timed-out one drops the connection so the retry opens a fresh one; it may
+still have landed, which at least once allows. A Redis restart mid-run is retried the same way,
+reconnecting on the next attempt. `--header` is refused, since an entry has no headers, and the
+URL and its password are never printed. Nothing trims the stream: cap it with `XTRIM` once your
+consumers have read past an entry.
+
+Under Bun this uses Bun's own Redis client. Under Node it needs `ioredis` installed
+(`npm i ioredis`), loaded only when `--to` is a Redis URL. Redis Cluster and Sentinel URLs are
+not supported.
+
 `--to-version` turns `forward` into a backfill job. It needs `--from-version` or `--from-time`
 (a saved cursor still wins), and the bound must already be history: the head is read once, and a
 bound above it fails. Nothing above the bound is sent. The run ends with exit `0` when the walk
@@ -3668,11 +3706,10 @@ streamd forward --to https://hooks.example.com/backfill --from-version 300000000
   --to-version 3001000000 --batch-size 100 0x1::coin::CoinDeposit
 ```
 
-Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST without moving the
-cursor; `1` when a batch fails past its retries, the subscription stops on an error, the
-cursor file cannot be read or written, or `--to-version` is above the head; `2` for invalid
-arguments. Run it under a supervisor
-that restarts on `1`.
+Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST or `XADD` without moving
+the cursor; `1` when a batch fails past its retries, the Redis client cannot be loaded, the
+subscription stops on an error, the cursor file cannot be read or written, or `--to-version` is
+above the head; `2` for invalid arguments. Run it under a supervisor that restarts on `1`.
 
 ### Alert on thresholds
 
