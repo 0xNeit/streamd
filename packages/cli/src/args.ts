@@ -792,6 +792,12 @@ function natsUrl(raw: string): string {
   if (url.search !== "" || url.hash !== "" || !/^\/?$/.test(url.pathname)) {
     throw new UsageError("--to nats:// takes no path, query or fragment");
   }
+  try {
+    decodeURIComponent(url.username);
+    decodeURIComponent(url.password);
+  } catch {
+    throw new UsageError("--to nats:// has a malformed percent-escape in its user or password");
+  }
   return url.protocol + raw.slice(url.protocol.length);
 }
 

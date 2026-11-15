@@ -327,6 +327,8 @@ describe("parseCommand forward", () => {
       [["--to", "nats://h/pw-s3cret", "--subject", "s", TYPE], /^--to nats:\/\/ takes no path, query or fragment$/],
       [["--to", "nats://h?pass=pw-s3cret", "--subject", "s", TYPE], /^--to nats:\/\/ takes no path, query or fragment$/],
       [["--to", "nats://h#pw-s3cret", "--subject", "s", TYPE], /^--to nats:\/\/ takes no path, query or fragment$/],
+      [["--to", "nats://u:pw-s3cret%zz@h", "--subject", "s", TYPE], /^--to nats:\/\/ has a malformed percent-escape/],
+      [["--to", "nats://pw-s3cret%zz@h", "--subject", "s", TYPE], /^--to nats:\/\/ has a malformed percent-escape/],
     ])("rejects %j without echoing the URL", (argv, pattern) => {
       let error: unknown;
       try {

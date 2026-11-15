@@ -163,7 +163,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
           : redisSink(await (io.redis ?? connectRedis)(options.to, options.timeout), { ...options, stream });
   } catch (err) {
     // The client's own errors are not known to leave the URL or password out.
-    io.error(`streamd: cannot open the Redis client: ${scrubber(options.to)(message(err))}`);
+    io.error(`streamd: cannot open the ${subject === undefined ? "Redis" : "NATS"} client: ${scrubber(options.to)(message(err))}`);
     return 1;
   }
   // Opening can await a dynamic import, long enough for a SIGINT to land before the listener below.

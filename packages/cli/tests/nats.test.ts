@@ -17,6 +17,8 @@ function fakeServer(
     info?: Record<string, unknown>;
     /** Answers CONNECT with this -ERR and closes, as nats-server does on bad credentials. */
     refuse?: string;
+    /** Holds the PONG to the client's PING until `release` is called. */
+    holdPong?(release: () => void): void;
     onPub?(socket: Socket<unknown>, pub: Pub, n: number): void;
   } = {},
 ) {
@@ -68,7 +70,8 @@ function fakeServer(
             buffer = Buffer.alloc(0);
             break;
           }
-          if (line === "PING") socket.write("PONG\r\n");
+          if (line === "PING" && options.holdPong !== undefined) options.holdPong(() => socket.write("PONG\r\n"));
+          else if (line === "PING") socket.write("PONG\r\n");
         }
         buffers.set(socket, buffer);
       },
@@ -176,6 +179,37 @@ describe("connectNats", () => {
     server = fake.server;
     const client = connectNats(`nats://u:wrong@127.0.0.1:${fake.server.port}`);
     await expect(client.request("s", {}, "[]", never)).rejects.toThrow("NATS -ERR 'Authorization Violation'");
+    expect(fake.pubs).toHaveLength(0);
+    client.close();
+  });
+
+  it.each([
+    ["MSG\r\n"],
+    ["MSG x 1 zz\r\n"],
+    ["MSG x 1 -5\r\n"],
+    ["HMSG x 1 9 4\r\n"],
+    [`MSG x 1 ${2 * 1024 * 1024}\r\n`],
+    ["x".repeat(70 * 1024)],
+  ])("fails the connection on a malformed reply %#, rather than spinning", async (frame) => {
+    const fake = fakeServer({ onPub: (socket) => socket.write(frame) });
+    server = fake.server;
+    const client = connectNats(fake.url);
+    await expect(client.request("s", {}, "[]", never)).rejects.toThrow(/^NATS server sent a (malformed H?MSG|line too long)/);
+    client.close();
+  });
+
+  it("never sends a publish aborted before the handshake finished", async () => {
+    let pong!: () => void;
+    const fake = fakeServer({ holdPong: (release) => (pong = release) });
+    server = fake.server;
+    const client = connectNats(fake.url);
+    const abort = new AbortController();
+    const pending = client.request("s", {}, "[]", abort.signal);
+    while (pong === undefined) await new Promise((r) => setTimeout(r, 5));
+    abort.abort(new Error("timed out"));
+    await expect(pending).rejects.toThrow("timed out");
+    pong();
+    await new Promise((r) => setTimeout(r, 30));
     expect(fake.pubs).toHaveLength(0);
     client.close();
   });

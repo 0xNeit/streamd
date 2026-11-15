@@ -27,6 +27,9 @@ interface Waiter<T> {
 }
 
 const DEFAULT_PORT = 4222;
+// Far above any reply this client waits for (a PubAck or a status), so a hostile or confused server cannot grow the buffer.
+const MAX_LINE = 64 * 1024;
+const MAX_MESSAGE = 1024 * 1024;
 const STATUS = /^NATS\/1\.0[ \t]+(\d{3})[ \t]*(.*)$/;
 
 /**
@@ -98,13 +101,20 @@ class Connection {
     this.buffer = this.buffer.length === 0 ? chunk : Buffer.concat([this.buffer, chunk]);
     while (!this.closed) {
       const end = this.buffer.indexOf("\r\n");
-      if (end < 0) return;
+      if (end < 0) {
+        if (this.buffer.length > MAX_LINE) this.fail(new Error("NATS server sent a line too long to be a protocol line"));
+        return;
+      }
       const line = this.buffer.subarray(0, end).toString();
       const [op = "", ...args] = line.split(/[ \t]+/);
       const verb = op.toUpperCase();
       if (verb === "MSG" || verb === "HMSG") {
         const total = Number(args.at(-1));
         const headerBytes = verb === "HMSG" ? Number(args.at(-2)) : 0;
+        // An unchecked NaN would leave the buffer where it is and spin this loop forever.
+        if (!Number.isSafeInteger(total) || !Number.isSafeInteger(headerBytes) || headerBytes < 0 || headerBytes > total || total > MAX_MESSAGE) {
+          return this.fail(new Error(`NATS server sent a malformed ${verb}`));
+        }
         if (this.buffer.length < end + 2 + total + 2) return;
         const block = this.buffer.subarray(end + 2, end + 2 + total);
         this.buffer = this.buffer.subarray(end + 4 + total);
