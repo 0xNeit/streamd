@@ -4148,8 +4148,8 @@ default and needs one. A round never overlaps the next, and a call that takes lo
   time from head blocks' timestamps (`null` when a node's block cannot be read). The leader reads
   `0`. The two come from separate reads, so they agree closely, not exactly.
 - **Requests, errors and `429`s** count every call the monitor made to a node, head, block and
-  comparison reads alike. Each node's requests go out once, without the SDK's own retries, so a
-  `429` reaches the monitor rather than being waited out. A node that answers `429` is set aside
+  comparison reads alike. Each node's requests go out once, without the SDK's own retries, and a timed-out one
+  is abandoned on Aptos, so a `429` reaches the monitor rather than being waited out. A node that answers `429` to any call, comparison reads included, is set aside
   for its `Retry-After`, or for one interval when it names none, as Aptos fullnode errors never
   do, so at least the next round skips it and reports `error: "429"`.
 - **The window** holds the rounds that started less than `--window` ago, at most 10,000.
@@ -4175,7 +4175,9 @@ this round's comparison with node `0`, `null` for node `0` and for a node not co
 has pruned its range makes node `0`'s walk fail with `410`, counted as an error on node `0`.
 
 `--format prometheus` prints each round as text exposition, rounds separated by a blank line, and
-`--listen` serves the latest at `GET /metrics` whatever `--format` prints. Gauges labelled
+`--listen` serves the latest at `GET /metrics` whatever `--format` prints. The endpoint has no
+authentication; it serves only counts, versions and node positions, but a host other than
+`127.0.0.1` makes it reachable by anyone on that network. Gauges labelled
 `node`: `streamd_monitor_up`, `streamd_monitor_head_version`, `streamd_monitor_lag_versions`,
 `streamd_monitor_lag_seconds`, `streamd_monitor_window_requests`, `streamd_monitor_window_errors`,
 `streamd_monitor_window_rate_limited`, and for nodes from `1` up `streamd_monitor_window_matched`
@@ -4185,8 +4187,8 @@ and the rest, by `node` and `method`), from which Prometheus computes its own ra
 
 `--api-key` goes to node `0` only; `APTOS_API_KEY` is not used, since every node is a URL given.
 `--archive`, `--cache` and `--stats` are refused: each would hide or repeat what the monitor
-measures. The defaults cost each node about four reads per 10 seconds, within the anonymous
-Aptos fullnode limit. Exit codes: `0` on Ctrl-C, `SIGTERM`, or after `--limit` rounds; `1` when
+measures. The defaults cost each node about four reads per 10 seconds, and node `0` one more walk
+per other node, within the anonymous Aptos fullnode limit for a few nodes. Exit codes: `0` on Ctrl-C, `SIGTERM`, or after `--limit` rounds; `1` when
 `--listen` cannot bind or stdout fails; `2` for invalid arguments. A node that is down never ends
 the command.
 

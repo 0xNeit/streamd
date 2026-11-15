@@ -1095,7 +1095,8 @@ function listenAddress(raw: string): { host: string; port: number } {
   const match = LISTEN.exec(raw);
   const port = match === null ? NaN : Number(match[2]);
   if (!(port >= 1 && port <= 65535)) throw new UsageError(`--listen must be a port or host:port, the port 1 to 65535: ${raw}`);
-  return { host: match![1] ?? "127.0.0.1", port };
+  // An IPv6 host is written in brackets, which listen() does not take.
+  return { host: match![1]?.replace(/^\[(.*)\]$/, "$1") ?? "127.0.0.1", port };
 }
 
 function parseMonitor(args: string[]): ParsedCommand {

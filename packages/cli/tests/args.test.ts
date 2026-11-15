@@ -1423,6 +1423,7 @@ describe("parseCommand monitor", () => {
       limit: 3,
     });
     expect(monitor("--listen", "0.0.0.0:9464").listen).toEqual({ host: "0.0.0.0", port: 9464 });
+    expect(monitor("--listen", "[::1]:9464").listen).toEqual({ host: "::1", port: 9464 });
     expect(monitor("--window", "30s").window).toBe(30_000);
     expect(monitor("--account", ADDR).descriptor).toEqual({ kind: "account", accountAddress: LONG_ADDR });
     expect(parseCommand(["monitor", "--help"])).toEqual({ command: "help" });

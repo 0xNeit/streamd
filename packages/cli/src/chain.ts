@@ -13,8 +13,11 @@ export interface Chain {
   client(): StreamdClient & Pick<AptosClient, "eventsOf" | "transfers" | "getTransfers" | "balances">;
   /** An adapter over the endpoint's nodes, or over `nodeUrl` alone, which gets no API key. */
   adapter(nodeUrl?: string): HeadAdapter;
-  /** One adapter per node, unpooled and uncounted, the first with the API key, each request sent once. */
-  nodes(): HeadAdapter[];
+  /**
+   * One adapter per node, unpooled and uncounted, the first with the API key,
+   * each request sent once and, on Aptos, abandoned after `timeout` ms.
+   */
+  nodes(timeout?: number): HeadAdapter[];
   check(descriptor: ModuleEventDescriptor): Promise<TypeChecks>;
   /** The long-form address a name points to; an address comes back in long form with no read. */
   resolveName(nameOrAddress: string): Promise<string>;
@@ -44,18 +47,28 @@ export function aptosConfig(options: Pick<Endpoint, "network" | "nodeUrl" | "api
 }
 
 /**
- * Each request once, through fetch. The SDK's own client retries a 429 twice,
- * waiting out its Retry-After, which would hide from `monitor` the throttling
- * it reports and spend the rate limit doing so.
+ * A client sending each request once, through fetch, abandoned after
+ * `timeout` ms. The SDK's own client retries a 429 twice, waiting out its
+ * Retry-After, which would hide from `monitor` the throttling it reports and
+ * spend the rate limit doing so.
  */
-export async function sendOnce(request: ClientRequest<unknown>): Promise<ClientResponse<unknown>> {
+export function sendOnce(timeout?: number): Client {
+  return { provider: (request) => send(request, timeout) } as Client;
+}
+
+async function send(request: ClientRequest<unknown>, timeout: number | undefined): Promise<ClientResponse<unknown>> {
   const url = new URL(request.url);
   for (const [key, value] of Object.entries(request.params ?? {})) {
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
   const headers = Object.fromEntries(Object.entries(request.headers ?? {}).filter(([, value]) => value !== undefined));
   const body = request.body === undefined ? undefined : request.body instanceof Uint8Array ? request.body : JSON.stringify(request.body);
-  const response = await fetch(url, { method: request.method, headers, ...(body !== undefined && { body }) });
+  const response = await fetch(url, {
+    method: request.method,
+    headers,
+    ...(body !== undefined && { body }),
+    ...(timeout !== undefined && { signal: AbortSignal.timeout(timeout) }),
+  });
   const text = await response.text();
   let data: unknown = text;
   try {
@@ -66,9 +79,7 @@ export async function sendOnce(request: ClientRequest<unknown>): Promise<ClientR
   return { status: response.status, statusText: response.statusText, data, headers: Object.fromEntries(response.headers) };
 }
 
-const ONCE = { provider: sendOnce } as Client;
-
-export type HeadAdapter = EventAdapter & { getHeadVersion(): Promise<bigint> };
+type HeadAdapter = EventAdapter & { getHeadVersion(): Promise<bigint> };
 
 /**
  * `first` itself, or reads spread over it and `others` through `PoolAdapter`,
@@ -109,7 +120,7 @@ function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: R
   return {
     client: () => new AptosClient({ aptos: new Aptos(config), adapter: reads() }),
     adapter: (nodeUrl) => (nodeUrl === undefined ? reads() : node(nodeUrl)),
-    nodes: () => nodes(ONCE),
+    nodes: (timeout) => nodes(sendOnce(timeout)),
     check: (descriptor) => checkDescriptor(new Aptos(config), descriptor),
     resolveName: (value) => resolveName(new Aptos(config), value),
     primaryName: (address) => primaryName(new Aptos(config), address),

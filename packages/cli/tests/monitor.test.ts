@@ -294,3 +294,44 @@ describe("serveMetrics", () => {
     }
   });
 });
+
+describe("runMonitor repairs", () => {
+  it("sets a node aside when a compare read answers 429", async () => {
+    const all = Array.from({ length: 30 }, (_, i) => ev(i + 1));
+    let heads = 0;
+    const throttled: EventAdapter = {
+      fetchEvents: async () => Promise.reject(new StreamdNetworkError("slow down", 429, undefined, 1500)),
+      getHeadVersion: async () => (heads++, 30n),
+    };
+    const { lines } = await run([memory(30n, all), throttled], { limit: 3 });
+    expect(lines.map((l) => l.nodes[1].error)).toEqual([null, "429", null]);
+    expect(heads).toBe(2);
+    expect(lines[2]!.nodes[1].window).toMatchObject({ rateLimited: 2 });
+  });
+
+  it("removes its abort listener after every round", async () => {
+    const controller = new AbortController();
+    let listening = 0;
+    const add = controller.signal.addEventListener.bind(controller.signal);
+    const remove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.addEventListener = ((...args: Parameters<typeof add>) => (listening++, add(...args))) as typeof add;
+    controller.signal.removeEventListener = ((...args: Parameters<typeof remove>) => (listening--, remove(...args))) as typeof remove;
+    await run([node([1n]), node([1n])], { limit: 50 }, controller.signal);
+    expect(listening).toBe(0);
+  });
+
+  it("renders lag in seconds, and publishes Prometheus text under --format json", async () => {
+    let clock = 0;
+    const published: string[] = [];
+    await runMonitor({ ...OPTIONS, limit: 1 }, {
+      nodes: [node([10n], [3_000_000n]), node([10n], [2_750_000n])],
+      write: () => {},
+      publish: (t) => void published.push(t),
+      signal: new AbortController().signal,
+      now: () => clock,
+      sleep: async (ms) => void (clock += ms),
+    });
+    expect(published).toHaveLength(1);
+    expect(published[0]!.split("\n")).toContain('streamd_monitor_lag_seconds{node="1"} 0.25');
+  });
+});

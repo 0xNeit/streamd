@@ -29,8 +29,12 @@ const CALLS = ["getHeadVersion", "getBlockHeights", "getBlock", "fetchEvents"] a
 
 class Timeout extends StreamdNetworkError {}
 
-/** `adapter` with each call the monitor makes rejected after `ms`, so one silent node cannot stall a round. */
-function timed(adapter: EventAdapter, ms: number): EventAdapter {
+/**
+ * `adapter` with each call the monitor makes rejected after `ms`, so one
+ * silent node cannot stall a round, and every failure, compare reads
+ * included, passed to `failed` before it is rethrown.
+ */
+function timed(adapter: EventAdapter, ms: number, failed: (err: unknown) => void): EventAdapter {
   const out = {} as EventAdapter;
   for (const method of CALLS) {
     const call = adapter[method] as ((...args: unknown[]) => Promise<unknown>) | undefined;
@@ -43,6 +47,9 @@ function timed(adapter: EventAdapter, ms: number): EventAdapter {
         });
         try {
           return await Promise.race([call.apply(adapter, args), timeout]);
+        } catch (err) {
+          failed(err);
+          throw err;
         } finally {
           clearTimeout(timer);
         }
@@ -136,11 +143,11 @@ class Monitor {
     now: () => number,
   ) {
     this.now = now;
-    this.nodes = adapters.map((adapter) => ({
-      metrics: adapterMetrics(timed(adapter, options.interval)),
-      until: -Infinity,
-      totals: { requests: 0, errors: 0, rateLimited: 0 },
-    }));
+    this.nodes = adapters.map((adapter) => {
+      const node = { until: -Infinity, totals: { requests: 0, errors: 0, rateLimited: 0 } } as Node;
+      node.metrics = adapterMetrics(timed(adapter, options.interval, (err) => this.failed(node, err)));
+      return node;
+    });
   }
 
   /** A 429 sets the node aside for its `retryAfter`, or until after the next round. */
@@ -156,8 +163,7 @@ class Monitor {
     try {
       const { newest } = await adapter.getBlockHeights(this.options.descriptor);
       return (await adapter.getBlock(this.options.descriptor, newest)).timestamp;
-    } catch (err) {
-      this.failed(node, err);
+    } catch {
       return undefined;
     }
   }
@@ -169,7 +175,6 @@ class Monitor {
       const timestamp = await this.headTime(node);
       return timestamp === undefined ? { error: null, head } : { error: null, head, timestamp };
     } catch (err) {
-      this.failed(node, err);
       return { error: code(err) };
     }
   }
@@ -185,7 +190,8 @@ class Monitor {
     await Promise.all(readings.map(async (reading, i) => {
       if (i === 0 || reading.head === undefined) return;
       const toVersion = reading.head < reference ? reading.head : reference;
-      const fromVersion = toVersion - BigInt(range) + 1n > 0n ? toVersion - BigInt(range) + 1n : 0n;
+      const start = toVersion - BigInt(range) + 1n;
+      const fromVersion = start > 0n ? start : 0n;
       const report = await compareAdapters(this.nodes[0]!.metrics.adapter, this.nodes[i]!.metrics.adapter, descriptor, {
         fromVersion,
         toVersion,
@@ -313,10 +319,12 @@ export function serveMetrics(listen: { host: string; port: number }, latest: () 
   });
 }
 
-function aborted(signal: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal.aborted) resolve();
-    else signal.addEventListener("abort", () => resolve(), { once: true });
+/** `round`, or undefined as soon as `signal` aborts; the listener goes when the round settles. */
+function untilAborted<T>(round: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  return new Promise((resolve, reject) => {
+    const stop = () => resolve(undefined);
+    signal.addEventListener("abort", stop, { once: true });
+    round.then(resolve, reject).finally(() => signal.removeEventListener("abort", stop));
   });
 }
 
@@ -331,10 +339,9 @@ export async function runMonitor(options: MonitorOptions, io: MonitorIO): Promis
   const now = io.now ?? Date.now;
   const wait = io.sleep ?? sleep;
   const monitor = new Monitor(options, io.nodes, now);
-  const stopped = aborted(io.signal);
   for (let index = 1; !io.signal.aborted; index++) {
     const started = now();
-    const round = await Promise.race([monitor.round(index), stopped]);
+    const round = await untilAborted(monitor.round(index), io.signal);
     if (round === undefined || io.signal.aborted) break;
     io.publish?.(round.prometheus);
     try {

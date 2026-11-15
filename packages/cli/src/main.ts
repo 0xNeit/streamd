@@ -349,7 +349,7 @@ async function monitor(options: MonitorOptions): Promise<number> {
   const out = stdout(controller);
   try {
     const code = await runMonitor(options, {
-      nodes: (await chainFor(options)).nodes(),
+      nodes: (await chainFor(options)).nodes(options.interval),
       write: out.write,
       publish: (text) => void (latest = text),
       signal: controller.signal,

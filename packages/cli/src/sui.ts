@@ -40,6 +40,7 @@ export async function suiChain(endpoint: Endpoint, stats?: RequestStats): Promis
   return {
     client: () => new sui.SuiClient({ sui: node, adapter: reads() }),
     adapter: (nodeUrl) => (nodeUrl === undefined ? reads() : new sui.SuiAdapter(grpc(nodeUrl))),
+    // ponytail: gRPC calls are not cancelled at the monitor's timeout; pass a per-call signal if hung Sui nodes pile up.
     nodes,
     check: (descriptor) => sui.checkDescriptor(node, descriptor),
     resolveName: (value) => sui.resolveName(node, value),
