@@ -281,7 +281,6 @@ export class AptosClient extends StreamdClient {
         const seen = new Set<string>();
         let cursor: string | undefined;
         do {
-
           signal.throwIfAborted();
           const page = await this.aptos.getAccountModulesPage({ accountAddress: at, options: { ledgerVersion: version, cursor, limit: 1000 } });
           modules.push(...page.modules);
