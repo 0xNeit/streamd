@@ -3683,7 +3683,9 @@ The reply to `XADD`, the new entry's id, is the acknowledgement, and the cursor 
 after it, exactly as after a webhook's `2xx`. It means the primary accepted the entry; streamd does
 not wait for replicas or the append-only file. Connection failures, timeouts and transient
 replies such as `LOADING`, `READONLY` or `OOM` are retried with the same backoff and `--retries`
-budget; `ERR`, `WRONGTYPE`, `NOPERM`, `NOAUTH` and `WRONGPASS` fail at once. `--timeout` bounds
+budget; `ERR`, `WRONGTYPE`, `NOPERM`, `NOAUTH` and `WRONGPASS` fail at once. Bun's client
+reports a refused handshake, such as a wrong password, as a closed connection, so under Bun that
+is retried through the budget before exiting `1`. `--timeout` bounds
 each `XADD`, and a timed-out one drops the connection so the retry opens a fresh one; it may
 still have landed, which at least once allows. A Redis restart mid-run is retried the same way,
 reconnecting on the next attempt. `--header` is refused, since an entry has no headers, and the
