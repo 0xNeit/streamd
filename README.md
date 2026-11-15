@@ -2236,14 +2236,16 @@ const past = await streamd.getUpgrades("0x1", { fromVersion: 7454757100n, toVers
   `#[event]` is an added event, and a public function that becomes a view an added view. The
   diff spans the whole address, so another package there would show too, though only one is
   published per transaction in practice; a second publish there in one transaction adds no
-  record.
+  record when both are on one page, as a `FullnodeScanAdapter` page always holds whole
+  transactions.
 - **Signatures.** An `EventStructSignature` is `{ name, abilities, typeParameters, fields,
   variants? }` (`variants` for an enum) and a `FunctionSignature` `{ name, visibility,
   typeParameters, params, returns }`, types as the fullnode writes them. Public functions that
   are neither entry nor view, plain structs and bytecode-only changes are not reported.
 - **Reads.** Two module listings per publish (one at version 0), read two at a time outside
   `maxConcurrentRequests`, as `transfers()` reads stores. `requestTimeout` bounds the whole page,
-  its scan and every listing in it together, and a page given up on reads nothing more. A
+  its scan and every listing in it together, and a page given up on stops reading once the next
+  page arrives. A
   failed read fails the poll, which retries as for `on()`, or rejects `getUpgrades`; a module
   without a readable ABI is refused rather than reported as removed. The reads do not go
   through the adapter, so `ArchiveFallbackAdapter` does not answer them: a publish older than

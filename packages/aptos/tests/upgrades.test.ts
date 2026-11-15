@@ -281,6 +281,41 @@ describe("getUpgrades", () => {
     expect(cursors).toEqual([undefined, "next"]);
   });
 
+  it("refuses a module listing whose cursor repeats", async () => {
+    const aptos = makeAptos();
+    let calls = 0;
+    Object.assign(aptos, { getAccountModulesPage: async () => (calls++, { modules: V1, cursor: "same" }) });
+    const client = testClient({ adapter: new MemoryAdapter([publish(0, 0, A, false)]), aptos });
+    await expect(client.getUpgrades(A, { fromVersion: 0n })).rejects.toThrow("repeated a module listing cursor");
+    expect(calls).toBe(2);
+  });
+
+  it("stops paging a listing once its page is given up on", async () => {
+    const aptos = makeAptos();
+    const cursors: (string | undefined)[] = [];
+    let release = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    Object.assign(aptos, {
+      getAccountModulesPage: async ({ options }: { options: { cursor?: string } }) => {
+        cursors.push(options.cursor);
+        await gate;
+        return { modules: V1, cursor: options.cursor === undefined ? "next" : undefined };
+      },
+    });
+    let n = 0;
+    const pages = [[publish(0, 0, A, false)], []];
+    const client = testClient({ adapter: new MemoryAdapter([]), aptos });
+    const wrap = (client as unknown as { upgradesOf(a: string): (s: unknown) => { fetchEvents: (d: unknown, o: unknown) => Promise<unknown> } }).upgradesOf(A);
+    const source = wrap({ fetchEvents: async () => ({ events: pages[n++]!, nextCursor: "", hasMore: false }) });
+    const abandoned = source.fetchEvents(UPGRADE_DESCRIPTOR, { fromVersion: 0n });
+    abandoned.catch(() => {});
+    await new Promise((r) => setTimeout(r, 5));
+    await source.fetchEvents(UPGRADE_DESCRIPTOR, { fromVersion: 0n });
+    release();
+    await new Promise((r) => setTimeout(r, 5));
+    expect(cursors).toEqual([undefined]);
+  });
+
   it("refuses an address that is not a string at the call", () => {
     const client = testClient({ adapter: new MemoryAdapter([]) });
     expect(() => client.getUpgrades(42 as never)).toThrow("upgrades needs an address or Aptos name");
@@ -336,17 +371,17 @@ describe("upgrades", () => {
 describe("upgradeSource", () => {
   const range = { fromVersion: 0n, limit: 10 };
 
-  it("ignores other event types and adds no record for a transaction cut across pages", async () => {
+  it("ignores other event types, and delivers a page fetched again in full", async () => {
     const reads: bigint[] = [];
     const stray = { ...publish(7, 0, A), type: "0xbad::code::PublishPackage" };
-    const pages = [[stray, publish(8, 0, A)], [publish(8, 3, A), publish(9, 0, A)]];
-    let n = 0;
-    const one = upgradeSource({ fetchEvents: async () => ({ events: pages[n++]!, nextCursor: "", hasMore: false }) }, async () => A, async (_a, v) => (reads.push(v), V1));
-    const first = await one.fetchEvents(UPGRADE_DESCRIPTOR, range);
-    const second = await one.fetchEvents(UPGRADE_DESCRIPTOR, range);
-    expect(first.events.map((e) => e.version)).toEqual([8n]);
-    expect(second.events.map((e) => e.version)).toEqual([9n]);
-    expect(reads.sort((x, y) => Number(x - y))).toEqual([7n, 8n, 8n, 9n]);
+    const events = [stray, publish(8, 0, A), publish(8, 3, A), publish(9, 0, A)];
+    const source = upgradeSource({ fetchEvents: async () => ({ events, nextCursor: "", hasMore: false }) }, async () => A, async (_a, v) => (reads.push(v), V1));
+    const first = await source.fetchEvents(UPGRADE_DESCRIPTOR, range);
+    // A caller retrying the page, after a failed where or a pause, gets it all again.
+    const again = await source.fetchEvents(UPGRADE_DESCRIPTOR, range);
+    expect(first.events.map((e) => e.version)).toEqual([8n, 9n]);
+    expect(again.events.map((e) => e.version)).toEqual([8n, 9n]);
+    expect(reads.sort((x, y) => Number(x - y))).toEqual([7n, 7n, 8n, 8n, 8n, 8n, 9n, 9n]);
   });
 
   it("stops a page given up on from reading more once the next page starts", async () => {
@@ -369,7 +404,7 @@ describe("upgradeSource", () => {
     await new Promise((r) => setTimeout(r, 5));
     await source.fetchEvents(UPGRADE_DESCRIPTOR, range);
     release();
-    await expect(abandoned).rejects.toThrow("Superseded by a later page");
+    await expect(abandoned).rejects.toBeInstanceOf(StreamdNetworkError);
     await new Promise((r) => setTimeout(r, 5));
     expect(reads.sort((x, y) => Number(x - y))).toEqual([9n, 10n]);
   });

@@ -1,4 +1,4 @@
-import { RequestLimiter, StreamdError, normalizeAddress } from "@streamd/core";
+import { RequestLimiter, StreamdError, StreamdNetworkError, normalizeAddress } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, StreamdEvent } from "@streamd/core";
 import type { MoveModuleBytecode } from "@aptos-labs/ts-sdk";
 import { addr, malformed, pageSource } from "./records.js";
@@ -9,8 +9,8 @@ import type { AbiChanges, EventStructSignature, FunctionSignature, PackageUpgrad
 const PUBLISH = "0x1::code::PublishPackage";
 export const UPGRADE_DESCRIPTOR: ModuleEventDescriptor = { kind: "module", eventType: PUBLISH };
 
-/** Every module at `address` as of `version`, as the fullnode lists them. */
-export type ModuleReader = (address: string, version: bigint) => Promise<MoveModuleBytecode[]>;
+/** Every module at `address` as of `version`, as the fullnode lists them; stops paging once `signal` aborts. */
+export type ModuleReader = (address: string, version: bigint, signal: AbortSignal) => Promise<MoveModuleBytecode[]>;
 
 type Raw = Record<string, unknown>;
 
@@ -134,24 +134,22 @@ export function diffModules(
  * `read` returns at the version before it and at its own. The reads run two
  * at a time through a limiter of their own, as the page fetch already holds
  * a slot of the client's, whose `requestTimeout` bounds the whole page; a
- * failed read fails the page. A second publish there in one transaction adds
- * no record, since the diff already spans the transaction.
+ * failed read fails the page. A second publish there in one transaction on
+ * the page adds no record, since the diff already spans the transaction.
  */
 export function upgradeSource(adapter: EventAdapter, account: () => Promise<string>, read: ModuleReader): EventAdapter {
   const limiter = new RequestLimiter(2);
   // Pages are read one at a time, so one still reading when the next starts was
   // given up on (timed out or aborted): its queued reads leave, and it reads no more.
   let page = new AbortController();
-  // The version of the last record a finished page made: a walk ascends, so a
-  // transaction cut across pages shows here.
-  let last: bigint | undefined;
   return pageSource(adapter, async (events) => {
-    page.abort(new StreamdError("Superseded by a later page"));
+    // A network error, so a caller still holding the page retries rather than stops.
+    page.abort(new StreamdNetworkError("Superseded by a later page"));
     const { signal } = (page = new AbortController());
     if (events.length === 0) return [];
     const at = await account();
     const records: StreamdEvent<PackageUpgrade>[] = [];
-    let newest = last;
+    let newest: bigint | undefined;
     for (const event of events) {
       if (event.type !== PUBLISH) continue;
       const d = event.data as Fields | null;
@@ -159,12 +157,11 @@ export function upgradeSource(adapter: EventAdapter, account: () => Promise<stri
       if (addr(d.code_address, event) !== at || event.version === newest) continue;
       newest = event.version;
       const [before, after] = await Promise.all([
-        event.version === 0n ? [] : limiter.run(() => read(at, event.version - 1n), signal, signal),
-        limiter.run(() => read(at, event.version), signal, signal),
+        event.version === 0n ? [] : limiter.run(() => read(at, event.version - 1n, signal), signal, signal),
+        limiter.run(() => read(at, event.version, signal), signal, signal),
       ]);
       records.push({ ...event, data: { address: at, isUpgrade: d.is_upgrade, ...diffModules(before, after) } });
     }
-    last = newest;
     return records;
   });
 }

@@ -1,5 +1,5 @@
 import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, toStreamdError, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, StreamdNetworkError, checkTimeout, toStreamdError, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -275,14 +275,19 @@ export class AptosClient extends StreamdClient {
     const who = this.accountOf(address)!;
     // Paged by hand: the SDK's getAccountModules stops at 1000 modules in all, and a
     // short listing would read as removed signatures.
-    const read = async (at: string, version: bigint) => {
+    const read = async (at: string, version: bigint, signal: AbortSignal) => {
       try {
         const modules = [];
+        const seen = new Set<string>();
         let cursor: string | undefined;
         do {
+
+          signal.throwIfAborted();
           const page = await this.aptos.getAccountModulesPage({ accountAddress: at, options: { ledgerVersion: version, cursor, limit: 1000 } });
           modules.push(...page.modules);
           cursor = page.cursor;
+          if (cursor !== undefined && seen.has(cursor)) throw new StreamdNetworkError("Fullnode repeated a module listing cursor");
+          if (cursor !== undefined) seen.add(cursor);
         } while (cursor !== undefined);
         return modules;
       } catch (err) {
