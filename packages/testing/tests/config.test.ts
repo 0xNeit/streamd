@@ -17,6 +17,18 @@ describe("localnetPorts", () => {
     expect((await localnetPorts(65528)).public).toBe(65535);
   });
 
+  it("refuses a basePort whose block holds a port already taken", async () => {
+    const { createServer } = await import("node:net");
+    const server = createServer();
+    await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+    const taken = (server.address() as { port: number }).port;
+    try {
+      await expect(localnetPorts(taken - 3)).rejects.toThrow("A localnet port is not free");
+    } finally {
+      server.close();
+    }
+  });
+
   it("refuses a basePort that is not an integer or leaves the range", async () => {
     for (const bad of [1023, 65529, 20000.5, Number.NaN, -1]) {
       await expect(localnetPorts(bad)).rejects.toThrow(StreamdError);

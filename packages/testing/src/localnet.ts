@@ -18,7 +18,7 @@ export interface LocalnetOptions {
   basePort?: number;
   /** How long to wait for the node and faucet, in ms (default 60000). */
   readyTimeout?: number;
-  /** Config for `client`; `defaults.pollInterval` is 100 unless given. */
+  /** Config for `client`; `defaultPollInterval` is 100 unless given. */
   client?: LocalnetClientConfig;
 }
 
@@ -83,11 +83,15 @@ export async function startLocalnet(options: LocalnetOptions = {}): Promise<Loca
     const override = join(dir, "override.yaml");
     await writeFile(override, configOverride(ports));
     const node = await startNode(cli, runLocalnetArgs(join(dir, "node"), override, ports), `http://127.0.0.1:${ports.ready}/`, readyTimeout);
-    const urls = { nodeUrl: `http://127.0.0.1:${ports.api}/v1`, faucetUrl: `http://127.0.0.1:${ports.faucet}` };
-    return new RunningLocalnet(urls.nodeUrl, urls.faucetUrl, cli, options.client, ports, async () => {
+    try {
+      return new RunningLocalnet(`http://127.0.0.1:${ports.api}/v1`, `http://127.0.0.1:${ports.faucet}`, cli, options.client, ports, async () => {
+        await node.stop();
+        await rm(dir, { recursive: true, force: true });
+      });
+    } catch (err) {
       await node.stop();
-      await rm(dir, { recursive: true, force: true });
-    });
+      throw err;
+    }
   } catch (err) {
     await rm(dir, { recursive: true, force: true });
     throw err;
@@ -123,7 +127,7 @@ class RunningLocalnet implements Localnet {
     this.aptos = new Aptos(
       new AptosConfig({ network: Network.LOCAL, fullnode: nodeUrl, faucet: faucetUrl, clientConfig: { http2: false } }),
     );
-    this.client = new AptosClient({ ...config, aptos: this.aptos, defaults: { pollInterval: 100, ...config?.defaults } });
+    this.client = new AptosClient({ defaultPollInterval: 100, ...config, aptos: this.aptos });
   }
 
   async fundedAccount(amount: number = DEFAULT_FUNDING): Promise<Account> {

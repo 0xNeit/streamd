@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { connect } from "node:net";
 import { StreamdAssertionError, StreamdError, whereField } from "@streamd/core";
 import { startLocalnet, type Localnet } from "../../src/index.js";
 
@@ -30,8 +31,12 @@ async function bumpAndAssert(localnet: Localnet) {
   expect(() => localnet.client.on(bumped, () => {}, { withNames: true })).toThrow(StreamdError);
 }
 
-async function listening(url: string): Promise<boolean> {
-  return fetch(url).then(() => true, () => false);
+function listening(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = connect(port, "127.0.0.1");
+    socket.once("connect", () => (socket.destroy(), resolve(true)));
+    socket.once("error", () => resolve(false));
+  });
 }
 
 describe.skipIf(!enabled)("startLocalnet (aptos CLI)", () => {
@@ -44,7 +49,7 @@ describe.skipIf(!enabled)("startLocalnet (aptos CLI)", () => {
       await Promise.all(localnets.map((localnet) => localnet.stop()));
     }
     for (const localnet of localnets) {
-      for (const port of Object.values(localnet.ports!)) expect(await listening(`http://127.0.0.1:${port}/`)).toBe(false);
+      for (const port of Object.values(localnet.ports!)) expect(await listening(port)).toBe(false);
     }
   }, 180_000);
 });

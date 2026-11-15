@@ -47,6 +47,17 @@ describe("startNode", () => {
     expect(await listening(url)).toBe(false);
   });
 
+  it("refuses to start when something already answers the ready check", async () => {
+    const { node, url } = await start("ready");
+    try {
+      const err = await startNode(FAKE, ["node", "run-localnet"], url, 1000).catch((e) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err.message).toContain("already serving a localnet ready check");
+    } finally {
+      await node.stop();
+    }
+  });
+
   it("says the CLI must be installed when it is missing", async () => {
     const err = await startNode("/nonexistent/aptos", [], "http://127.0.0.1:1/", 1000).catch((e) => e);
     expect(err).toBeInstanceOf(StreamdError);

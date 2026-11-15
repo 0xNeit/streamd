@@ -6,6 +6,10 @@ const flag = (name: string) => args[args.indexOf(name) + 1];
 
 if (args[0] === "node" && args[1] === "run-localnet") {
   console.log(`args ${JSON.stringify(args)}`);
+  if (process.env.FAKE_APTOS_LOG !== undefined) {
+    const override = await Bun.file(flag("--test-config-override")).text().catch(() => "");
+    await Bun.write(process.env.FAKE_APTOS_LOG, JSON.stringify({ args, override }));
+  }
   if (mode === "exit") {
     console.error("error binding to 127.0.0.1:9101: Address already in use");
     process.exit(1);

@@ -772,15 +772,17 @@ await localnet.client.expectEvents(hash).toEmit({ kind: "module", eventType: `${
   time is killed and rejects with `StreamdTimeoutError`.
 - **Ports.** Each instance takes eight loopback ports, so several run at once: the ready server,
   REST API, faucet, inspection, admin, backup service, and the validator and public network
-  listeners. They are free ports the OS picks, or eight consecutive from `basePort`, and
-  `localnet.ports` lists them. The node also opens two random ports of its own, one on every
+  listeners. They are free ports the OS picks, or eight consecutive from `basePort`, each checked
+  free first, and `localnet.ports` lists them. A start refuses a ready port something already
+  answers on, so it never hands back another process's node. The node also opens two random ports of its own, one on every
   interface.
 - **Attach.** `attachLocalnet({ nodeUrl, faucetUrl? })` uses a node already running, such as
   `http://127.0.0.1:8080/v1`; it reads the ledger once so an unreachable node fails at once, and
   `stop()` leaves that node running.
 - **The client.** `localnet.client` is an `AptosClient` on `localnet.aptos` (an `Aptos` on
-  `Network.LOCAL` with `http2: false`). Its `defaults.pollInterval` is 100 ms, so `eventsOf` and
-  `expectEvents` see a commit within about 100 ms; `client` in the options sets any other config.
+  `Network.LOCAL` with `http2: false`). It polls every 100 ms, so `eventsOf` and `expectEvents`
+  see a commit within about 100 ms; the `client` option takes any other `AptosClient` config,
+  `defaultPollInterval` or `defaults.pollInterval` included.
   A localnet has no Aptos names, so `withNames` is refused there.
 - **Accounts.** `fundedAccount(amount?)` generates an account and funds it through the faucet,
   10 APT by default, enough for the SDK's default gas limit.
@@ -794,7 +796,9 @@ await localnet.client.expectEvents(hash).toEmit({ kind: "module", eventType: `${
   dependency resolves from the CLI's own cache when its `rev` is the CLI's release tag, such as
   `rev = "aptos-cli-v9.4.0"` for CLI 9.4.0. Another `rev` is fetched from GitHub on first use.
 - **Stop.** `stop()` (or `await using`) destroys the client, sends the node SIGINT, kills it after
-  20 s, and removes its directory. A node still running when the test process exits is killed.
+  20 s, and removes its directory. Call it in a `finally` or `afterAll`, or use `await using`:
+  the node is also killed if the process exits normally while it runs, but not when the process
+  is killed by a signal, and `bun test` does not run that hook for a failed test either.
 - **Its own test.** `bun run test:localnet` in `packages/testing` starts two localnets side by
   side and asserts a published package's events on each; the normal test run skips it.
 

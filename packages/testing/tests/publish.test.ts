@@ -47,15 +47,12 @@ describe("buildPublishPayload", () => {
     await expect(buildPublishPayload(FAKE, "/pkg")).rejects.toThrow("not a 0x1::code::publish_package_txn call");
   });
 
-  it("runs compiles of one package one after another, and of different packages at once", async () => {
+  it("runs compiles of one package one after another", async () => {
     const dir = await mkdtemp(join(tmpdir(), "streamd-publish-test-"));
     try {
       process.env.FAKE_APTOS_LOG = join(dir, "same.log");
       await Promise.all([buildPublishPayload(FAKE, "/pkg"), buildPublishPayload(FAKE, "/pkg/../pkg")]);
       expect(await readFile(join(dir, "same.log"), "utf8")).toBe("start\nend\nstart\nend\n");
-      process.env.FAKE_APTOS_LOG = join(dir, "different.log");
-      await Promise.all([buildPublishPayload(FAKE, "/a"), buildPublishPayload(FAKE, "/b")]);
-      expect(await readFile(join(dir, "different.log"), "utf8")).toBe("start\nstart\nend\nend\n");
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

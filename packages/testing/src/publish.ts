@@ -13,6 +13,7 @@ export interface PublishPayload {
 
 const MOVE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const HEX_BYTES = /^0x(?:[0-9a-fA-F]{2})+$/;
+const OUTPUT_CHARS = 16_000;
 // The CLI compiles into the package's own build/, so two compiles of one package must not overlap.
 const compiling = new Map<string, Promise<unknown>>();
 
@@ -81,9 +82,10 @@ function run(cli: string, args: string[], failure: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(cli, args, { stdio: ["ignore", "pipe", "pipe"] });
     let output = "";
-    child.stdout?.on("data", (chunk: Buffer) => (output += chunk));
-    child.stderr?.on("data", (chunk: Buffer) => (output += chunk));
-    child.once("error", (err) => reject(spawnError(cli, err)));
+    const keep = (chunk: Buffer) => (output = (output + chunk).slice(-OUTPUT_CHARS));
+    child.stdout?.on("data", keep);
+    child.stderr?.on("data", keep);
+    child.on("error", (err) => reject(spawnError(cli, err)));
     child.once("close", (code) => (code === 0 ? resolve() : reject(new StreamdError(`${failure}:\n${output.trim()}`))));
   });
 }

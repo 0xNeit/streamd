@@ -19,6 +19,10 @@ export async function startNode(
   readyTimeout: number,
   stopGrace = STOP_GRACE,
 ): Promise<NodeProcess> {
+  // Anything already answering would pass the ready check in place of this node.
+  if (await isReady(readyUrl, AbortSignal.timeout(2000))) {
+    throw new StreamdError(`Something is already serving a localnet ready check at ${readyUrl}`);
+  }
   const child = spawn(cli, args, { stdio: ["ignore", "pipe", "pipe"] });
   const output: string[] = [];
   const keep = (chunk: Buffer) => {
@@ -28,14 +32,15 @@ export async function startNode(
   child.stdout?.on("data", keep);
   child.stderr?.on("data", keep);
 
-  // A test run that ends without stop() must not leave a validator holding its ports.
+  // Best effort for a process that exits without stop(); it does not run when
+  // the process is killed by a signal, and test runners may not exit normally.
   const killOnExit = () => child.kill("SIGKILL");
   process.on("exit", killOnExit);
   const exited = new Promise<void>((resolve) => child.once("close", () => resolve()));
   exited.then(() => process.off("exit", killOnExit));
 
   const failed = new Promise<never>((_, reject) => {
-    child.once("error", (err) => reject(spawnError(cli, err)));
+    child.on("error", (err) => reject(spawnError(cli, err)));
     exited.then(() => reject(new StreamdError(`The localnet exited before it was ready:\n${output.join("\n")}`)));
   });
 
@@ -60,6 +65,9 @@ export async function startNode(
         throw new StreamdTimeoutError(`The localnet was not ready after ${readyTimeout}ms:\n${output.join("\n")}`, readyTimeout);
       }),
     ]);
+    if (child.exitCode !== null || child.signalCode !== null) {
+      throw new StreamdError(`The localnet exited before it was ready:\n${output.join("\n")}`);
+    }
   } catch (err) {
     await kill(child, exited);
     throw err;
