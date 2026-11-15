@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
-import { StreamdError } from "@streamd/core";
-import type { StreamdEvent } from "@streamd/core";
-import { applyStakingEvent } from "../src/staking.js";
+import { MemoryAdapter, StreamdError } from "@streamd/core";
+import type { EventAdapter, FetchOptions, StreamdEvent } from "@streamd/core";
+import { STAKING_DESCRIPTOR, applyStakingEvent } from "../src/staking.js";
 import type { StakingState } from "../src/staking.js";
+import type { AptosClient } from "../src/index.js";
+import { testClient } from "./helpers.js";
 
 const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
 const POOL_A = long("a");
@@ -149,5 +151,142 @@ describe("applyStakingEvent", () => {
     expect(applyStakingEvent(state, ev(10, 1, "constructor", {}))).toEqual([]);
     expect(applyStakingEvent(state, ev(10, 2, "0x1::delegation_pool::DistributeCommission", {}))).toEqual([]);
     expect(state).toEqual({ pools: new Map() });
+  });
+});
+
+const HISTORY = [
+  fee(100, 0, POOL_A, "2"),
+  rewards(100, 1, POOL_A, "40"),
+  rewards(100, 2, POOL_B, "30"),
+  newEpoch(100, 3, "10"),
+  add(150, POOL_A, ALICE, "1000", "5"),
+  commission(160, POOL_A, "800"),
+];
+const until = async (done: () => boolean) => {
+  for (let i = 0; i < 500; i++) {
+    if (done()) return;
+    await new Promise((r) => setTimeout(r, 2));
+  }
+  throw new Error("timed out waiting");
+};
+const settle = () => new Promise((r) => setTimeout(r, 50));
+
+/** A `MemoryAdapter` over `events`, recording each fetch. */
+function source(events: StreamdEvent[] = HISTORY) {
+  const memory = new MemoryAdapter(events);
+  const asked: FetchOptions[] = [];
+  const adapter: EventAdapter = {
+    fetchEvents: (d, o) => {
+      expect(d).toEqual(STAKING_DESCRIPTOR);
+      asked.push(o);
+      return memory.fetchEvents(d, o);
+    },
+  };
+  return { adapter, memory, asked };
+}
+
+describe("stakePools", () => {
+  it("folds the history into one map, as no listener", async () => {
+    const { adapter, asked } = source();
+    const client = testClient({ adapter });
+    const monitor = client.stakePools({ fromVersion: 0n, batchSize: 7 });
+    const value = await monitor.ready;
+    expect(value).toBe(monitor.value);
+    expect([...value.keys()].sort()).toEqual([POOL_A, POOL_B]);
+    expect(monitor.get("0xa")).toMatchObject({
+      rewards: [{ epoch: 9n, rewards: 40n, fees: 2n, version: 100n }],
+      commissionPercentage: 800n,
+    });
+    expect(monitor.get("0xa")!.delegators.get(ALICE)).toMatchObject({ added: 1000n, firstAddedAt: 150n });
+    expect(monitor.get("not an address")).toBeUndefined();
+    expect(monitor.active).toBe(true);
+    expect(client.listenerCount()).toBe(0);
+    expect(asked.every((o) => o.limit === 7)).toBe(true);
+    client.destroy();
+  });
+
+  it("follows live, reporting each pool an epoch change paid once, with NewEpoch", async () => {
+    const { adapter, memory } = source();
+    const client = testClient({ adapter });
+    const changes: [string, bigint, string][] = [];
+    const errors: Error[] = [];
+    const monitor = client.stakePools({
+      fromVersion: 0n,
+      pollInterval: 1,
+      onError: (e) => errors.push(e),
+      onChange: (p, e) => changes.push([p.address, e.version, e.type]),
+    });
+    await monitor.ready;
+    expect(changes).toEqual([]);
+    memory.push(rewards(300, 0, POOL_A, "41"), rewards(300, 1, POOL_B, "31"), newEpoch(300, 2, "11"));
+    memory.push(move(310, "UnlockStake", POOL_A, ALICE, "200"));
+    await until(() => changes.length === 3);
+    await settle();
+    expect(changes).toEqual([
+      [POOL_A, 300n, "0x1::reconfiguration::NewEpoch"],
+      [POOL_B, 300n, "0x1::reconfiguration::NewEpoch"],
+      [POOL_A, 310n, "0x1::delegation_pool::UnlockStake"],
+    ]);
+    expect(monitor.get(POOL_B)!.rewards.map((r) => r.epoch)).toEqual([9n, 10n]);
+    expect(monitor.get(POOL_A)!.delegators.get(ALICE)!.unlocked).toBe(200n);
+    expect(errors).toEqual([]);
+    client.destroy();
+  });
+
+  it("folds nothing below fromVersion, and only the pools asked for", async () => {
+    const client = testClient({ adapter: source().adapter });
+    const later = await client.stakePools({ fromVersion: 101n }).ready;
+    expect([...later.keys()]).toEqual([POOL_A]);
+    expect(later.get(POOL_A)!.rewards).toEqual([]);
+    const narrowed = await client.stakePools({ fromVersion: 0n, pool: ["0xb"] }).ready;
+    expect([...narrowed.keys()]).toEqual([POOL_B]);
+    client.destroy();
+  });
+
+  it("resolves an empty map when there are no staking events", async () => {
+    const client = testClient({ adapter: source([]).adapter });
+    expect((await client.stakePools().ready).size).toBe(0);
+    client.destroy();
+  });
+
+  it("refuses an unknown option and a malformed pool at the call", () => {
+    const client = testClient({ adapter: source().adapter });
+    expect(() => client.stakePools({ where: () => true } as never)).toThrow("Unsupported stakePools option: where");
+    for (const pool of ["nope", [], ["0xa", 3], 7]) {
+      expect(() => client.stakePools({ pool } as never)).toThrow("pool must be an address or a non-empty list of addresses");
+    }
+    client.destroy();
+  });
+
+  it("stops on a malformed event, naming it, reporting once", async () => {
+    const reported: Error[] = [];
+    const client = testClient({ adapter: source([...HISTORY, add(170, POOL_A, ALICE, "x", "0")]).adapter, onError: (e) => reported.push(e) });
+    const monitor = client.stakePools({ fromVersion: 0n });
+    await expect(monitor.ready).rejects.toThrow();
+    expect(reported.map((e) => (e.cause as Error).message)).toEqual(["0x1::delegation_pool::AddStake at 170:0 does not have its struct's fields"]);
+    expect(monitor.active).toBe(false);
+    client.destroy();
+  });
+
+  it("stops on unsubscribe, dispose, abort and destroy", async () => {
+    const stops: [string, (m: ReturnType<AptosClient["stakePools"]>, c: AptosClient, a: AbortController) => void][] = [
+      ["unsubscribe", (m) => m.unsubscribe()],
+      ["dispose", (m) => m[Symbol.dispose]()],
+      ["abort", (_, __, a) => a.abort()],
+      ["destroy", (_, c) => c.destroy()],
+    ];
+    for (const [name, stop] of stops) {
+      const { adapter, memory } = source();
+      const client = testClient({ adapter });
+      const controller = new AbortController();
+      const monitor = client.stakePools({ fromVersion: 0n, pollInterval: 1, signal: controller.signal });
+      await monitor.ready;
+      stop(monitor, client, controller);
+      expect([name, monitor.active]).toEqual([name, false]);
+      memory.push(commission(900, POOL_B, "1"));
+      await settle();
+      expect([name, monitor.get(POOL_B)!.commissionPercentage]).toEqual([name, undefined]);
+      client.destroy();
+    }
   });
 });

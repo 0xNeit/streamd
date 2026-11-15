@@ -1,8 +1,8 @@
 import { StreamdError, eventId } from "@streamd/core";
-import type { ModuleEventDescriptor, StreamdEvent } from "@streamd/core";
+import type { ModuleEventDescriptor, ReduceOptions, Reducer, Reduction, StreamdEvent } from "@streamd/core";
 import { address, amount } from "./records.js";
 import type { Fields } from "./records.js";
-import type { Delegator, StakePool } from "./types.js";
+import type { Delegator, StakePool, StakePools, StakePoolsOptions } from "./types.js";
 
 const REWARDS = "0x1::stake::DistributeRewards";
 const FEES = "0x1::stake::DistributeTransactionFee";
@@ -136,4 +136,74 @@ export function applyStakingEvent(state: StakingState, event: StreamdEvent, only
   }
   del.lastVersion = version;
   return [p];
+}
+
+const ALLOWED: readonly string[] = [
+  "pool",
+  "fromVersion",
+  "fromTime",
+  "pollInterval",
+  "batchSize",
+  "maxErrors",
+  "maxBackoff",
+  "maxPollInterval",
+  "retries",
+  "signal",
+  "onError",
+  "onChange",
+] satisfies readonly (keyof StakePoolsOptions)[];
+
+function pools(chosen: unknown): ReadonlySet<string> | undefined {
+  if (chosen === undefined) return undefined;
+  const list: unknown = typeof chosen === "string" ? [chosen] : chosen;
+  const found = Array.isArray(list) ? list.map(address) : [];
+  if (found.length === 0 || found.includes(undefined)) {
+    throw new StreamdError("pool must be an address or a non-empty list of addresses");
+  }
+  return new Set(found as string[]);
+}
+
+/** `client.reduce()`, as the monitor calls it. */
+export type ReduceStaking = (
+  descriptor: ModuleEventDescriptor,
+  reducer: Reducer<StakingState>,
+  initial: StakingState,
+  options: ReduceOptions<StakingState>,
+) => Reduction<StakingState>;
+
+/** `AptosClient.stakePools()`: one reduction over `STAKING_DESCRIPTOR`, folding into one map. */
+export function startStakePools(reduce: ReduceStaking, options: StakePoolsOptions = {}): StakePools {
+  const refused = Object.keys(options).find((k) => !ALLOWED.includes(k));
+  if (refused !== undefined) {
+    throw new StreamdError(`Unsupported stakePools option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
+  }
+  const { pool: chosen, onChange, ...rest } = options;
+  const only = pools(chosen);
+  const state: StakingState = { pools: new Map() };
+  let changed: StakePool[] = [];
+  const walk = reduce(
+    STAKING_DESCRIPTOR,
+    (s, event) => {
+      changed = applyStakingEvent(s, event, only);
+      return s;
+    },
+    state,
+    { ...rest, onChange: (_, event) => changed.forEach((p) => onChange?.(p, event)) },
+  );
+  const ready = walk.ready.then(() => state.pools as ReadonlyMap<string, StakePool>);
+  ready.catch(() => {});
+  const stop = () => walk.unsubscribe();
+  return {
+    value: state.pools,
+    get: (at) => {
+      const key = address(at);
+      return key === undefined ? undefined : state.pools.get(key);
+    },
+    ready,
+    get active() {
+      return walk.active;
+    },
+    unsubscribe: stop,
+    [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: stop,
+  } as StakePools;
 }

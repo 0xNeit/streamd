@@ -14,12 +14,13 @@ import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
 import { governanceSource, startProposals } from "./governance.js";
+import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { saleDescriptor, saleSource } from "./sales.js";
 import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, Swap, SwapFilter, SwapListenerOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExpectPreviewOptions, PreviewEventsOptions, Proposals, ProposalsOptions, Sale, StakePools, StakePoolsOptions, SaleFilter, SaleListenerOptions, Swap, SwapFilter, SwapListenerOptions, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -221,6 +222,21 @@ export class AptosClient extends StreamdClient {
       this.onError,
       options,
     );
+  }
+
+  /**
+   * Keep every stake pool current from one scan over the staking module
+   * events: the rewards and transaction fees each pool was paid at every
+   * epoch change, its delegation pool commission changes, and each
+   * delegator's adds (the first a join), unlocks, reactivations and
+   * withdrawals. The history is read from `fromVersion` or `fromTime` (as for
+   * `getEvents` when omitted: a `FullnodeScanAdapter` scan starts at the
+   * head, and epochs change about every two hours), then followed live;
+   * `pool` narrows to some pools. Like `reduce()`, it is not a listener for
+   * `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  stakePools(options?: StakePoolsOptions): StakePools {
+    return startStakePools((d, r, i, o) => this.reduce(d, r, i, o), options);
   }
 
   /**
