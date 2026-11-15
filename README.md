@@ -804,16 +804,16 @@ import { formatExplanation } from "@streamd/aptos";
 const explanation = await streamd.explain("0xaaa0871a...", { withNames: true });
 console.log(explanation.gas?.fee, explanation.balanceChanges);
 process.stdout.write(formatExplanation(explanation));
-// Transaction 0xaaa0871a... at version 8062800017, 2026-11-15T09:12:31.405Z
+// Transaction 0xaaa0871a... at version 8062800017, 2026-11-15T12:05:02.630Z
 // Status: success (Executed successfully)
 // Sender: 0x172d...
 // Function: 0x1::aptos_account::transfer
 // Gas: 5414 units at 100 octas, fee 0.005414 APT (storage 0.005324 APT, refund 0 APT)
 // Transfers:
-//   0.494586 APT from 0x172d... to 0x5bf2...
+//   0.494586 APT from 0x172d... to 0xfe56...
 // Balance changes:
 //   0x172d...: -0.494586 APT
-//   0x5bf2...: +0.494586 APT
+//   0xfe56...: +0.494586 APT
 // Events: 3
 
 const preview = await streamd.explain(await aptos.transaction.build.simple({ sender, data }));

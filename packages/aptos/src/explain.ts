@@ -151,7 +151,8 @@ export async function explain(host: ExplainHost, target: unknown, options: Expla
     };
     if (typeof target === "string") explanation.transactionHash = first?.transactionHash ?? target;
     if (sender !== undefined) explanation.sender = sender;
-    if (found.feePayer !== undefined) explanation.feePayer = found.feePayer;
+    const feePayer = found.feePayer === undefined ? undefined : normalizeAddress(found.feePayer);
+    if (feePayer !== undefined) explanation.feePayer = feePayer;
     if (first?.timestamp !== undefined) explanation.timestamp = first.timestamp;
     if (first?.entryFunction !== undefined) explanation.entryFunction = first.entryFunction;
     const gas = gasOf(events, found.gasUnitPrice);

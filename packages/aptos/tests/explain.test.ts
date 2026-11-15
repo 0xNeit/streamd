@@ -140,7 +140,7 @@ describe("explain a committed transaction", () => {
 
   it("leaves the fee out when the source reports no gas price, and names a sponsored transaction's fee payer", async () => {
     const { gasUnitPrice: _, ...unpriced } = transfer;
-    const { base } = adapter({ ...unpriced, feePayer: SPONSOR });
+    const { base } = adapter({ ...unpriced, feePayer: "0x5E" });
     const explanation = await testClient({ adapter: base }).explain(HASH, { withAssetInfo: false });
     expect(explanation.gas).toEqual({ units: 5414n, executionUnits: 35n, ioUnits: 55n, storageFee: 532400n, storageRefund: 1000n });
     expect(explanation.feePayer).toBe(SPONSOR);
