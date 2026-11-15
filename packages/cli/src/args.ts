@@ -49,8 +49,10 @@ export const SECRET_ENV = "STREAMD_WEBHOOK_SECRET";
 export const API_KEY_ENV = "APTOS_API_KEY";
 
 export interface ForwardOptions extends SourceOptions {
-  /** Webhook URL; may carry a token, so it is never printed. */
+  /** Webhook URL, or a `redis://` or `rediss://` URL; may carry a token or password, so it is never printed. */
   to: string;
+  /** The Redis stream each batch is added to; set exactly when `to` is a Redis URL. */
+  stream?: string;
   cursorFile: string;
   /** Retries per batch after the first attempt. */
   retries: number;
@@ -310,6 +312,7 @@ const FORWARD_OPTIONS = {
   ...DELIVERY_OPTIONS,
   "to-version": { type: "string" },
   "batch-size": { type: "string" },
+  stream: { type: "string" },
 } as const;
 
 const ALERT_OPTIONS = {
@@ -463,6 +466,7 @@ export const USAGE = `Usage:
   streamd tail --account <address> --resource <type> [options]
   streamd forward --to <url> [options] <eventType>...
   streamd forward --to <url> --account <address> [...]
+  streamd forward --to redis://<host> --stream <key> [options] <eventType>...
   streamd alert --rules <file> --to <url> [options]
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
@@ -481,8 +485,9 @@ export const USAGE = `Usage:
   streamd monitor --node-url <url> --node-url <url>... [options] [<eventType>...]
 
 tail follows matching events and prints each as one JSON line on stdout.
-forward POSTs each batch of matching events to a webhook as a JSON array,
-saving its position to a cursor file once the webhook acknowledges it.
+forward POSTs each batch of matching events to a webhook as a JSON array, or
+adds it to a Redis stream, saving its position to a cursor file once the
+webhook or Redis acknowledges it.
 alert follows the rules in a JSON file, each a descriptor, filter, window and
 count or sum threshold, and POSTs a signed alert to a webhook the first time a
 window of chain time crosses its threshold, saving each rule's position and
@@ -558,7 +563,10 @@ Options:
   --limit <n>            tail, transfers, watch: exit after printing n; balances: after n changes;
                          record, query: stop after n; compare: page size; monitor: rounds
   --rules <file>         alert: the rules file (required)
-  --to <url>             forward, alert: webhook URL (http or https, required)
+  --to <url>             forward, alert: webhook URL (http or https, required); forward also
+                         takes redis://[user:password@]host[:port][/db] or rediss:// (TLS),
+                         Bun's own client under Bun, ioredis under Node (npm i ioredis)
+  --stream <key>         forward: the Redis stream each batch is added to (with redis://)
   --cursor-file <path>   tail, transfers (following): save and resume from here; watch: each
                          address's position, as one JSON object; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
@@ -568,8 +576,9 @@ Options:
   --timeout <ms>         forward, alert: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx: wait for commit (default: 20000)
   --header <h>           forward, alert: request header 'Name: value', repeatable
-  --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER}
-                         (or set ${SECRET_ENV}, which keeps it out of ps)
+  --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
+                         or a Redis entry's signature field (or set ${SECRET_ENV}, which
+                         keeps it out of ps)
   --db <file>            store: SQLite file to write (this or --postgres)
   --postgres <url>       store: Postgres database to write, postgres://user@host/db; Bun.SQL
                          under Bun, pg under Node (npm i pg); the URL is never printed, and
@@ -758,6 +767,17 @@ function archive(raw: string, network: Network, sui: boolean): string {
   return raw;
 }
 
+// A Redis URL is the one place credentials are expected, so it is checked here and never echoed.
+function redisUrl(raw: string): string {
+  const url = URL.canParse(raw) ? new URL(raw) : undefined;
+  if (url === undefined || url.hostname === "") throw new UsageError("--to must be a valid redis:// or rediss:// URL with a host");
+  if (url.search !== "" || url.hash !== "" || !/^(\/\d*)?$/.test(url.pathname)) {
+    throw new UsageError("--to redis:// takes only a database number as its path, with no query or fragment");
+  }
+  // Lowercased, so a client matching the scheme case-sensitively never takes REDISS:// as plaintext.
+  return url.protocol + raw.slice(url.protocol.length);
+}
+
 function webhookUrl(raw: string | undefined, command: string): string {
   if (raw === undefined) throw new UsageError(`${command} needs --to <url>`);
   // The URL is not echoed: it may carry a token.
@@ -921,10 +941,18 @@ function parseForward(args: string[]): ParsedCommand {
     parseArgs({ args, options: FORWARD_OPTIONS, allowPositionals: true, strict: true }),
   );
   if (values.help) return { command: "help" };
+  const redis = values.to !== undefined && /^rediss?:/i.test(values.to);
   const options: ForwardOptions = {
     ...source("forward", values, positionals),
-    ...delivery("forward", values, DEFAULT_CURSOR_FILE),
+    ...delivery("forward", values, DEFAULT_CURSOR_FILE, redis ? redisUrl(values.to!) : undefined),
   };
+  if (redis) {
+    if (values.header !== undefined) throw new UsageError("--header is for webhooks: a Redis stream entry carries no headers");
+    if (values.stream === undefined || values.stream === "") throw new UsageError("--to redis:// needs --stream <key>");
+    options.stream = values.stream;
+  } else if (values.stream !== undefined) {
+    throw new UsageError("--stream needs a redis:// or rediss:// --to");
+  }
   const toVersion = version(values["to-version"], "to-version");
   if (toVersion !== undefined) {
     if (options.fromVersion === undefined && options.fromTime === undefined) {
@@ -949,10 +977,14 @@ interface DeliveryFlags {
   secret?: string;
 }
 
-/** The webhook, its headers, signing, retry budget and cursor file, as forward and alert take them. */
-function delivery(command: string, values: DeliveryFlags, cursorFile: string) {
+/**
+ * The destination, its headers, signing, retry budget and cursor file, as
+ * forward and alert take them; `to` is a webhook unless the caller has
+ * already checked another kind.
+ */
+function delivery(command: string, values: DeliveryFlags, cursorFile: string, to = webhookUrl(values.to, command)) {
   const options: Pick<ForwardOptions, "to" | "cursorFile" | "retries" | "timeout" | "headers" | "secret"> = {
-    to: webhookUrl(values.to, command),
+    to,
     cursorFile: values["cursor-file"] ?? cursorFile,
     retries: integer("retries", values.retries, 0, MAX_RETRIES) ?? DEFAULT_RETRIES,
     timeout: integer("timeout", values.timeout, 1, MAX_TIMEOUT) ?? DEFAULT_TIMEOUT,

@@ -1,3 +1,4 @@
+import { createHmac } from "node:crypto";
 import type { StreamdEvent } from "@streamd/core";
 
 export { serializeEvent as formatEvent } from "@streamd/core";
@@ -45,4 +46,43 @@ export function message(err: unknown): string {
   return cause instanceof Error && !err.message.includes(cause.message)
     ? `${err.message}: ${cause.message}`
     : err.message;
+}
+
+/** `url` with its password shown as `***` and its query string dropped, safe to print. */
+export function redactUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.password !== "") parsed.password = "***";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return "the URL";
+  }
+}
+
+/** Replaces `url` in a message with its redacted form, and each secret it carries with `***`. */
+export function scrubber(url: string): (text: string) => string {
+  const secrets = new Set<string>();
+  try {
+    const parsed = new URL(url);
+    secrets.add(parsed.password).add(decodeURIComponent(parsed.password));
+    for (const [key, value] of parsed.searchParams) {
+      if (/pass/i.test(key)) secrets.add(value).add(encodeURIComponent(value));
+    }
+  } catch {
+    // An unparsed URL still has its whole text replaced below.
+  }
+  secrets.delete("");
+  const redacted = redactUrl(url);
+  return (text) => {
+    let out = text.split(url).join(redacted);
+    for (const secret of secrets) out = out.split(secret).join("***");
+    return out;
+  };
+}
+
+/** The `sha256=<hex>` HMAC of `body`, as the webhook header and a stream entry's field carry it. */
+export function signature(body: string, secret: string): string {
+  return `sha256=${createHmac("sha256", secret).update(body, "utf8").digest("hex")}`;
 }

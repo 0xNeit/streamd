@@ -3,9 +3,10 @@ import { createHmac } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runForward } from "../src/forward.js";
-import type { ForwardIO } from "../src/forward.js";
+import { deliver, runForward } from "../src/forward.js";
+import type { Attempt, ForwardIO, Sink } from "../src/forward.js";
 import type { ForwardOptions } from "../src/args.js";
+import type { RedisLike } from "../src/redis.js";
 import { MemoryAdapter, StreamdClient, StreamdError, verifyWebhook } from "@streamd/core";
 import type { EventAdapter, StreamdEvent } from "@streamd/core";
 
@@ -511,5 +512,236 @@ describe("runForward decode", () => {
     expect(await runForward(options({ fromVersion: 0n, toVersion: 3n, decode: ["amount"] }), h.io)).toBe(0);
     expect(received.flatMap(versions)).toEqual(["1", "3"]);
     expect(h.errors.join()).toContain('Cannot decode field "amount" of 2:0');
+  });
+});
+
+describe("deliver", () => {
+  function sink(results: Attempt[]) {
+    const bodies: string[] = [];
+    const fake: Sink = {
+      send: async (body) => {
+        bodies.push(body);
+        return results.shift() ?? { ok: true };
+      },
+    };
+    return { fake, bodies };
+  }
+  const io = (signal = new AbortController().signal, errors: string[] = []) => ({
+    error: (m: string) => void errors.push(m),
+    signal,
+    retryDelay: 1,
+  });
+
+  it("retries a retryable failure, then reports the ack", async () => {
+    const { fake, bodies } = sink([{ ok: false, failure: "down", retryable: true }]);
+    const errors: string[] = [];
+    expect(await deliver("[1]", fake, 3, io(undefined, errors))).toBe(true);
+    expect(bodies).toEqual(["[1]", "[1]"]);
+    expect(errors).toEqual(["streamd: delivery failed (attempt 1/4): down; retrying in 1ms"]);
+  });
+
+  it("gives up past the retry bound", async () => {
+    const down = { ok: false, failure: "down", retryable: true };
+    const { fake, bodies } = sink([down, down, down]);
+    const errors: string[] = [];
+    expect(await deliver("[]", fake, 1, io(undefined, errors))).toBe(false);
+    expect(bodies).toHaveLength(2);
+    expect(errors.at(-1)).toBe("streamd: delivery failed: down");
+  });
+
+  it("fails at once on a failure that is not retryable", async () => {
+    const { fake, bodies } = sink([{ ok: false, failure: "refused" }]);
+    expect(await deliver("[]", fake, 5, io())).toBe(false);
+    expect(bodies).toHaveLength(1);
+  });
+
+  it("waits retryAfter instead of the backoff", async () => {
+    const { fake } = sink([{ ok: false, failure: "busy", retryable: true, retryAfter: 30 }]);
+    const errors: string[] = [];
+    const started = Date.now();
+    expect(await deliver("[]", fake, 1, io(undefined, errors))).toBe(true);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(25);
+    expect(errors[0]).toEndWith("retrying in 30ms");
+  });
+
+  it("stops during the wait on abort", async () => {
+    const controller = new AbortController();
+    const { fake, bodies } = sink([{ ok: false, failure: "busy", retryable: true, retryAfter: 10_000 }]);
+    setTimeout(() => controller.abort(), 5);
+    expect(await deliver("[]", fake, 3, io(controller.signal))).toBe(false);
+    expect(bodies).toHaveLength(1);
+  });
+});
+
+describe("runForward to Redis", () => {
+  const PASSWORD = "pw-s3cret";
+  const REDIS = `redis://streamd:${PASSWORD}@127.0.0.1:6379/0`;
+  type Reply = (n: number) => Promise<unknown>;
+
+  function fakeRedis(reply: Reply = async (n) => `${n}-0`) {
+    const calls: { command: string; args: string[] }[] = [];
+    const state = { closed: 0, opened: [] as unknown[] };
+    const client: RedisLike = {
+      send: (command, args) => {
+        calls.push({ command, args });
+        return reply(calls.length);
+      },
+      close: () => void state.closed++,
+    };
+    const open = (url: string, timeout: number) => {
+      state.opened.push([url, timeout]);
+      return client;
+    };
+    return { calls, state, open };
+  }
+
+  const redisOptions = (extra: Partial<ForwardOptions> = {}) => options({ to: REDIS, stream: "aptos:deposits", ...extra });
+
+  async function forwardTo(fake: ReturnType<typeof fakeRedis>, events: StreamdEvent[], extra: Partial<ForwardOptions>, done: () => boolean) {
+    const h = harness(new MemoryAdapter(events));
+    const run = runForward(redisOptions(extra), { ...h.io, redis: fake.open });
+    await until(done);
+    h.controller.abort();
+    return { ...h, code: await run };
+  }
+
+  it("adds one entry per batch with the webhook body, and checkpoints after the reply", async () => {
+    const fake = fakeRedis();
+    const { code, errors } = await forwardTo(fake, [ev(1), ev(2)], {}, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.state.opened).toEqual([[REDIS, 2000]]);
+    expect(fake.calls).toEqual([
+      {
+        command: "XADD",
+        args: [
+          "aptos:deposits",
+          "*",
+          "body",
+          '[{"type":"0x1::coin::DepositEvent","data":{"amount":"10"},"version":"1","sequenceNumber":"0","eventIndex":0},' +
+            '{"type":"0x1::coin::DepositEvent","data":{"amount":"20"},"version":"2","sequenceNumber":"0","eventIndex":0}]',
+        ],
+      },
+    ]);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("2\n");
+    expect(fake.state.closed).toBe(1);
+    expect(errors).toEqual([]);
+  });
+
+  it("adds a signature field that verifyWebhook accepts", async () => {
+    const fake = fakeRedis();
+    await forwardTo(fake, [{ ...ev(1), data: { memo: "café" } }], { secret: "key" }, () => existsSync(cursorFile()));
+    const [stream, id, bodyField, body, signatureField, signature] = fake.calls[0]!.args;
+    expect([stream, id, bodyField, signatureField]).toEqual(["aptos:deposits", "*", "body", "signature"]);
+    expect(await verifyWebhook(body!, signature, "key")).toBe(true);
+    expect(await verifyWebhook(body!, signature, "other")).toBe(false);
+  });
+
+  it("writes no cursor until the reply arrives", async () => {
+    let ack!: () => void;
+    const fake = fakeRedis(() => new Promise((resolve) => (ack = () => resolve("1-0"))));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(redisOptions(), { ...h.io, redis: fake.open });
+    await until(() => fake.calls.length === 1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(existsSync(cursorFile())).toBe(false);
+    ack();
+    await until(() => existsSync(cursorFile()));
+    h.controller.abort();
+    expect(await run).toBe(0);
+  });
+
+  it.each([
+    ["a lost connection", new Error("Connection closed")],
+    ["a transient reply", new Error("LOADING Redis is loading the dataset in memory")],
+    ["an out-of-memory reply", new Error("OOM command not allowed when used memory > 'maxmemory'.")],
+  ])("retries %s, then delivers", async (_label, failure) => {
+    const fake = fakeRedis(async (n) => {
+      if (n === 1) throw failure;
+      return "1-0";
+    });
+    const { code, errors } = await forwardTo(fake, [ev(1)], {}, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.calls).toHaveLength(2);
+    expect(errors).toEqual([`streamd: delivery failed (attempt 1/4): ${failure.message}; retrying in 1ms`]);
+  });
+
+  it.each([["WRONGTYPE Operation against a key holding the wrong kind of value"], ["NOPERM this user has no permissions"], ["ERR syntax error"]])(
+    "fails at once on %s, exiting 1 with no cursor",
+    async (reply) => {
+      const fake = fakeRedis(async () => {
+        throw new Error(reply);
+      });
+      const h = harness(new MemoryAdapter([ev(1)]));
+      expect(await runForward(redisOptions(), { ...h.io, redis: fake.open })).toBe(1);
+      expect(fake.calls).toHaveLength(1);
+      expect(existsSync(cursorFile())).toBe(false);
+      expect(h.errors).toEqual([`streamd: delivery failed: ${reply}`]);
+      expect(fake.state.closed).toBe(1);
+    },
+  );
+
+  it("times out a hung XADD, closing the connection, then retries", async () => {
+    const fake = fakeRedis((n) => (n === 1 ? new Promise(() => {}) : Promise.resolve("1-0")));
+    const { code, errors } = await forwardTo(fake, [ev(1)], { timeout: 20 }, () => existsSync(cursorFile()));
+    expect(code).toBe(0);
+    expect(fake.calls).toHaveLength(2);
+    expect(errors).toEqual(["streamd: delivery failed (attempt 1/4): XADD timed out after 20ms; retrying in 1ms"]);
+    // Once for the timeout, once at the end.
+    expect(fake.state.closed).toBe(2);
+  });
+
+  it("abandons an in-flight XADD on abort without advancing", async () => {
+    writeFileSync(cursorFile(), "0\n");
+    const fake = fakeRedis(() => new Promise(() => {}));
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const run = runForward(redisOptions(), { ...h.io, redis: fake.open });
+    await until(() => fake.calls.length === 1);
+    h.controller.abort();
+    expect(await run).toBe(0);
+    expect(readFileSync(cursorFile(), "utf8")).toBe("0\n");
+    expect(h.errors).toEqual([]);
+  });
+
+  it("never prints the URL or its password", async () => {
+    const fake = fakeRedis(async () => {
+      throw new Error(`WRONGPASS for ${REDIS} with ${PASSWORD}`);
+    });
+    const h = harness(new MemoryAdapter([ev(1)]));
+    expect(await runForward(redisOptions(), { ...h.io, redis: fake.open })).toBe(1);
+    expect(h.errors).toHaveLength(1);
+    expect(h.errors[0]).toStartWith("streamd: delivery failed: WRONGPASS for redis://streamd:***@127.0.0.1:6379/0");
+    expect(h.errors.join("\n")).not.toContain(PASSWORD);
+  });
+
+  it("exits 1 when the client cannot be opened, before subscribing", async () => {
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const open = async (url: string) => {
+      throw new Error(`no driver for ${url}`);
+    };
+    expect(await runForward(redisOptions(), { ...h.io, redis: open })).toBe(1);
+    expect(h.errors).toEqual(["streamd: cannot open the Redis client: no driver for redis://streamd:***@127.0.0.1:6379/0"]);
+    expect(existsSync(cursorFile())).toBe(false);
+  });
+
+  it("exits 0 without subscribing when aborted while the client opens", async () => {
+    const fake = fakeRedis();
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const open = async (url: string, timeout: number) => {
+      h.controller.abort();
+      return fake.open(url, timeout);
+    };
+    expect(await runForward(redisOptions(), { ...h.io, redis: open })).toBe(0);
+    expect(fake.calls).toEqual([]);
+    expect(fake.state.closed).toBe(1);
+  });
+
+  it("resumes from the cursor file and delivers through the same rule as webhooks", async () => {
+    writeFileSync(cursorFile(), "1\n");
+    const fake = fakeRedis();
+    await forwardTo(fake, [ev(1), ev(2)], { fromVersion: 1n }, () => readFileSync(cursorFile(), "utf8") === "2\n");
+    expect(fake.calls).toHaveLength(1);
+    expect(JSON.parse(fake.calls[0]!.args[3]!)).toEqual([
+      { type: TYPE, data: { amount: "20" }, version: "2", sequenceNumber: "0", eventIndex: 0 },
+    ]);
   });
 });

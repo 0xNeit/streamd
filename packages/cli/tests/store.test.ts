@@ -4,7 +4,8 @@ import { describe, expect, it } from "bun:test";
 import { MemoryAdapter, StreamdClient, StreamdNetworkError } from "@streamd/core";
 import type { EventAdapter, StreamdEvent } from "@streamd/core";
 import type { StoreOptions } from "../src/args.js";
-import { openDatabase, redactUrl, runStore, type OpenDatabase, type PostgresConnection } from "../src/store.js";
+import { redactUrl } from "../src/format.js";
+import { openDatabase, runStore, type OpenDatabase, type PostgresConnection } from "../src/store.js";
 
 const TYPE = "0x1::coin::DepositEvent";
 const OTHER = "0x1::coin::WithdrawEvent";
@@ -330,6 +331,6 @@ describe("redactUrl", () => {
   });
 
   it("names no part of a URL it cannot parse", () => {
-    expect(redactUrl("postgres://:::secret")).toBe("the Postgres URL");
+    expect(redactUrl("postgres://:::secret")).toBe("the URL");
   });
 });

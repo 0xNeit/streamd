@@ -1,11 +1,11 @@
-import { createHmac } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { parseRetryAfter, serializeEvent } from "@streamd/core";
 import type { StreamdClient, Subscription } from "@streamd/core";
 import { SIGNATURE_HEADER, type ForwardOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { filterPredicate } from "./filter.js";
-import { message } from "./format.js";
+import { message, scrubber, signature } from "./format.js";
+import { connectRedis, redisSink, type RedisLike } from "./redis.js";
 
 export interface ForwardIO {
   client: Pick<StreamdClient, "onBatch">;
@@ -17,18 +17,36 @@ export interface ForwardIO {
   retryDelay?: number;
   /** The source's head version; read once, and only for a `toVersion` run. */
   headVersion(): Promise<bigint>;
+  /** Opens the Redis client for a Redis `--to` (default `connectRedis`). */
+  redis?(url: string, timeout: number): RedisLike | Promise<RedisLike>;
 }
 
 const MAX_RETRY_DELAY = 60_000;
 
-/** What a delivery reads: the webhook, its headers and signing, and the retry budget. */
-export type Delivery = Pick<ForwardOptions, "to" | "headers" | "secret" | "timeout" | "retries">;
+/** What a webhook delivery reads: the URL, its headers and signing, and the per-request timeout. */
+export type Delivery = Pick<ForwardOptions, "to" | "headers" | "secret" | "timeout">;
 
-interface Attempt {
+/** One delivery attempt's outcome; `retryAfter` (ms) replaces the backoff for the next wait. */
+export interface Attempt {
   ok: boolean;
   failure?: string;
   retryable?: boolean;
   retryAfter?: number;
+}
+
+/**
+ * Where forward and alert deliver a body. `send` makes one attempt and says
+ * whether it was acknowledged; `deliver` owns the retries, so every sink
+ * shares the same backoff and the same rule that nothing counts until acked.
+ */
+export interface Sink {
+  send(body: string, signal: AbortSignal): Promise<Attempt>;
+  close?(): unknown;
+}
+
+/** POSTs to the webhook; a 2xx acknowledges. */
+export function webhookSink(options: Delivery): Sink {
+  return { send: (body, signal) => post(body, options, signal) };
 }
 
 async function post(body: string, options: Delivery, signal: AbortSignal): Promise<Attempt> {
@@ -39,9 +57,7 @@ async function post(body: string, options: Delivery, signal: AbortSignal): Promi
       headers: {
         "content-type": "application/json",
         ...options.headers,
-        ...(options.secret !== undefined && {
-          [SIGNATURE_HEADER]: `sha256=${createHmac("sha256", options.secret).update(body, "utf8").digest("hex")}`,
-        }),
+        ...(options.secret !== undefined && { [SIGNATURE_HEADER]: signature(body, options.secret) }),
       },
       body,
       // Not following redirects keeps --header values from reaching another host.
@@ -72,24 +88,25 @@ async function post(body: string, options: Delivery, signal: AbortSignal): Promi
   };
 }
 
-/** POSTs `body` until a 2xx, the retry bound, or abort; true once acknowledged. */
+/** Sends `body` until the sink acknowledges it, the retry bound, or abort; true once acknowledged. */
 export async function deliver(
   body: string,
-  options: Delivery,
+  sink: Sink,
+  retries: number,
   io: Pick<ForwardIO, "error" | "signal" | "retryDelay">,
 ): Promise<boolean> {
   let delay = io.retryDelay ?? 1000;
   for (let attempt = 1; ; attempt++) {
-    const result = await post(body, options, io.signal);
+    const result = await sink.send(body, io.signal);
     if (result.ok) return true;
     if (io.signal.aborted) return false;
-    if (!result.retryable || attempt > options.retries) {
+    if (!result.retryable || attempt > retries) {
       io.error(`streamd: delivery failed: ${result.failure}`);
       return false;
     }
     const wait = Math.min(result.retryAfter ?? delay, MAX_RETRY_DELAY);
     io.error(
-      `streamd: delivery failed (attempt ${attempt}/${options.retries + 1}): ${result.failure}; retrying in ${wait}ms`,
+      `streamd: delivery failed (attempt ${attempt}/${retries + 1}): ${result.failure}; retrying in ${wait}ms`,
     );
     const slept = await sleep(wait, true, { signal: io.signal }).catch(() => false);
     if (!slept) return false;
@@ -98,14 +115,14 @@ export async function deliver(
 }
 
 /**
- * Follows `options.descriptor`, POSTing each batch to the webhook, and
- * resolves to the process exit code: 0 when the signal aborts or a
- * `toVersion` range is done, 1 when a delivery fails past its retries,
- * polling gives up, the cursor file cannot be read or written, or the bound
- * is above the head.
+ * Follows `options.descriptor`, delivering each batch to the webhook or the
+ * Redis stream, and resolves to the process exit code: 0 when the signal
+ * aborts or a `toVersion` range is done, 1 when a delivery fails past its
+ * retries, the Redis client cannot be opened, polling gives up, the cursor
+ * file cannot be read or written, or the bound is above the head.
  *
  * Delivery is at least once: the cursor file only ever holds a position
- * whose events the webhook has acknowledged.
+ * whose events the destination has acknowledged.
  */
 export async function runForward(options: ForwardOptions, io: ForwardIO): Promise<number> {
   let saved: string | undefined;
@@ -132,6 +149,23 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     }
   }
 
+  let sink: Sink;
+  try {
+    const { stream } = options;
+    sink =
+      stream === undefined
+        ? webhookSink(options)
+        : redisSink(await (io.redis ?? connectRedis)(options.to, options.timeout), { ...options, stream });
+  } catch (err) {
+    // The client's own errors are not known to leave the URL or password out.
+    io.error(`streamd: cannot open the Redis client: ${scrubber(options.to)(message(err))}`);
+    return 1;
+  }
+  // Opening can await a dynamic import, long enough for a SIGINT to land before the listener below.
+  if (io.signal.aborted) {
+    sink.close?.();
+    return 0;
+  }
   return new Promise<number>((resolve) => {
     let sub: Subscription | undefined;
     let done = false;
@@ -155,6 +189,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
       if (done) return;
       done = true;
       sub?.unsubscribe();
+      sink.close?.();
       io.signal.removeEventListener("abort", onAbort);
       resolve(checkpoint() ? code : 1);
     };
@@ -172,7 +207,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
         try {
           for (let i = 0; delivered && i < events.length; i += size) {
             const chunk = events.slice(i, i + size);
-            delivered = await deliver(`[${chunk.map(serializeEvent).join(",")}]`, options, io);
+            delivered = await deliver(`[${chunk.map(serializeEvent).join(",")}]`, sink, options.retries, io);
           }
         } catch (err) {
           delivered = false;

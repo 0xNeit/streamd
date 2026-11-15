@@ -44,10 +44,12 @@
       "peerDependencies": {
         "@aptos-labs/ts-sdk": ">=1.0.0",
         "@mysten/sui": "2.39.1",
+        "ioredis": ">=5",
         "pg": ">=8",
       },
       "optionalPeers": [
         "@mysten/sui",
+        "ioredis",
         "pg",
       ],
     },
