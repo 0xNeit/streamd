@@ -285,6 +285,64 @@ describe("parseCommand forward", () => {
       rejects(["alert", "--rules", "r.json", "--to", "https://h.example", "--stream", "s"], /Unknown option '--stream'/);
     });
   });
+
+  describe("to NATS", () => {
+    const NATS = "nats://streamd:pw-s3cret@127.0.0.1:4222";
+
+    it("reads a NATS URL and its subject", () => {
+      expect(forward("--to", NATS, "--subject", "aptos.deposits", TYPE)).toEqual({
+        descriptor: { kind: "module", eventType: [TYPE] },
+        network: "mainnet",
+        to: NATS,
+        subject: "aptos.deposits",
+        cursorFile: "streamd-forward.cursor",
+        retries: 5,
+        timeout: 10000,
+        headers: {},
+      });
+      expect(forward("--to", "nats://tok-s3cret@nats.example", "--subject", "s", "--secret", "k", TYPE)).toMatchObject({
+        to: "nats://tok-s3cret@nats.example",
+        subject: "s",
+        secret: "k",
+      });
+      expect(forward("--to", "NATS://h:4223/", "--subject", "a.b", TYPE).to).toBe("nats://h:4223/");
+    });
+
+    it.each([
+      [["--to", NATS, TYPE], /^--to nats:\/\/ needs --subject <name>$/],
+      [["--to", NATS, "--subject", "", TYPE], /^--to nats:\/\/ needs --subject <name>$/],
+      [["--to", NATS, "--subject", "a.*", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", NATS, "--subject", "a.>", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", NATS, "--subject", "a b", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", NATS, "--subject", "a..b", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", NATS, "--subject", ".a", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", NATS, "--subject", "a\tb", TYPE], /^--subject must be dot-separated tokens/],
+      [["--to", "https://hooks.example.com/in", "--subject", "s", TYPE], /^--subject needs a nats:\/\/ --to$/],
+      [["--to", "redis://h", "--stream", "s", "--subject", "s", TYPE], /^--subject needs a nats:\/\/ --to$/],
+      [["--to", NATS, "--subject", "s", "--stream", "s", TYPE], /^--stream needs a redis:\/\/ or rediss:\/\/ --to$/],
+      [["--to", NATS, "--subject", "s", "--header", "X: pw-s3cret", TYPE], /^--header is for webhooks/],
+      [["--to", "tls://u:pw-s3cret@h:4222", "--subject", "s", TYPE], /^--to tls:\/\/ is not supported/],
+      [["--to", "nats+tls://u:pw-s3cret@h:4222", "--subject", "s", TYPE], /^--to tls:\/\/ is not supported/],
+      [["--to", "nats://:pw-s3cret@/", "--subject", "s", TYPE], /^--to must be a valid nats:\/\/ URL with a host$/],
+      [["--to", "nats://h/pw-s3cret", "--subject", "s", TYPE], /^--to nats:\/\/ takes no path, query or fragment$/],
+      [["--to", "nats://h?pass=pw-s3cret", "--subject", "s", TYPE], /^--to nats:\/\/ takes no path, query or fragment$/],
+      [["--to", "nats://h#pw-s3cret", "--subject", "s", TYPE], /^--to nats:\/\/ takes no path, query or fragment$/],
+    ])("rejects %j without echoing the URL", (argv, pattern) => {
+      let error: unknown;
+      try {
+        forward(...(argv as string[]));
+      } catch (err) {
+        error = err;
+      }
+      expect((error as Error).message).toMatch(pattern as RegExp);
+      expect(String(error)).not.toContain("pw-s3cret");
+    });
+
+    it("keeps alert webhook-only", () => {
+      rejects(["alert", "--rules", "r.json", "--to", NATS], /^--to must be an http or https URL$/);
+      rejects(["alert", "--rules", "r.json", "--to", "https://h.example", "--subject", "s"], /Unknown option '--subject'/);
+    });
+  });
 });
 
 describe("parseCommand codegen", () => {
