@@ -199,9 +199,14 @@ export function latch(): Latch {
 }
 
 const URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
-const BEARER_PATTERN = /\bBearer\s+[A-Za-z0-9._~+/=-]+/gi;
+const SCHEME_PATTERN = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
+// A key-like name followed by `=` or `:`, as in a query string, a header or JSON.
+const PARAM_PATTERN = /\b([\w-]*(?:api[_-]?key|token|secret|password|auth)[\w-]*)(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi;
 
-/** `text` with every URL and bearer token taken out, since node URLs and headers can carry API keys. */
+/** `text` with URLs and credentials taken out, since node URLs and headers can carry API keys. */
 export function redactSecrets(text: string): string {
-  return text.replace(URL_PATTERN, "<url>").replace(BEARER_PATTERN, "Bearer <redacted>");
+  return text
+    .replace(URL_PATTERN, "<url>")
+    .replace(SCHEME_PATTERN, "$1 <redacted>")
+    .replace(PARAM_PATTERN, "$1$2<redacted>");
 }

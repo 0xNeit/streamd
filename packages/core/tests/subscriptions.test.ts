@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "bun:test";
 import { advanceTimersByTimeAsync } from "./timers.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdClient } from "../src/client.js";
-import { StreamdNetworkError } from "../src/errors.js";
+import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import { redactSecrets } from "../src/utils.js";
 import type { EventAdapter, EventDescriptor, StreamdEvent } from "../src/types.js";
 
@@ -79,10 +79,59 @@ describe("listSubscriptions", () => {
     expect(client.listSubscriptions()).toEqual([]);
   });
 
-  it("redacts URLs and bearer tokens in any text", () => {
+  it("redacts URLs and credentials in any text", () => {
     expect(redactSecrets("GET https://node.example/v1/KEY/x?y=1 failed, Bearer abc.def, ws://h:1/p"))
       .toBe("GET <url> failed, Bearer <redacted>, <url>");
+    expect(redactSecrets("Basic dXNlcjpwYXNz")).toBe("Basic <redacted>");
+    expect(redactSecrets("x-api-key: KEY1 sent")).toBe("x-api-key: <redacted> sent");
+    expect(redactSecrets("node.example:443/v1?api_key=KEY2&x=1")).toBe("node.example:443/v1?api_key=<redacted>&x=1");
+    expect(redactSecrets('{"token":"KEY3","n":1}')).toBe('{"token":"<redacted>","n":1}');
+    expect(redactSecrets("password=KEY4")).toBe("password=<redacted>");
     expect(redactSecrets("Polling failed (1/3)")).toBe("Polling failed (1/3)");
+  });
+
+  it("keeps the final snapshot of a walk that gives up at once, redacted, under ended", async () => {
+    const adapter: EventAdapter = {
+      async fetchEvents() {
+        throw new StreamdError("bad cursor at https://n.example/KEY");
+      },
+    };
+    const client = new StreamdClient({ adapter, onError: () => {} });
+    client.on(onA, () => {}, { fromVersion: 0n, id: "gone" });
+    await advanceTimersByTimeAsync(5);
+    expect(client.listSubscriptions()).toEqual([]);
+    const [info] = client.listSubscriptions({ ended: true });
+    expect(info).toMatchObject({ id: "gone", ended: true, active: false, consecutiveErrors: 1 });
+    expect(info!.lastError!.message).toBe("Polling stopped on invalid input: bad cursor at <url>");
+    expect(Object.isFrozen(info)).toBe(true);
+  });
+
+  it("lists live ones first, then the last 20 ended, newest first", () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter([]) });
+    for (let i = 0; i < 25; i++) client.on(onA, () => {}, { fromVersion: 0n, id: `s${i}` }).unsubscribe();
+    client.on(onA, () => {}, { fromVersion: 0n, id: "live" });
+    const list = client.listSubscriptions({ ended: true });
+    expect(list.map((s) => s.id)).toEqual(["live", ...Array.from({ length: 20 }, (_, i) => `s${24 - i}`)]);
+    expect(list.map((s) => s.ended)).toEqual([false, ...Array(20).fill(true)]);
+    client.destroy();
+  });
+
+  it("keeps the last error after the subscription recovers", async () => {
+    let fail = true;
+    const memory = new MemoryAdapter([ev(1)]);
+    const adapter: EventAdapter = {
+      fetchEvents(d, o) {
+        if (fail) return ((fail = false), Promise.reject(new StreamdNetworkError("down")));
+        return memory.fetchEvents(d, o);
+      },
+    };
+    const client = new StreamdClient({ adapter, onError: () => {} });
+    client.on(onA, () => {}, { fromVersion: 0n, maxBackoff: 10 });
+    await advanceTimersByTimeAsync(50);
+    const [info] = client.listSubscriptions();
+    expect(info).toMatchObject({ consecutiveErrors: 0, lastVersion: 1n });
+    expect(info!.lastError!.cause).toBe("down");
+    client.destroy();
   });
 
   it("redacts the error's own message and its direct cause", async () => {

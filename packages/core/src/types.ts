@@ -896,7 +896,7 @@ export interface Subscription {
 /** The most recent error a subscription reported, as `listSubscriptions()` shows it. */
 export interface SubscriptionError {
   readonly name: string;
-  /** The error's message, with any URL replaced by `<url>` and any bearer token hidden. */
+  /** The error's message, with any URL replaced by `<url>` and credentials hidden. */
   readonly message: string;
   /** The direct cause's message, redacted the same way; deeper causes are left out. */
   readonly cause?: string;
@@ -915,6 +915,8 @@ export interface SubscriptionInfo extends SubscriptionStatus {
   readonly descriptor: EventDescriptor;
   /** Whether `listenerCount()` counts it: an `on()` or `onBatch()` subscription. */
   readonly listener: boolean;
+  /** Whether this is the final snapshot of one that ended, listed only with `ended: true`. */
+  readonly ended: boolean;
   readonly paused: boolean;
   /** Kept after the subscription recovers; `consecutiveErrors` says whether it still fails. */
   readonly lastError?: SubscriptionError;

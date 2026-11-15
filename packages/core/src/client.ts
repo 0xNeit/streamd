@@ -58,6 +58,9 @@ const DISPOSE: typeof Symbol.dispose =
 
 const DEFAULT_CLOSE_TIMEOUT = 5000;
 
+// Enough to see why recent walks ended, without a long-lived client growing.
+const KEEP_ENDED = 20;
+
 /** Whether `work` settled within `ms`. */
 async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -169,6 +172,18 @@ function frozenDescriptor(descriptor: EventDescriptor): EventDescriptor {
   return Object.freeze(copy) as EventDescriptor;
 }
 
+function snapshot(id: string, { poller, descriptor, listener, lastError }: Running, ended: boolean): SubscriptionInfo {
+  return Object.freeze({
+    id,
+    descriptor,
+    listener,
+    ended,
+    paused: poller.paused,
+    ...poller.status,
+    ...(lastError === undefined ? {} : { lastError }),
+  });
+}
+
 function errorInfo(error: Error): SubscriptionError {
   const cause = (error as { cause?: unknown }).cause;
   return Object.freeze({
@@ -203,6 +218,8 @@ export class StreamdClient {
   private readonly subscriptions = new Map<string, Running>();
   /** The `on()`/`onBatch()` subset of `subscriptions`; `once()` and streams own theirs. */
   private readonly listeners = new Map<string, Listener>();
+  /** Final snapshots of the most recently ended subscriptions, newest first. */
+  private readonly ended: SubscriptionInfo[] = [];
   /** Open streams, so destroy() can end their loops rather than strand them. */
   private readonly streams = new Set<() => void>();
   /** What `reduce()` needs, built once. */
@@ -408,7 +425,10 @@ export class StreamdClient {
     const forget = () => {
       reached.reject(new StreamdError("Subscription ended before catching up"));
       // A later subscription may hold this id by now; leave its entries alone.
-      if (this.subscriptions.get(id)?.poller === poller) {
+      const running = this.subscriptions.get(id);
+      if (running?.poller === poller) {
+        this.ended.unshift(snapshot(id, running, true));
+        this.ended.length = Math.min(this.ended.length, KEEP_ENDED);
         this.subscriptions.delete(id);
         this.listeners.delete(id);
       }
@@ -764,21 +784,15 @@ export class StreamdClient {
    * A snapshot of every subscription this client is running, in start order:
    * `on()`, `onBatch()`, `once()` and `stream()`, each walk of a merged list,
    * and the walks behind `reduce()`, `onTransaction()`, `watch()` and chain
-   * helpers. Ended ones are left out. Read-only, for devtools and logs: each
-   * entry is a frozen copy, and nothing in it pauses, resumes or moves a
-   * subscription. Error text has URLs and bearer tokens taken out.
+   * helpers. With `ended: true`, the final snapshots of the last 20 that ended
+   * follow, newest first, so a walk that gave up still shows its error.
+   * Read-only, for devtools and logs: each entry is a frozen copy, and nothing
+   * in it pauses, resumes or moves a subscription. Error text has URLs and
+   * credentials taken out.
    */
-  listSubscriptions(): SubscriptionInfo[] {
-    return [...this.subscriptions].map(([id, { poller, descriptor, listener, lastError }]) =>
-      Object.freeze({
-        id,
-        descriptor,
-        listener,
-        paused: poller.paused,
-        ...poller.status,
-        ...(lastError === undefined ? {} : { lastError }),
-      }),
-    );
+  listSubscriptions(options: { ended?: boolean } = {}): SubscriptionInfo[] {
+    const live = [...this.subscriptions].map(([id, running]) => snapshot(id, running, false));
+    return options.ended === true ? [...live, ...this.ended] : live;
   }
 
   private matching(descriptor?: EventDescriptor): Listener[] {

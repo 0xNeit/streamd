@@ -20,33 +20,18 @@ export interface StreamdDevtoolsProps {
   defaultOpen?: boolean;
 }
 
-/** A subscription as the panel shows it; `ended` keeps the last snapshot read before it ended. */
-interface Row {
-  info: SubscriptionInfo;
-  ended: boolean;
-}
-
 interface View {
-  rows: Row[];
+  rows: SubscriptionInfo[];
   metrics: [string, AdapterMetricsSnapshot][];
   at: number;
 }
 
-// Enough to see why a walk gave up without the table growing for as long as the page is open.
-const KEEP_ENDED = 20;
 const CURSOR_CHARS = 24;
 
 function sources(metrics: StreamdDevtoolsProps["metrics"]): [string, AdapterMetrics][] {
   if (metrics === undefined) return [];
   if (typeof (metrics as AdapterMetrics).snapshot === "function") return [["adapter", metrics as AdapterMetrics]];
   return Object.entries(metrics as Record<string, AdapterMetrics>);
-}
-
-/** The live list, then the most recently ended ones still remembered. */
-function nextRows(live: SubscriptionInfo[], previous: readonly Row[]): Row[] {
-  const ids = new Set(live.map((s) => s.id));
-  const ended = previous.filter((r) => !ids.has(r.info.id)).map((r) => ({ info: r.info, ended: true }));
-  return [...live.map((info) => ({ info, ended: false })), ...ended.slice(0, KEEP_ENDED)];
 }
 
 function summary(d: EventDescriptor): string {
@@ -68,11 +53,10 @@ function summary(d: EventDescriptor): string {
   }
 }
 
-function state({ info, ended }: Row): string {
-  if (ended) return "ended";
+function state(info: SubscriptionInfo): string {
+  if (info.ended) return "ended";
   if (info.paused) return "paused";
-  if (info.consecutiveErrors > 0) return "retrying";
-  return info.active ? "live" : "stopped";
+  return info.consecutiveErrors > 0 ? "retrying" : "live";
 }
 
 function short(text: string | undefined): string {
@@ -138,19 +122,16 @@ function table(caption: string, head: string[], rows: ReactNode[][], empty: stri
   );
 }
 
-function subscriptionRows(rows: Row[], now: number): ReactNode[][] {
-  return rows.map((row) => {
-    const { info } = row;
-    return [
-      info.id,
-      summary(info.descriptor),
-      state(row),
-      h("span", { title: info.cursor }, short(info.cursor)),
-      info.lastVersion === undefined ? "-" : String(info.lastVersion),
-      errorText(info),
-      age(info.lastSuccessAt, now),
-    ];
-  });
+function subscriptionRows(rows: SubscriptionInfo[], now: number): ReactNode[][] {
+  return rows.map((info) => [
+    info.id,
+    summary(info.descriptor),
+    state(info),
+    h("span", { title: info.cursor }, short(info.cursor)),
+    info.lastVersion === undefined ? "-" : String(info.lastVersion),
+    errorText(info),
+    age(info.lastSuccessAt, now),
+  ]);
 }
 
 function metricRows(metrics: View["metrics"]): ReactNode[][] {
@@ -170,8 +151,8 @@ function metricRows(metrics: View["metrics"]): ReactNode[][] {
 }
 
 /**
- * A floating panel listing the client's running subscriptions, through
- * `client.listSubscriptions()`, and the `metrics` given, re-read every
+ * A floating panel listing the client's subscriptions, running and recently
+ * ended, through `client.listSubscriptions()`, and the `metrics` given, re-read every
  * `interval`. Read-only: it shows cursors, errors and pause state and offers
  * no control over them. Renders nothing during server rendering; mount it in
  * development builds only.
@@ -188,11 +169,11 @@ export function StreamdDevtools({ client: explicit, metrics, interval = 1000, de
 
   useEffect(() => {
     const read = () =>
-      setView((previous) => ({
-        rows: nextRows(client.listSubscriptions(), previous?.rows ?? []),
+      setView({
+        rows: client.listSubscriptions({ ended: true }),
         metrics: sources(latestMetrics.current).map(([label, m]) => [label, m.snapshot()]),
         at: Date.now(),
-      }));
+      });
     read();
     const timer = setInterval(read, interval);
     return () => clearInterval(timer);
@@ -200,6 +181,7 @@ export function StreamdDevtools({ client: explicit, metrics, interval = 1000, de
 
   if (view === undefined) return null;
   const running = view.rows.filter((r) => !r.ended).length;
+
   return h(
     "div",
     { style: PANEL, "data-streamd-devtools": "" },

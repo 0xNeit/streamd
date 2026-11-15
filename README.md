@@ -1027,9 +1027,12 @@ walks behind `reduce()`, `onTransaction()`, `watch()` and the chain helpers (`ba
 `listenerCount()` counts it), `active`, `paused`, `cursor`, `lastVersion`, `consecutiveErrors`,
 `lastSuccessAt` and `lastError`, the most recent error it reported as `{ name, message, cause?,
 at }`. `lastError` stays after the subscription recovers; `consecutiveErrors` says whether it is
-still failing. URLs and bearer tokens in the error text are replaced by `<url>` and
-`Bearer <redacted>`, since node URLs can carry API keys, and `cause` is the direct cause's
-message only. Ended subscriptions are not listed. It is read-only: nothing in an entry pauses,
+still failing. URLs in the error text become `<url>`, and `Bearer` or `Basic` credentials and
+values after key-like names (`api_key=`, `x-api-key:`, `"token":`, `password=`) become
+`<redacted>`, since node URLs and headers can carry API keys; `cause` is the direct cause's
+message only. Ended subscriptions are left out, unless you pass `{ ended: true }`: then the final
+snapshots of the last 20 that ended follow the running ones, newest first, with `ended: true`, so
+a walk that gave up still shows its last error. It is read-only: nothing in an entry pauses,
 resumes or moves a subscription.
 
 ### Clean up
@@ -3586,11 +3589,10 @@ const streamd = new AptosClient({ aptos, adapter: metrics.adapter });
 
 `<StreamdDevtools />` is a small panel fixed to the bottom-right corner, closed until its
 `streamd (n running)` button is clicked. It lists every subscription from
-`client.listSubscriptions()`: id, descriptor, state (`live`, `retrying` while polls are failing,
+`client.listSubscriptions({ ended: true })`: id, descriptor, state (`live`, `retrying` while polls are failing,
 `paused`, `ended`), cursor (shortened, the full value on hover), last version, the error count
 with the last error, and how long ago the last good poll was. The last 20 subscriptions that
-ended stay listed as `ended`, with the last snapshot read before they ended, so a walk that gave
-up still shows why. With `metrics`, one `adapterMetrics` wrapper or a record of them by a label
+ended stay listed as `ended`, with their final snapshot, so a walk that gave up still shows why. With `metrics`, one `adapterMetrics` wrapper or a record of them by a label
 you choose (`{ fullnode: a, archive: b }`), it adds requests, errors, rate-limited calls and
 p50, p95 and max latency per method.
 

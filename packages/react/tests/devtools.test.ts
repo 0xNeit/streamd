@@ -18,8 +18,10 @@ async function mount(client: StreamdClient, props: StreamdDevtoolsProps = {}) {
   const container = document.createElement("div");
   document.body.append(container);
   const root = createRoot(container);
-  const el = createElement(StreamdProvider, { client }, createElement(StreamdDevtools, { interval: 10, defaultOpen: true, ...props }));
-  await act(async () => root.render(el));
+  const el = (c: StreamdClient, p: StreamdDevtoolsProps) =>
+    createElement(StreamdProvider, { client: c }, createElement(StreamdDevtools, { interval: 10, defaultOpen: true, ...p }));
+  await act(async () => root.render(el(client, props)));
+  const rerender = (c: StreamdClient, p: StreamdDevtoolsProps = props) => act(async () => root.render(el(c, p)));
   const rows = () =>
     all(all(container, "table")[0]!, "tbody tr").map((tr) => all(tr, "td").map((td) => td.textContent),
     );
@@ -28,7 +30,7 @@ async function mount(client: StreamdClient, props: StreamdDevtoolsProps = {}) {
     container.remove();
     client.destroy();
   };
-  return { container, rows, done };
+  return { container, rows, done, rerender };
 }
 
 describe("StreamdDevtools", () => {
@@ -103,6 +105,10 @@ describe("StreamdDevtools", () => {
     await waitFor(() => expect(metricRows(t.container)[0]!.slice(0, 2)).toEqual(["adapter", "fetchEvents"]));
     expect(Number(metricRows(t.container)[0]![2])).toBeGreaterThan(0);
     expect(metricRows(t.container)[0]![3]).toBe("0");
+    const latency = all(all(t.container, "table")[1]!, "tbody tr td").slice(5, 8).map((td) => td.textContent);
+    for (const cell of latency) expect(cell).toMatch(/^\d+ms$/);
+    await t.rerender(client, { metrics: { renamed: metered } });
+    await waitFor(() => expect(metricRows(t.container)[0]![0]).toBe("renamed"));
     const other = adapterMetrics(new MemoryAdapter([]));
     const u = await mount(new StreamdClient({ adapter: other.adapter }), { metrics: { primary: metered, archive: other } });
     await waitFor(() => expect(metricRows(u.container).map((r) => r[0])).toContain("primary"));
@@ -129,6 +135,61 @@ describe("StreamdDevtools", () => {
     for (const interval of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
       expect(() => renderToString(createElement(StreamdDevtools, { client, interval }))).toThrow(StreamdError);
     }
+  });
+
+  it("summarises every descriptor kind", async () => {
+    const LONG = "c".repeat(40);
+    const stub: EventAdapter = { fetchEvents: async () => ({ events: [], nextCursor: LONG, hasMore: false, throughVersion: 10n }) };
+    const client = new StreamdClient({ adapter: stub });
+    const kinds = [
+      { kind: "module", eventType: [TYPE, OTHER] },
+      { kind: "handle", accountAddress: "0x1", eventHandleStruct: "0x1::m::S", fieldName: "f" },
+      { kind: "handle", accountAddress: "0x1", creationNumber: 7n },
+      { kind: "account", accountAddress: "0xa", received: true },
+      { kind: "resource", accountAddress: "0xa", resourceType: "0x1::m::R" },
+      { kind: "object", objectId: "0xb" },
+    ] as const;
+    for (const d of kinds) client.on(d, () => {}, LIVE);
+    const t = await mount(client);
+    await waitFor(() => expect(t.rows()[0]![3]).toBe(`${"c".repeat(21)}...`));
+    expect(t.rows().map((r) => r[1])).toEqual([
+      `${TYPE}, ${OTHER}`,
+      "0x1 0x1::m::S.f",
+      "0x1 handle #7",
+      "account 0xa received",
+      "0xa 0x1::m::R",
+      "object 0xb",
+    ]);
+    expect(all(t.container, "tbody tr td span")[0]!.getAttribute("title")).toBe(LONG);
+    expect(t.rows()[0]![6]).toMatch(/^\d+s ago$/);
+    await t.done();
+  });
+
+  it("shows why a walk that gave up at once ended", async () => {
+    const adapter: EventAdapter = {
+      async fetchEvents() {
+        throw new StreamdError("refused at https://n.example/KEY");
+      },
+    };
+    const client = new StreamdClient({ adapter, onError: () => {} });
+    client.on({ kind: "module", eventType: TYPE }, () => {}, { ...LIVE, id: "g" });
+    const t = await mount(client);
+    await waitFor(() => expect(t.rows()[0]!.slice(0, 3)).toEqual(["g", TYPE, "ended"]));
+    expect(t.rows()[0]![5]).toBe("1 StreamdPollingError: Polling stopped on invalid input: refused at <url> (cause: refused at <url>)");
+    await t.done();
+  });
+
+  it("shows only the new client's subscriptions after the client changes", async () => {
+    const first = new StreamdClient({ adapter: new MemoryAdapter([]) });
+    first.on({ kind: "module", eventType: TYPE }, () => {}, { ...LIVE, id: "one" });
+    const t = await mount(first);
+    await waitFor(() => expect(t.rows()[0]![0]).toBe("one"));
+    const second = new StreamdClient({ adapter: new MemoryAdapter([]) });
+    second.on({ kind: "module", eventType: TYPE }, () => {}, { ...LIVE, id: "two" });
+    await t.rerender(second);
+    await waitFor(() => expect(t.rows().map((r) => r[0])).toEqual(["two"]));
+    first.destroy();
+    await t.done();
   });
 
   it("adds no runtime dependency", () => {
