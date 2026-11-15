@@ -1996,7 +1996,9 @@ for (const p of governance.value.values()) console.log(p.id, proposalState(p), p
   after a vote has not seen it. A resolution's figures are final, since no vote lands once
   voting closes, and `proposalState` uses them when there is one. A multi-step proposal resolves
   once per step, so `resolution.version` is the first step's and `steps` counts them; mainnet's
-  proposal 205 took seven.
+  proposal 205 took seven. No event marks the last step, so `resolution` is present once any
+  step resolved: mainnet's multi-step proposals 68 and 88 resolved one step each and never ran
+  the rest, so `0x1::voting::is_resolved` is false for them.
 - **State.** `proposalState` is `"pending"` until `expirationSecs` passes or either side reaches
   `earlyResolutionVoteThreshold`, then `"succeeded"` when yes beats no and the two reach
   `minVoteThreshold`, else `"failed"`; `undefined` when the creation was not seen. `nowSecs`

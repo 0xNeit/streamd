@@ -232,7 +232,12 @@ export interface ProposalVote {
   version: bigint;
 }
 
-/** What `voting::ResolveProposal` reported. */
+/**
+ * What `voting::ResolveProposal` reported. Present once any step resolved: a
+ * multi-step proposal is resolved on chain (`is_resolved`) only after its last
+ * step, which no event marks, so one whose later steps never ran has a
+ * resolution here and `is_resolved` false.
+ */
 export interface ProposalResolution {
   /** The first resolution's version. */
   version: bigint;
