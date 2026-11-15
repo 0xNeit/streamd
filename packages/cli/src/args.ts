@@ -774,7 +774,8 @@ function redisUrl(raw: string): string {
   if (url.search !== "" || url.hash !== "" || !/^(\/\d*)?$/.test(url.pathname)) {
     throw new UsageError("--to redis:// takes only a database number as its path, with no query or fragment");
   }
-  return raw;
+  // Lowercased, so a client matching the scheme case-sensitively never takes REDISS:// as plaintext.
+  return url.protocol + raw.slice(url.protocol.length);
 }
 
 function webhookUrl(raw: string | undefined, command: string): string {

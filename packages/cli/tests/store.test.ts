@@ -331,6 +331,6 @@ describe("redactUrl", () => {
   });
 
   it("names no part of a URL it cannot parse", () => {
-    expect(redactUrl("postgres://:::secret")).toBe("the Postgres URL");
+    expect(redactUrl("postgres://:::secret")).toBe("the URL");
   });
 });

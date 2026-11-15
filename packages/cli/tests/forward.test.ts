@@ -719,8 +719,20 @@ describe("runForward to Redis", () => {
       throw new Error(`no driver for ${url}`);
     };
     expect(await runForward(redisOptions(), { ...h.io, redis: open })).toBe(1);
-    expect(h.errors).toEqual(["streamd: cannot open the Redis client: no driver for the Redis URL"]);
+    expect(h.errors).toEqual(["streamd: cannot open the Redis client: no driver for redis://streamd:***@127.0.0.1:6379/0"]);
     expect(existsSync(cursorFile())).toBe(false);
+  });
+
+  it("exits 0 without subscribing when aborted while the client opens", async () => {
+    const fake = fakeRedis();
+    const h = harness(new MemoryAdapter([ev(1)]));
+    const open = async (url: string, timeout: number) => {
+      h.controller.abort();
+      return fake.open(url, timeout);
+    };
+    expect(await runForward(redisOptions(), { ...h.io, redis: open })).toBe(0);
+    expect(fake.calls).toEqual([]);
+    expect(fake.state.closed).toBe(1);
   });
 
   it("resumes from the cursor file and delivers through the same rule as webhooks", async () => {

@@ -4,7 +4,7 @@ import type { StreamdClient, Subscription } from "@streamd/core";
 import { SIGNATURE_HEADER, type ForwardOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { filterPredicate } from "./filter.js";
-import { message, signature } from "./format.js";
+import { message, scrubber, signature } from "./format.js";
 import { connectRedis, redisSink, type RedisLike } from "./redis.js";
 
 export interface ForwardIO {
@@ -157,9 +157,14 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
         ? webhookSink(options)
         : redisSink(await (io.redis ?? connectRedis)(options.to, options.timeout), { ...options, stream });
   } catch (err) {
-    // The message only: the client's own errors are not known to leave the URL out.
-    io.error(`streamd: cannot open the Redis client: ${message(err).split(options.to).join("the Redis URL")}`);
+    // The client's own errors are not known to leave the URL or password out.
+    io.error(`streamd: cannot open the Redis client: ${scrubber(options.to)(message(err))}`);
     return 1;
+  }
+  // Opening can await a dynamic import, long enough for a SIGINT to land before the listener below.
+  if (io.signal.aborted) {
+    sink.close?.();
+    return 0;
   }
   return new Promise<number>((resolve) => {
     let sub: Subscription | undefined;

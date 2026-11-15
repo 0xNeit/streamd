@@ -256,7 +256,7 @@ describe("parseCommand forward", () => {
         stream: "s",
         secret: "k",
       });
-      expect(forward("--to", "REDIS://h:6380/", "--stream", "s", TYPE).to).toBe("REDIS://h:6380/");
+      expect(forward("--to", "REDISS://h:6380/", "--stream", "s", TYPE).to).toBe("rediss://h:6380/");
     });
 
     it.each([

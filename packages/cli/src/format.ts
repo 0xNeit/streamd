@@ -57,7 +57,7 @@ export function redactUrl(url: string): string {
     parsed.hash = "";
     return parsed.toString();
   } catch {
-    return "the Postgres URL";
+    return "the URL";
   }
 }
 
