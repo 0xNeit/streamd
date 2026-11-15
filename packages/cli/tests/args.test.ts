@@ -237,6 +237,54 @@ describe("parseCommand forward", () => {
       );
     },
   );
+  describe("to Redis", () => {
+    const REDIS = "redis://streamd:pw-s3cret@127.0.0.1:6379/2";
+
+    it("reads a Redis URL and its stream", () => {
+      expect(forward("--to", REDIS, "--stream", "aptos:deposits", TYPE)).toEqual({
+        descriptor: { kind: "module", eventType: [TYPE] },
+        network: "mainnet",
+        to: REDIS,
+        stream: "aptos:deposits",
+        cursorFile: "streamd-forward.cursor",
+        retries: 5,
+        timeout: 10000,
+        headers: {},
+      });
+      expect(forward("--to", "rediss://redis.example", "--stream", "s", "--secret", "k", TYPE)).toMatchObject({
+        to: "rediss://redis.example",
+        stream: "s",
+        secret: "k",
+      });
+      expect(forward("--to", "REDIS://h:6380/", "--stream", "s", TYPE).to).toBe("REDIS://h:6380/");
+    });
+
+    it.each([
+      [["--to", REDIS, TYPE], /^--to redis:\/\/ needs --stream <key>$/],
+      [["--to", REDIS, "--stream", "", TYPE], /^--to redis:\/\/ needs --stream <key>$/],
+      [["--to", "https://hooks.example.com/in", "--stream", "s", TYPE], /^--stream needs a redis:\/\/ or rediss:\/\/ --to$/],
+      [["--to", REDIS, "--stream", "s", "--header", "X: pw-s3cret", TYPE], /^--header is for webhooks/],
+      [["--to", "redis://:pw-s3cret@/", "--stream", "s", TYPE], /^--to must be a valid redis:\/\/ or rediss:\/\/ URL with a host$/],
+      [["--to", "redis://h/streams/pw-s3cret", "--stream", "s", TYPE], /^--to redis:\/\/ takes only a database number/],
+      [["--to", "redis://h/0?password=pw-s3cret", "--stream", "s", TYPE], /^--to redis:\/\/ takes only a database number/],
+      [["--to", "redis://h/0#pw-s3cret", "--stream", "s", TYPE], /^--to redis:\/\/ takes only a database number/],
+      [["--to", "redis-pw-s3cret", "--stream", "s", TYPE], /^--to must be an http or https URL$/],
+    ])("rejects %j without echoing the URL", (argv, pattern) => {
+      let error: unknown;
+      try {
+        forward(...(argv as string[]));
+      } catch (err) {
+        error = err;
+      }
+      expect((error as Error).message).toMatch(pattern as RegExp);
+      expect(String(error)).not.toContain("pw-s3cret");
+    });
+
+    it("keeps alert webhook-only", () => {
+      rejects(["alert", "--rules", "r.json", "--to", REDIS], /^--to must be an http or https URL$/);
+      rejects(["alert", "--rules", "r.json", "--to", "https://h.example", "--stream", "s"], /Unknown option '--stream'/);
+    });
+  });
 });
 
 describe("parseCommand codegen", () => {
