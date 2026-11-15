@@ -13,15 +13,21 @@ export const amount = (field: unknown) =>
 /**
  * `adapter` as a source of records: each page's events become `toRecord`'s
  * records, in the page's order, dropping those it returns `undefined` for.
+ */
+export function recordSource<T>(adapter: EventAdapter, toRecord: (event: StreamdEvent) => StreamdEvent<T> | undefined): EventAdapter {
+  return pageSource(adapter, (events) => events.map(toRecord).filter((e): e is StreamdEvent<T> => e !== undefined));
+}
+
+/**
+ * `adapter` with each page's events replaced by what `rewrite` makes of them.
  * The optional reads are passed through, so negative `fromVersion`,
  * `fromTime` and `withState` work.
  */
-export function recordSource<T>(adapter: EventAdapter, toRecord: (event: StreamdEvent) => StreamdEvent<T> | undefined): EventAdapter {
+export function pageSource(adapter: EventAdapter, rewrite: (events: StreamdEvent[]) => StreamdEvent[] | Promise<StreamdEvent[]>): EventAdapter {
   const source: EventAdapter = {
     fetchEvents: async (descriptor, options) => {
       const page = await adapter.fetchEvents(descriptor, options);
-      const events = page.events.map(toRecord).filter((e): e is StreamdEvent<T> => e !== undefined);
-      return { ...page, events };
+      return { ...page, events: await rewrite(page.events) };
     },
   };
   for (const name of ["getHeadVersion", "getEarliestVersion", "getBlock", "getBlockHeights", "view"] as const) {

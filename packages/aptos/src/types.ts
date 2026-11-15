@@ -2,6 +2,7 @@ import type { MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos
 import type {
   EventFilter,
   EventPredicate,
+  ReduceOptions,
   StreamdEvent,
   SubscriptionOptions,
   Transfer,
@@ -218,4 +219,90 @@ export interface AptosTransactionSimulation extends TransactionSimulation {
   secondarySignersPublicKeys?: (PublicKey | undefined)[];
   /** The fee payer's public key, for a sponsored transaction; omitted, its check is skipped. */
   feePayerPublicKey?: PublicKey;
+}
+
+/** One `aptos_governance::Vote`: a stake pool's voter spending some of the pool's voting power. */
+export interface ProposalVote {
+  /** Long form. A delegation pool's vote names the pool's own signer, not the delegator. */
+  voter: string;
+  /** Long form. */
+  stakePool: string;
+  votes: bigint;
+  shouldPass: boolean;
+  version: bigint;
+}
+
+/**
+ * What `voting::ResolveProposal` reported. Present once any step resolved: a
+ * multi-step proposal is resolved on chain (`is_resolved`) only after its last
+ * step, which no event marks, so one whose later steps never ran has a
+ * resolution here and `is_resolved` false.
+ */
+export interface ProposalResolution {
+  /** The first resolution's version. */
+  version: bigint;
+  /** Final: no vote lands once voting has closed. */
+  yesVotes: bigint;
+  noVotes: bigint;
+  early: boolean;
+  /** Resolution events seen: a multi-step proposal resolves once per step. */
+  steps: number;
+}
+
+/** As `0x1::voting::get_proposal_state` reports it: `PENDING`, `SUCCEEDED` or `FAILED`. */
+export type ProposalState = "pending" | "succeeded" | "failed";
+
+/**
+ * One governance proposal as far as its events have been seen. The creation
+ * fields are absent when the creation was not seen, and `yesVotes`, `noVotes`
+ * and `votes` count only the votes seen.
+ */
+export interface Proposal {
+  id: bigint;
+  /** Long form, from `aptos_governance::CreateProposal`. */
+  proposer?: string;
+  stakePool?: string;
+  /**
+   * The rest of the creation fields come from `voting::CreateProposal`. The
+   * hash is the first step's: a multi-step proposal's view moves on to later steps.
+   */
+  executionHash?: string;
+  /** As created. Each value's bytes as text, or as the fullnode writes them (hex) when they are not printable UTF-8. */
+  metadata?: Record<string, string>;
+  expirationSecs?: bigint;
+  minVoteThreshold?: bigint;
+  earlyResolutionVoteThreshold?: bigint;
+  /** The creation's version. */
+  createdAt?: bigint;
+  yesVotes: bigint;
+  noVotes: bigint;
+  /** In the order they landed. */
+  votes: ProposalVote[];
+  resolution?: ProposalResolution;
+}
+
+/**
+ * Options for `AptosClient.proposals`: `fromVersion` bounds every walk, and
+ * the live options tune each of them, as for `reduce()`.
+ */
+export interface ProposalsOptions
+  extends Pick<
+    ReduceOptions,
+    "fromVersion" | "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "maxPollInterval" | "retries" | "signal" | "onError"
+  > {
+  /** Called after each live event changes a proposal, with that proposal. A throw goes to `onError`. */
+  onChange?: (proposal: Proposal, event: StreamdEvent) => void;
+}
+
+/** A running `proposals()`: every proposal seen so far, kept current as events arrive. */
+export interface Proposals {
+  /** Every proposal seen, by id; the map and its records are updated in place. */
+  readonly value: ReadonlyMap<bigint, Proposal>;
+  get(id: bigint): Proposal | undefined;
+  /** Resolves once every walk has read its history and is following; rejects if one fails or it is stopped first. */
+  readonly ready: Promise<ReadonlyMap<bigint, Proposal>>;
+  /** False once stopped: unsubscribed, aborted, or a walk failed or gave up, which stops them all. */
+  readonly active: boolean;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
 }
