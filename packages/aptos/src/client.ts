@@ -36,8 +36,8 @@ export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
  * A `StreamdClient` for Aptos: everything the chain-neutral client does, plus
  * asset transfers and balances, transaction lookups, simulations and the
  * assertions on them, and Aptos names wherever an account is taken. On
- * mainnet and a localnet, `withNames` attaches each sender's primary name
- * through `primaryName`; elsewhere it is refused at the call.
+ * mainnet, `withNames` attaches each sender's primary name through
+ * `primaryName`; elsewhere it is refused at the call.
  */
 export class AptosClient extends StreamdClient {
   protected readonly aptos: Aptos;
@@ -48,10 +48,11 @@ export class AptosClient extends StreamdClient {
     const { aptos: _given, ...rest } = config;
     super({ ...rest, adapter: config.adapter ?? new FullnodeScanAdapter(aptos) });
     this.aptos = aptos;
-    // Testnet's ANS router is gone, so only mainnet and a localnet can answer.
+    // Testnet's ANS router is gone, and a localnet has none published at the
+    // SDK's local router address, so only mainnet can answer.
     const network = aptos.config?.network;
     this.names.serve(
-      network === Network.MAINNET || network === Network.LOCAL
+      network === Network.MAINNET
         ? (address) => primaryName(aptos, address)
         : `withNames needs Aptos names, which network ${network} does not serve`,
     );

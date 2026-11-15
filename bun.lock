@@ -124,6 +124,20 @@
         "@mysten/sui": "2.39.1",
       },
     },
+    "packages/testing": {
+      "name": "@streamd/testing",
+      "version": "0.1.0",
+      "dependencies": {
+        "@streamd/aptos": "workspace:*",
+        "@streamd/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@aptos-labs/ts-sdk": "^6.3.1",
+      },
+      "peerDependencies": {
+        "@aptos-labs/ts-sdk": ">=1.0.0",
+      },
+    },
   },
   "packages": {
     "@0no-co/graphql.web": ["@0no-co/graphql.web@1.3.4", "", { "peerDependencies": { "graphql": "^14.0.0 || ^15.0.0 || ^16.0.0 || ^17.0.0" }, "optionalPeers": ["graphql"] }, "sha512-imSwulOeDQodRy/olQmVEo2PiY6ntjkZ9eiGdw6lMYylh/tay9b7MusyJBmEnkL8GiKRKr6ltr+D42mY5bd8Bg=="],
@@ -187,6 +201,8 @@
     "@streamd/store-sqlite": ["@streamd/store-sqlite@workspace:packages/store-sqlite"],
 
     "@streamd/sui": ["@streamd/sui@workspace:packages/sui"],
+
+    "@streamd/testing": ["@streamd/testing@workspace:packages/testing"],
 
     "@szmarczak/http-timer": ["@szmarczak/http-timer@4.0.6", "", { "dependencies": { "defer-to-connect": "^2.0.0" } }, "sha512-4BAffykYOgO+5nzBWYwE3W90sBgLJoUPRWWcL8wlyiM8IB8ipJz3UMJ9KXQd1RKQXpKp8Tutn80HZtWsu2u76w=="],
 
