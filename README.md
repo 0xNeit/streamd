@@ -18,7 +18,7 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `balances`, `balanceAt`,
+`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `proposals`, `balances`, `balanceAt`,
 `eventsOf`, `eventsAt`, `expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
@@ -1945,6 +1945,86 @@ const wapal = await streamd.getSales({ fromVersion: 7028273582n, toVersion: 7028
   marketplace package, so a storefront that created its own fee schedule on that package is
   reported as `wapal` too. An event whose fields do not have its struct's shape is skipped. A
   sales subscription is not a listener for `off()` or `listenerCount()`.
+
+## Governance proposals
+
+`proposals(options?)` keeps every Aptos governance proposal it sees current: what was proposed,
+the stake for and against, each vote, and the resolution. `value` is a map by proposal id of
+`Proposal { id, proposer?, stakePool?, executionHash?, metadata?, expirationSecs?,
+minVoteThreshold?, earlyResolutionVoteThreshold?, createdAt?, yesVotes, noVotes, votes, resolution? }`,
+and `proposalState(proposal, nowSecs?)` gives what `0x1::voting::get_proposal_state` would report:
+
+```ts
+import { proposalState } from "@streamd/aptos";
+
+const governance = streamd.proposals({
+  onChange: (p, event) => console.log(`proposal ${p.id}: ${p.yesVotes} yes, ${p.noVotes} no at ${event.version}`),
+});
+await governance.ready;
+for (const p of governance.value.values()) console.log(p.id, proposalState(p), p.votes.length);
+```
+
+- **Sources.** Five walks, each its own `reduce()`, folding into one map; no view is read:
+
+  | Walk | Gives |
+  | --- | --- |
+  | `0x1::voting::CreateProposalEvent` (handle, creation number 5 at `0x1`) | `executionHash`, `metadata`, `expirationSecs`, `minVoteThreshold`, `earlyResolutionVoteThreshold`, `createdAt` |
+  | `0x1::aptos_governance::CreateProposalEvent` (`GovernanceEvents.create_proposal_events`) | `proposer`, `stakePool` |
+  | `0x1::aptos_governance::VoteEvent` (`GovernanceEvents.vote_events`) | one `ProposalVote { voter, stakePool, votes, shouldPass, version }` each, summed into `yesVotes` or `noVotes` |
+  | `0x1::voting::ResolveProposal` (handle, creation number 7) | `resolution { version, yesVotes, noVotes, early, steps }` |
+  | one scan over `voting::CreateProposal`, `aptos_governance::CreateProposal`, `aptos_governance::Vote` and `voting::ResolveProposal` | the same, for proposals after the module-event migration |
+
+  The legacy handles carry proposals 0 to 134 (the migration itself, resolved at version
+  2812968150); every later proposal emits only module events. `voting::Vote` is not read, since
+  `aptos_governance::Vote` is emitted beside it with the voter, pool and direction. A legacy
+  resolution, whose type the module event shares, is folded from its handle only.
+- **Counts.** `yesVotes`, `noVotes` and `votes` count the votes seen; a tracker that started
+  after a vote has not seen it. A resolution's figures are final, since no vote lands once
+  voting closes, and `proposalState` uses them when there is one. A multi-step proposal resolves
+  once per step, so `resolution.version` is the first step's and `steps` counts them; mainnet's
+  proposal 205 took seven.
+- **State.** `proposalState` is `"pending"` until `expirationSecs` passes or either side reaches
+  `earlyResolutionVoteThreshold`, then `"succeeded"` when yes beats no and the two reach
+  `minVoteThreshold`, else `"failed"`; `undefined` when the creation was not seen. `nowSecs`
+  (Unix seconds) defaults to the wall clock; pass the ledger timestamp to match the chain exactly.
+- **As created.** `executionHash` and `metadata` are the creation's: a multi-step proposal's
+  `get_execution_hash` view moves on to later steps. `metadata` values are text, or hex as the
+  fullnode writes them when the bytes are not printable UTF-8, such as the `0x01` of
+  `IS_MULTI_STEP_PROPOSAL_KEY`. Addresses are in long form. A vote through a delegation pool
+  names the pool's own voter, not the delegator.
+- **History needs the right sources.** Each walk reads from `fromVersion`, as `getEvents` does
+  when it is omitted: a handle from its first event, and a `FullnodeScanAdapter` module scan from
+  the head. Mainnet's legacy events are all older than the public fullnode keeps, and its handle
+  endpoint answers that pruned history with an empty page rather than `410`, so
+  `ArchiveFallbackAdapter` never falls back for it: route `handle` to the archive instead. No
+  public source serves module events by type, so the module walk is a transaction scan; history
+  before the head needs `fromVersion` and a source that can scan or index that far (a store from
+  `streamd store`, an archive with an API key for a narrow range):
+
+  ```ts
+  const streamd = new AptosClient({
+    aptos,
+    adapter: new RoutingAdapter({
+      handle: new FullnodeScanAdapter(new Aptos(new AptosConfig(networks.aptosMainnetArchive))),
+      default: new FullnodeScanAdapter(aptos),
+    }),
+  });
+  ```
+
+  The legacy handles hold 199,058 votes, about 2,000 archive pages, well past the archive's
+  anonymous rate, so give it an API key.
+- **Following.** Each walk polls on its own cursor after its backfill, so five requests go out
+  per `pollInterval`, four of them to legacy handles that no longer grow on mainnet;
+  `maxPollInterval` lets the quiet ones back off. `ready` resolves with the map once every walk
+  is following. The map and its records are updated in place; `onChange` fires for each live
+  event that changed a proposal. Options: `fromVersion`, `onChange`, `onError`, `signal`,
+  `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`, `maxPollInterval` and `retries`;
+  anything else throws.
+- **Stops together.** A walk that fails its backfill, gives up after `maxErrors`, or meets an
+  event of a known type without its fields stops every walk, reported once through `onError`,
+  since the map would otherwise go on missing that walk's events. There is no cursor to resume
+  from: a restart reads the history again. Like `reduce()`, it is not a listener for `off()` or
+  `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 
 ## Live balances
 
