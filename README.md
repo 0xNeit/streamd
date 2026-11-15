@@ -3602,9 +3602,10 @@ streamd forward --to https://hooks.example.com/aptos \
 
 | Option | Meaning |
 | --- | --- |
-| `--to <url>` | webhook URL, `http` or `https` (required), or a Redis or NATS URL (below) |
+| `--to <url>` | webhook URL, `http` or `https` (required), or a Redis, NATS or Kafka URL (below) |
 | `--stream <key>` | the Redis stream to add each batch to (required with a Redis `--to`) |
 | `--subject <name>` | the NATS subject to publish each batch to (required with a NATS `--to`) |
+| `--topic <name>` | the Kafka topic to produce each batch to (required with a Kafka `--to`) |
 | `--cursor-file <path>` | where the position is saved (default `streamd-forward.cursor`) |
 | `--retries <n>` | retries per batch after the first attempt (default `5`) |
 | `--timeout <ms>` | per-request timeout (default `10000`) |
@@ -3747,6 +3748,61 @@ NKEY, JWT and `.creds` authentication and lists of several servers. `--header` i
 server needs headers (NATS 2.2 or later), and the URL, its password and its token are never
 printed.
 
+**To a Kafka topic.** Give `--to` a Kafka URL, `kafka://host[:port]` (port `9092` by default),
+several brokers separated by commas (`kafka://b1:9092,b2:9092`), or `kafkas://` for TLS, and
+`--topic` a topic that already exists. For SASL put `user:password@` before the brokers and name
+the mechanism: `?sasl=plain`, `?sasl=scram-sha-256` or `?sasl=scram-sha-512` (there is no
+default, and PLAIN sends the password as it is, so pair it with `kafkas://`). Each batch becomes
+one record whose value is exactly the webhook body. Its key is the descriptor, such as
+`["module",["0x1::coin::DepositEvent"]]`, the same for every batch of one forwarder, so the
+default partitioner keeps them on one partition, in order. With a secret the record carries the
+header `x-streamd-signature`, the same `sha256=<hex>` the webhook header carries:
+
+```sh
+kafka-topics.sh --create --topic aptos.deposits --bootstrap-server localhost:9092
+streamd forward --to kafka://localhost:9092 --topic aptos.deposits \
+  --cursor-file deposits.cursor 0x1::coin::DepositEvent
+```
+
+```ts
+import { WEBHOOK_SIGNATURE_HEADER, verifyWebhook } from "@streamd/core";
+import type { KafkaMessage } from "kafkajs";
+
+async function handle(message: KafkaMessage): Promise<void> {
+  const signature = message.headers?.[WEBHOOK_SIGNATURE_HEADER]?.toString();
+  if (!(await verifyWebhook(message.value!, signature, process.env.STREAMD_WEBHOOK_SECRET!))) return;
+  const events = JSON.parse(message.value!.toString());
+  // ...
+}
+```
+
+The producer sends with `acks=all`, so a send resolves only once every in-sync replica has the
+record, and the cursor file moves only after that, exactly as after a webhook's `2xx`. The
+producer is idempotent: a resend of a batch that was not acknowledged, on the same connection
+or after a broker restart, carries the same producer id and sequence, and the broker drops the
+copy. At least once still allows a duplicate when a send outlives `--timeout`, which closes the
+producer so the retry opens a fresh one with a new producer id, and when `forward` restarts and
+resends the batch in flight. A resent record's value is byte-identical, so a consumer drops
+copies by the value's SHA-256 or by each event's `version` and `eventIndex`.
+
+What fails at once, exiting `1`: a topic that does not exist (the producer never creates one),
+authorization or SASL authentication failures, a record over the broker's or topic's size limit
+(lower `--batch-size`), an invalid topic or record, a topic policy violation, and a broker too
+old for the request. Everything else is retried with the same backoff and `--retries` budget:
+refused or dropped connections, leader elections, too few in-sync replicas, request timeouts,
+and a send still unfinished at `--timeout`, which bounds connecting and sending together. A
+broker restart mid-run is retried the same way, reconnecting on the next attempt. `--header`
+is refused, and the URL and its password are never printed.
+
+The CLI ships no Kafka client: install one, and it is loaded only when `--to` is a Kafka URL.
+`@confluentinc/kafka-javascript` is the one to choose, maintained by Confluent over
+librdkafka, and streamd drives it through its KafkaJS-compatible API; `kafkajs`, pure
+JavaScript, works too but has had no release since February 2023. When both are installed,
+Confluent's is used. Under Confluent's client, librdkafka waits up to 30 seconds for a topic
+missing from the metadata to appear, longer than the default `--timeout`, so a missing topic
+is retried as a timeout until the budget runs out rather than failing at once. Transactions
+(exactly once), OAUTHBEARER, client certificates and a custom CA are not supported.
+
 `--to-version` turns `forward` into a backfill job. It needs `--from-version` or `--from-time`
 (a saved cursor still wins), and the bound must already be history: the head is read once, and a
 bound above it fails. Nothing above the bound is sent. The run ends with exit `0` when the walk
@@ -3759,9 +3815,9 @@ streamd forward --to https://hooks.example.com/backfill --from-version 300000000
   --to-version 3001000000 --batch-size 100 0x1::coin::CoinDeposit
 ```
 
-Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST, `XADD` or publish
+Exit codes: `0` on Ctrl-C or `SIGTERM`, which abandons an in-flight POST, `XADD`, publish or send
 without moving the cursor; `1` when a batch fails past its retries or fails at once, the Redis
-client cannot be loaded, the subscription stops on an error, the cursor file cannot be read or
+or Kafka client cannot be loaded, the subscription stops on an error, the cursor file cannot be read or
 written, or `--to-version` is above the head; `2` for invalid arguments. Run it under a supervisor that restarts on `1`.
 
 ### Alert on thresholds
