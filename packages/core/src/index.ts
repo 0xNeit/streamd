@@ -184,6 +184,8 @@ export type {
   StateRequest,
   StateRequestBuilder,
   NameOptions,
+  SubscriptionError,
+  SubscriptionInfo,
   SubscriptionStatus,
   TransactionEvents,
   TransactionSimulation,

@@ -19,6 +19,8 @@ import type {
   StreamdConfig,
   StreamdEvent,
   Subscription,
+  SubscriptionError,
+  SubscriptionInfo,
   SubscriptionOptions,
   TransactionCallback,
   TransactionFilter,
@@ -33,7 +35,7 @@ import {
   StreamdError,
   StreamdTimeoutError,
 } from "./errors.js";
-import { ASYNC_DISPOSE, descriptorKey, generateId, latch, onAbort } from "./utils.js";
+import { ASYNC_DISPOSE, descriptorKey, generateId, latch, onAbort, redactSecrets } from "./utils.js";
 import { eventStream } from "./stream.js";
 import { RequestLimiter } from "./limiter.js";
 import { CursorManager } from "./cursor.js";
@@ -55,6 +57,9 @@ const DISPOSE: typeof Symbol.dispose =
   Symbol.dispose ?? (Symbol.for("Symbol.dispose") as typeof Symbol.dispose);
 
 const DEFAULT_CLOSE_TIMEOUT = 5000;
+
+// Enough to see why recent walks ended, without a long-lived client growing.
+const KEEP_ENDED = 20;
 
 /** Whether `work` settled within `ms`. */
 async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolean> {
@@ -150,6 +155,45 @@ interface Listener {
   stop: () => void;
 }
 
+/** A running poller, with what `listSubscriptions()` reports beside its status. */
+interface Running {
+  poller: EventPoller;
+  stop: () => void;
+  descriptor: EventDescriptor;
+  listener: boolean;
+  lastError?: SubscriptionError;
+}
+
+/** A copy nothing can change, so a snapshot never hands out the caller's object. */
+function frozenDescriptor(descriptor: EventDescriptor): EventDescriptor {
+  const copy = Object.fromEntries(
+    Object.entries(descriptor).map(([k, v]) => [k, Array.isArray(v) ? Object.freeze([...v]) : v]),
+  );
+  return Object.freeze(copy) as EventDescriptor;
+}
+
+function snapshot(id: string, { poller, descriptor, listener, lastError }: Running, ended: boolean): SubscriptionInfo {
+  return Object.freeze({
+    id,
+    descriptor,
+    listener,
+    ended,
+    paused: poller.paused,
+    ...poller.status,
+    ...(lastError === undefined ? {} : { lastError }),
+  });
+}
+
+function errorInfo(error: Error): SubscriptionError {
+  const cause = (error as { cause?: unknown }).cause;
+  return Object.freeze({
+    name: error.name,
+    message: redactSecrets(error.message),
+    ...(cause instanceof Error ? { cause: redactSecrets(cause.message) } : {}),
+    at: Date.now(),
+  });
+}
+
 
 function resolveAdapter(config: StreamdConfig): EventAdapter {
   // Still checked at runtime for JavaScript callers, whom the type does not reach.
@@ -171,9 +215,11 @@ export class StreamdClient {
   protected readonly names: SenderNames;
   /** Lets identical subscriptions share each poll's adapter request. */
   private readonly shared: SharedFetches;
-  private readonly subscriptions = new Map<string, { poller: EventPoller; stop: () => void }>();
+  private readonly subscriptions = new Map<string, Running>();
   /** The `on()`/`onBatch()` subset of `subscriptions`; `once()` and streams own theirs. */
   private readonly listeners = new Map<string, Listener>();
+  /** Final snapshots of the most recently ended subscriptions, newest first. */
+  private readonly ended: SubscriptionInfo[] = [];
   /** Open streams, so destroy() can end their loops rather than strand them. */
   private readonly streams = new Set<() => void>();
   /** What `reduce()` needs, built once. */
@@ -379,7 +425,10 @@ export class StreamdClient {
     const forget = () => {
       reached.reject(new StreamdError("Subscription ended before catching up"));
       // A later subscription may hold this id by now; leave its entries alone.
-      if (this.subscriptions.get(id)?.poller === poller) {
+      const running = this.subscriptions.get(id);
+      if (running?.poller === poller) {
+        this.ended.unshift(snapshot(id, running, true));
+        this.ended.length = Math.min(this.ended.length, KEEP_ENDED);
         this.subscriptions.delete(id);
         this.listeners.delete(id);
       }
@@ -398,6 +447,8 @@ export class StreamdClient {
           resolved.onCaughtUp?.();
         },
         onError: (err) => {
+          const running = this.subscriptions.get(id);
+          if (running?.poller === poller) running.lastError = errorInfo(err);
           // Drop the subscription once the poller has given up and stopped
           // itself; a paused one reporting a late handler error stays.
           if (!poller.active && !poller.paused) {
@@ -415,7 +466,12 @@ export class StreamdClient {
     // An already-aborted signal leaves the poller stopped: nothing to track.
     if (poller.active) {
       const stop = () => (poller.stop(), forget());
-      this.subscriptions.set(id, { poller, stop });
+      this.subscriptions.set(id, {
+        poller,
+        stop,
+        descriptor: frozenDescriptor(descriptor),
+        listener: listener !== undefined,
+      });
       if (listener !== undefined) {
         this.listeners.set(id, { key: descriptorKey(descriptor), callback: listener, stop });
       }
@@ -722,6 +778,21 @@ export class StreamdClient {
    */
   listenerCount(descriptor?: EventDescriptor): number {
     return this.matching(descriptor).length;
+  }
+
+  /**
+   * A snapshot of every subscription this client is running, in start order:
+   * `on()`, `onBatch()`, `once()` and `stream()`, each walk of a merged list,
+   * and the walks behind `reduce()`, `onTransaction()`, `watch()` and chain
+   * helpers. With `ended: true`, the final snapshots of the last 20 that ended
+   * follow, newest first, so a walk that gave up still shows its error.
+   * Read-only, for devtools and logs: each entry is a frozen copy, and nothing
+   * in it pauses, resumes or moves a subscription. Error text has URLs and
+   * credentials taken out.
+   */
+  listSubscriptions(options: { ended?: boolean } = {}): SubscriptionInfo[] {
+    const live = [...this.subscriptions].map(([id, running]) => snapshot(id, running, false));
+    return options.ended === true ? [...live, ...this.ended] : live;
   }
 
   private matching(descriptor?: EventDescriptor): Listener[] {

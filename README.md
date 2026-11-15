@@ -1012,6 +1012,34 @@ descriptor, as `removeAllListeners(descriptor)` does. `listenerCount()` counts p
 subscriptions but not ended ones. `once()` and `stream()` are not listeners here: they end
 with their promise or loop, or `destroy()`.
 
+### List running subscriptions
+
+```ts
+for (const s of streamd.listSubscriptions()) {
+  console.log(s.id, s.descriptor.kind, s.paused, s.cursor, s.lastVersion, s.lastError?.message);
+}
+```
+
+`listSubscriptions()` returns one frozen snapshot per subscription the client is running, in
+start order: `on()`, `onBatch()`, `once()` and `stream()`, each walk of a merged list, and the
+walks behind `reduce()`, `onTransaction()`, `watch()` and the chain helpers (`balances`,
+`transfers` and the rest). Each holds `id`, a frozen copy of the `descriptor`, `listener` (whether
+`listenerCount()` counts it), `active`, `paused`, `cursor`, `lastVersion`, `consecutiveErrors`,
+`lastSuccessAt` and `lastError`, the most recent error it reported as `{ name, message, cause?,
+at }`. `lastError` stays after the subscription recovers; `consecutiveErrors` says whether it is
+still failing. URLs in the error text become `<url>`, and credentials become `<redacted>`: an
+`Authorization` header's `Bearer` or `Basic` value in any case, a `Bearer` or `Basic` token of 8
+or more characters elsewhere, and the value after a whole key-like name (`api_key=`,
+`x-api-key:`, `"token":`, `password=`; compound names such as `refresh_token` are not
+matched), since node URLs and headers can carry API keys; `cause` is the direct cause's
+message only. Ended subscriptions are left out, unless you pass `{ ended: true }`: then the final
+snapshots of the last 20 that ended follow the running ones, newest first, with `ended: true`, so
+a walk that gave up still shows its last error. Every ending counts toward the 20, a resolved
+`once()`, an unsubscribe and each subscription `destroy()` stops included, so on a busy client a
+give-up can be pushed out within seconds. Error text is cut to 2,000 characters before
+redaction. It is read-only: nothing in an entry pauses,
+resumes or moves a subscription.
+
 ### Clean up
 
 ```ts
@@ -3548,6 +3576,39 @@ function Feed() {
   rate-limited fullnode response can surface as a `StreamdNetworkError` without `retryAfter`,
   so give the `Aptos` client an API key.
 - `client` in any hook's options overrides the provider's.
+
+### Devtools
+
+```tsx
+import { adapterMetrics } from "@streamd/core";
+import { StreamdDevtools } from "@streamd/react";
+
+const metrics = adapterMetrics(new FullnodeScanAdapter(aptos));
+const streamd = new AptosClient({ aptos, adapter: metrics.adapter });
+
+<StreamdProvider client={streamd}>
+  <App />
+  {import.meta.env.DEV && <StreamdDevtools metrics={metrics} />}
+</StreamdProvider>
+```
+
+`<StreamdDevtools />` is a small panel fixed to the bottom-right corner, closed until its
+`streamd (n running)` button is clicked. It lists every subscription from
+`client.listSubscriptions({ ended: true })`: id, descriptor, state (`live`, `retrying` while polls are failing,
+`paused`, `ended`), cursor (shortened, the full value on hover), last version, the error count
+with the last error, and how long ago the last good poll was. The last 20 subscriptions that
+ended stay listed as `ended`, with their final snapshot, so a walk that gave up still shows why. With `metrics`, one `adapterMetrics` wrapper or a record of them by a label
+you choose (`{ fullnode: a, archive: b }`), it adds requests, errors, rate-limited calls and
+p50, p95 and max latency per method.
+
+- **Props.** `client` (else the provider's), `metrics`, `interval` (how often it re-reads, in
+  ms, default 1000; anything but a positive number throws) and `defaultOpen` (default `false`).
+- **Read-only.** It offers no pause, resume, stop or cursor control.
+- **Secrets.** It shows no node URL or adapter setting: sources are named by your labels, and
+  error text is redacted as `listSubscriptions()` redacts it.
+- **Footprint.** Inline styles, no styling library and no dependency beyond React. It renders
+  nothing during server rendering or before mount. It is meant for development builds; gate it
+  as above.
 
 ## Command line
 

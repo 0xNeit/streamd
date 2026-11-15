@@ -893,6 +893,35 @@ export interface Subscription {
   readonly caughtUp: Promise<void>;
 }
 
+/** The most recent error a subscription reported, as `listSubscriptions()` shows it. */
+export interface SubscriptionError {
+  readonly name: string;
+  /** The error's message, with any URL replaced by `<url>` and credentials hidden. */
+  readonly message: string;
+  /** The direct cause's message, redacted the same way; deeper causes are left out. */
+  readonly cause?: string;
+  /** When it was reported, as `Date.now()`. */
+  readonly at: number;
+}
+
+/**
+ * One running subscription as `StreamdClient.listSubscriptions()` reports it:
+ * a frozen snapshot taken at the call, holding nothing that changes or
+ * controls the subscription.
+ */
+export interface SubscriptionInfo extends SubscriptionStatus {
+  readonly id: string;
+  /** A frozen copy of the descriptor the walk follows. */
+  readonly descriptor: EventDescriptor;
+  /** Whether `listenerCount()` counts it: an `on()` or `onBatch()` subscription. */
+  readonly listener: boolean;
+  /** Whether this is the final snapshot of one that ended, listed only with `ended: true`. */
+  readonly ended: boolean;
+  readonly paused: boolean;
+  /** Kept after the subscription recovers; `consecutiveErrors` says whether it still fails. */
+  readonly lastError?: SubscriptionError;
+}
+
 /** What `stream()` returns: its live events, and where to resume them. */
 export interface EventStream<TData = unknown> extends AsyncIterableIterator<EventOf<TData>> {
   /**
