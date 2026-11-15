@@ -219,3 +219,55 @@ export interface AptosTransactionSimulation extends TransactionSimulation {
   /** The fee payer's public key, for a sponsored transaction; omitted, its check is skipped. */
   feePayerPublicKey?: PublicKey;
 }
+
+/** One `aptos_governance::Vote`: a stake pool's voter spending some of the pool's voting power. */
+export interface ProposalVote {
+  /** Long form. A delegation pool's vote names the pool's own signer, not the delegator. */
+  voter: string;
+  /** Long form. */
+  stakePool: string;
+  votes: bigint;
+  shouldPass: boolean;
+  version: bigint;
+}
+
+/** What `voting::ResolveProposal` reported. */
+export interface ProposalResolution {
+  /** The first resolution's version. */
+  version: bigint;
+  /** Final: no vote lands once voting has closed. */
+  yesVotes: bigint;
+  noVotes: bigint;
+  early: boolean;
+  /** Resolution events seen: a multi-step proposal resolves once per step. */
+  steps: number;
+}
+
+/** As `0x1::voting::get_proposal_state` reports it: `PENDING`, `SUCCEEDED` or `FAILED`. */
+export type ProposalState = "pending" | "succeeded" | "failed";
+
+/**
+ * One governance proposal as far as its events have been seen. The creation
+ * fields are absent when the creation was not seen, and `yesVotes`, `noVotes`
+ * and `votes` count only the votes seen.
+ */
+export interface Proposal {
+  id: bigint;
+  /** Long form, from `aptos_governance::CreateProposal`. */
+  proposer?: string;
+  stakePool?: string;
+  /** The rest of the creation fields come from `voting::CreateProposal`. */
+  executionHash?: string;
+  /** Each value's bytes as UTF-8 text, or as the fullnode writes them (hex) when they are not UTF-8. */
+  metadata?: Record<string, string>;
+  expirationSecs?: bigint;
+  minVoteThreshold?: bigint;
+  earlyResolutionVoteThreshold?: bigint;
+  /** The creation's version. */
+  createdAt?: bigint;
+  yesVotes: bigint;
+  noVotes: bigint;
+  /** In the order they landed. */
+  votes: ProposalVote[];
+  resolution?: ProposalResolution;
+}
