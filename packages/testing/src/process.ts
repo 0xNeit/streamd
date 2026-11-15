@@ -35,13 +35,7 @@ export async function startNode(
   exited.then(() => process.off("exit", killOnExit));
 
   const failed = new Promise<never>((_, reject) => {
-    child.once("error", (err: NodeJS.ErrnoException) => {
-      reject(
-        err.code === "ENOENT"
-          ? new StreamdError(`The aptos CLI was not found at "${cli}"; install it, or pass its path as \`cli\``, err)
-          : new StreamdError(`Could not start the aptos CLI: ${err.message}`, err),
-      );
-    });
+    child.once("error", (err) => reject(spawnError(cli, err)));
     exited.then(() => reject(new StreamdError(`The localnet exited before it was ready:\n${output.join("\n")}`)));
   });
 
@@ -73,6 +67,13 @@ export async function startNode(
     deadline.abort();
   }
   return { stop };
+}
+
+/** The error for a CLI that could not be spawned, naming the install when it is missing. */
+export function spawnError(cli: string, err: NodeJS.ErrnoException): StreamdError {
+  return err.code === "ENOENT"
+    ? new StreamdError(`The aptos CLI was not found at "${cli}"; install it, or pass its path as \`cli\``, err)
+    : new StreamdError(`Could not start the aptos CLI: ${err.message}`, err);
 }
 
 async function kill(child: ChildProcess, exited: Promise<void>): Promise<void> {

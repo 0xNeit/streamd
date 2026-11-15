@@ -24,3 +24,16 @@ if (args[0] === "node" && args[1] === "run-localnet") {
     process.exit(0);
   });
 }
+
+if (args[0] === "move" && args[1] === "build-publish-payload") {
+  if (mode === "compile-error") {
+    console.error(`error[E03002]: unbound module\nargs ${JSON.stringify(args)}`);
+    process.exit(1);
+  }
+  const payload =
+    mode === "bad-payload"
+      ? { function_id: "0x1::aptos_account::transfer", args: [] }
+      : { function_id: "0x1::code::publish_package_txn", type_args: [], args: [{ type: "hex", value: "0x0102" }, { type: "hex", value: ["0xa11ceb0b", "0xa11ceb0c"] }] };
+  if (mode !== "no-payload") await Bun.write(flag("--json-output-file"), JSON.stringify(payload));
+}
+export {};
