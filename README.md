@@ -1027,9 +1027,11 @@ walks behind `reduce()`, `onTransaction()`, `watch()` and the chain helpers (`ba
 `listenerCount()` counts it), `active`, `paused`, `cursor`, `lastVersion`, `consecutiveErrors`,
 `lastSuccessAt` and `lastError`, the most recent error it reported as `{ name, message, cause?,
 at }`. `lastError` stays after the subscription recovers; `consecutiveErrors` says whether it is
-still failing. URLs in the error text become `<url>`, and `Bearer` or `Basic` credentials and
-values after key-like names (`api_key=`, `x-api-key:`, `"token":`, `password=`) become
-`<redacted>`, since node URLs and headers can carry API keys; `cause` is the direct cause's
+still failing. URLs in the error text become `<url>`, and credentials become `<redacted>`: an
+`Authorization` header's `Bearer` or `Basic` value in any case, a `Bearer` or `Basic` token of 8
+or more characters elsewhere, and the value after a whole key-like name (`api_key=`,
+`x-api-key:`, `"token":`, `password=`; compound names such as `refresh_token` are not
+matched), since node URLs and headers can carry API keys; `cause` is the direct cause's
 message only. Ended subscriptions are left out, unless you pass `{ ended: true }`: then the final
 snapshots of the last 20 that ended follow the running ones, newest first, with `ended: true`, so
 a walk that gave up still shows its last error. Every ending counts toward the 20, a resolved

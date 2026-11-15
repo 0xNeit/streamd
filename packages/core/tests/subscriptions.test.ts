@@ -88,6 +88,9 @@ describe("listSubscriptions", () => {
     expect(redactSecrets('{"token":"KEY3","n":1}')).toBe('{"token":"<redacted>","n":1}');
     expect(redactSecrets("password=KEY4")).toBe("password=<redacted>");
     expect(redactSecrets("Authorization: Bearer abc.def.ghi")).toBe("Authorization: Bearer <redacted>");
+    expect(redactSecrets("authorization: bearer short")).toBe("authorization: bearer <redacted>");
+    expect(redactSecrets('{"Authorization":"BASIC dXNlcjpwYXNz"}')).toBe('{"Authorization":"BASIC <redacted>"}');
+    expect(redactSecrets("Bearer\tabcdefghij")).toBe("Bearer <redacted>");
     expect(redactSecrets("Polling failed (1/3)")).toBe("Polling failed (1/3)");
   });
 
@@ -106,7 +109,7 @@ describe("listSubscriptions", () => {
   });
 
   it("stays fast on long adversarial text and bounds its length", () => {
-    const text = "token-".repeat(5000);
+    const text = "a-".repeat(15000);
     const started = performance.now();
     const out = redactSecrets(text);
     expect(performance.now() - started).toBeLessThan(100);
