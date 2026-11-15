@@ -289,6 +289,41 @@ describe("proposals", () => {
     client.destroy();
   });
 
+  it("drops a forged resolution in the real proposal's own creation transaction without a view abort", async () => {
+    const created = 80n;
+    const view = async (request: ViewRequest, version: bigint) => {
+      if (request.function === "0x1::voting::next_proposal_id") return [version < created ? "2" : "3"];
+      // The forum has no proposal 2 before its creation, so any view of it there aborts.
+      if (version < created) throw new StreamdError("Move abort: proposal 2 does not exist");
+      return [false];
+    };
+    const module = [votingCreate(80, "2"), governanceCreate(80, "2"), { ...resolve(80, "2", "0", "9"), eventIndex: 2 }];
+    const errors: Error[] = [];
+    const client = testClient({ adapter: { ...walks([[], [], [], [], module]).adapter, view } });
+    const tracker = client.proposals({ onError: (e) => errors.push(e) });
+    await tracker.ready;
+    expect(tracker.get(2n)).toMatchObject({ createdAt: 80n });
+    expect(tracker.get(2n)!.resolution).toBeUndefined();
+    expect(errors).toEqual([]);
+    client.destroy();
+  });
+
+  it("retries a page whose forum view failed rather than dropping its resolution", async () => {
+    const genuine = resolve(70, "1", "9", "1");
+    const { adapter } = walks([[], [], [], [], [votingCreate(40, "1"), governanceCreate(40, "1"), genuine]]);
+    let failures = 1;
+    const flaky: EventAdapter = {
+      ...adapter,
+      view: (request, version) => (failures-- > 0 ? Promise.reject(new Error("timeout")) : adapter.view!(request, version)),
+    };
+    const errors: string[] = [];
+    const client = testClient({ adapter: flaky });
+    const tracker = client.proposals({ retries: 1, onError: (e) => errors.push(e.message) });
+    await tracker.ready;
+    expect(tracker.get(1n)!.resolution).toMatchObject({ version: 70n });
+    client.destroy();
+  });
+
   it("refuses an adapter without view at the call", () => {
     const client = testClient({ adapter: new MemoryAdapter() });
     expect(() => client.proposals()).toThrow("proposals needs an adapter that implements view");

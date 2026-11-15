@@ -209,12 +209,12 @@ export class AptosClient extends StreamdClient {
    * listener for `off()` or `listenerCount()`; `destroy()` ends it.
    */
   proposals(options?: ProposalsOptions): Proposals {
-    const wrap = (source: EventAdapter) => governanceSource(source);
+    const wrap = (source: EventAdapter) => governanceSource(source, this.requestTimeout);
     const verified = {
       ...this.reduceHost,
       query: new EventQuery(wrap(this.adapter), this.limiter, this.names),
-      subscribe: (d: EventDescriptor | readonly EventDescriptor[], callback: EventCallback, listener: object) =>
-        this.subscribe(d as EventDescriptor, callback, listener, undefined, undefined, wrap),
+      subscribe: (d: EventDescriptor | readonly EventDescriptor[], callback: EventCallback, options: object) =>
+        this.subscribe(d as EventDescriptor, callback, options, undefined, undefined, wrap),
     };
     return startProposals(
       (d, r, i, o) => (d.kind === "handle" ? this.reduce(d, r, i, o) : startReduction(verified, d, r, i, o)),

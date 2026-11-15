@@ -1984,10 +1984,12 @@ for (const p of governance.value.values()) console.log(p.id, proposalState(p), p
   `ResolveProposal` with a real proposal's id. The module walk keeps a `voting::CreateProposal`
   only when `aptos_governance::CreateProposal`, which only governance emits, follows it in the
   same transaction, and a `ResolveProposal` only when `0x1`'s forum shows it at that version: the
-  id is below `next_proposal_id`, and the proposal became resolved there (a last step) or its
-  execution hash changed (an earlier step), by up to four `0x1::voting` views at the version and
-  the one before. So `proposals()` needs an adapter with `view`, and throws at the call without
-  one. The legacy handles are `0x1`'s own and `aptos_governance` events cannot be forged, so
+  id is below `next_proposal_id` at the version before (no proposal resolves in the transaction
+  that creates it), and the proposal became resolved there (a last step) or its execution hash
+  changed (an earlier step), by up to four `0x1::voting` views at the version and the one before,
+  at most two at a time, outside `maxConcurrentRequests` (the page asking for them holds a slot)
+  and each timed by `requestTimeout`. A failed view fails the page, which retries. So
+  `proposals()` needs an adapter with `view`, and throws at the call without one. The legacy handles are `0x1`'s own and `aptos_governance` events cannot be forged, so
   neither is checked. Pairing reads one page at a time, which `FullnodeScanAdapter` keeps to whole
   transactions; a source that splits a transaction across pages would drop that creation.
 - **Counts.** `yesVotes`, `noVotes` and `votes` count the votes seen; a tracker that started

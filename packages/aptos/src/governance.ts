@@ -1,4 +1,4 @@
-import { StreamdError, eventId } from "@streamd/core";
+import { RequestLimiter, StreamdError, eventId } from "@streamd/core";
 import type {
   CreationNumberEventDescriptor,
   EventAdapter,
@@ -198,17 +198,19 @@ function governed(create: StreamdEvent, next: StreamdEvent | undefined): boolean
 }
 
 /**
- * Whether `0x1`'s forum shows this resolution: the proposal exists there and,
- * at the event's version, either became resolved (a last step) or took its
- * next step's execution hash. Asking for the id first keeps a forged id past
- * the forum's end from aborting the views.
+ * Whether `0x1`'s forum shows this resolution: the proposal existed there
+ * before the event's version and, at it, either became resolved (a last
+ * step) or took its next step's execution hash. Asking for the id first, at
+ * the version before, keeps a forged id the forum lacks then (past its end,
+ * or created in the same transaction) from aborting the views; no proposal
+ * resolves in the transaction that creates it.
  */
 async function resolvedHere(adapter: EventAdapter, event: StreamdEvent): Promise<boolean> {
   const id = (event.data as Fields | null)?.proposal_id;
   const { version } = event;
   // Left for the fold to refuse as malformed.
   if (amount(id) === undefined) return true;
-  const next = amount(await forum(adapter, "next_proposal_id", [], version));
+  const next = amount(await forum(adapter, "next_proposal_id", [], version - 1n));
   if (next === undefined || amount(id)! >= next) return false;
   if ((await forum(adapter, "is_resolved", [id], version)) === true) {
     return (await forum(adapter, "is_resolved", [id], version - 1n)) !== true;
@@ -225,12 +227,16 @@ async function resolvedHere(adapter: EventAdapter, event: StreamdEvent): Promise
  * forum on, and its events name no forum, so a creation is kept only beside
  * `aptos_governance`'s, which only governance emits, and a resolution only
  * when `0x1`'s forum shows it, by up to four views at its version and the one
- * before. `aptos_governance` events need no check.
+ * before, at most two at a time. `aptos_governance` events need no check.
  */
-export function governanceSource(adapter: EventAdapter): EventAdapter {
+export function governanceSource(adapter: EventAdapter, requestTimeout?: number): EventAdapter {
   if (typeof adapter.view !== "function") {
     throw new StreamdError("proposals needs an adapter that implements view");
   }
+  // Outside the client's limiter, as transfers' store reads are: the page
+  // asking holds a slot, so views queued behind it could wait forever. Timed,
+  // so a view that never settles fails the page rather than hanging it.
+  const views = new RequestLimiter(2, Infinity, requestTimeout).wrap(adapter);
   return pageSource(adapter, async (events) => {
     const kept: StreamdEvent[] = [];
     // ponytail: pairs within one page, which holds whole transactions on
@@ -238,7 +244,7 @@ export function governanceSource(adapter: EventAdapter): EventAdapter {
     // would drop that creation.
     for (const [i, event] of events.entries()) {
       if (event.guid === undefined && event.type === VOTING_CREATE && !governed(event, events[i + 1])) continue;
-      if (event.guid === undefined && event.type === RESOLVE && !(await resolvedHere(adapter, event))) continue;
+      if (event.guid === undefined && event.type === RESOLVE && !(await resolvedHere(views, event))) continue;
       kept.push(event);
     }
     return kept;
