@@ -375,7 +375,7 @@ export interface StakePoolsOptions
     | "signal"
     | "onError"
   > {
-  /** A pool address or a non-empty list of them; other pools' events are ignored. */
+  /** A pool address or a non-empty list of them; other pools' events are ignored, though a malformed one still stops the monitor. */
   pool?: string | readonly string[];
   /**
    * Called after each live event changes a pool, with that pool: once per

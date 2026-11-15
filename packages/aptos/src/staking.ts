@@ -1,6 +1,6 @@
-import { StreamdError, eventId } from "@streamd/core";
+import { StreamdError } from "@streamd/core";
 import type { ModuleEventDescriptor, ReduceOptions, Reducer, Reduction, StreamdEvent } from "@streamd/core";
-import { address, amount } from "./records.js";
+import { addr, address, malformed, u } from "./records.js";
 import type { Fields } from "./records.js";
 import type { Delegator, StakePool, StakePools, StakePoolsOptions } from "./types.js";
 
@@ -37,22 +37,7 @@ export interface StakingState {
   held?: { version: bigint; paid: Map<string, { rewards: bigint; fees: bigint }> };
 }
 
-const malformed = (event: StreamdEvent) =>
-  new StreamdError(`${event.type} at ${eventId(event)} does not have its struct's fields`);
-
-function u(field: unknown, event: StreamdEvent): bigint {
-  const value = amount(field);
-  if (value === undefined) throw malformed(event);
-  return value;
-}
-
-function addr(field: unknown, event: StreamdEvent): string {
-  const value = address(field);
-  if (value === undefined) throw malformed(event);
-  return value;
-}
-
-function pool(state: StakingState, at: string): StakePool {
+function poolAt(state: StakingState, at: string): StakePool {
   let found = state.pools.get(at);
   if (found === undefined) {
     found = { address: at, rewards: [], commissionChanges: [], delegators: new Map() };
@@ -61,10 +46,10 @@ function pool(state: StakingState, at: string): StakePool {
   return found;
 }
 
-function delegator(p: StakePool, at: string, version: bigint): Delegator {
+function delegator(p: StakePool, at: string): Delegator {
   let found = p.delegators.get(at);
   if (found === undefined) {
-    found = { address: at, added: 0n, addStakeFees: 0n, unlocked: 0n, reactivated: 0n, withdrawn: 0n, lastVersion: version };
+    found = { address: at, added: 0n, addStakeFees: 0n, unlocked: 0n, reactivated: 0n, withdrawn: 0n, lastVersion: 0n };
     p.delegators.set(at, found);
   }
   return found;
@@ -74,7 +59,7 @@ function delegator(p: StakePool, at: string, version: bigint): Delegator {
 function commit(state: StakingState, epoch: bigint, version: bigint): StakePool[] {
   const changed: StakePool[] = [];
   for (const [at, { rewards, fees }] of state.held?.paid ?? []) {
-    const p = pool(state, at);
+    const p = poolAt(state, at);
     p.rewards.push({ epoch, rewards, fees, version });
     changed.push(p);
   }
@@ -85,10 +70,10 @@ function commit(state: StakingState, epoch: bigint, version: bigint): StakePool[
 /**
  * Folds one staking event into `state`, returning the pools it changed (none
  * for a held payment or an event it does not read). `only` keeps those pools
- * alone; `NewEpoch` is read whatever it holds. Throws a `StreamdError`, changing
- * nothing, for an event of a known type without its fields, and for held
- * payments their transaction's `NewEpoch` did not follow, since a source
- * dropping it would misnumber every epoch.
+ * alone, though every event is checked first; `NewEpoch` is read whatever it
+ * holds. Throws a `StreamdError`, changing nothing, for an event of a known
+ * type without its fields, and for payments whose transaction ends without a
+ * `NewEpoch`, since a source dropping it would misnumber every epoch.
  */
 export function applyStakingEvent(state: StakingState, event: StreamdEvent, only?: ReadonlySet<string>): StakePool[] {
   const { type, version } = event;
@@ -118,7 +103,7 @@ export function applyStakingEvent(state: StakingState, event: StreamdEvent, only
   if (type === COMMISSION) {
     const change = { percentage: u(d.commission_percentage_next_lockup_cycle, event), owner: addr(d.owner, event), version };
     if (only !== undefined && !only.has(at)) return [];
-    const p = pool(state, at);
+    const p = poolAt(state, at);
     p.commissionPercentage = change.percentage;
     p.commissionChanges.push(change);
     return [p];
@@ -127,8 +112,8 @@ export function applyStakingEvent(state: StakingState, event: StreamdEvent, only
   const [who, moved] = [addr(d.delegator_address, event), u(d[field], event)];
   const fee = type === ADD ? u(d.add_stake_fee, event) : undefined;
   if (only !== undefined && !only.has(at)) return [];
-  const p = pool(state, at);
-  const del = delegator(p, who, version);
+  const p = poolAt(state, at);
+  const del = delegator(p, who);
   del[sum] += moved;
   if (fee !== undefined) {
     del.addStakeFees += fee;
@@ -153,7 +138,7 @@ const ALLOWED: readonly string[] = [
   "onChange",
 ] satisfies readonly (keyof StakePoolsOptions)[];
 
-function pools(chosen: unknown): ReadonlySet<string> | undefined {
+function poolSet(chosen: unknown): ReadonlySet<string> | undefined {
   if (chosen === undefined) return undefined;
   const list: unknown = typeof chosen === "string" ? [chosen] : chosen;
   const found = Array.isArray(list) ? list.map(address) : [];
@@ -178,7 +163,7 @@ export function startStakePools(reduce: ReduceStaking, options: StakePoolsOption
     throw new StreamdError(`Unsupported stakePools option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
   }
   const { pool: chosen, onChange, ...rest } = options;
-  const only = pools(chosen);
+  const only = poolSet(chosen);
   const state: StakingState = { pools: new Map() };
   let changed: StakePool[] = [];
   const walk = reduce(
