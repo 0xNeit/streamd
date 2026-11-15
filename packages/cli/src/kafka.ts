@@ -15,7 +15,8 @@ const DEFAULT_PORT = 9092;
 const MECHANISMS = new Set<string>(["plain", "scram-sha-256", "scram-sha-512"]);
 // Kafka's own URL has no standard form, and several brokers make it no valid URL either, so it is split by hand.
 const KAFKA_URL = /^(kafkas?):\/\/(?:([^@/?#]*)@)?([^@/?#]*)\/?(?:\?([^#]*))?$/i;
-const BROKER = /^(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9._-]+)(?::(\d{1,5}))?$/;
+// No bracketed IPv6: kafkajs splits a broker on every colon, so it could never connect to one.
+const BROKER = /^([A-Za-z0-9._-]+)(?::(\d{1,5}))?$/;
 
 function decode(part: string): string {
   try {
@@ -158,7 +159,10 @@ export async function connectKafka(url: string, timeout: number, load: KafkaLoad
   };
   return {
     async send(topic, message) {
-      const producer = await (current ??= open());
+      const opening = (current ??= open());
+      const producer = await opening;
+      // A close() while connecting is disconnecting this producer; the retry sends on a fresh one.
+      if (current !== opening) throw new Error("the Kafka producer was closed");
       await producer.send(record(topic, message));
     },
     close() {
@@ -213,9 +217,9 @@ function chain(err: unknown): { name?: unknown; type?: unknown }[] {
   return links;
 }
 
-function errorType(err: unknown): string | undefined {
-  for (const { type } of chain(err)) if (typeof type === "string") return type.replace(/^ERR_+/, "");
-  return undefined;
+/** The error types along the chain, without librdkafka's ERR_ prefix. */
+function errorTypes(err: unknown): string[] {
+  return chain(err).flatMap(({ type }) => (typeof type === "string" ? [type.replace(/^ERR_+/, "")] : []));
 }
 
 /**
@@ -240,7 +244,9 @@ export function kafkaSink(client: KafkaLike, options: KafkaSinkOptions): Sink {
           client.close();
           return { ok: false, failure: `send timed out after ${options.timeout}ms`, retryable: true };
         }
-        const type = errorType(err);
+        const types = errorTypes(err);
+        // Any final type along the chain decides, so a wrapper's own type cannot hide a final cause.
+        const type = types.find((t) => FINAL_TYPES.has(t)) ?? types[0];
         const final = (type !== undefined && FINAL_TYPES.has(type)) || chain(err).some(({ name }) => FINAL_NAMES.has(String(name)));
         const failure = scrub(type === undefined ? message(err) : `${message(err)} (${type})`);
         return { ok: false, failure, retryable: !final };

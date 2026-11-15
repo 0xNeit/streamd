@@ -3781,12 +3781,15 @@ record, and the cursor file moves only after that, exactly as after a webhook's 
 producer is idempotent: a resend of a batch that was not acknowledged, whether the client's own
 retry of a stalled request (each request gets a third of `--timeout`, so one retry fits) or a
 later attempt after a dropped connection or a broker restart, carries the same producer id and
-sequence, and the broker drops the copy. At least once still allows a duplicate when a send
-outlives `--timeout`, which closes the producer so the retry opens a fresh one with a new
+sequence, and the broker drops the copy. That holds under `kafkajs`; under Confluent's client
+only librdkafka's own retries are covered, and a later attempt is a new record. At least once
+still allows a duplicate when a send outlives `--timeout`, which closes the producer so the retry opens a fresh one with a new
 producer id, and when `forward` restarts and resends the batch in flight. A resent record's value is byte-identical, so a consumer drops
 copies by the value's SHA-256 or by each event's `version` and `eventIndex`.
 
-What fails at once, exiting `1`: a topic that does not exist (the producer never creates one),
+What fails at once, exiting `1`: a topic that does not exist (the producer never creates one,
+and a broker answering "unknown topic or partition" for longer than one metadata refresh, as it
+can briefly during a partition reassignment, counts too, so the supervisor restarts it),
 authorization or SASL authentication failures, a record over the broker's or topic's size limit
 (lower `--batch-size`), an invalid topic or record, a topic policy violation, and a broker too
 old for the request. Everything else is retried with the same backoff and `--retries` budget:
@@ -3803,7 +3806,8 @@ and Bun it prints a harmless `TimeoutNegativeWarning` on stderr. When both are i
 Confluent's is used. Under Confluent's client, librdkafka waits up to 30 seconds for a topic
 missing from the metadata to appear, longer than the default `--timeout`, so a missing topic
 is retried as a timeout until the budget runs out rather than failing at once. Transactions
-(exactly once), OAUTHBEARER, client certificates and a custom CA are not supported.
+(exactly once), OAUTHBEARER, client certificates, a custom CA and IPv6 broker addresses (kafkajs
+cannot reach them; use a hostname) are not supported.
 
 `--to-version` turns `forward` into a backfill job. It needs `--from-version` or `--from-time`
 (a saved cursor still wins), and the bound must already be history: the head is read once, and a

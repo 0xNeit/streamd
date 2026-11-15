@@ -1038,6 +1038,14 @@ describe("runForward to Kafka", () => {
       "This server does not host this topic-partition (UNKNOWN_TOPIC_OR_PARTITION)",
     ],
     [kafkaError("Local: Unknown topic", "ERR__UNKNOWN_TOPIC"), "Local: Unknown topic (UNKNOWN_TOPIC)"],
+    [
+      kafkaError("Broker: Topic authorization failed", "ERR_UNKNOWN", {
+        cause: { cause: kafkaError("Broker: Topic authorization failed", "ERR_TOPIC_AUTHORIZATION_FAILED") },
+      }),
+      "Broker: Topic authorization failed (TOPIC_AUTHORIZATION_FAILED)",
+    ],
+    [kafkaError("Not authorized to access cluster", "CLUSTER_AUTHORIZATION_FAILED"), "Not authorized to access cluster (CLUSTER_AUTHORIZATION_FAILED)"],
+    [kafkaError("Broker does not support InitProducerId", undefined, { name: "KafkaJSServerDoesNotSupportApiKey" }), "Broker does not support InitProducerId"],
     [kafkaError("Broker: Unknown topic or partition", "ERR_UNKNOWN_TOPIC_OR_PART"), "Broker: Unknown topic or partition (UNKNOWN_TOPIC_OR_PART)"],
     [kafkaError("Not authorized to access topics: [Topic authorization failed]", "TOPIC_AUTHORIZATION_FAILED"), "Not authorized to access topics: [Topic authorization failed] (TOPIC_AUTHORIZATION_FAILED)"],
     [kafkaError("The request included a message larger than the max message size the server will accept", "MESSAGE_TOO_LARGE"), "The request included a message larger than the max message size the server will accept (MESSAGE_TOO_LARGE)"],

@@ -361,8 +361,8 @@ describe("parseCommand forward", () => {
         timeout: 10000,
         headers: {},
       });
-      expect(forward("--to", "KAFKAS://[::1]:9092", "--topic", "a_b-C.9", "--secret", "k", TYPE)).toMatchObject({
-        to: "kafkas://[::1]:9092",
+      expect(forward("--to", "KAFKAS://10.0.0.2:9092", "--topic", "a_b-C.9", "--secret", "k", TYPE)).toMatchObject({
+        to: "kafkas://10.0.0.2:9092",
         topic: "a_b-C.9",
         secret: "k",
       });
@@ -415,8 +415,9 @@ describe("parseCommand forward", () => {
 describe("parseKafkaUrl", () => {
   it("reads brokers, TLS and SASL", () => {
     expect(parseKafkaUrl("kafka://h")).toEqual({ brokers: ["h:9092"], ssl: false });
-    expect(parseKafkaUrl("kafkas://a:1,[::1],b.example:9094/")).toEqual({
-      brokers: ["a:1", "[::1]:9092", "b.example:9094"],
+    expect(() => parseKafkaUrl("kafka://[::1]:9092")).toThrow("--to must be a valid kafka:// URL with host[:port] brokers");
+    expect(parseKafkaUrl("kafkas://a:1,h,b.example:9094/")).toEqual({
+      brokers: ["a:1", "h:9092", "b.example:9094"],
       ssl: true,
     });
     for (const mechanism of ["plain", "scram-sha-256", "scram-sha-512"] as const) {

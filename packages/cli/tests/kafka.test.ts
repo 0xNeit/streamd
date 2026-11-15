@@ -110,6 +110,31 @@ describe("connectKafka", () => {
     expect(recorded.sends).toHaveLength(2);
   });
 
+  it("never sends on a producer closed while it was connecting", async () => {
+    const recorded = fresh();
+    let release!: () => void;
+    const Kafka = class {
+      producer() {
+        recorded.producers.push({});
+        const gate = recorded.producers.length === 1 ? new Promise<void>((r) => (release = r)) : Promise.resolve();
+        return {
+          connect: () => gate,
+          send: async (record: Record<string, unknown>) => void recorded.sends.push(record),
+          disconnect: async () => void recorded.disconnects++,
+        };
+      }
+    };
+    const kafka = await connectKafka("kafka://h", 100, loader({ kafkajs: { Kafka } }));
+    const first = kafka.send("t", MESSAGE);
+    kafka.close();
+    release();
+    await expect(first).rejects.toThrow("the Kafka producer was closed");
+    expect(recorded.sends).toEqual([]);
+    expect(recorded.disconnects).toBe(1);
+    await kafka.send("t", MESSAGE);
+    expect(recorded.sends).toHaveLength(1);
+  });
+
   it("names both clients when neither is installed", async () => {
     await expect(connectKafka("kafka://h", 100, loader({}))).rejects.toThrow(
       "--to kafka:// needs a Kafka client installed: npm i @confluentinc/kafka-javascript (or kafkajs)",
