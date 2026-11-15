@@ -2228,7 +2228,8 @@ const past = await streamd.getUpgrades("0x1", { fromVersion: 7454757100n, toVers
   so no other module can forge a record. `isUpgrade` is the event's `is_upgrade`: false for a
   package's first publish.
 - **The diff.** Every module at the address is read at the version before the publish and at
-  its own, through the client's `aptos` (`getAccountModulesPage` at `ledgerVersion`, every page), and their
+  its own, through the client's `aptos` (every page of the fullnode's `/accounts/{address}/modules` at
+  `ledger_version`; the SDK's own module listings drop the version and read the head), and their
   ABIs compared: structs marked `#[event]` (`is_event`), functions with `is_entry`, and functions
   with `is_view`, each named `address::module::name` with the address in long form. A name only
   after the publish is `added`, only before it `removed`, and in both with a different

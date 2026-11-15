@@ -1,4 +1,6 @@
-import { RequestLimiter, StreamdError, StreamdNetworkError, normalizeAddress } from "@streamd/core";
+import { getAptosFullNode } from "@aptos-labs/ts-sdk";
+import type { Aptos } from "@aptos-labs/ts-sdk";
+import { RequestLimiter, StreamdError, StreamdNetworkError, normalizeAddress, toStreamdError } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, StreamdEvent } from "@streamd/core";
 import type { MoveModuleBytecode } from "@aptos-labs/ts-sdk";
 import { addr, malformed, pageSource } from "./records.js";
@@ -125,6 +127,41 @@ export function diffModules(
     events: changes(b.events, a.events),
     entryFunctions: changes(b.entryFunctions, a.entryFunctions),
     views: changes(b.views, a.views),
+  };
+}
+
+/**
+ * `ModuleReader` over `aptos`'s fullnode, every page of `/accounts/{address}/modules`
+ * at `ledger_version`. Not the SDK's `getAccountModules` or `getAccountModulesPage`,
+ * which drop `ledgerVersion` (ts-sdk 6.3.1) and so read the head, and the first of
+ * which also stops at 1000 modules in all. A repeated cursor fails rather than pages forever.
+ */
+export function moduleReader(aptos: Aptos): ModuleReader {
+  return async (address, version, signal) => {
+    const modules: MoveModuleBytecode[] = [];
+    const seen = new Set<string>();
+    let cursor: string | undefined;
+    do {
+      signal.throwIfAborted();
+      let page;
+      try {
+        page = await getAptosFullNode<{}, MoveModuleBytecode[]>({
+          aptosConfig: aptos.config,
+          originMethod: "upgrades",
+          path: `accounts/${address}/modules`,
+          params: { ledger_version: version.toString(), limit: 1000, ...(cursor !== undefined && { start: cursor }) },
+        });
+      } catch (err) {
+        throw toStreamdError(err, `modules of ${address} at version ${version}`);
+      }
+      if (!Array.isArray(page.data)) throw new StreamdError(`Fullnode returned no module list for ${address} at version ${version}`);
+      modules.push(...page.data);
+      const next: unknown = page.headers?.["x-aptos-cursor"];
+      cursor = typeof next === "string" && next !== "" ? next : undefined;
+      if (cursor !== undefined && seen.has(cursor)) throw new StreamdNetworkError("Fullnode repeated a module listing cursor");
+      if (cursor !== undefined) seen.add(cursor);
+    } while (cursor !== undefined);
+    return modules;
   };
 }
 

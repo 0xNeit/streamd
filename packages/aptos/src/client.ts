@@ -1,5 +1,5 @@
 import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, StreamdNetworkError, checkTimeout, toStreamdError, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -23,7 +23,7 @@ import { eventsOf, previewEvents } from "./transaction.js";
 import { saleDescriptor, saleSource } from "./sales.js";
 import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import { UPGRADE_DESCRIPTOR, upgradeSource } from "./upgrades.js";
+import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
 import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
@@ -273,26 +273,7 @@ export class AptosClient extends StreamdClient {
   private upgradesOf(address: string): (source: EventAdapter) => EventAdapter {
     if (typeof address !== "string") throw new StreamdError("upgrades needs an address or Aptos name");
     const who = this.accountOf(address)!;
-    // Paged by hand: the SDK's getAccountModules stops at 1000 modules in all, and a
-    // short listing would read as removed signatures.
-    const read = async (at: string, version: bigint, signal: AbortSignal) => {
-      try {
-        const modules = [];
-        const seen = new Set<string>();
-        let cursor: string | undefined;
-        do {
-          signal.throwIfAborted();
-          const page = await this.aptos.getAccountModulesPage({ accountAddress: at, options: { ledgerVersion: version, cursor, limit: 1000 } });
-          modules.push(...page.modules);
-          cursor = page.cursor;
-          if (cursor !== undefined && seen.has(cursor)) throw new StreamdNetworkError("Fullnode repeated a module listing cursor");
-          if (cursor !== undefined) seen.add(cursor);
-        } while (cursor !== undefined);
-        return modules;
-      } catch (err) {
-        throw toStreamdError(err, `modules of ${at} at version ${version}`);
-      }
-    };
+    const read = moduleReader(this.aptos);
     return (source) => upgradeSource(source, who, read);
   }
 

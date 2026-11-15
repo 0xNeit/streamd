@@ -171,17 +171,39 @@ const publish = (version: number, eventIndex: number, codeAddress: string, isUpg
 const V1 = [mod("pool", [{ name: "swap", is_entry: true }])];
 const V2 = [mod("pool", [{ name: "swap", is_entry: true }, { name: "price", is_view: true }])];
 
-/** An offline SDK instance whose module reads answer from `answer`, recording each `[address, version]`. */
-function reader(answer: (address: string, version: bigint) => MoveModuleBytecode[] | Promise<MoveModuleBytecode[]>, aptos: Aptos = makeAptos()) {
-  const reads: [string, bigint][] = [];
-  Object.assign(aptos, {
-    getAccountModulesPage: async ({ accountAddress, options }: { accountAddress: string; options: { ledgerVersion: bigint; cursor?: string } }) => {
-      if (options.cursor !== undefined) throw new Error("one page only");
-      reads.push([accountAddress, options.ledgerVersion]);
-      return { modules: await answer(accountAddress, options.ledgerVersion), cursor: undefined };
+type Listing = { modules: MoveModuleBytecode[]; cursor?: string };
+
+/**
+ * An SDK instance over a fake fullnode that serves `/accounts/{address}/modules`
+ * from `page`, by the request's `ledger_version` and `start`, recording each.
+ * A thrown error carrying `status` becomes that HTTP status.
+ */
+function fakeNode(page: (address: string, version: bigint, start: string | undefined) => Listing | Promise<Listing>, network = Network.DEVNET) {
+  const requests: [string, bigint, string | undefined][] = [];
+  const client = {
+    async provider(req: { url: string; params?: Record<string, unknown> }) {
+      const match = /\/accounts\/([^/]+)\/modules$/.exec(req.url.replace(/\?.*$/, ""));
+      if (match === null || typeof req.params?.ledger_version !== "string") throw new Error(`unexpected request ${req.url}`);
+      const start = req.params.start as string | undefined;
+      requests.push([match[1]!, BigInt(req.params.ledger_version), start]);
+      try {
+        const { modules, cursor } = await page(match[1]!, BigInt(req.params.ledger_version), start);
+        return { status: 200, statusText: "OK", data: modules, headers: cursor === undefined ? {} : { "x-aptos-cursor": cursor } };
+      } catch (err) {
+        const status = (err as { status?: number }).status;
+        if (status === undefined) throw err;
+        return { status, statusText: "Error", data: { message: (err as Error).message }, headers: {} };
+      }
     },
-  });
-  return { aptos, reads };
+  };
+  const aptos = new Aptos(new AptosConfig({ network, fullnode: "http://fake/v1", client: client as never, clientConfig: { http2: false } }));
+  return { aptos, requests };
+}
+
+/** `fakeNode` answering one page per listing from `answer`. */
+function reader(answer: (address: string, version: bigint) => MoveModuleBytecode[] | Promise<MoveModuleBytecode[]>, network?: Network) {
+  const node = fakeNode(async (address, version) => ({ modules: await answer(address, version) }), network);
+  return { aptos: node.aptos, reads: node.requests };
 }
 const byVersion = (from: number) => (_a: string, v: bigint) => (v >= BigInt(from) ? V2 : V1);
 
@@ -207,7 +229,7 @@ describe("getUpgrades", () => {
         removed: [],
       },
     } satisfies PackageUpgrade);
-    expect(reads.sort((x, y) => Number(x[1] - y[1]))).toEqual([[A, 9n], [A, 10n]]);
+    expect(reads.map(([a, v]): [string, bigint] => [a, v]).sort((x, y) => Number(x[1] - y[1]))).toEqual([[A, 9n], [A, 10n]]);
   });
 
   it("reads nothing before version 0 and takes the address in any form", async () => {
@@ -216,7 +238,7 @@ describe("getUpgrades", () => {
     const [record] = await client.getUpgrades(A.toUpperCase().replace("0X", "0x"), { fromVersion: 0n });
     expect(record!.data.isUpgrade).toBe(false);
     expect(record!.data.entryFunctions.added.map((f) => f.name)).toEqual([`${A}::pool::swap`]);
-    expect(reads).toEqual([[A, 0n]]);
+    expect(reads.map(([a, v]) => [a, v])).toEqual([[A, 0n]]);
   });
 
   it("applies the range, where and limit to the records", async () => {
@@ -261,46 +283,31 @@ describe("getUpgrades", () => {
     await expect(slow.getUpgrades(A, { fromVersion: 0n })).rejects.toThrow("timed out");
   });
 
-  it("reads every page of a long module listing", async () => {
-    const aptos = makeAptos();
-    const cursors: (string | undefined)[] = [];
-    const pages: Record<string, { modules: MoveModuleBytecode[]; cursor: string | undefined }> = {
-      start: { modules: V1, cursor: "next" },
-      next: { modules: [mod("extra", [{ name: "go", is_entry: true }])], cursor: undefined },
-    };
-    Object.assign(aptos, {
-      getAccountModulesPage: async ({ options }: { options: { cursor?: string; limit?: number } }) => {
-        cursors.push(options.cursor);
-        expect(options.limit).toBe(1000);
-        return pages[options.cursor ?? "start"]!;
-      },
-    });
+  it("reads every page of a long module listing at the publish's versions", async () => {
+    const { aptos, requests } = fakeNode((_a, version, start) =>
+      start === undefined
+        ? { modules: V1, cursor: `next-${version}` }
+        : { modules: version === 0n ? [mod("extra", [{ name: "go", is_entry: true }])] : [] },
+    );
     const client = testClient({ adapter: new MemoryAdapter([publish(0, 0, A, false)]), aptos });
     const [record] = await client.getUpgrades(A, { fromVersion: 0n });
     expect(record!.data.entryFunctions.added.map((f) => f.name)).toEqual([`${A}::extra::go`, `${A}::pool::swap`]);
-    expect(cursors).toEqual([undefined, "next"]);
+    expect(requests).toEqual([[A, 0n, undefined], [A, 0n, "next-0"]]);
   });
 
   it("refuses a module listing whose cursor repeats", async () => {
-    const aptos = makeAptos();
-    let calls = 0;
-    Object.assign(aptos, { getAccountModulesPage: async () => (calls++, { modules: V1, cursor: "same" }) });
+    const { aptos, requests } = fakeNode(() => ({ modules: V1, cursor: "same" }));
     const client = testClient({ adapter: new MemoryAdapter([publish(0, 0, A, false)]), aptos });
     await expect(client.getUpgrades(A, { fromVersion: 0n })).rejects.toThrow("repeated a module listing cursor");
-    expect(calls).toBe(2);
+    expect(requests).toHaveLength(2);
   });
 
   it("stops paging a listing once its page is given up on", async () => {
-    const aptos = makeAptos();
-    const cursors: (string | undefined)[] = [];
     let release = () => {};
     const gate = new Promise<void>((r) => (release = r));
-    Object.assign(aptos, {
-      getAccountModulesPage: async ({ options }: { options: { cursor?: string } }) => {
-        cursors.push(options.cursor);
-        await gate;
-        return { modules: V1, cursor: options.cursor === undefined ? "next" : undefined };
-      },
+    const { aptos, requests } = fakeNode(async (_a, _v, start) => {
+      await gate;
+      return { modules: V1, ...(start === undefined && { cursor: "next" }) };
     });
     let n = 0;
     const pages = [[publish(0, 0, A, false)], []];
@@ -313,7 +320,7 @@ describe("getUpgrades", () => {
     await source.fetchEvents(UPGRADE_DESCRIPTOR, { fromVersion: 0n });
     release();
     await new Promise((r) => setTimeout(r, 5));
-    expect(cursors).toEqual([undefined]);
+    expect(requests).toEqual([[A, 0n, undefined]]);
   });
 
   it("refuses an address that is not a string at the call", () => {
@@ -325,7 +332,6 @@ describe("getUpgrades", () => {
 
 describe("upgrades", () => {
   it("follows live, retries a failed read, and resolves a name once", async () => {
-    const mainnet = new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig: { http2: false } }));
     let fail = true;
     const { aptos, reads } = reader((_a, v) => {
       if (fail) {
@@ -333,7 +339,7 @@ describe("upgrades", () => {
         throw Object.assign(new Error("busy"), { status: 503 });
       }
       return v >= 10n ? V2 : V1;
-    }, mainnet);
+    }, Network.MAINNET);
     const lookups: string[] = [];
     Object.assign(aptos, { getTargetAddress: async ({ name }: { name: string }) => (lookups.push(name), A) });
     const memory = new MemoryAdapter([publish(4, 0, B), publish(10, 0, A)]);
