@@ -5,6 +5,7 @@ import { SIGNATURE_HEADER, type ForwardOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { filterPredicate } from "./filter.js";
 import { message, scrubber, signature } from "./format.js";
+import { connectNats, natsSink, type NatsLike } from "./nats.js";
 import { connectRedis, redisSink, type RedisLike } from "./redis.js";
 
 export interface ForwardIO {
@@ -19,6 +20,8 @@ export interface ForwardIO {
   headVersion(): Promise<bigint>;
   /** Opens the Redis client for a Redis `--to` (default `connectRedis`). */
   redis?(url: string, timeout: number): RedisLike | Promise<RedisLike>;
+  /** Opens the NATS client for a NATS `--to` (default `connectNats`); it connects on the first publish. */
+  nats?(url: string): NatsLike;
 }
 
 const MAX_RETRY_DELAY = 60_000;
@@ -115,8 +118,8 @@ export async function deliver(
 }
 
 /**
- * Follows `options.descriptor`, delivering each batch to the webhook or the
- * Redis stream, and resolves to the process exit code: 0 when the signal
+ * Follows `options.descriptor`, delivering each batch to the webhook, the
+ * Redis stream or the NATS subject, and resolves to the process exit code: 0 when the signal
  * aborts or a `toVersion` range is done, 1 when a delivery fails past its
  * retries, the Redis client cannot be opened, polling gives up, the cursor
  * file cannot be read or written, or the bound is above the head.
@@ -149,13 +152,15 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     }
   }
 
+  const { stream, subject } = options;
   let sink: Sink;
   try {
-    const { stream } = options;
     sink =
-      stream === undefined
-        ? webhookSink(options)
-        : redisSink(await (io.redis ?? connectRedis)(options.to, options.timeout), { ...options, stream });
+      subject !== undefined
+        ? natsSink((io.nats ?? connectNats)(options.to), { ...options, subject })
+        : stream === undefined
+          ? webhookSink(options)
+          : redisSink(await (io.redis ?? connectRedis)(options.to, options.timeout), { ...options, stream });
   } catch (err) {
     // The client's own errors are not known to leave the URL or password out.
     io.error(`streamd: cannot open the Redis client: ${scrubber(options.to)(message(err))}`);

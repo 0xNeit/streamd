@@ -1,5 +1,8 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { connect, type Socket } from "node:net";
+import { WEBHOOK_SIGNATURE_HEADER } from "@streamd/core";
+import { message, scrubber, signature } from "./format.js";
+import type { Attempt, Sink } from "./forward.js";
 
 /** The first message on a publish's reply inbox: `status` from a header-only reply such as 503 no responders. */
 export interface NatsReply {
@@ -8,7 +11,11 @@ export interface NatsReply {
   data: string;
 }
 
-/** The one call the NATS sink makes, which `connectNats` gives over the NATS text protocol. */
+/**
+ * The one call the NATS sink makes, which `connectNats` gives over the NATS
+ * text protocol: publish with a reply inbox, resolve with the first reply,
+ * and reject once `signal` aborts.
+ */
 export interface NatsLike {
   request(subject: string, headers: Record<string, string>, body: string, signal: AbortSignal): Promise<NatsReply>;
   close(): unknown;
@@ -169,5 +176,81 @@ export function connectNats(url: string): NatsLike {
       current?.fail(new Error("NATS connection closed"));
       current = undefined;
     },
+  };
+}
+
+export interface NatsSinkOptions {
+  /** Only for scrubbing messages: the client was opened with it. */
+  to: string;
+  subject: string;
+  secret?: string;
+  /** Per-publish timeout in ms, connecting included. */
+  timeout: number;
+}
+
+// Refusals that will not change on a retry; every other -ERR and transport failure is retried.
+const FINAL_ERRORS =
+  /^(NATS -ERR '(Authorization Violation|Permissions Violation|Maximum Payload Violation)|the NATS server (requires TLS|does not support headers))/i;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+/** What the first reply on the inbox says: a PubAck delivers, and a 4xx JetStream error or no stream is final. */
+function classify(reply: NatsReply, subject: string): Attempt {
+  if (reply.status === 503) {
+    return { ok: false, failure: `no responders on ${subject}: no JetStream stream captures it`, retryable: false };
+  }
+  if (reply.status !== undefined) {
+    return { ok: false, failure: `NATS status ${reply.status} ${reply.description ?? ""}`.trim(), retryable: true };
+  }
+  let ack: unknown;
+  try {
+    ack = JSON.parse(reply.data);
+  } catch {
+    ack = undefined;
+  }
+  if (isRecord(ack) && isRecord(ack.error)) {
+    const { code, err_code: errCode, description } = ack.error;
+    const failure = `JetStream error ${String(code)}${errCode === undefined ? "" : ` (${String(errCode)})`}: ${String(description)}`;
+    return { ok: false, failure, retryable: !(typeof code === "number" && code >= 400 && code < 500) };
+  }
+  if (isRecord(ack) && typeof ack.stream === "string" && typeof ack.seq === "number") return { ok: true };
+  return { ok: false, failure: `the reply on ${subject} is not a JetStream PubAck`, retryable: false };
+}
+
+/**
+ * Publishes each body to `options.subject` with `Nats-Msg-Id` its SHA-256, so
+ * JetStream drops a resent identical batch inside its duplicate window, and
+ * the signature header when signing; the stream's PubAck is the acknowledgement.
+ */
+export function natsSink(client: NatsLike, options: NatsSinkOptions): Sink {
+  const url = URL.canParse(options.to) ? new URL(options.to) : undefined;
+  const token = url !== undefined && url.password === "" ? decodeURIComponent(url.username) : "";
+  const scrubUrl = scrubber(options.to);
+  // scrubber hides a password, but a token rides in the URL's user part.
+  const scrub = (text: string) => (token === "" ? scrubUrl(text) : scrubUrl(text).split(token).join("***"));
+  return {
+    async send(body, signal): Promise<Attempt> {
+      const headers: Record<string, string> = { "Nats-Msg-Id": createHash("sha256").update(body, "utf8").digest("hex") };
+      if (options.secret !== undefined) headers[WEBHOOK_SIGNATURE_HEADER] = signature(body, options.secret);
+      const timeout = AbortSignal.timeout(options.timeout);
+      let reply: NatsReply;
+      try {
+        reply = await client.request(options.subject, headers, body, AbortSignal.any([signal, timeout]));
+      } catch (err) {
+        if (signal.aborted) return { ok: false, failure: "aborted" };
+        if (timeout.aborted) {
+          // A wedged connection would time out every retry; the next attempt opens a fresh one.
+          client.close();
+          return { ok: false, failure: `publish timed out after ${options.timeout}ms`, retryable: true };
+        }
+        const failure = scrub(message(err));
+        return { ok: false, failure, retryable: !FINAL_ERRORS.test(failure) };
+      }
+      const attempt = classify(reply, options.subject);
+      return attempt.failure === undefined ? attempt : { ...attempt, failure: scrub(attempt.failure) };
+    },
+    close: () => client.close(),
   };
 }
