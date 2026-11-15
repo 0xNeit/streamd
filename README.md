@@ -1032,7 +1032,10 @@ values after key-like names (`api_key=`, `x-api-key:`, `"token":`, `password=`) 
 `<redacted>`, since node URLs and headers can carry API keys; `cause` is the direct cause's
 message only. Ended subscriptions are left out, unless you pass `{ ended: true }`: then the final
 snapshots of the last 20 that ended follow the running ones, newest first, with `ended: true`, so
-a walk that gave up still shows its last error. It is read-only: nothing in an entry pauses,
+a walk that gave up still shows its last error. Every ending counts toward the 20, a resolved
+`once()`, an unsubscribe and each subscription `destroy()` stops included, so on a busy client a
+give-up can be pushed out within seconds. Error text is cut to 2,000 characters before
+redaction. It is read-only: nothing in an entry pauses,
 resumes or moves a subscription.
 
 ### Clean up

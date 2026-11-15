@@ -199,13 +199,18 @@ export function latch(): Latch {
 }
 
 const URL_PATTERN = /\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi;
-const SCHEME_PATTERN = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+/gi;
-// A key-like name followed by `=` or `:`, as in a query string, a header or JSON.
-const PARAM_PATTERN = /\b([\w-]*(?:api[_-]?key|token|secret|password|auth)[\w-]*)(["']?\s*[:=]\s*["']?)[^\s"'&,;}]+/gi;
+// Case-sensitive and at least 8 characters, so prose such as "basic validation" is left alone.
+const SCHEME_PATTERN = /\b(Bearer|Basic) +[A-Za-z0-9._~+/=-]{8,}/g;
+// A whole key-like name, then `=` or a lone `:`, so Move paths such as `0x3::token::X` never match.
+const PARAM_PATTERN =
+  /(?<![\w:-])(x-api-key|api[_-]?key|access[_-]?token|token|secret|password|authorization)(["']?[ \t]*(?:=|:(?!:))[ \t]*["']?)(?!Bearer |Basic )[^\s"'&,;}<]+/gi;
+// Bounds the work on text a remote source wrote.
+const MAX_TEXT = 2000;
 
 /** `text` with URLs and credentials taken out, since node URLs and headers can carry API keys. */
 export function redactSecrets(text: string): string {
-  return text
+  const bounded = text.length > MAX_TEXT ? `${text.slice(0, MAX_TEXT)}...` : text;
+  return bounded
     .replace(URL_PATTERN, "<url>")
     .replace(SCHEME_PATTERN, "$1 <redacted>")
     .replace(PARAM_PATTERN, "$1$2<redacted>");

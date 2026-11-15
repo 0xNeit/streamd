@@ -80,14 +80,37 @@ describe("listSubscriptions", () => {
   });
 
   it("redacts URLs and credentials in any text", () => {
-    expect(redactSecrets("GET https://node.example/v1/KEY/x?y=1 failed, Bearer abc.def, ws://h:1/p"))
+    expect(redactSecrets("GET https://node.example/v1/KEY/x?y=1 failed, Bearer abc.def.ghi, ws://h:1/p"))
       .toBe("GET <url> failed, Bearer <redacted>, <url>");
     expect(redactSecrets("Basic dXNlcjpwYXNz")).toBe("Basic <redacted>");
     expect(redactSecrets("x-api-key: KEY1 sent")).toBe("x-api-key: <redacted> sent");
     expect(redactSecrets("node.example:443/v1?api_key=KEY2&x=1")).toBe("node.example:443/v1?api_key=<redacted>&x=1");
     expect(redactSecrets('{"token":"KEY3","n":1}')).toBe('{"token":"<redacted>","n":1}');
     expect(redactSecrets("password=KEY4")).toBe("password=<redacted>");
+    expect(redactSecrets("Authorization: Bearer abc.def.ghi")).toBe("Authorization: Bearer <redacted>");
     expect(redactSecrets("Polling failed (1/3)")).toBe("Polling failed (1/3)");
+  });
+
+  it("leaves Move paths and prose alone", () => {
+    for (const text of [
+      "Type 0x3::token::TokenDeposit not found",
+      "view 0x4::token::creator aborted",
+      "0x1::authority::X",
+      "author: alice",
+      "token_address: 0xabc",
+      "basic validation failed",
+      "Basic Auth",
+    ]) {
+      expect(redactSecrets(text)).toBe(text);
+    }
+  });
+
+  it("stays fast on long adversarial text and bounds its length", () => {
+    const text = "token-".repeat(5000);
+    const started = performance.now();
+    const out = redactSecrets(text);
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(out.length).toBeLessThanOrEqual(2003);
   });
 
   it("keeps the final snapshot of a walk that gives up at once, redacted, under ended", async () => {
@@ -137,7 +160,7 @@ describe("listSubscriptions", () => {
   it("redacts the error's own message and its direct cause", async () => {
     const adapter: EventAdapter = {
       async fetchEvents() {
-        throw new StreamdNetworkError("at https://n.example/KEY", undefined, new Error("Bearer tok"));
+        throw new StreamdNetworkError("at https://n.example/KEY", undefined, new Error("Bearer tok.tok.tok"));
       },
     };
     const errors: Error[] = [];
