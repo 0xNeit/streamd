@@ -488,3 +488,48 @@ export interface StakePools {
   unsubscribe(): void;
   [Symbol.dispose](): void;
 }
+
+/** A `#[event]` struct or enum as its module ABI declares it. */
+export interface EventStructSignature {
+  /** `address::module::Struct`, the address in long form. */
+  name: string;
+  abilities: string[];
+  typeParameters: { constraints: string[]; isPhantom: boolean }[];
+  /** A struct's fields; empty for an enum. */
+  fields: { name: string; type: string }[];
+  /** An enum's variants. */
+  variants?: { name: string; fields: { name: string; type: string }[] }[];
+}
+
+/** An entry or view function as its module ABI declares it. */
+export interface FunctionSignature {
+  /** `address::module::function`, the address in long form. */
+  name: string;
+  /** `public`, `private` or `friend`. */
+  visibility: string;
+  typeParameters: { constraints: string[] }[];
+  params: string[];
+  returns: string[];
+}
+
+/** What one publish did to a set of signatures, each list sorted by name. */
+export interface AbiChanges<T> {
+  added: T[];
+  changed: { before: T; after: T }[];
+  removed: T[];
+}
+
+/**
+ * One package publish at one address, the `data` of the records `upgrades`
+ * and `getUpgrades` deliver: how the address's event structs, entry functions
+ * and view functions differ between the version before the publish and its own.
+ */
+export interface PackageUpgrade {
+  /** The code address, long form. */
+  address: string;
+  /** False for a package's first publish. */
+  isUpgrade: boolean;
+  events: AbiChanges<EventStructSignature>;
+  entryFunctions: AbiChanges<FunctionSignature>;
+  views: AbiChanges<FunctionSignature>;
+}
