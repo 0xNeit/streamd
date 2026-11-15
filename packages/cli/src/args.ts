@@ -3,6 +3,7 @@ import { WEBHOOK_SIGNATURE_HEADER, normalizeAddress, requireAddress, requireEven
 import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
 import type { ModuleRef } from "./codegen.js";
 import { FILTER_OPTIONS, parseDecode, parseFilter } from "./filter.js";
+import { parseKafkaUrl } from "./kafka.js";
 import type { CliFilter, FilterFlags } from "./filter.js";
 
 export type Network = "mainnet" | "testnet" | "devnet" | "movement-mainnet" | "movement-testnet";
@@ -49,12 +50,14 @@ export const SECRET_ENV = "STREAMD_WEBHOOK_SECRET";
 export const API_KEY_ENV = "APTOS_API_KEY";
 
 export interface ForwardOptions extends SourceOptions {
-  /** Webhook URL, or a `redis://`, `rediss://` or `nats://` URL; may carry a token or password, so it is never printed. */
+  /** Webhook URL, or a `redis://`, `rediss://`, `nats://`, `kafka://` or `kafkas://` URL; may carry a token or password, so it is never printed. */
   to: string;
   /** The Redis stream each batch is added to; set exactly when `to` is a Redis URL. */
   stream?: string;
   /** The NATS subject each batch is published to; set exactly when `to` is a NATS URL. */
   subject?: string;
+  /** The Kafka topic each batch is produced to; set exactly when `to` is a Kafka URL. */
+  topic?: string;
   cursorFile: string;
   /** Retries per batch after the first attempt. */
   retries: number;
@@ -316,6 +319,7 @@ const FORWARD_OPTIONS = {
   "batch-size": { type: "string" },
   stream: { type: "string" },
   subject: { type: "string" },
+  topic: { type: "string" },
 } as const;
 
 const ALERT_OPTIONS = {
@@ -471,6 +475,7 @@ export const USAGE = `Usage:
   streamd forward --to <url> --account <address> [...]
   streamd forward --to redis://<host> --stream <key> [options] <eventType>...
   streamd forward --to nats://<host> --subject <name> [options] <eventType>...
+  streamd forward --to kafka://<host> --topic <name> [options] <eventType>...
   streamd alert --rules <file> --to <url> [options]
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
@@ -490,7 +495,8 @@ export const USAGE = `Usage:
 
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array, or
-adds it to a Redis stream or publishes it to a NATS JetStream subject, saving
+adds it to a Redis stream, publishes it to a NATS JetStream subject or produces
+it to a Kafka topic, saving
 its position to a cursor file once the destination acknowledges it.
 alert follows the rules in a JSON file, each a descriptor, filter, window and
 count or sum threshold, and POSTs a signed alert to a webhook the first time a
@@ -570,10 +576,15 @@ Options:
   --to <url>             forward, alert: webhook URL (http or https, required); forward also
                          takes redis://[user:password@]host[:port][/db] or rediss:// (TLS),
                          Bun's own client under Bun, ioredis under Node (npm i ioredis);
-                         or nats://[user:password@ | token@]host[:port], plaintext only
+                         or nats://[user:password@ | token@]host[:port], plaintext only;
+                         or kafka://[user:password@]host[:port][,host[:port]]...[?sasl=<m>]
+                         or kafkas:// (TLS), <m> plain, scram-sha-256 or scram-sha-512, through
+                         @confluentinc/kafka-javascript or kafkajs (npm i either)
   --stream <key>         forward: the Redis stream each batch is added to (with redis://)
   --subject <name>       forward: the NATS subject each batch is published to, which a
                          JetStream stream must capture (with nats://)
+  --topic <name>         forward: the Kafka topic each batch is produced to, which must exist
+                         (with kafka:// or kafkas://)
   --cursor-file <path>   tail, transfers (following): save and resume from here; watch: each
                          address's position, as one JSON object; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
@@ -584,7 +595,7 @@ Options:
                          tx: wait for commit (default: 20000)
   --header <h>           forward, alert: request header 'Name: value', repeatable
   --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
-                         a Redis entry's signature field or a NATS message's header (or set
+                         a Redis entry's signature field or a NATS or Kafka header (or set
                          ${SECRET_ENV}, which keeps it out of ps)
   --db <file>            store: SQLite file to write (this or --postgres)
   --postgres <url>       store: Postgres database to write, postgres://user@host/db; Bun.SQL
@@ -801,6 +812,19 @@ function natsUrl(raw: string): string {
   return url.protocol + raw.slice(url.protocol.length);
 }
 
+// Kafka's legal topic names: 1 to 249 of these, never "." or "..".
+const TOPIC = /^[A-Za-z0-9._-]{1,249}$/;
+
+function kafkaUrl(raw: string): string {
+  try {
+    parseKafkaUrl(raw);
+  } catch (err) {
+    throw new UsageError((err as Error).message);
+  }
+  const scheme = raw.indexOf(":");
+  return raw.slice(0, scheme).toLowerCase() + raw.slice(scheme);
+}
+
 // Publishing needs a literal subject: dot-separated tokens, no wildcards, no whitespace or controls.
 const SUBJECT = /^[^\s\u0000-\u001f\u007f.*>]+(\.[^\s\u0000-\u001f\u007f.*>]+)*$/;
 
@@ -972,10 +996,22 @@ function parseForward(args: string[]): ParsedCommand {
   }
   const redis = values.to !== undefined && /^rediss?:/i.test(values.to);
   const nats = values.to !== undefined && /^nats:/i.test(values.to);
+  const kafka = values.to !== undefined && /^kafkas?:/i.test(values.to);
+  const brokerUrl = redis ? redisUrl(values.to!) : nats ? natsUrl(values.to!) : kafka ? kafkaUrl(values.to!) : undefined;
   const options: ForwardOptions = {
     ...source("forward", values, positionals),
-    ...delivery("forward", values, DEFAULT_CURSOR_FILE, redis ? redisUrl(values.to!) : nats ? natsUrl(values.to!) : undefined),
+    ...delivery("forward", values, DEFAULT_CURSOR_FILE, brokerUrl),
   };
+  if (kafka) {
+    if (values.header !== undefined) throw new UsageError("--header is for webhooks: the Kafka sink sets only its own headers");
+    if (values.topic === undefined || values.topic === "") throw new UsageError("--to kafka:// needs --topic <name>");
+    if (!TOPIC.test(values.topic) || values.topic === "." || values.topic === "..") {
+      throw new UsageError(`--topic must be 1 to 249 of A-Z, a-z, 0-9, ".", "_" and "-", not "." or "..": ${JSON.stringify(values.topic)}`);
+    }
+    options.topic = values.topic;
+  } else if (values.topic !== undefined) {
+    throw new UsageError("--topic needs a kafka:// or kafkas:// --to");
+  }
   if (nats) {
     if (values.header !== undefined) throw new UsageError("--header is for webhooks: the NATS sink sets only its own headers");
     if (values.subject === undefined || values.subject === "") throw new UsageError("--to nats:// needs --subject <name>");

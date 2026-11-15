@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { parseCommand, parseTime, UsageError } from "../src/args.js";
+import { parseKafkaUrl } from "../src/kafka.js";
 import type { AlertOptions, MonitorOptions, StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
@@ -344,6 +345,88 @@ describe("parseCommand forward", () => {
       rejects(["alert", "--rules", "r.json", "--to", NATS], /^--to must be an http or https URL$/);
       rejects(["alert", "--rules", "r.json", "--to", "https://h.example", "--subject", "s"], /Unknown option '--subject'/);
     });
+  });
+
+  describe("to Kafka", () => {
+    const KAFKA = "kafka://streamd:pw-s3cret@10.0.0.1:9093,b2.example?sasl=scram-sha-512";
+
+    it("reads a Kafka URL and its topic", () => {
+      expect(forward("--to", KAFKA, "--topic", "aptos.deposits", TYPE)).toEqual({
+        descriptor: { kind: "module", eventType: [TYPE] },
+        network: "mainnet",
+        to: KAFKA,
+        topic: "aptos.deposits",
+        cursorFile: "streamd-forward.cursor",
+        retries: 5,
+        timeout: 10000,
+        headers: {},
+      });
+      expect(forward("--to", "KAFKAS://10.0.0.2:9092", "--topic", "a_b-C.9", "--secret", "k", TYPE)).toMatchObject({
+        to: "kafkas://10.0.0.2:9092",
+        topic: "a_b-C.9",
+        secret: "k",
+      });
+      expect(forward("--to", "kafka://h", "--topic", "t".repeat(249), TYPE).topic).toHaveLength(249);
+    });
+
+    it.each([
+      [["--to", KAFKA, TYPE], /^--to kafka:\/\/ needs --topic <name>$/],
+      [["--to", KAFKA, "--topic", "", TYPE], /^--to kafka:\/\/ needs --topic <name>$/],
+      [["--to", KAFKA, "--topic", "..", TYPE], /^--topic must be 1 to 249/],
+      [["--to", KAFKA, "--topic", ".", TYPE], /^--topic must be 1 to 249/],
+      [["--to", KAFKA, "--topic", "a b", TYPE], /^--topic must be 1 to 249/],
+      [["--to", KAFKA, "--topic", "a/b", TYPE], /^--topic must be 1 to 249/],
+      [["--to", KAFKA, "--topic", "t".repeat(250), TYPE], /^--topic must be 1 to 249/],
+      [["--to", "https://hooks.example.com/in", "--topic", "t", TYPE], /^--topic needs a kafka:\/\/ or kafkas:\/\/ --to$/],
+      [["--to", "nats://h", "--subject", "s", "--topic", "t", TYPE], /^--topic needs a kafka:\/\/ or kafkas:\/\/ --to$/],
+      [["--to", KAFKA, "--topic", "t", "--subject", "s", TYPE], /^--subject needs a nats:\/\/ --to$/],
+      [["--to", KAFKA, "--topic", "t", "--stream", "s", TYPE], /^--stream needs a redis:\/\/ or rediss:\/\/ --to$/],
+      [["--to", KAFKA, "--topic", "t", "--header", "X: pw-s3cret", TYPE], /^--header is for webhooks/],
+      [["--to", "kafka://u:pw-s3cret@h", "--topic", "t", TYPE], /^--to kafka:\/\/ with credentials needs \?sasl=plain/],
+      [["--to", "kafka://u:pw-s3cret@h?sasl=gssapi", "--topic", "t", TYPE], /^--to kafka:\/\/ with credentials needs \?sasl=plain/],
+      [["--to", "kafka://pw-s3cret@h?sasl=plain", "--topic", "t", TYPE], /^--to kafka:\/\/ credentials must be user:password@$/],
+      [["--to", "kafka://h?sasl=plain", "--topic", "t", TYPE], /^--to kafka:\/\/ \?sasl= needs user:password@/],
+      [["--to", "kafka://u:pw-s3cret@h?sasl=plain&pass=pw-s3cret", "--topic", "t", TYPE], /^--to kafka:\/\/ takes no query but/],
+      [["--to", "kafka://u:pw-s3cret@h/pw-s3cret", "--topic", "t", TYPE], /^--to kafka:\/\/ takes no path or fragment/],
+      [["--to", "kafka://u:pw-s3cret@h#pw-s3cret", "--topic", "t", TYPE], /^--to kafka:\/\/ takes no path or fragment/],
+      [["--to", "kafka://u:pw-s3cret@?sasl=plain", "--topic", "t", TYPE], /^--to must be a valid kafka:\/\/ URL with host\[:port\] brokers$/],
+      [["--to", "kafka://u:pw-s3cret@h:?sasl=plain", "--topic", "t", TYPE], /^--to must be a valid kafka:\/\/ URL/],
+      [["--to", "kafka://u:pw-s3cret@h:70000?sasl=plain", "--topic", "t", TYPE], /^--to must be a valid kafka:\/\/ URL/],
+      [["--to", "kafka://u:pw-s3cret@h,,h2?sasl=plain", "--topic", "t", TYPE], /^--to must be a valid kafka:\/\/ URL/],
+      [["--to", "kafka://u:pw-s3cret%zz@h?sasl=plain", "--topic", "t", TYPE], /^--to kafka:\/\/ has a malformed percent-escape/],
+    ])("rejects %j without echoing the URL", (argv, pattern) => {
+      let error: unknown;
+      try {
+        forward(...(argv as string[]));
+      } catch (err) {
+        error = err;
+      }
+      expect((error as Error).message).toMatch(pattern as RegExp);
+      expect(String(error)).not.toContain("pw-s3cret");
+    });
+
+    it("keeps alert webhook-only", () => {
+      rejects(["alert", "--rules", "r.json", "--to", KAFKA], /^--to must be an http or https URL$/);
+      rejects(["alert", "--rules", "r.json", "--to", "https://h.example", "--topic", "t"], /Unknown option '--topic'/);
+    });
+  });
+});
+
+describe("parseKafkaUrl", () => {
+  it("reads brokers, TLS and SASL", () => {
+    expect(parseKafkaUrl("kafka://h")).toEqual({ brokers: ["h:9092"], ssl: false });
+    expect(() => parseKafkaUrl("kafka://[::1]:9092")).toThrow("--to must be a valid kafka:// URL with host[:port] brokers");
+    expect(parseKafkaUrl("kafkas://a:1,h,b.example:9094/")).toEqual({
+      brokers: ["a:1", "h:9092", "b.example:9094"],
+      ssl: true,
+    });
+    for (const mechanism of ["plain", "scram-sha-256", "scram-sha-512"] as const) {
+      expect(parseKafkaUrl(`kafka://us%40er:p%3Aw@h?sasl=${mechanism.toUpperCase()}`).sasl).toEqual({
+        mechanism,
+        username: "us@er",
+        password: "p:w",
+      });
+    }
   });
 });
 

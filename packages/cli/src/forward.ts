@@ -1,10 +1,11 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { parseRetryAfter, serializeEvent } from "@streamd/core";
+import { descriptorKey, parseRetryAfter, serializeEvent } from "@streamd/core";
 import type { StreamdClient, Subscription } from "@streamd/core";
 import { SIGNATURE_HEADER, type ForwardOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { filterPredicate } from "./filter.js";
 import { message, scrubber, signature } from "./format.js";
+import { connectKafka, kafkaSink, type KafkaLike } from "./kafka.js";
 import { connectNats, natsSink, type NatsLike } from "./nats.js";
 import { connectRedis, redisSink, type RedisLike } from "./redis.js";
 
@@ -22,6 +23,8 @@ export interface ForwardIO {
   redis?(url: string, timeout: number): RedisLike | Promise<RedisLike>;
   /** Opens the NATS client for a NATS `--to` (default `connectNats`); it connects on the first publish. */
   nats?(url: string): NatsLike;
+  /** Opens the Kafka client for a Kafka `--to` (default `connectKafka`); it connects on the first send. */
+  kafka?(url: string, timeout: number): KafkaLike | Promise<KafkaLike>;
 }
 
 const MAX_RETRY_DELAY = 60_000;
@@ -119,9 +122,9 @@ export async function deliver(
 
 /**
  * Follows `options.descriptor`, delivering each batch to the webhook, the
- * Redis stream or the NATS subject, and resolves to the process exit code: 0 when the signal
+ * Redis stream, the NATS subject or the Kafka topic, and resolves to the process exit code: 0 when the signal
  * aborts or a `toVersion` range is done, 1 when a delivery fails past its
- * retries, the Redis client cannot be opened, polling gives up, the cursor
+ * retries, a broker client cannot be opened, polling gives up, the cursor
  * file cannot be read or written, or the bound is above the head.
  *
  * Delivery is at least once: the cursor file only ever holds a position
@@ -152,18 +155,25 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     }
   }
 
-  const { stream, subject } = options;
+  const { stream, subject, topic } = options;
   let sink: Sink;
   try {
     sink =
       subject !== undefined
         ? natsSink((io.nats ?? connectNats)(options.to), { ...options, subject })
-        : stream === undefined
-          ? webhookSink(options)
-          : redisSink(await (io.redis ?? connectRedis)(options.to, options.timeout), { ...options, stream });
+        : topic !== undefined
+          ? kafkaSink(await (io.kafka ?? connectKafka)(options.to, options.timeout), {
+              ...options,
+              topic,
+              key: descriptorKey(options.descriptor)!,
+            })
+          : stream === undefined
+            ? webhookSink(options)
+            : redisSink(await (io.redis ?? connectRedis)(options.to, options.timeout), { ...options, stream });
   } catch (err) {
     // The client's own errors are not known to leave the URL or password out.
-    io.error(`streamd: cannot open the ${subject === undefined ? "Redis" : "NATS"} client: ${scrubber(options.to)(message(err))}`);
+    const name = subject !== undefined ? "NATS" : topic !== undefined ? "Kafka" : "Redis";
+    io.error(`streamd: cannot open the ${name} client: ${scrubber(options.to)(message(err))}`);
     return 1;
   }
   // Opening can await a dynamic import, long enough for a SIGINT to land before the listener below.
