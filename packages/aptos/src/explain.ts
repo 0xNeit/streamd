@@ -1,4 +1,4 @@
-import { StreamdError, checkTimeout, committedTransaction, normalizeAddress, raceAbort, requireTransactionHash } from "@streamd/core";
+import { StreamdError, checkTimeout, committedTransaction, formatAmount, normalizeAddress, raceAbort, requireTransactionHash } from "@streamd/core";
 import type { EventAdapter, EventPage, RequestLimiter, StreamdEvent, TransactionEvents, Transfer } from "@streamd/core";
 import { deltas } from "./activity.js";
 import { u } from "./records.js";
@@ -153,4 +153,70 @@ export async function explain(host: ExplainHost, target: unknown, options: Expla
     return explanation;
   };
   return raceAbort(work(), options.signal);
+}
+
+// C0 and C1 controls, which some terminals obey, and the bidirectional overrides that reorder a line.
+const UNSAFE = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
+const APT_DECIMALS = 8;
+
+/**
+ * `explanation` as plain text, one fact per line: the header, status, sender
+ * and fee payer, function, gas, then transfers, balance changes, swaps and
+ * sales, and the event count. Amounts use the asset's decimals and symbol when
+ * known (a swap takes them from its transaction's transfers), else base
+ * units and the asset. On-chain text has control characters replaced.
+ */
+export function formatExplanation(explanation: TransactionExplanation): string {
+  const e = explanation;
+  const clean = (text: string) => text.replace(UNSAFE, "?");
+  const who = (address: string | undefined) => {
+    if (address === undefined) return "an unknown account";
+    const name = e.names?.[address];
+    return typeof name === "string" ? `${address} (${clean(name)})` : address;
+  };
+  const details = new Map<string, { symbol: string; decimals: number }>();
+  for (const t of e.transfers) {
+    if (t.symbol !== undefined && t.decimals !== undefined) details.set(t.asset, { symbol: t.symbol, decimals: t.decimals });
+  }
+  const amount = (value: bigint, asset: string, signed = false) => {
+    const info = details.get(asset);
+    const text = info === undefined ? `${value} ${clean(asset)}` : `${formatAmount(value, info.decimals)} ${clean(info.symbol)}`;
+    return signed && value > 0n ? `+${text}` : text;
+  };
+  const apt = (octas: bigint) => `${formatAmount(octas, APT_DECIMALS)} APT`;
+
+  const date = e.timestamp === undefined ? undefined : new Date(Number(e.timestamp / 1000n));
+  const time = date === undefined || Number.isNaN(date.getTime()) ? "" : `, ${date.toISOString()}`;
+  const lines = [
+    `${e.simulated ? "Simulated transaction" : `Transaction ${clean(e.transactionHash ?? "")}`} at version ${e.version}${time}`,
+    `Status: ${e.success ? "success" : "failed"} (${clean(e.vmStatus)})`,
+  ];
+  if (e.sender !== undefined) lines.push(`Sender: ${who(e.sender)}`);
+  if (e.feePayer !== undefined) lines.push(`Fee payer: ${who(e.feePayer)}`);
+  if (e.entryFunction !== undefined) lines.push(`Function: ${clean(e.entryFunction.function)}`);
+  if (e.gas !== undefined) {
+    const { units, unitPrice, fee, storageFee, storageRefund } = e.gas;
+    const price = unitPrice === undefined || fee === undefined ? "" : ` at ${unitPrice} octas, fee ${apt(fee)}`;
+    lines.push(`Gas: ${units} units${price} (storage ${apt(storageFee)}, refund ${apt(storageRefund)})`);
+  }
+  const section = (title: string, items: string[]) => {
+    if (items.length > 0) lines.push(`${title}:`, ...items.map((item) => `  ${item}`));
+  };
+  section(
+    "Transfers",
+    e.transfers.map((t) =>
+      [amount(t.amount, t.asset), t.from === undefined ? "" : ` from ${who(t.from)}`, t.to === undefined ? "" : ` to ${who(t.to)}`].join(""),
+    ),
+  );
+  section("Balance changes", e.balanceChanges.map((c) => `${who(c.account)}: ${amount(c.delta, c.asset, true)}`));
+  section(
+    "Swaps",
+    e.swaps.map((s) => `${s.protocol}: ${amount(s.amountIn, s.assetIn)} in, ${amount(s.amountOut, s.assetOut)} out, pool ${clean(s.poolId)}`),
+  );
+  section(
+    "Sales",
+    e.sales.map((s) => `${s.marketplace} ${s.kind}: ${clean(s.token)} from ${who(s.seller)} to ${who(s.buyer)} for ${s.price} base units`),
+  );
+  lines.push(`Events: ${e.events.length}`);
+  return `${lines.join("\n")}\n`;
 }

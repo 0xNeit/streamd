@@ -6,6 +6,8 @@ import { StreamdError, parseEvent } from "@streamd/core";
 import type { EventAdapter, StreamdEvent, TransactionEvents, ViewRequest } from "@streamd/core";
 import { toSale } from "../src/sales.js";
 import { toSwap } from "../src/swaps.js";
+import { formatExplanation } from "../src/index.js";
+import type { TransactionExplanation } from "../src/index.js";
 import { testClient } from "./helpers.js";
 
 const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
@@ -244,5 +246,101 @@ describe("explain refusals", () => {
       throw new Error("socket hang up");
     };
     await expect(testClient({ adapter: base }).explain(HASH)).rejects.toThrow("socket hang up");
+  });
+});
+
+describe("formatExplanation", () => {
+  const base: TransactionExplanation = {
+    simulated: false,
+    version: 10n,
+    transactionHash: HASH,
+    success: true,
+    vmStatus: "Executed successfully",
+    sender: ALICE,
+    timestamp: 1_700_000_000_000_000n,
+    entryFunction: { function: "0x1::aptos_account::transfer", typeArguments: [], arguments: [] },
+    gas: { units: 5414n, executionUnits: 35n, ioUnits: 55n, storageFee: 532400n, storageRefund: 1000n, unitPrice: 100n, fee: 541400n },
+    transfers: [{ asset: APT, amount: 250000000n, from: ALICE, to: BOB, symbol: "APT", decimals: 8 }],
+    balanceChanges: [
+      { account: ALICE, asset: APT, delta: -250000000n, symbol: "APT", decimals: 8 },
+      { account: BOB, asset: APT, delta: 250000000n, symbol: "APT", decimals: 8 },
+    ],
+    swaps: [],
+    sales: [],
+    events: [],
+  };
+
+  it("renders a committed transfer with names, gas and asset details", () => {
+    expect(formatExplanation({ ...base, feePayer: SPONSOR, names: { [ALICE]: null, [BOB]: "bob.apt", [SPONSOR]: null } })).toBe(
+      [
+        `Transaction ${HASH} at version 10, 2023-11-14T22:13:20.000Z`,
+        "Status: success (Executed successfully)",
+        `Sender: ${ALICE}`,
+        `Fee payer: ${SPONSOR}`,
+        "Function: 0x1::aptos_account::transfer",
+        "Gas: 5414 units at 100 octas, fee 0.005414 APT (storage 0.005324 APT, refund 0.00001 APT)",
+        "Transfers:",
+        `  2.5 APT from ${ALICE} to ${BOB} (bob.apt)`,
+        "Balance changes:",
+        `  ${ALICE}: -2.5 APT`,
+        `  ${BOB} (bob.apt): +2.5 APT`,
+        "Events: 0",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("renders a failed simulation without a price, a hash or a time", () => {
+    const { unitPrice: _p, fee: _f, ...gas } = base.gas!;
+    const { transactionHash: _h, timestamp: _t, entryFunction: _e, ...rest } = base;
+    const text = formatExplanation({ ...rest, simulated: true, success: false, vmStatus: "Out of gas", gas, transfers: [], balanceChanges: [] });
+    expect(text.split("\n")).toEqual([
+      "Simulated transaction at version 10",
+      "Status: failed (Out of gas)",
+      `Sender: ${ALICE}`,
+      "Gas: 5414 units (storage 0.005324 APT, refund 0.00001 APT)",
+      "Events: 0",
+      "",
+    ]);
+  });
+
+  it("renders raw units without details, lone sides, swaps with their transaction's details, and sales", () => {
+    const text = formatExplanation({
+      ...base,
+      gas: undefined,
+      transfers: [
+        { asset: USDC, amount: 7n, to: ALICE },
+        { asset: APT, amount: 5n, from: BOB, symbol: "APT", decimals: 8 },
+      ],
+      balanceChanges: [{ account: ALICE, asset: USDC, delta: 7n }],
+      swaps: [{ protocol: "cellana", poolId: long("9"), assetIn: APT, amountIn: 5n, assetOut: USDC, amountOut: 7n }],
+      sales: [{ marketplace: "wapal", kind: "listing", token: long("70"), seller: BOB, buyer: ALICE, price: 450000000n }],
+    });
+    expect(text.split("\n").slice(4)).toEqual([
+      "Transfers:",
+      `  7 ${USDC} to ${ALICE}`,
+      `  0.00000005 APT from ${BOB}`,
+      "Balance changes:",
+      `  ${ALICE}: +7 ${USDC}`,
+      "Swaps:",
+      `  cellana: 0.00000005 APT in, 7 ${USDC} out, pool ${long("9")}`,
+      "Sales:",
+      `  wapal listing: ${long("70")} from ${BOB} to ${ALICE} for 450000000 base units`,
+      "Events: 0",
+      "",
+    ]);
+  });
+
+  it("replaces control and reordering characters in on-chain text", () => {
+    const text = formatExplanation({
+      ...base,
+      vmStatus: "abort\u001b[2J",
+      transfers: [{ asset: APT, amount: 1n, from: ALICE, to: BOB, symbol: "AP‮T", decimals: 0 }],
+      balanceChanges: [],
+      names: { [BOB]: "bob\u009b.apt" },
+    });
+    expect(text).toContain("Status: success (abort?[2J)");
+    expect(text).toContain(`  1 AP?T from ${ALICE} to ${BOB} (bob?.apt)`);
+    expect(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f‮]/.test(text)).toBe(false);
   });
 });
