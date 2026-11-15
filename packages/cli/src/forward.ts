@@ -21,14 +21,35 @@ export interface ForwardIO {
 
 const MAX_RETRY_DELAY = 60_000;
 
-/** What a delivery reads: the webhook, its headers and signing, and the retry budget. */
-export type Delivery = Pick<ForwardOptions, "to" | "headers" | "secret" | "timeout" | "retries">;
+/** What a webhook delivery reads: the URL, its headers and signing, and the per-request timeout. */
+export type Delivery = Pick<ForwardOptions, "to" | "headers" | "secret" | "timeout">;
 
-interface Attempt {
+/** One delivery attempt's outcome; `retryAfter` (ms) replaces the backoff for the next wait. */
+export interface Attempt {
   ok: boolean;
   failure?: string;
   retryable?: boolean;
   retryAfter?: number;
+}
+
+/**
+ * Where forward and alert deliver a body. `send` makes one attempt and says
+ * whether it was acknowledged; `deliver` owns the retries, so every sink
+ * shares the same backoff and the same rule that nothing counts until acked.
+ */
+export interface Sink {
+  send(body: string, signal: AbortSignal): Promise<Attempt>;
+  close?(): unknown;
+}
+
+/** The `sha256=<hex>` HMAC of `body`, as the webhook header and a stream entry's field carry it. */
+export function signature(body: string, secret: string): string {
+  return `sha256=${createHmac("sha256", secret).update(body, "utf8").digest("hex")}`;
+}
+
+/** POSTs to the webhook; a 2xx acknowledges. */
+export function webhookSink(options: Delivery): Sink {
+  return { send: (body, signal) => post(body, options, signal) };
 }
 
 async function post(body: string, options: Delivery, signal: AbortSignal): Promise<Attempt> {
@@ -39,9 +60,7 @@ async function post(body: string, options: Delivery, signal: AbortSignal): Promi
       headers: {
         "content-type": "application/json",
         ...options.headers,
-        ...(options.secret !== undefined && {
-          [SIGNATURE_HEADER]: `sha256=${createHmac("sha256", options.secret).update(body, "utf8").digest("hex")}`,
-        }),
+        ...(options.secret !== undefined && { [SIGNATURE_HEADER]: signature(body, options.secret) }),
       },
       body,
       // Not following redirects keeps --header values from reaching another host.
@@ -72,24 +91,25 @@ async function post(body: string, options: Delivery, signal: AbortSignal): Promi
   };
 }
 
-/** POSTs `body` until a 2xx, the retry bound, or abort; true once acknowledged. */
+/** Sends `body` until the sink acknowledges it, the retry bound, or abort; true once acknowledged. */
 export async function deliver(
   body: string,
-  options: Delivery,
+  sink: Sink,
+  retries: number,
   io: Pick<ForwardIO, "error" | "signal" | "retryDelay">,
 ): Promise<boolean> {
   let delay = io.retryDelay ?? 1000;
   for (let attempt = 1; ; attempt++) {
-    const result = await post(body, options, io.signal);
+    const result = await sink.send(body, io.signal);
     if (result.ok) return true;
     if (io.signal.aborted) return false;
-    if (!result.retryable || attempt > options.retries) {
+    if (!result.retryable || attempt > retries) {
       io.error(`streamd: delivery failed: ${result.failure}`);
       return false;
     }
     const wait = Math.min(result.retryAfter ?? delay, MAX_RETRY_DELAY);
     io.error(
-      `streamd: delivery failed (attempt ${attempt}/${options.retries + 1}): ${result.failure}; retrying in ${wait}ms`,
+      `streamd: delivery failed (attempt ${attempt}/${retries + 1}): ${result.failure}; retrying in ${wait}ms`,
     );
     const slept = await sleep(wait, true, { signal: io.signal }).catch(() => false);
     if (!slept) return false;
@@ -132,6 +152,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
     }
   }
 
+  const sink = webhookSink(options);
   return new Promise<number>((resolve) => {
     let sub: Subscription | undefined;
     let done = false;
@@ -172,7 +193,7 @@ export async function runForward(options: ForwardOptions, io: ForwardIO): Promis
         try {
           for (let i = 0; delivered && i < events.length; i += size) {
             const chunk = events.slice(i, i + size);
-            delivered = await deliver(`[${chunk.map(serializeEvent).join(",")}]`, options, io);
+            delivered = await deliver(`[${chunk.map(serializeEvent).join(",")}]`, sink, options.retries, io);
           }
         } catch (err) {
           delivered = false;

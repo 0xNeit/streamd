@@ -3,8 +3,8 @@ import { createHmac } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runForward } from "../src/forward.js";
-import type { ForwardIO } from "../src/forward.js";
+import { deliver, runForward } from "../src/forward.js";
+import type { Attempt, ForwardIO, Sink } from "../src/forward.js";
 import type { ForwardOptions } from "../src/args.js";
 import { MemoryAdapter, StreamdClient, StreamdError, verifyWebhook } from "@streamd/core";
 import type { EventAdapter, StreamdEvent } from "@streamd/core";
@@ -511,5 +511,63 @@ describe("runForward decode", () => {
     expect(await runForward(options({ fromVersion: 0n, toVersion: 3n, decode: ["amount"] }), h.io)).toBe(0);
     expect(received.flatMap(versions)).toEqual(["1", "3"]);
     expect(h.errors.join()).toContain('Cannot decode field "amount" of 2:0');
+  });
+});
+
+describe("deliver", () => {
+  function sink(results: Attempt[]) {
+    const bodies: string[] = [];
+    const fake: Sink = {
+      send: async (body) => {
+        bodies.push(body);
+        return results.shift() ?? { ok: true };
+      },
+    };
+    return { fake, bodies };
+  }
+  const io = (signal = new AbortController().signal, errors: string[] = []) => ({
+    error: (m: string) => void errors.push(m),
+    signal,
+    retryDelay: 1,
+  });
+
+  it("retries a retryable failure, then reports the ack", async () => {
+    const { fake, bodies } = sink([{ ok: false, failure: "down", retryable: true }]);
+    const errors: string[] = [];
+    expect(await deliver("[1]", fake, 3, io(undefined, errors))).toBe(true);
+    expect(bodies).toEqual(["[1]", "[1]"]);
+    expect(errors).toEqual(["streamd: delivery failed (attempt 1/4): down; retrying in 1ms"]);
+  });
+
+  it("gives up past the retry bound", async () => {
+    const down = { ok: false, failure: "down", retryable: true };
+    const { fake, bodies } = sink([down, down, down]);
+    const errors: string[] = [];
+    expect(await deliver("[]", fake, 1, io(undefined, errors))).toBe(false);
+    expect(bodies).toHaveLength(2);
+    expect(errors.at(-1)).toBe("streamd: delivery failed: down");
+  });
+
+  it("fails at once on a failure that is not retryable", async () => {
+    const { fake, bodies } = sink([{ ok: false, failure: "refused" }]);
+    expect(await deliver("[]", fake, 5, io())).toBe(false);
+    expect(bodies).toHaveLength(1);
+  });
+
+  it("waits retryAfter instead of the backoff", async () => {
+    const { fake } = sink([{ ok: false, failure: "busy", retryable: true, retryAfter: 30 }]);
+    const errors: string[] = [];
+    const started = Date.now();
+    expect(await deliver("[]", fake, 1, io(undefined, errors))).toBe(true);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(25);
+    expect(errors[0]).toEndWith("retrying in 30ms");
+  });
+
+  it("stops during the wait on abort", async () => {
+    const controller = new AbortController();
+    const { fake, bodies } = sink([{ ok: false, failure: "busy", retryable: true, retryAfter: 10_000 }]);
+    setTimeout(() => controller.abort(), 5);
+    expect(await deliver("[]", fake, 3, io(controller.signal))).toBe(false);
+    expect(bodies).toHaveLength(1);
   });
 });
