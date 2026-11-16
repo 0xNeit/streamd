@@ -87,7 +87,8 @@ function idle<TData>(): SubmitTransactionState<TData> {
 /**
  * Preview, sign, submit and confirm a transaction from a component: simulates
  * it through `client.previewEvents`, hands it to `signAndSubmit`, then waits
- * through `client.eventsOf`. Every failure is a `failed` state, never a throw.
+ * through `client.eventsOf`. Every failure of a run is a `failed` state, never
+ * a throw; a client without the methods it needs throws during render.
  * Options are read when `submit` is called.
  */
 export function useSubmitTransaction<TTransaction, TData = unknown>(
@@ -102,24 +103,40 @@ export function useSubmitTransaction<TTransaction, TData = unknown>(
   const [state, setState] = useState(idle<TData>);
   const running = useRef<{ controller: AbortController; promise: Promise<SubmitTransactionState<TData>> }>(undefined);
 
-  useEffect(() => () => running.current?.controller.abort(), []);
-
   const submit = useCallback((transaction: TTransaction) => {
     if (running.current) return running.current.promise;
     const controller = new AbortController();
     const { options, client } = latest.current;
-    const promise = run(transaction, client, options, controller.signal, setState).finally(() => {
-      if (running.current?.controller === controller) running.current = undefined;
-    });
+    // Started a tick later, so a signAndSubmit that calls submit synchronously already finds this run.
+    const promise = Promise.resolve()
+      .then(() => run(transaction, client, options, controller.signal, setState))
+      .finally(() => {
+        if (running.current?.controller === controller) running.current = undefined;
+      });
     running.current = { controller, promise };
     return promise;
   }, []);
 
-  const reset = useCallback(() => {
-    running.current?.controller.abort();
+  const abandon = useCallback(() => {
+    const abandoned = running.current;
     running.current = undefined;
-    setState(idle<TData>());
+    abandoned?.controller.abort();
+    return abandoned !== undefined;
   }, []);
+
+  const reset = useCallback(() => {
+    abandon();
+    setState(idle<TData>());
+  }, [abandon]);
+
+  // Also runs when <Activity> hides the component, keeping its state: a run cut short there
+  // must not stay shown as in progress.
+  useEffect(
+    () => () => {
+      if (abandon()) setState(idle<TData>());
+    },
+    [abandon],
+  );
 
   return { ...state, submit, reset };
 }

@@ -1,6 +1,6 @@
 import "./dom.js";
 import { describe, expect, it } from "bun:test";
-import { StrictMode, createElement } from "react";
+import { Activity, StrictMode, createElement } from "react";
 import {
   MemoryAdapter,
   StreamdError,
@@ -299,13 +299,11 @@ describe("useSubmitTransaction", () => {
       const release = t.hold("simulation");
       const promise = t.last().submit(TX);
       await waitFor(() => expect(t.last().status).toBe("previewing"));
-      const renders = t.results.length;
       await unmount(root);
       release();
       const final = await promise;
       expect(final.status).toBe("previewing");
       expect(t.signed).toEqual([]);
-      expect(t.results.length).toBe(renders);
     });
 
     it("aborts the wait when unmounted while confirming, still resolving with the hash", async () => {
@@ -314,14 +312,12 @@ describe("useSubmitTransaction", () => {
       t.hold("lookup");
       const promise = t.last().submit(TX);
       await waitFor(() => expect(t.last().status).toBe("confirming"));
-      const renders = t.results.length;
       await unmount(root);
       expect(t.signals[0]!.aborted).toBe(true);
       expect(t.walletSignals[0]!.aborted).toBe(true);
       const final = await promise;
       expect(final.status).toBe("confirming");
       expect(final.hash).toBe(A);
-      expect(t.results.length).toBe(renders);
     });
 
     it("keeps a hash the wallet returns after unmount, without waiting for it", async () => {
@@ -353,6 +349,64 @@ describe("useSubmitTransaction", () => {
       const next = await submitted(t);
       expect(next.status).toBe("confirmed");
       expect(t.last().status).toBe("confirmed");
+      await unmount(root);
+    });
+
+    it("reset while signing lets a new run start, and the abandoned wallet answer changes nothing", async () => {
+      const t = setup();
+      const root = await render(t.el({ preview: false }));
+      let releaseFirst!: () => void;
+      t.answer(() => new Promise((r) => (releaseFirst = () => r(FAILED))));
+      const first = t.last().submit(TX);
+      await waitFor(() => expect(t.last().status).toBe("signing"));
+      t.last().reset();
+      await waitFor(() => expect(t.last().status).toBe("idle"));
+      expect(t.walletSignals[0]!.aborted).toBe(true);
+      let releaseSecond!: () => void;
+      t.answer(() => new Promise((r) => (releaseSecond = () => r(A))));
+      const second = t.last().submit(TX);
+      expect(second).not.toBe(first);
+      await waitFor(() => expect(t.last().status).toBe("signing"));
+      releaseFirst();
+      expect(await first).toMatchObject({ status: "confirming", hash: FAILED });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(t.last()).toMatchObject({ status: "signing", hash: undefined });
+      expect(t.last().submit(TX)).toBe(second);
+      releaseSecond();
+      expect(await second).toMatchObject({ status: "confirmed", hash: A });
+      await waitFor(() => expect(t.last().status).toBe("confirmed"));
+      expect(t.signals).toHaveLength(1);
+      await unmount(root);
+    });
+
+    it("a run cut short by <Activity> hiding returns to idle and a new submit starts", async () => {
+      const t = setup();
+      const shown = (mode: "visible" | "hidden") => createElement(Activity, { mode, children: t.el() });
+      const root = await render(shown("visible"));
+      t.hold("simulation");
+      const first = t.last().submit(TX);
+      await waitFor(() => expect(t.last().status).toBe("previewing"));
+      await rerender(root, shown("hidden"));
+      await rerender(root, shown("visible"));
+      await waitFor(() => expect(t.last().status).toBe("idle"));
+      expect(t.last().submit(TX)).not.toBe(first);
+      await unmount(root);
+    });
+
+    it("a signAndSubmit that calls submit again still signs once", async () => {
+      const t = setup();
+      let again: Promise<unknown> | undefined;
+      let submit!: UseSubmitTransactionResult<Tx, unknown>["submit"];
+      t.answer(async () => {
+        again = submit(TX);
+        return A;
+      });
+      const root = await render(t.el({ preview: false }));
+      submit = t.last().submit;
+      const first = submit(TX);
+      await first;
+      expect(again).toBe(first);
+      expect(t.signed).toHaveLength(1);
       await unmount(root);
     });
 

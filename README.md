@@ -3800,7 +3800,8 @@ function Feed() {
   simulates it through `client.previewEvents`, passes it to your `signAndSubmit(transaction,
   { signal })`, then waits through `client.eventsOf`; the hook returns `{ status, preview,
   previewError, hash, events, error, vmStatus, submit, reset }`. `status` goes `"idle"`,
-  `"previewing"`, `"signing"`, `"confirming"`, then `"confirmed"` or `"failed"`; nothing throws.
+  `"previewing"`, `"signing"`, `"confirming"`, then `"confirmed"` or `"failed"`; a run never
+  throws or rejects.
   A failed run sets `error` (the simulation, the wallet, the transaction or the wait) and, when
   the chain reported one, `vmStatus`. `signAndSubmit` may resolve with a hash or an object with
   `hash` (the Aptos wallet adapter, `PendingTransactionResponse`) or `digest` (Sui); anything
@@ -3813,13 +3814,16 @@ function Feed() {
     going starts nothing and returns that run's promise, so a double click signs once.
   - **Unmount or `reset()`** abandons the run: the signal given to `signAndSubmit` and
     `eventsOf` aborts, a run still previewing never reaches `signAndSubmit`, and no state is set
-    afterwards. `reset()` returns to `"idle"`. A transaction already submitted stays submitted;
-    the abandoned run's promise still resolves, with its `hash` if the wallet returned one.
+    afterwards. `reset()` returns to `"idle"`, and so does a run cut short by an `<Activity>`
+    hiding the component. A transaction already submitted stays submitted, and a wallet prompt
+    already open can still be approved unless your `signAndSubmit` honours the signal; the
+    abandoned run's promise still resolves, with its `hash` if the wallet returned one.
   - It takes `descriptor`, `decode`, `where` and `timeout`, read when `submit` is called and
     applied to both the preview and the events. The Aptos preview runs without signer keys, so
-    the auth key check is skipped. It needs a client with `eventsOf` and `previewEvents`
-    (`SubmitTransactionClient`): an `AptosClient`, passed a built transaction, or a `SuiClient`,
-    passed built transaction bytes.
+    the auth key check is skipped. It needs a client with `eventsOf` and, unless `preview: false`,
+    `previewEvents` (`SubmitTransactionClient`), and throws a `StreamdError` during render
+    otherwise: an `AptosClient`, passed a built transaction, or a `SuiClient`, passed built
+    transaction bytes.
 
   ```tsx
   const { submit, status, preview, events, vmStatus } = useSubmitTransaction({
