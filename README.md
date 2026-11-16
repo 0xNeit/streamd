@@ -3130,7 +3130,9 @@ const streamd = new StreamdClient({
 
 - **Indexer lag.** Reads stop at the version the Indexer has processed, usually about a
   second behind the chain; `getHeadVersion` reports it, and a subscription with no start
-  begins there.
+  begins there. A bounded `toVersion` above the processed version pages through what is
+  indexed with `hasMore: true`, then rejects with `StreamdNetworkError` once the cursor
+  passes it until the Indexer catches up.
 - **Pruning.** The Indexer lists history the fullnode has pruned, so `fromVersion` is
   raised to the fullnode's oldest version (`getEarliestVersion`). A cursor older than that
   fails with status 410 rather than skipping history.

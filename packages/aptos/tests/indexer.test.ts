@@ -117,11 +117,10 @@ describe("IndexerAccountAdapter bounds", () => {
     [{ data: { processor_status: [{ last_success_version: "1e3" }] } }],
     [{ data: null }],
     [{}],
-  ])("rejects a malformed answer %p as a StreamdError", async (body) => {
+  ])("rejects a malformed answer %p as a StreamdNetworkError", async (body) => {
     const { adapter } = adapterWith(() => body);
     const err = await adapter.getHeadVersion().catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StreamdError);
-    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
   });
 
   it("rejects a 200 body that is not JSON as a network error, so it is retried", async () => {
@@ -186,7 +185,7 @@ describe("IndexerAccountAdapter bounds", () => {
       new IndexerAccountAdapter(fakeNode(() => reply).aptos, { indexerUrl: URL_, fetch: indexer.fetch })
         .getEarliestVersion();
     expect(await earliest({ data: { oldest_ledger_version: "77" } })).toBe(77n);
-    await expect(earliest({ data: { oldest_ledger_version: "x" } })).rejects.toBeInstanceOf(StreamdError);
+    await expect(earliest({ data: { oldest_ledger_version: "x" } })).rejects.toBeInstanceOf(StreamdNetworkError);
     const err = (await earliest({ status: 503, data: { message: "down" } }).catch((e: unknown) => e)) as StreamdNetworkError;
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect(err.statusCode).toBe(503);
@@ -316,6 +315,25 @@ describe("IndexerAccountAdapter fetchEvents", () => {
     expect(page).toMatchObject({ nextCursor: "21", hasMore: false, throughVersion: 20n });
   });
 
+  it("keeps hasMore true and rejects with StreamdNetworkError once past indexed when toVersion exceeds head", async () => {
+    const { make, state } = chain([10, 60], 50);
+    const adapter = make();
+    const first = await adapter.fetchEvents(account, { fromVersion: 0n, toVersion: 60n });
+    expect(ids(first)).toEqual(["10:0", "10:1"]);
+    expect(first).toMatchObject({ nextCursor: "51", hasMore: true, throughVersion: 50n });
+
+    const caught = await adapter
+      .fetchEvents(account, { cursor: first.nextCursor, toVersion: 60n })
+      .catch((e: unknown) => e);
+    expect(caught).toBeInstanceOf(StreamdNetworkError);
+    expect((caught as Error).message).toContain("behind toVersion 60");
+
+    state.indexed = 60;
+    const second = await adapter.fetchEvents(account, { cursor: first.nextCursor, toVersion: 60n });
+    expect(ids(second)).toEqual(["60:0", "60:1"]);
+    expect(second).toMatchObject({ nextCursor: "61", hasMore: false, throughVersion: 60n });
+  });
+
   it("leaves the cursor where it was while the Indexer is behind it", async () => {
     const { make, calls } = chain([10], 50);
     const page = await make().fetchEvents(account, { cursor: "60" });
@@ -371,8 +389,7 @@ describe("IndexerAccountAdapter fetchEvents", () => {
     );
     const adapter = new IndexerAccountAdapter(aptos, { indexerUrl: URL_, fetch: indexer.fetch });
     const err = await adapter.fetchEvents(account, { cursor: "5" }).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StreamdError);
-    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
   });
 
   it.each([
@@ -386,8 +403,7 @@ describe("IndexerAccountAdapter fetchEvents", () => {
     const { make, state } = chain([10], 50);
     state.txns.set(10, body);
     const err = await make().fetchEvents(account, { fromVersion: 0n }).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StreamdError);
-    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
   });
 
   it("rejects a pruned or missing transaction as a network error", async () => {
@@ -432,10 +448,16 @@ describe("IndexerAccountAdapter.listTransactionVersions", () => {
       [OBJECT, 0n, 1n, 101],
       [OBJECT, 0n, 1n, 1.5],
     ] as const) {
-      await expect(adapter.listTransactionVersions(...(args as unknown as [string, bigint, bigint, number]))).rejects.toBeInstanceOf(StreamdError);
+      const err = await adapter
+        .listTransactionVersions(...(args as unknown as [string, bigint, bigint, number]))
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
     }
     expect(calls).toEqual([]);
     const outside = adapterWith(() => ({ data: { account_transactions: [{ transaction_version: 30 }] } })).adapter;
-    await expect(outside.listTransactionVersions(OBJECT, 0n, 20n, 5)).rejects.toThrow("malformed account_transactions");
+    const err = await outside.listTransactionVersions(OBJECT, 0n, 20n, 5).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("malformed account_transactions");
   });
 });

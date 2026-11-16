@@ -66,7 +66,7 @@ function resolveUrl(aptos: Aptos, indexerUrl: unknown): string {
 
 /** Checks the fields `toStreamdEvents` reads, so a malformed transaction is refused rather than mapped. */
 function requireTransaction(txn: unknown, version: bigint): TransactionWithEvents {
-  const malformed = new StreamdError(`Fullnode returned a malformed transaction at version ${version}`);
+  const malformed = new StreamdNetworkError(`Fullnode returned a malformed transaction at version ${version}`);
   if (!isObject(txn) || toVersion(txn.version) !== version) throw malformed;
   for (const key of ["hash", "sender"]) {
     if (txn[key] !== undefined && typeof txn[key] !== "string") throw malformed;
@@ -104,10 +104,12 @@ function graphqlFailure(errors: unknown[], retryAfter: number | undefined): Stre
  *
  * Reads never pass the Indexer's processed version (`getHeadVersion`): a
  * listing above it is incomplete, and paging past a gap would skip it for
- * good. The cursor is the next ledger version to read. Without one,
- * `fromVersion` is raised to the fullnode's oldest version, since older
- * events cannot be read, and with neither the walk starts at the processed
- * version. Pages are never `final`.
+ * good. When a bounded `toVersion` exceeds `getHeadVersion`, walks page up to
+ * that head with `hasMore: true`, and reject with `StreamdNetworkError` once the
+ * cursor passes it while the Indexer is still behind `toVersion`. The cursor is
+ * the next ledger version to read. Without one, `fromVersion` is raised to the
+ * fullnode's oldest version, since older events cannot be read, and with
+ * neither the walk starts at the processed version. Pages are never `final`.
  */
 export class IndexerAccountAdapter implements EventAdapter {
   private readonly url: string;
@@ -156,12 +158,22 @@ export class IndexerAccountAdapter implements EventAdapter {
       const earliest = await this.getEarliestVersion();
       start = options.fromVersion > earliest ? options.fromVersion : earliest;
     }
+    if (options.toVersion !== undefined && start <= options.toVersion && start > indexed) {
+      throw new StreamdNetworkError(
+        `Indexer has only processed through version ${indexed}, behind toVersion ${options.toVersion}`,
+      );
+    }
     const end =
       options.toVersion !== undefined && options.toVersion < indexed ? options.toVersion : indexed;
     const { events, next } = await this.walk(descriptor, address, start, end, wanted);
 
     if (options.orderBy === "desc") events.reverse();
-    const page: EventPage = { events, nextCursor: next.toString(), hasMore: next <= end };
+    const targetEnd = options.toVersion !== undefined ? options.toVersion : end;
+    const page: EventPage = {
+      events,
+      nextCursor: next.toString(),
+      hasMore: start <= targetEnd && next <= targetEnd,
+    };
     if (next > start) page.throughVersion = next - 1n;
     return page;
   }
@@ -230,13 +242,13 @@ export class IndexerAccountAdapter implements EventAdapter {
     });
     const rows = data.account_transactions;
     if (!Array.isArray(rows) || rows.length > limit) {
-      throw new StreamdError("Indexer returned a malformed account_transactions listing");
+      throw new StreamdNetworkError("Indexer returned a malformed account_transactions listing");
     }
     let last = from - 1n;
     return rows.map((row) => {
       const version = isObject(row) ? toVersion(row.transaction_version) : undefined;
       if (version === undefined || version <= last || version > to) {
-        throw new StreamdError("Indexer returned a malformed account_transactions listing");
+        throw new StreamdNetworkError("Indexer returned a malformed account_transactions listing");
       }
       last = version;
       return version;
@@ -263,7 +275,7 @@ export class IndexerAccountAdapter implements EventAdapter {
     const row = Array.isArray(rows) && rows.length === 1 && isObject(rows[0]) ? rows[0] : undefined;
     const version = toVersion(row?.last_success_version);
     if (version === undefined) {
-      throw new StreamdError(`Indexer reported no processed version for ${PROCESSOR}`);
+      throw new StreamdNetworkError(`Indexer reported no processed version for ${PROCESSOR}`);
     }
     return version;
   }
@@ -280,7 +292,7 @@ export class IndexerAccountAdapter implements EventAdapter {
       throw toStreamdError(err, "oldest ledger version");
     }
     const version = toVersion(oldest);
-    if (version === undefined) throw new StreamdError("Fullnode returned a malformed oldest ledger version");
+    if (version === undefined) throw new StreamdNetworkError("Fullnode returned a malformed oldest ledger version");
     return version;
   }
 
@@ -327,7 +339,9 @@ export class IndexerAccountAdapter implements EventAdapter {
     if (isObject(body) && Array.isArray(body.errors) && body.errors.length > 0) {
       throw graphqlFailure(body.errors, retryAfter);
     }
-    if (!isObject(body) || !isObject(body.data)) throw new StreamdError("Indexer returned no data");
+    if (!isObject(body) || !isObject(body.data)) {
+      throw new StreamdNetworkError("Indexer returned no data", response.status, undefined, retryAfter);
+    }
     return body.data;
   }
 }
