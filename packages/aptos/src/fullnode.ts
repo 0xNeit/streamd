@@ -777,7 +777,10 @@ export class FullnodeScanAdapter implements EventAdapter {
    * How many events the handle had emitted by `version`: the sequence number of
    * its first event after it. The endpoint cannot seek by version, and walking
    * from 0 on a busy handle reads its whole history (or, on a node that pruned
-   * it, `200 []` forever). A resource not yet created there has emitted none.
+   * it, `200 []` forever). A resource or account not yet created there has
+   * emitted none. A version the node has pruned, as a start clamped to its
+   * oldest version by `"earliest"` or `fromTime` gives, falls back to walking
+   * from 0 as before, so the seek never fails a walk that worked without it.
    */
   private async handleCounterAt(descriptor: HandleEventDescriptor, version: bigint): Promise<bigint> {
     const address = requireAddress(descriptor.accountAddress);
@@ -791,7 +794,8 @@ export class FullnodeScanAdapter implements EventAdapter {
       }));
     } catch (err) {
       const e = err as { status?: unknown; data?: { error_code?: unknown } } | null;
-      if (e?.status === 404 && e.data?.error_code === "resource_not_found") return 0n;
+      if (e?.status === 404 && (e.data?.error_code === "resource_not_found" || e.data?.error_code === "account_not_found")) return 0n;
+      if (e?.status === 410) return 0n;
       throw err;
     }
     const counter = ((data as { data?: Record<string, unknown> } | null)?.data?.[descriptor.fieldName] as { counter?: unknown } | undefined)?.counter;

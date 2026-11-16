@@ -2496,7 +2496,7 @@ const sub = streamd.prices([APT_USD, BTC_USD], ({ data }) => {
   carries them as `0x` and lowercase hex. Anything else is refused at the call.
 - **`prices()`** reads Pyth's one legacy event handle, which carries every feed's updates, and
   keeps the feeds named. `observedAt` is the update's block time. With no `cursor`, `fromVersion`
-  or `fromTime` it starts at the head; `cursor` is the handle's sequence number. Like `swaps()`,
+  or `fromTime` it starts one version below the head; `cursor` is the handle's sequence number. Like `swaps()`,
   it is not a listener for `off()` or `listenerCount()`.
 - **`priceAt()`** reads Pyth's latest-price table at `version`, so it is the price a contract
   calling Pyth would have read then, and `observedAt` is the time of the block holding
@@ -2523,7 +2523,8 @@ By default streamd reads from a fullnode with `FullnodeScanAdapter`:
   by sequence number and cannot seek by version, so a walk given `fromVersion` and no cursor
   first reads the handle's resource at the version before it and starts at its `counter`, the
   first event at or after `fromVersion`. A creation-number handle has no resource to read and
-  starts at sequence 0, as does a walk with no start at all.
+  starts at sequence 0, as does a walk with no start at all, and one whose version before
+  `fromVersion` the node has pruned (as `"earliest"` or an old `fromTime` resolve to).
 - **Account events** walk that account's own transaction history. Cheap even
   far back, but only transactions the account sent; `IndexerAccountAdapter`
   (below) adds the ones it received.

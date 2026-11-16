@@ -473,15 +473,16 @@ describe("FullnodeScanAdapter handle events", () => {
     expect(await reads(creationDesc, { fromVersion: 5n })).toEqual([CREATION_PATH]);
   });
 
-  it("starts at 0 when the handle's resource did not exist yet", async () => {
-    const { aptos, calls } = fakeNode((path, params) =>
-      path === HANDLE_RESOURCE_PATH
-        ? { status: 404, data: { message: "Resource not found", error_code: "resource_not_found" } }
-        : handle([handleEvent(0, 3)])(path, params),
-    );
-    const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, { fromVersion: 2n });
-    expect(calls.at(-1)?.params.start).toBe("0");
-    expect(page.events.map((e) => e.version)).toEqual([3n]);
+  it("starts at 0 when the handle's resource or account did not exist yet, or the version is pruned", async () => {
+    // "earliest" and an old fromTime resolve to the node's oldest version, whose predecessor it has pruned.
+    for (const [status, code] of [[404, "resource_not_found"], [404, "account_not_found"], [410, "version_pruned"]] as const) {
+      const { aptos, calls } = fakeNode((path, params) =>
+        path === HANDLE_RESOURCE_PATH ? { status, data: { message: "no", error_code: code } } : handle([handleEvent(0, 3)])(path, params),
+      );
+      const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, { fromVersion: 2n });
+      expect(calls.at(-1)?.params.start).toBe("0");
+      expect(page.events.map((e) => e.version)).toEqual([3n]);
+    }
   });
 
   it("rejects with the resource read's status, and on a resource without the field", async () => {
@@ -489,7 +490,7 @@ describe("FullnodeScanAdapter handle events", () => {
       fakeNode((path, params) =>
         path === HANDLE_RESOURCE_PATH ? { status, data: { message: "no", error_code } } : handle([])(path, params),
       ).aptos;
-    for (const [status, code] of [[410, "version_pruned"], [404, "version_not_found"]] as const) {
+    for (const [status, code] of [[404, "version_not_found"], [503, "service_unavailable"]] as const) {
       const err = await new FullnodeScanAdapter(failing(status, code)).fetchEvents(handleDesc, { fromVersion: 9n }).catch((e) => e);
       expect(err).toBeInstanceOf(StreamdNetworkError);
       expect(err.statusCode).toBe(status);
