@@ -1983,6 +1983,79 @@ const sub = streamd.activity("0x1234...", ({ data }) => console.log(data.transfe
 - **Not here.** Whether the transaction succeeded is not on the entry. An activity subscription is not a listener for `off()` or
   `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 
+## Fund-flow tracing
+
+`trace(address, options?)` follows the funds around an address for a few hops and resolves a
+counterparty graph: every address reached, and every transfer between them summed per
+sender, receiver and asset. `tracePath(graph, from, to)` reads the shortest chain of
+transfers from one address to another out of that graph.
+
+```ts
+import { RoutingAdapter } from "@streamd/core";
+import { AptosClient, FullnodeScanAdapter, IndexerAccountAdapter, tracePath } from "@streamd/aptos";
+
+const streamd = new AptosClient({
+  aptos,
+  adapter: new RoutingAdapter({
+    account: new IndexerAccountAdapter(aptos, { apiKey: process.env.APTOS_API_KEY }),
+    default: new FullnodeScanAdapter(aptos),
+  }),
+});
+
+const graph = await streamd.trace("0x1234...", {
+  hops: 2,
+  fromVersion: -1_000_000n,
+  minAmount: 1_000_000n,
+  stop: ["0x5678..."], // an exchange: kept as a node, never expanded
+});
+for (const { from, to, asset, amount, transfers } of graph.edges) console.log(from, to, asset, amount, transfers);
+
+const path = tracePath(graph, "0x1234...", "0x9abc...");
+```
+
+- **The walk.** Breadth first from `address` (an address or Aptos name, resolved once). Each
+  node within `hops` (default 1, at most 6) is read once, one node at a time, as
+  `getActivity` reads it: every transaction it sent or received, with the `Transfer` records
+  it took part in, built and paired as `transfers()` builds them. Each counterparty joins at
+  the next hop. `direction` follows what a node sent (`"out"`), received (`"in"`) or both, the
+  default.
+- **The graph.** `nodes` are `TraceNode { address, hop, expanded }` in the order they joined;
+  `expanded` is false for a node at the hop cap, on the `stop` list, or not reached before the
+  walk stopped. `edges` are `TraceEdge { from, to, asset, amount, transfers, firstVersion,
+  lastVersion }`, one per sender, receiver and asset, `amount` the exact `bigint` sum in base
+  units. A transfer read from both of its ends counts once. A transfer with no `from` or no
+  `to` (a lone withdraw or deposit), or to the same address, makes no edge. Addresses are long
+  form, and assets are in `Transfer.asset`'s form, so APT as a coin and as the fungible asset
+  `0xa` are separate edges.
+- **Narrowing.** `minAmount` ignores transfers below that many base units, whatever their
+  asset, so pair it with `asset` (any form `transfers()` takes) to make it mean one unit.
+  `stop` and `target` take addresses, not names.
+- **The range.** `fromVersion` and `toVersion` bound every node's read. `toVersion` defaults to
+  `"head"`, and the head is read once when the trace starts, as is the base of a negative
+  `fromVersion`, so every node is read over the same range. Reads start no earlier than the
+  fullnode's oldest version and stop at the Indexer's processed version, as for
+  `getActivity`.
+- **Bounds.** `maxNodes` (default 100) caps the graph, root included: the transfer that would
+  add one more node is left out and the walk ends. `maxRequests` (default 1000) caps adapter
+  calls, the head read, page reads and the views that resolve fungible stores alike; the node
+  being read when it runs out keeps `expanded: false` and its partial read is dropped.
+  `target` ends the walk as soon as that address joins. Whichever ended it is `stoppedBy`
+  (`"nodes"`, `"requests"` or `"target"`), absent when every node within `hops` was read, and
+  `requests` counts the calls made. `retries` and `signal` apply to each read as for
+  `getEvents`, and any other failure rejects the trace.
+- **Paths.** `tracePath(graph, from, to)` follows edges in their direction and returns the
+  fewest edges from `from` to `to`, `[]` for the same address, or `undefined` when the graph
+  holds no such chain. It only knows the graph: a trace that stopped early, or a `minAmount`,
+  can hide a path that exists on chain.
+- **Source.** The client's adapter must serve an `account` descriptor with `received: true`:
+  `IndexerAccountAdapter` routed beside a fullnode, as above, since the fullnode alone sees
+  only transactions an account signed. Page reads take the client's `maxConcurrentRequests`
+  slots; the store views run beside them, as for `transfers()`. Each node's read costs pages
+  in proportion to the transactions it made, so an exchange or router left off `stop` spends
+  the budget fast.
+- **Aptos only.** Over `getTransfers({ account })` every node would scan every transaction
+  in the range, so the walk stays on the account path. There is no `SuiClient.trace`.
+
 ## DEX swaps
 
 `swaps(callback, options?)` follows swaps on the main Aptos DEXes as they land, and
