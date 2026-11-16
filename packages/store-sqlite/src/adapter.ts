@@ -100,7 +100,12 @@ function parseCursor(cursor: string): Position {
   return { version: BigInt(match[1]!), eventIndex };
 }
 
-/** No start position means the oldest version kept; only asking for pruned history fails. */
+/**
+ * No start position means the oldest version kept; only asking for pruned history fails.
+ * An empty page leaves `nextCursor` at the last match, so pruning past a quiet
+ * follower's cursor triggers a 410 `StreamdNetworkError` even when nothing matching was
+ * deleted; restart such a follower with `fromVersion: "earliest"`.
+ */
 function startOf(options: FetchOptions, edge: bigint): Position {
   const start =
     options.cursor !== undefined
@@ -137,10 +142,16 @@ function count(value: number | undefined, label: string, fallback: number): numb
 /**
  * Serves events a `SqliteEventStore` wrote, as an `EventAdapter`. It answers
  * from what is stored, so it sees only what the store's subscriptions caught:
- * `account` matches events stored with that `sender`, `handle` matches by
+ * `account` matches events stored with that `sender` (and refuses `received: true`,
+ * so received transactions written from `IndexerAccountAdapter` must be read by
+ * `module`, `handle`, or transaction lookup), `handle` matches by
  * `creationNumber` against each event's stored `guid`, and `resource` matches
  * changes `storeEvents` stored with that address, so none an older release
  * stored without one. Changes stored with an address match no other kind.
+ *
+ * Empty fetches keep `nextCursor` at the last match, so a quiet follower fails
+ * with status 410 `StreamdNetworkError` once `prune` passes that cursor and can
+ * restart from `fromVersion: "earliest"`.
  */
 export class StoreAdapter implements EventAdapter {
   private readonly db: SqliteDatabase;
