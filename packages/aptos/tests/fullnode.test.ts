@@ -1440,6 +1440,7 @@ describe("FullnodeScanAdapter view", () => {
       const err = await adapter.view(request as never, version as never).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(StreamdError);
       expect(err).not.toBeInstanceOf(StreamdNetworkError);
+      expect((err as { aborted?: boolean }).aborted).toBe(false);
     }
     expect(calls).toHaveLength(0);
   });
@@ -1536,6 +1537,7 @@ describe("FullnodeScanAdapter view", () => {
     const err = await adapter.view({ function: BALANCE, functionArguments: circular }, 1n).catch((e: Error) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as { aborted?: boolean }).aborted).toBe(false);
     expect((err as Error).message).toContain("JSON-serialisable");
     expect(calls).toHaveLength(1);
   });

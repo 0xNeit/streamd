@@ -2,6 +2,7 @@ import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { testClient } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
 import { MemoryAdapter, RoutingAdapter, StreamdError, StreamdNetworkError } from "@streamd/core";
+import { activityDescriptor, activitySource } from "../src/activity.js";
 import { FullnodeScanAdapter } from "../src/fullnode.js";
 import { TRANSFER_DESCRIPTOR, formatAmount, transferSource } from "../src/transfers.js";
 import type { EventAdapter, FetchOptions, StreamdEvent, ViewRequest } from "@streamd/core";
@@ -828,6 +829,22 @@ describe("transfers with requestTimeout", () => {
       .catch((e: unknown) => e);
     expect(infoErr).toBeInstanceOf(StreamdError);
     expect(infoErr).not.toBeInstanceOf(StreamdNetworkError);
+    const callsBeforeBadCoin = viewCalls;
+
+    const badVersion = new MemoryAdapter([
+      { ...coin(9, 0, "Deposit", ALICE, "5"), version: 2n ** 64n },
+    ]);
+    const badAdapter: EventAdapter = {
+      fetchEvents: (d, o) => badVersion.fetchEvents(d, o),
+      view: (req, version) => fullnode.view(req, version),
+    };
+    const badErr = await transferSource(badAdapter, undefined, undefined, true)
+      .fetchEvents(TRANSFER_DESCRIPTOR, all)
+      .catch((e: unknown) => e);
+    expect(badErr).toBeInstanceOf(StreamdError);
+    expect(badErr).not.toBeInstanceOf(StreamdNetworkError);
+    expect((badErr as { aborted?: boolean }).aborted).toBe(false);
+    expect(viewCalls).toBe(callsBeforeBadCoin);
   });
 
   it("still falls back to version - 1 on a genuine FullnodeScanAdapter Move abort (web_framework_error + 4016)", async () => {
@@ -869,11 +886,10 @@ describe("transfers with requestTimeout", () => {
     };
     const records = await transfers(transferSource(adapter));
     expect(records).toEqual([{ at: "9:0", asset: APT, amount: 3n, from: ALICE, to: undefined }]);
-    expect(abortCalls).toContain(9n);
-    expect(abortCalls).toContain(8n);
+    expect(abortCalls).toEqual([9n, 8n, 9n, 8n]);
   });
 
-  it("fails instead of hiding tokens when a routed adapter lacks view", async () => {
+  it("fails instead of hiding tokens when a routed adapter lacks view or a module route", async () => {
     const routed = new RoutingAdapter({
       module: new MemoryAdapter([moved(4, 2, NFT, ALICE, BOB)]),
       default: withViews([]).adapter,
@@ -883,6 +899,17 @@ describe("transfers with requestTimeout", () => {
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
     expect((err as Error).message).toContain("does not run views");
+
+    const accountOnly = new RoutingAdapter({
+      account: new MemoryAdapter([moved(4, 2, NFT, ALICE, BOB)]),
+      handle: withViews([]).adapter,
+    });
+    const noModuleErr = await activitySource(accountOnly, async () => ALICE)
+      .fetchEvents(activityDescriptor(ALICE), all)
+      .catch((e: unknown) => e);
+    expect(noModuleErr).toBeInstanceOf(StreamdError);
+    expect(noModuleErr).not.toBeInstanceOf(StreamdNetworkError);
+    expect((noModuleErr as Error).message).toContain('No adapter configured for descriptor kind "module"');
   });
 
   it("retries malformed view address or metadata answers under maxErrors", async () => {
@@ -899,15 +926,15 @@ describe("transfers with requestTimeout", () => {
           return base.adapter.fetchEvents(d, o);
         },
         view: async (req, v, d) => {
-          if (kind === "metadata" && attempt === 1 && req.function.endsWith("::symbol")) return [7];
-          if (kind === "metadata" && attempt === 1 && req.function.endsWith("::decimals")) return [8];
+          if (req.function.endsWith("::symbol")) return attempt === 1 ? [7] : ["APT"];
+          if (req.function.endsWith("::decimals")) return [8];
           return base.adapter.view!(req, v, d);
         },
       };
       const errors: unknown[] = [];
       const client = testClient({ adapter });
       const record = await new Promise<StreamdEvent<Transfer>>((resolve, reject) => {
-        client.transfers(resolve, {
+        const sub = client.transfers(resolve, {
           fromVersion: 0n,
           pollInterval: 1,
           maxBackoff: 1,
@@ -915,12 +942,13 @@ describe("transfers with requestTimeout", () => {
           withAssetInfo: kind === "metadata",
           onError: (err) => {
             errors.push(err);
-            if (errors.length > 1) reject(err);
+            if (!sub.active || errors.length > 1) reject(err);
           },
         });
       });
       client.destroy();
       expect(record.data.amount).toBe(7n);
+      if (kind === "metadata") expect(record.data).toMatchObject({ symbol: "APT", decimals: 8 });
       expect(errors).toHaveLength(1);
     }
   });

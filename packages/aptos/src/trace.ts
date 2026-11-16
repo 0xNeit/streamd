@@ -25,7 +25,9 @@ export interface WalkOptions {
 }
 
 /** Thrown by `countedAdapter` once the budget is spent; a caller's limit, so never retried. */
-export class TraceBudgetError extends StreamdError {}
+export class TraceBudgetError extends StreamdError {
+  readonly aborted = false;
+}
 
 // What a node read can call: the methods activitySource passes on, and the head read.
 const METHODS = ["fetchEvents", "getHeadVersion", "getEarliestVersion", "getBlock", "getBlockHeights", "view"] as const;

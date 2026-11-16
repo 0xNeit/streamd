@@ -456,16 +456,26 @@ export class FullnodeScanAdapter implements EventAdapter {
    * request and client config; the message still names the node URL.
    */
   async view(request: ViewRequest, ledgerVersion: bigint): Promise<unknown[]> {
-    const { function: fn, typeArguments = [], functionArguments = [] } = requireViewRequest(request);
-    const version = requireLedgerVersion(ledgerVersion);
+    let fn: ViewRequest["function"];
+    let typeArguments: readonly string[];
+    let version: bigint;
     let args: never[];
     try {
-      // JSON has no bigint; Move takes u64 and wider as decimal strings.
-      args = JSON.parse(
-        JSON.stringify(functionArguments, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v)),
-      ) as never[];
-    } catch {
-      throw new StreamdError(`functionArguments for ${fn} must be JSON-serialisable`);
+      const checked = requireViewRequest(request);
+      fn = checked.function;
+      typeArguments = checked.typeArguments ?? [];
+      version = requireLedgerVersion(ledgerVersion);
+      try {
+        // JSON has no bigint; Move takes u64 and wider as decimal strings.
+        args = JSON.parse(
+          JSON.stringify(checked.functionArguments ?? [], (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v)),
+        ) as never[];
+      } catch {
+        throw new StreamdError(`functionArguments for ${fn} must be JSON-serialisable`);
+      }
+    } catch (err) {
+      if (err instanceof StreamdError) Object.assign(err, { aborted: false });
+      throw err;
     }
     try {
       return await this.aptos.viewJson({

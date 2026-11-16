@@ -156,7 +156,7 @@ function isViewAbort(err: unknown): boolean {
     err instanceof StreamdError &&
     !(err instanceof StreamdNetworkError) &&
     (err as { aborted?: boolean }).aborted !== false &&
-    !/does not run views|to run a view/.test(err.message)
+    !/does not run views|to run a view|No adapter configured|event types span routes/.test(err.message)
   );
 }
 
