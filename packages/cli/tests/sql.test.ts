@@ -102,7 +102,7 @@ describe("generateEventTypes sql", () => {
     ]);
   });
 
-  it("names tables <module>_<struct> in snake case, whatever else is generated", async () => {
+  it("names tables <module>_<struct> in snake case, unchanged by generating other names", async () => {
     const one = module(DEX, "pool_v3", [struct("SwapEventV3", [], true), struct("FAEvent", [], true)]);
     expect((await tablesOf([one])).map((t) => t.table)).toEqual(["pool_v3_fa_event", "pool_v3_swap_event_v3"]);
     const more = await tablesOf([one, module(OTHER, "router", [struct("Swapped", [], true)])]);
@@ -132,6 +132,16 @@ describe("generateEventTypes sql", () => {
     // Hashed names are stable across runs.
     const again = await tablesOf([module(OTHER, "dex", [struct("Swap", [], true)]), module("0xcafe0", "dex", [struct("Swap", [], true)])]);
     expect(again.map((t) => t.table).sort()).toEqual(names.slice(0, 2).sort());
+  });
+
+  it("hashes again when stepping a 63-byte column name would pass the limit", async () => {
+    const long = "a".repeat(63);
+    const tables = await tablesOf([module(DEX, "w", [struct("Wide", [[long, "u8"], [long.toUpperCase(), "u8"], [`${long.slice(0, 62)}B`, "u8"]], true)])]);
+    const names = tables[0]!.columns.map((c) => c.name);
+    expect(names[0]).toBe(long);
+    expect(new Set(names).size).toBe(3);
+    for (const name of names) expect(name.length).toBeLessThanOrEqual(63);
+    expect(names[1]).toMatch(/^a{54}_[0-9a-f]{8}$/);
   });
 
   it("steps around Postgres's pg_ prefix and writes empty lists for a module with no events", async () => {

@@ -92,7 +92,8 @@ function tableNames(targets: TableTarget[]): string[] {
 function columnName(field: string, taken: Set<string>): string {
   let name = field.toLowerCase();
   if (name.length > MAX_NAME) name = shortened(name, field);
-  while (taken.has(name)) name = name.length < MAX_NAME ? `${name}_` : shortened(`${name}_`, `${field}:${taken.size}`);
+  // Past 63 bytes, each attempt hashes a new key, so a name chosen to collide with one cannot repeat it.
+  for (let n = 0; taken.has(name); n++) name = name.length < MAX_NAME ? `${name}_` : shortened(field.toLowerCase(), `${field}:${n}`);
   taken.add(name);
   return name;
 }

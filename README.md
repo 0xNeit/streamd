@@ -5221,7 +5221,7 @@ storeTables(streamd, new SqliteEventStore(new Database("events.db")), streamdTab
   `event_index`, `transaction_hash` (hex lowercased), `timestamp` (microseconds), `sender` (long
   form), and for a generic event `type_arguments`, the text inside its type's outer `<...>`. A
   field that would collide with one of them, with an earlier field or with a Postgres system
-  column (`xmin`, `ctid` and the like) gets `_` appended (`timestamp_`). The key is `(version, event_index)`, and a redelivered event replaces its row.
+  column (`xmin`, `ctid` and the like) gets `_` appended (`timestamp_`), or, at 63 bytes, a hash. The key is `(version, event_index)`, and a redelivered event replaces its row.
 - **Nothing is lossy.** Integers wider than 32 bits are exact decimal text on SQLite, so compare
   them as numbers with care (`CAST` reads past 2^63 as a float), and `numeric` on Postgres.
   Postgres `text` and `jsonb` cannot hold NUL or a lone surrogate, which become U+FFFD there.
