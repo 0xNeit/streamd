@@ -463,6 +463,19 @@ describe("parseCommand codegen", () => {
     expect(parseCommand(["codegen", "0x1::coin"])).not.toMatchObject({ options: { validators: true } });
   });
 
+  it("takes --arbitraries on both chains and beside --check", () => {
+    expect(parseCommand(["codegen", "--arbitraries", "0x1::coin"])).toMatchObject({ options: { arbitraries: true } });
+    expect(parseCommand(["codegen", "0x1::coin"])).not.toMatchObject({ options: { arbitraries: true } });
+    expect(parseCommand(["codegen", "--chain", "sui", "--arbitraries", "--validators", "0x2::kiosk"])).toEqual({
+      command: "codegen",
+      options: { chain: "sui", modules: [{ address: "0x2", module: "kiosk" }], network: "mainnet", validators: true, arbitraries: true },
+    });
+    expect(parseCommand(["codegen", "--check", "--out", "events.ts", "--arbitraries", "0x1"])).toEqual({
+      command: "codegen",
+      options: { modules: [{ address: ADDR }], network: "mainnet", out: "events.ts", arbitraries: true, check: true },
+    });
+  });
+
   it("takes --check with --out, beside the other flags", () => {
     expect(parseCommand(["codegen", "--check", "--out", "events.ts", "--validators", "0x1"])).toEqual({
       command: "codegen",

@@ -5128,6 +5128,44 @@ already through `decode` passes. Extra fields pass, so an upgraded module's new 
 break old checks, and values of a type parameter are not checked. It checks shape, not
 identity: two event types with the same fields pass each other's check.
 
+`--arbitraries` also writes an `arbitrary<Type>(rng)` generator for every generated type,
+returning a random value in the JSON form the node reports, with no dependencies. Use them to
+fill a `MemoryAdapter` with thousands of valid events for a property test:
+
+```ts
+import { MemoryAdapter, StreamdClient } from "@streamd/core";
+import { arbitraryFungibleAsset_Deposit, FungibleAsset_Deposit, streamdEvent, streamdRng } from "./events.js";
+
+const rng = streamdRng(42); // the same seed gives the same events on every run
+const events = Array.from({ length: 1000 }, (_, i) =>
+  streamdEvent(FungibleAsset_Deposit, arbitraryFungibleAsset_Deposit(rng), BigInt(i + 1)),
+);
+const client = new StreamdClient({ adapter: new MemoryAdapter(events) });
+const deposits = await client.getEvents(FungibleAsset_Deposit, { fromVersion: 0n });
+```
+
+- **`streamdRng(seed)`** is a seeded mulberry32, a `StreamdRng`: a function returning a uint32
+  per call. Any function with that contract works in its place.
+- **A generic type's generator takes one generator per type parameter** after `rng`, each
+  `(rng) => T`, so `arbitraryCoin_Deposit(rng, myGenerator)` or another `arbitrary<Type>`
+  fills its `T0` fields. A phantom parameter still takes one, so the arity matches the type.
+- **`streamdEvent(descriptor, data, version, eventIndex = 0)`** builds a `StreamdEvent` of the
+  descriptor's one event type, `sequenceNumber` `0n`; a descriptor over several types throws.
+  Give each event a distinct `(version, eventIndex)`, since `MemoryAdapter` keys them on it.
+- **Values follow the table below:** integers in range as numbers or decimal strings,
+  addresses in lowercase hex with leading zeros dropped (`0x1`, and 63 digits one time in
+  sixteen, as the fullnode writes them), `vector<u8>` as `0x` hex, `Option` as `{ vec: [] }` or
+  `{ vec: [x] }`, enums one variant chosen uniformly. With `--chain sui`, addresses and object
+  ids are long form, bytes base64 and options `null` or the value.
+- **Edge values come up often:** a quarter of integers are their minimum, maximum, `0` or `1`,
+  and the rest vary in magnitude; a quarter of vectors, byte vectors and strings are empty, and
+  half of options are none. Strings include multi-byte characters.
+- **Sizes are bounded:** vectors hold 0 to 4 elements and byte vectors 0 to 32 bytes. Move
+  allows no recursive types, so every value is finite.
+- Every generated value passes the `--validators` check of its type. A struct named
+  `StreamdRng`, `StreamdEvent` or `ModuleEventDescriptor` is refused, since the generated file
+  uses those names.
+
 A bare address covers every module published there, skipping the ones with no `#[event]` struct,
 event handle or `#[view]` function, and mixes with named modules:
 

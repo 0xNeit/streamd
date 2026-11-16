@@ -245,6 +245,8 @@ export interface CodegenOptions extends Endpoint {
   out?: string;
   /** Also write an `is<Type>` runtime check per generated type. */
   validators?: boolean;
+  /** Also write an `arbitrary<Type>` random payload generator per generated type. */
+  arbitraries?: boolean;
   /** Compare with `out` instead of writing it; set only with `out`. */
   check?: boolean;
 }
@@ -475,6 +477,7 @@ const CODEGEN_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   out: { type: "string" },
   validators: { type: "boolean" },
+  arbitraries: { type: "boolean" },
   check: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -518,7 +521,7 @@ export const USAGE = `Usage:
   streamd name <name | address>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] [--cache <file>] <eventType>...
-  streamd codegen [--out <file> [--check]] [--validators] (<address> | <address>::<module>)...
+  streamd codegen [--out <file> [--check]] [--validators] [--arbitraries] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
   streamd monitor --node-url <url> --node-url <url>... [options] [<eventType>...]
 
@@ -653,6 +656,8 @@ Options:
                          reads made outside the adapter, such as name lookups and inspect's
                          resource reads, are not counted
   --validators           codegen: also write an is<Type> runtime check per type
+  --arbitraries          codegen: also write an arbitrary<Type>(rng) random payload generator
+                         per type, a seeded streamdRng and streamdEvent for MemoryAdapter
   --check                codegen: compare with the --out file, writing nothing; exit 1 if
                          it differs or is missing, naming the first line that differs
   --chain <name>         aptos or sui (default: aptos); with sui, --network is mainnet,
@@ -1537,6 +1542,7 @@ function parseCodegen(args: string[]): ParsedCommand {
     options.out = values.out;
   }
   if (values.validators) options.validators = true;
+  if (values.arbitraries) options.arbitraries = true;
   if (values.check) {
     if (options.out === undefined) throw new UsageError("--check needs --out <file> to compare with");
     options.check = true;
