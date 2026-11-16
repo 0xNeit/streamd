@@ -295,6 +295,18 @@ describe("package manifests and tarballs", () => {
       });
       expect(nestedNpm.exitCode).toBe(1);
       expect(new TextDecoder().decode(nestedNpm.stderr)).toContain("bun publish");
+
+      const winBun = Bun.spawnSync(["bun", "run", "prepublishOnly"], {
+        cwd,
+        env: {
+          ...cleanEnv,
+          npm_config_user_agent: "bun/1.4.3 npm/? node/v24.3.0 win32 x64",
+          npm_execpath: "C:\\Users\\runner\\.bun\\bin\\bun.exe",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(winBun.exitCode).toBe(0);
     }
   });
 
