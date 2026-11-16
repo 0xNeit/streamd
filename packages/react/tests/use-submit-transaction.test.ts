@@ -393,6 +393,34 @@ describe("useSubmitTransaction", () => {
       await unmount(root);
     });
 
+    it("reset in the same tick as submit calls neither the preview nor the wallet", async () => {
+      for (const preview of [true, false]) {
+        const t = setup();
+        const root = await render(t.el({ preview }));
+        const promise = t.last().submit(TX);
+        t.last().reset();
+        expect((await promise).status).toBe("idle");
+        expect(t.simulations).toEqual([]);
+        expect(t.signed).toEqual([]);
+        await unmount(root);
+      }
+    });
+
+    it("a run hidden after submitting keeps its hash, as failed", async () => {
+      const t = setup();
+      const shown = (mode: "visible" | "hidden") => createElement(Activity, { mode, children: t.el() });
+      const root = await render(shown("visible"));
+      t.hold("lookup");
+      t.last().submit(TX);
+      await waitFor(() => expect(t.last().status).toBe("confirming"));
+      await rerender(root, shown("hidden"));
+      await rerender(root, shown("visible"));
+      await waitFor(() => expect(t.last().status).toBe("failed"));
+      expect(t.last().hash).toBe(A);
+      expect(t.last().error!.message).toContain("hidden");
+      await unmount(root);
+    });
+
     it("a signAndSubmit that calls submit again still signs once", async () => {
       const t = setup();
       let again: Promise<unknown> | undefined;

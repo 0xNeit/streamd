@@ -65,7 +65,7 @@ export interface UseSubmitTransactionResult<TTransaction, TData> extends SubmitT
   /**
    * Preview, sign and confirm `transaction`. Resolves with the run's final
    * state and never rejects; while a run is going, returns its promise and
-   * starts nothing.
+   * starts nothing, so a `signAndSubmit` must not await it.
    */
   submit: (transaction: TTransaction) => Promise<SubmitTransactionState<TData>>;
   /** Abandon any run and return to `idle`. A transaction already submitted stays submitted. */
@@ -130,10 +130,15 @@ export function useSubmitTransaction<TTransaction, TData = unknown>(
   }, [abandon]);
 
   // Also runs when <Activity> hides the component, keeping its state: a run cut short there
-  // must not stay shown as in progress.
+  // must not stay shown as in progress, nor hide a hash already submitted.
   useEffect(
     () => () => {
-      if (abandon()) setState(idle<TData>());
+      if (!abandon()) return;
+      setState((shown) =>
+        shown.hash === undefined
+          ? idle<TData>()
+          : { ...shown, status: "failed", error: new StreamdError("Stopped waiting for the transaction: the component was hidden") },
+      );
     },
     [abandon],
   );
@@ -150,6 +155,7 @@ async function run<TTransaction, TData>(
 ): Promise<SubmitTransactionState<TData>> {
   const { descriptor, decode, where, timeout } = options;
   let state = idle<TData>();
+  if (signal.aborted) return state;
   const step = (patch: Partial<SubmitTransactionState<TData>>) => {
     state = { ...state, ...patch };
     if (!signal.aborted) publish(state);

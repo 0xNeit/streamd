@@ -3811,11 +3811,13 @@ function Feed() {
     reason as `previewError`; `preview: false` skips the simulation.
   - **One run at a time.** `submit` and `reset` are the same functions on every render, and
     `submit` resolves with the run's final state and never rejects. Calling it while a run is
-    going starts nothing and returns that run's promise, so a double click signs once.
+    going starts nothing and returns that run's promise, so a double click signs once (and a
+    `signAndSubmit` must not await `submit`, which would wait on itself).
   - **Unmount or `reset()`** abandons the run: the signal given to `signAndSubmit` and
     `eventsOf` aborts, a run still previewing never reaches `signAndSubmit`, and no state is set
-    afterwards. `reset()` returns to `"idle"`, and so does a run cut short by an `<Activity>`
-    hiding the component. A transaction already submitted stays submitted, and a wallet prompt
+    afterwards. `reset()` returns to `"idle"`. A run cut short by an `<Activity>` hiding the
+    component returns to `"idle"` too, or, once the wallet has returned a hash, to `"failed"`
+    keeping that `hash`, so a submitted transaction stays visible. A transaction already submitted stays submitted, and a wallet prompt
     already open can still be approved unless your `signAndSubmit` honours the signal; the
     abandoned run's promise still resolves, with its `hash` if the wallet returned one.
   - It takes `descriptor`, `decode`, `where` and `timeout`, read when `submit` is called and
