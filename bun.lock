@@ -35,6 +35,7 @@
         "@streamd/store-postgres": "workspace:*",
         "@streamd/store-sqlite": "workspace:*",
         "@streamd/sui": "workspace:*",
+        "@streamd/testing": "workspace:*",
       },
       "devDependencies": {
         "@aptos-labs/ts-sdk": "^6.3.1",
