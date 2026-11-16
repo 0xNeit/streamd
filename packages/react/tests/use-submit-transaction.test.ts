@@ -1,6 +1,6 @@
 import "./dom.js";
 import { describe, expect, it } from "bun:test";
-import { createElement } from "react";
+import { StrictMode, createElement } from "react";
 import {
   MemoryAdapter,
   StreamdError,
@@ -20,7 +20,7 @@ import {
   type UseSubmitTransactionResult,
 } from "../src/index.js";
 import { OTHER, TYPE, ev } from "./fixtures.js";
-import { render, unmount, waitFor } from "./render.js";
+import { render, rerender, unmount, waitFor } from "./render.js";
 
 const A = `0x${"a".repeat(64)}`;
 const FAILED = `0x${"c".repeat(64)}`;
@@ -57,14 +57,22 @@ function setup() {
     },
   };
   const client = new AptosClient({ adapter, aptos: new AptosConfig({ network: Network.DEVNET, clientConfig: { http2: false } }) });
+  const signals: AbortSignal[] = [];
+  const eventsOf = client.eventsOf.bind(client);
+  client.eventsOf = ((h: string, d: undefined, o: { signal?: AbortSignal }) => {
+    signals.push(o.signal!);
+    return eventsOf(h, d, o);
+  }) as typeof client.eventsOf;
   const signed: Tx[] = [];
+  const walletSignals: AbortSignal[] = [];
   let answer: () => Promise<SubmittedTransaction> = async () => A;
   const results: UseSubmitTransactionResult<Tx, unknown>[] = [];
   function Sender({ options }: { options?: Partial<UseSubmitTransactionOptions<Tx>> }) {
     results.push(
       useSubmitTransaction<Tx>({
-        signAndSubmit: (tx) => {
+        signAndSubmit: (tx, { signal }) => {
           signed.push(tx);
+          walletSignals.push(signal);
           return answer();
         },
         ...options,
@@ -78,6 +86,8 @@ function setup() {
     client,
     simulations,
     signed,
+    signals,
+    walletSignals,
     results,
     el,
     last: () => results.at(-1)!,
@@ -264,5 +274,98 @@ describe("useSubmitTransaction", () => {
     expect(errors[0]).toBeInstanceOf(StreamdError);
     expect((errors[0] as Error).message).toContain("previewEvents");
     await unmount(again);
+  });
+
+  describe("lifetime", () => {
+    it("ignores a second submit while one runs, signing once", async () => {
+      const t = setup();
+      const root = await render(t.el());
+      const release = t.hold("lookup");
+      const first = t.last().submit(TX);
+      const second = t.last().submit({ rawTransaction: {} });
+      expect(second).toBe(first);
+      release();
+      expect((await first).status).toBe("confirmed");
+      expect(t.signed).toEqual([TX]);
+      const third = await submitted(t);
+      expect(third.status).toBe("confirmed");
+      expect(t.signed).toHaveLength(2);
+      await unmount(root);
+    });
+
+    it("never signs when unmounted during the preview", async () => {
+      const t = setup();
+      const root = await render(t.el());
+      const release = t.hold("simulation");
+      const promise = t.last().submit(TX);
+      await waitFor(() => expect(t.last().status).toBe("previewing"));
+      const renders = t.results.length;
+      await unmount(root);
+      release();
+      const final = await promise;
+      expect(final.status).toBe("previewing");
+      expect(t.signed).toEqual([]);
+      expect(t.results.length).toBe(renders);
+    });
+
+    it("aborts the wait when unmounted while confirming, still resolving with the hash", async () => {
+      const t = setup();
+      const root = await render(t.el());
+      t.hold("lookup");
+      const promise = t.last().submit(TX);
+      await waitFor(() => expect(t.last().status).toBe("confirming"));
+      const renders = t.results.length;
+      await unmount(root);
+      expect(t.signals[0]!.aborted).toBe(true);
+      expect(t.walletSignals[0]!.aborted).toBe(true);
+      const final = await promise;
+      expect(final.status).toBe("confirming");
+      expect(final.hash).toBe(A);
+      expect(t.results.length).toBe(renders);
+    });
+
+    it("keeps a hash the wallet returns after unmount, without waiting for it", async () => {
+      const t = setup();
+      let releaseWallet!: () => void;
+      t.answer(() => new Promise((r) => (releaseWallet = () => r({ hash: A }))));
+      const root = await render(t.el());
+      const promise = t.last().submit(TX);
+      await waitFor(() => expect(t.last().status).toBe("signing"));
+      await unmount(root);
+      releaseWallet();
+      const final = await promise;
+      expect(final).toMatchObject({ status: "confirming", hash: A });
+      expect(t.signals).toEqual([]);
+    });
+
+    it("reset abandons a run, returns to idle and ignores the abandoned result", async () => {
+      const t = setup();
+      const root = await render(t.el());
+      const release = t.hold("lookup");
+      const abandoned = t.last().submit(TX);
+      await waitFor(() => expect(t.last().status).toBe("confirming"));
+      t.last().reset();
+      await waitFor(() => expect(t.last().status).toBe("idle"));
+      expect(t.signals[0]!.aborted).toBe(true);
+      expect(t.last().hash).toBeUndefined();
+      release();
+      expect((await abandoned).status).toBe("confirming");
+      const next = await submitted(t);
+      expect(next.status).toBe("confirmed");
+      expect(t.last().status).toBe("confirmed");
+      await unmount(root);
+    });
+
+    it("keeps submit and reset stable across renders, and reads options at submit time", async () => {
+      const t = setup();
+      const root = await render(createElement(StrictMode, null, t.el()));
+      const { submit, reset } = t.last();
+      await rerender(root, createElement(StrictMode, null, t.el({ descriptor: { kind: "module", eventType: OTHER } })));
+      expect(t.last().submit).toBe(submit);
+      expect(t.last().reset).toBe(reset);
+      const final = await submitted(t);
+      expect(final.events!.map((e) => e.type)).toEqual([OTHER]);
+      await unmount(root);
+    });
   });
 });
