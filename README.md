@@ -54,9 +54,15 @@ TypeScript types:
 - `@streamd/sui` (`packages/sui`) - `SuiClient` and `SuiAdapter`, the same client over Sui events,
   Sui network presets, and `resolveName`, `primaryName` and `ownedBy` over SuiNS and object owners, with
   a `./framework` catalog of `0x2` and `0x3` events. `@mysten/sui` is a peer dependency. See [Sui](#sui).
-- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
-  `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents` and `useTransfers` take an
-  `AptosClient`. See [React hooks](#react-hooks).
+- `@streamd/testing` (`packages/testing`) - start or attach to an Aptos localnet, publish Move
+  packages to it and assert their events. Needs the `aptos` CLI. See
+  [Test against a localnet](#test-against-a-localnet).
+- `@streamd/receiver` (`packages/receiver`) - receive `streamd forward` webhooks: the signature
+  checked, the events parsed and repeats dropped. See
+  [Forward events to a webhook](#forward-events-to-a-webhook).
+- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
+  `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents`, `useSubmitTransaction` and
+  `useTransfers` take an `AptosClient`. See [React hooks](#react-hooks).
 
 ## Usage
 
@@ -740,6 +746,65 @@ transaction exactly as `eventsOf()` does and rejects as it does: a failed transa
 Nothing is looked up until an assertion runs. A malformed hash or `timeout` throws from
 `expectEvents()` itself.
 
+### Test against a localnet
+
+`@streamd/testing` starts an Aptos localnet with the installed `aptos` CLI, publishes a Move
+package to it, and gives you an `AptosClient` on it for `expectEvents`:
+
+```ts
+import { startLocalnet } from "@streamd/testing";
+
+await using localnet = await startLocalnet();
+const account = await localnet.fundedAccount();
+const me = account.accountAddress.toString();
+await localnet.publish("./move/counter", { account, namedAddresses: { counter: me } });
+
+const transaction = await localnet.aptos.transaction.build.simple({
+  sender: account.accountAddress,
+  data: { function: `${me}::counter::bump`, functionArguments: [42] },
+});
+const { hash } = await localnet.aptos.signAndSubmitTransaction({ signer: account, transaction });
+await localnet.client.expectEvents(hash).toEmit({ kind: "module", eventType: `${me}::counter::Bumped` });
+```
+
+- **Start.** `startLocalnet(options?)` runs `aptos node run-localnet` with no Docker, no
+  transaction stream and no Indexer, in a fresh temporary directory, and resolves once the node
+  and faucet are ready (about 16 s on an M-series Mac; `readyTimeout`, default 60000 ms). `cli`
+  names the binary when it is not `aptos` on `PATH`; a missing one rejects with a `StreamdError`
+  saying so. A node that exits first rejects with its last output lines, and one not ready in
+  time is killed and rejects with `StreamdTimeoutError`.
+- **Ports.** Each instance takes eight loopback ports, so several run at once: the ready server,
+  REST API, faucet, inspection, admin, backup service, and the validator and public network
+  listeners. They are free ports the OS picks, or eight consecutive from `basePort`, each checked
+  free first, and `localnet.ports` lists them. A start refuses a ready port something already
+  answers on, so it never hands back another process's node. The node also opens two random ports of its own, one on every
+  interface.
+- **Attach.** `attachLocalnet({ nodeUrl, faucetUrl? })` uses a node already running, such as
+  `http://127.0.0.1:8080/v1`; it reads the ledger once so an unreachable node fails at once, and
+  `stop()` leaves that node running.
+- **The client.** `localnet.client` is an `AptosClient` on `localnet.aptos` (an `Aptos` on
+  `Network.LOCAL` with `http2: false`). It polls every 100 ms, so `eventsOf` and `expectEvents`
+  see a commit within about 100 ms; the `client` option takes any other `AptosClient` config,
+  `defaultPollInterval` or `defaults.pollInterval` included.
+  A localnet has no Aptos names, so `withNames` is refused there.
+- **Accounts.** `fundedAccount(amount?)` generates an account and funds it through the faucet,
+  10 APT by default, enough for the SDK's default gas limit.
+- **Publish.** `publish(packageDir, { account, namedAddresses? })` compiles with
+  `aptos move build-publish-payload` and submits `0x1::code::publish_package_txn` from
+  `account` through the SDK, resolving `{ transactionHash, version }` once committed. A compile
+  failure rejects with the compiler's output, a failed transaction with
+  `StreamdTransactionError`. Named addresses must be addresses, not names. The CLI writes
+  `build/` inside the package; compiles of one package from one process run one at a time.
+- **Staying offline.** The compile passes `--skip-fetch-latest-git-deps`, so a framework
+  dependency resolves from the CLI's own cache when its `rev` is the CLI's release tag, such as
+  `rev = "aptos-cli-v9.4.0"` for CLI 9.4.0. Another `rev` is fetched from GitHub on first use.
+- **Stop.** `stop()` (or `await using`) destroys the client, sends the node SIGINT, kills it after
+  20 s, and removes its directory. Call it in a `finally` or `afterAll`, or use `await using`:
+  the node is also killed if the process exits normally while it runs, but not when the process
+  is killed by a signal, and `bun test` does not run that hook for a failed test either.
+- **Its own test.** `bun run test:localnet` in `packages/testing` starts two localnets side by
+  side and asserts a published package's events on each; the normal test run skips it.
+
 ### Preview a transaction's events before signing
 
 ```ts
@@ -838,7 +903,7 @@ const preview = await streamd.explain(await aptos.transaction.build.simple({ sen
   of first appearance and each account's assets in theirs, zero nets left out. `symbol` and `decimals` are read by view unless
   `withAssetInfo: false`.
 - **Swaps and sales.** Decoded from the same events as `swaps()` and `sales()` decode them.
-- **Names.** `withNames` (mainnet and a localnet) adds `names`: the primary name or `null`
+- **Names.** `withNames` (mainnet only) adds `names`: the primary name or `null`
   of the sender, the fee payer, every transfer's `from` and `to` and every sale's buyer and
   seller, through the client's name cache.
 - **Simulations.** The node simulates on top of its newest state at a version not yet
@@ -1778,9 +1843,10 @@ for (const e of deposits) console.log(e.senderName ?? e.sender);
   counting toward `maxErrors`. A name is cosmetic, but quietly leaving it off would make
   "absent" mean two things, and every later event from that sender would try again at once
   rather than back off from a node that is rate-limiting.
-- **Networks.** `AptosClient` serves names on mainnet and a localnet. On testnet, devnet and
+- **Networks.** `AptosClient` serves names on mainnet. On testnet, devnet, a localnet and
   custom networks such as the Movement presets, `withNames` is refused at the call with a
-  `StreamdError`. A plain `StreamdClient` refuses it too: it has no name service.
+  `StreamdError`. A localnet has no ANS published, so every lookup would fail. A plain
+  `StreamdClient` refuses it too: it has no name service.
 - **Sui.** `SuiClient` serves SuiNS primary names the same way, through `@streamd/sui`'s
   `primaryName`.
 
@@ -1916,6 +1982,84 @@ const sub = streamd.activity("0x1234...", ({ data }) => console.log(data.transfe
   fee statement.
 - **Not here.** Whether the transaction succeeded is not on the entry. An activity subscription is not a listener for `off()` or
   `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+
+## Fund-flow tracing
+
+`trace(address, options?)` follows the funds around an address for a few hops and resolves a
+counterparty graph: every address reached, and every transfer between them summed per
+sender, receiver and asset. `tracePath(graph, from, to)` reads the shortest chain of
+transfers from one address to another out of that graph.
+
+```ts
+import { RoutingAdapter } from "@streamd/core";
+import { AptosClient, FullnodeScanAdapter, IndexerAccountAdapter, tracePath } from "@streamd/aptos";
+
+const streamd = new AptosClient({
+  aptos,
+  adapter: new RoutingAdapter({
+    account: new IndexerAccountAdapter(aptos, { apiKey: process.env.APTOS_API_KEY }),
+    default: new FullnodeScanAdapter(aptos),
+  }),
+});
+
+const graph = await streamd.trace("0x1234...", {
+  hops: 2,
+  fromVersion: -1_000_000n,
+  minAmount: 1_000_000n,
+  stop: ["0x5678..."], // an exchange: kept as a node, never expanded
+});
+for (const { from, to, asset, amount, transfers } of graph.edges) console.log(from, to, asset, amount, transfers);
+
+const path = tracePath(graph, "0x1234...", "0x9abc...");
+```
+
+- **The walk.** Breadth first from `address` (an address or Aptos name, resolved once). Each
+  node within `hops` (default 1, at most 6) is read once, one node at a time, as
+  `getActivity` reads it: every transaction it sent or received, with the `Transfer` records
+  it took part in, built and paired as `transfers()` builds them. Each counterparty joins at
+  the next hop. `direction` follows what a node sent (`"out"`), received (`"in"`) or both, the
+  default.
+- **The graph.** `nodes` are `TraceNode { address, hop, expanded }` in the order they joined;
+  `expanded` is false for a node at the hop cap, on the `stop` list, or not reached before the
+  walk stopped. `edges` are `TraceEdge { from, to, asset, amount, transfers, firstVersion,
+  lastVersion }`, one per sender, receiver and asset, `amount` the exact `bigint` sum in base
+  units. A transfer read from both of its ends counts once. A transfer with no `from` or no
+  `to` (a lone withdraw or deposit), or to the same address, makes no edge. Addresses are long
+  form, and assets are in `Transfer.asset`'s form, so APT as a coin and as the fungible asset
+  `0xa` are separate edges.
+- **Narrowing.** `minAmount` ignores transfers below that many base units, whatever their
+  asset, so pair it with `asset` (any form `transfers()` takes) to make it mean one unit.
+  `stop` and `target` take addresses, not names.
+- **The range.** `fromVersion` and `toVersion` bound every node's read. `toVersion` defaults to
+  `"head"`, and the head is read once when the trace starts, as is the base of a negative
+  `fromVersion`, so every node is read over the same range. Reads start no earlier than the
+  fullnode's oldest version and stop at the Indexer's processed version, as for
+  `getActivity`.
+- **Bounds.** `maxNodes` (default 100) caps the graph, root included: the transfer that would
+  add one more node is left out and the walk ends. `maxRequests` (default 1000) caps adapter
+  calls, the head read, page reads and the views that resolve fungible stores alike, though
+  one page read on `IndexerAccountAdapter` is several HTTP requests (a listing, then one
+  fullnode read per transaction). The node being read when it runs out, in a page or in one
+  of its views, keeps `expanded: false` and its partial read is dropped.
+  `target` ends the walk as soon as that address joins. Whichever ended it is `stoppedBy`
+  (`"nodes"`, `"requests"` or `"target"`), absent when the walk ran to its end (stop-listed
+  nodes are never read either way), and
+  `requests` counts the calls made. `retries` and `signal` apply to the head read and to each node's
+  read as for `getEvents`, and any other failure rejects the trace.
+- **Paths.** `tracePath(graph, from, to)` follows edges in their direction and returns the
+  fewest edges from `from` to `to`, `[]` for the same address, or `undefined` when the graph
+  holds no such chain. It only knows the graph: a trace that stopped early, or a `minAmount`,
+  can hide a path that exists on chain.
+- **Source.** The client's adapter must serve an `account` descriptor with `received: true`:
+  `IndexerAccountAdapter` routed beside a fullnode, as above, since the fullnode alone sees
+  only transactions an account signed. The head and page reads take the client's
+  `maxConcurrentRequests` slots and `maxRequestsPerSecond` pacing; the store views run beside
+  them, up to 4 at a time and not paced, as for `transfers()`, and store metadata is read once
+  per trace. Each node's read costs calls in proportion to the transactions it made, so an
+  exchange or router left off `stop` can spend the whole budget and, as its partial read is
+  dropped, add nothing.
+- **Aptos only.** Over `getTransfers({ account })` every node would scan every transaction
+  in the range, so the walk stays on the account path. There is no `SuiClient.trace`.
 
 ## DEX swaps
 
@@ -2260,6 +2404,81 @@ const past = await streamd.getUpgrades("0x1", { fromVersion: 7454757100n, toVers
   `(version, eventIndex)`, `transactionHash`, `sender` and `entryFunction`; `where` and `limit`
   apply to records. Like `swaps()`, it is not a listener for `off()` or `listenerCount()`.
 
+## Object provenance
+
+`getProvenance(object, filter?)` returns the history of one Aptos object, a `0x4` token or any
+`0x1::object` object, as one record per transaction that touched it, and
+`provenance(object, callback, options?)` follows new ones. Each record's `data` is a
+`Provenance { object, success, actions, changes, properties?, names? }`:
+
+```ts
+import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { ArchiveFallbackAdapter } from "@streamd/core";
+import { AptosClient, FullnodeScanAdapter, networks } from "@streamd/aptos";
+
+const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET }));
+const archive = new Aptos(new AptosConfig(networks.aptosMainnetArchive));
+const streamd = new AptosClient({
+  aptos,
+  // Tokens minted long ago need the archive: the fullnode keeps only recent transactions.
+  adapter: new ArchiveFallbackAdapter(new FullnodeScanAdapter(aptos), new FullnodeScanAdapter(archive)),
+});
+
+for (const { version, data } of await streamd.getProvenance(token, { withNames: true })) {
+  for (const action of data.actions) {
+    if (action.kind === "transfer") console.log(version, data.names?.[action.from], "->", data.names?.[action.to]);
+    else console.log(version, action);
+  }
+}
+```
+
+- **Source.** The transactions come from the Aptos Indexer's `account_transactions` queried
+  with the object's address, the only public source that lists every transaction touching an
+  object, write-set-only changes included (the fullnode has no route by object). `indexer` takes
+  any `{ getHeadVersion, listTransactionVersions }`; by default it is an anonymous
+  `IndexerAccountAdapter` over the client's `aptos`. Each listed transaction is then read by
+  version through the adapter's `getTransactionEventsByVersion`, so `ArchiveFallbackAdapter`
+  answers the ones the fullnode pruned; without one, a pruned transaction rejects with its 410.
+- **Actions.** In event order: `mint` (`0x4::collection::Mint`, `MintEvent`,
+  `ConcurrentMintEvent`), `transfer` (`0x1::object::Transfer` and the legacy `TransferEvent`,
+  with `from` and `to`), `mutation` (`0x4::token::Mutation`, `0x4::collection::Mutation` and
+  their legacy handle events, with the field and its old and new values when the event has
+  them) and `burn` (`0x4::collection::Burn`, `BurnEvent`, `ConcurrentBurnEvent`), each kept only
+  when it names this object, then a bare `burn` when the transaction deleted the object (an
+  `ObjectCore` delete, or the `0x1::object::ObjectGroup` delete the fullnode reports when the
+  whole group goes) with no burn event.
+- **Changes and properties.** `changes` holds every resource the transaction wrote or deleted at
+  the object (`data` `null` on delete), so a record with no actions still says what it touched,
+  such as a fungible store's balance. An object's resources are one resource group, written
+  whole, so any write to the object lists all of them, unchanged ones included. `properties` is
+  the object's `PropertyMap` as the transaction left it, each value decoded from its BCS bytes
+  (integers as `bigint`); `0x4::property_map` emits no event, so a property changed where a
+  record's `properties` differs from the previous record's.
+- **Range.** `getProvenance` starts at version 0 unless `fromVersion`, `fromTime` or
+  `fromBlock` says otherwise, and ends at the Indexer's processed version, which trails the
+  fullnode by a few hundred versions; `provenance()` starts there and follows it. `limit`,
+  `where`, `toVersion` and the cursor work as for `getEvents`. `fromVersion: "earliest"` is
+  refused, since an archive behind the adapter serves every version. `orderBy: "desc"` walks the
+  whole range forward and keeps the tail, as for any adapter, so it reads every transaction in
+  the range however small `limit` is.
+- **Reads.** Each page is one Indexer listing of as many versions as the page size (the
+  query's or the subscription's `batchSize`, at most 100), then one fullnode read per version,
+  one at a time and outside `maxConcurrentRequests`. `requestTimeout` bounds the whole page, so
+  set it well above a page's worth of reads, archive reads included, or a page that cannot
+  finish in time is retried forever. A page given up on stops reading once the next page
+  starts. The anonymous Indexer and archive budgets are small, so an object with a long
+  history wants an API key on both. A version the node does not have yet fails the page as a
+  network error, which retries; a listing out of order or out of range fails it as invalid.
+- **Names.** Under `withNames`, `names` holds the primary name (`null` for none) of the sender
+  and every address in `actions`, through the client's name cache. Lookups the cache misses run
+  inside the page's slot, so `maxRequestsPerSecond` does not space them.
+- **Identity.** A record keeps the transaction's first event's `(version, eventIndex)`,
+  `transactionHash`, `sender`, `timestamp` and `entryFunction`, with `type`
+  `0x1::object::ObjectCore` whatever that event was. Like `activity()`, it is not a listener for
+  `off()` or `listenerCount()`.
+- **Not covered.** Legacy `0x3::token` tokens, which have no object address; transactions that
+  touch only an object this object owns, unless the Indexer lists them.
+
 ## Live balances
 
 `balances(address, options?)` keeps one wallet's balances current. `address` may be
@@ -2327,11 +2546,72 @@ const usdcThen = await streamd.balanceAt("alice.apt", usdc, 8038000000n);
 - **Aptos only.** Sui reads a balance only at its latest state, so `SuiClient` has no
   `balanceAt`.
 
+## Oracle prices
+
+`prices(feedId, callback, options?)` follows Pyth price updates for one feed or a list, and
+`priceAt(feedId, version)` reads the price a feed held at a ledger version. Both give a `Price`:
+
+Pyth's Aptos deployment is deprecated and has published no update since 2026-09-21, so these
+read history only: give `prices()` a past `fromVersion` or `fromTime` to replay updates, and
+use `priceAt` for a version before then. A follow from the head delivers nothing new.
+
+```ts
+const APT_USD = "0x03ae4db29ed4ae33d323568895aa00337e658e348b37509f5372ae51f0af00d5";
+const BTC_USD = "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
+
+const then = await streamd.priceAt(APT_USD, 7302080573n);
+// { oracle: "pyth", feedId: APT_USD, price: 77353341n, confidence: 152447n, exponent: -8,
+//   publishTime: 1790009897000000n, observedAt: 1790009907927720n, staleness: 10927720n }
+
+const sub = streamd.prices([APT_USD, BTC_USD], ({ data }) => {
+  if (data.staleness > 60_000_000n) return; // older than a minute when it landed
+  console.log(data.feedId, data.price, data.exponent);
+}, { fromVersion: 7302000000n });
+```
+
+- **Exact numbers.** The price is `price × 10^exponent`, both integers, so APT/USD above is
+  0.77353341. `confidence` is at the same exponent. Nothing is a float.
+- **Times are microseconds** since the Unix epoch, as `StreamdEvent.timestamp` is. Pyth
+  publishes seconds, scaled here. `observedAt` is the chain time the price was seen at, and
+  `staleness` is `observedAt - publishTime`, negative when Pyth's clock ran ahead of the chain's.
+- **Feed ids** are Pyth's 32-byte price ids, with or without `0x`, in any case; the record
+  carries them as `0x` and lowercase hex. Anything else is refused at the call.
+- **`prices()`** reads Pyth's one legacy event handle, which carries every feed's updates, and
+  keeps the feeds named. `observedAt` is the update's block time. With no `cursor`, `fromVersion`
+  or `fromTime` it starts one version below the head; `cursor` is the handle's sequence number. Like `swaps()`,
+  it is not a listener for `off()` or `listenerCount()`.
+- **`priceAt()`** reads Pyth's latest-price table at `version`, so it is the price a contract
+  calling Pyth would have read then, and `observedAt` is the time of the block holding
+  `version`. A feed with no entry then resolves `undefined`. It costs one table read and one
+  block read through the client's limiter and `requestTimeout`, with no retry, plus one read
+  of the table's handle per client.
+- **Errors.** A malformed feed id or version rejects before anything is sent. Pyth has no view
+  functions, so `priceAt` reads through the client's `aptos`, not the adapter, and an
+  `ArchiveFallbackAdapter` does not answer it: a version the fullnode has pruned rejects with its
+  `StreamdNetworkError`, `statusCode` 410, unless `aptos` points at
+  `https://archive.mainnet.aptoslabs.com/v1`. A version above the head rejects with 404.
+- **Pyth on Aptos is no longer updated.** Its last update on mainnet was at version 7302080573
+  (2026-09-21), and Pyth no longer lists Aptos among the chains it supports. History reads
+  as above, `priceAt` on any later version returns that last price with its staleness growing,
+  and a live `prices()` delivers nothing until updates resume.
+- **Switchboard is not read.** Neither of its Aptos packages has updated a price since
+  2026-08-29 (on-demand) or before the fullnode's retained window (v2).
+
 ## Data sources and their limits
 
 By default streamd reads from a fullnode with `FullnodeScanAdapter`:
 
-- **Handle events** use the dedicated fullnode endpoint. Exact and cheap.
+- **Handle events** use the dedicated fullnode endpoint. Exact and cheap. The endpoint pages
+  by sequence number and cannot seek by version, so a walk given `fromVersion` and no cursor
+  first reads the handle's resource at the version before it and starts at its `counter`, the
+  first event at or after `fromVersion`. A creation-number handle has no resource to read and
+  starts at sequence 0, as does a walk with no start at all, and one starting at the node's
+  oldest version (where `"earliest"` and an old `fromTime` resolve), whose predecessor it has
+  pruned. A `fromVersion` below the oldest version rejects with the node's 410. An
+  `ArchiveFallbackAdapter` answers that first page from the archive, but not the pages after
+  it, which the fullnode answers empty: route `handle` to the archive with `RoutingAdapter` to
+  walk pruned handle history, and pass `cursor` (a sequence number) rather than `fromVersion`
+  to start a busy handle's walk at a known point.
 - **Account events** walk that account's own transaction history. Cheap even
   far back, but only transactions the account sent; `IndexerAccountAdapter`
   (below) adds the ones it received.
@@ -3438,6 +3718,29 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
   first use, and `streamd_transfers` on the first transfer write or prune.
 
+### Typed event tables
+
+`storeTables(client, store, tables, { name })` follows every event type in `tables`, a generic
+one in every instantiation, and upserts each event into its own table, one column per field,
+with the subscription's cursor in the same transaction. `streamd codegen --sql sqlite` writes
+`tables` from the module ABIs ([Generate event types](#generate-event-types) has the mapping):
+
+```ts
+import { SqliteEventStore, storeTables } from "@streamd/store-sqlite";
+import { streamdTables } from "./events.js"; // streamd codegen --sql sqlite
+
+const sub = storeTables(streamd, new SqliteEventStore(db), streamdTables, { name: "fa", fromVersion: -10_000n });
+```
+
+It creates the tables before subscribing and keeps `storeEvents`'s rules: resume from the cursor
+saved under `tables:` and `name` (listed by `cursors()`, apart from any `storeEvents` cursor of
+the same name), save it again on first catching up, and end before the cursor moves when a write
+fails. An event whose value its column refuses (a `u16` out of range, a missing required field)
+is such a failure, named by table, column and event. `store.writeTables(tables, events,
+checkpoint)` writes one batch in a savepoint. `prune` and `stats` leave these tables alone. An
+upgraded module keeps its event structs' fields, so a table stays valid; an enum's new variant
+lands in `data`.
+
 ## Store events in Postgres
 
 `@streamd/store-postgres` does what `@streamd/store-sqlite` does, over a Postgres client you
@@ -3468,6 +3771,9 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   driver's array encoding matters and the parameter count is the same for any batch.
 - **No gaps, no duplicates,** as with SQLite: rows are keyed on `(version, eventIndex)`, a
   repeated write replaces its row, and the cursor moves only after its batch is stored.
+- **[Typed event tables](#typed-event-tables)** work the same, from `streamd codegen --sql
+  postgres`: `await storeTables(client, store, streamdTables, { name })`, each batch, every
+  table it touches and the cursor in one statement.
 - **Queryable.** `streamd_events` holds `version` (`numeric`, exact for every u64), `event_index`,
   `type`, `sender`, `guid_address`, `guid_creation`, `account_address`, `transaction_hash` and the event as the JSON text `serializeEvent`
   writes, so `SELECT event::jsonb->'data'->>'amount' FROM streamd_events WHERE type = '...'` works.
@@ -3658,6 +3964,44 @@ function Feed() {
   alone. It takes `eventsOf`'s options plus `descriptor`. Nothing from the previous hash is kept,
   and a `null` hash waits for nothing. It needs a client with `eventsOf`
   (`TransactionEventsClient`): an `AptosClient`, or a `SuiClient`, which takes a base58 digest.
+- **`useSubmitTransaction(options)`** sends a transaction and watches it land. `submit(transaction)`
+  simulates it through `client.previewEvents`, passes it to your `signAndSubmit(transaction,
+  { signal })`, then waits through `client.eventsOf`; the hook returns `{ status, preview,
+  previewError, hash, events, error, vmStatus, submit, reset }`. `status` goes `"idle"`,
+  `"previewing"`, `"signing"`, `"confirming"`, then `"confirmed"` or `"failed"`; a run never
+  throws or rejects.
+  A failed run sets `error` (the simulation, the wallet, the transaction or the wait) and, when
+  the chain reported one, `vmStatus`. `signAndSubmit` may resolve with a hash or an object with
+  `hash` (the Aptos wallet adapter, `PendingTransactionResponse`) or `digest` (Sui); anything
+  else fails the run.
+  - **A failed preview stops the run** before anything is signed, since the transaction would
+    most likely fail and still cost gas. `submitOnPreviewFailure: true` signs anyway and keeps the
+    reason as `previewError`; `preview: false` skips the simulation.
+  - **One run at a time.** `submit` and `reset` are the same functions on every render, and
+    `submit` resolves with the run's final state and never rejects. Calling it while a run is
+    going starts nothing and returns that run's promise, so a double click signs once (and a
+    `signAndSubmit` must not await `submit`, which would wait on itself).
+  - **Unmount, `reset()` or an `<Activity>` hiding the component** abandons the run: the signal given to `signAndSubmit` and
+    `eventsOf` aborts, and a run still previewing never reaches `signAndSubmit`. A transaction
+    already submitted stays submitted, and a wallet prompt already open can still be approved
+    unless your `signAndSubmit` honours the signal. `reset()` returns to `"idle"` and the
+    abandoned run sets nothing more. A run cut short by an `<Activity>` hiding the component
+    returns to `"idle"`, or to `"failed"` keeping its `hash` once the wallet has returned one,
+    even after the component is shown again, unless a newer run or `reset()` came since. The abandoned
+    run's promise resolves the same way: `"idle"`, or `"failed"` with the hash.
+  - It takes `descriptor`, `decode`, `where` and `timeout`, read when `submit` is called and
+    applied to both the preview and the events. The Aptos preview runs without signer keys, so
+    the auth key check is skipped. It needs a client with `eventsOf` and, unless `preview: false`,
+    `previewEvents` (`SubmitTransactionClient`), and throws a `StreamdError` during render
+    otherwise: an `AptosClient`, passed a built transaction, or a `SuiClient`, passed built
+    transaction bytes.
+
+  ```tsx
+  const { submit, status, preview, events, vmStatus } = useSubmitTransaction({
+    // A local signer here; a wallet's sign-then-submit goes in the same place.
+    signAndSubmit: (transaction) => aptos.signAndSubmitTransaction({ signer, transaction }),
+  });
+  ```
 - **`useTransfers(options?)`** follows `client.transfers` and returns the same
   `{ events, error, status }` as `useEvents`, with each event's `data` a `Transfer`. It takes
   `asset`, `account` and `maxEvents`; pass `null` to wait. It needs a client with `transfers`
@@ -3781,7 +4125,7 @@ has for long-lived handles, it fails at the start, with `--handle` as well.
 `--node-url` overrides its fullnode.
 
 Commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`, `transfers`,
-`balances` and `watch`) take `--node-url` more than once, spreading reads across the nodes through
+`balances`, `watch` and `inspect`) take `--node-url` more than once, spreading reads across the nodes through
 [`PoolAdapter`](#spreading-load-across-fullnodes): each walk stays on one node, and a node that
 answers `429` is set aside for 30 seconds while the others carry on. `--api-key` goes to the first
 node only. They also take `--archive <url>`, which sends only what the fullnodes refuse as pruned
@@ -3826,7 +4170,7 @@ cursor file could not be written; `2` for invalid arguments; `130` on a second C
 ### Request stats
 
 `--stats` on the commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`,
-`transfers`, `balances` and `watch`) prints what the command has asked of each node, through
+`transfers`, `balances`, `watch` and `inspect`) prints what the command has asked of each node, through
 `adapterMetrics`, as one JSON line on stderr: once when the command ends, by
 `--limit`, the end of its range, Ctrl-C, `SIGTERM`, stdout closing or a failure, and again each
 time the process gets `SIGUSR1` (not on Windows, which has no such signal). stdout keeps only
@@ -3846,12 +4190,12 @@ never by URL, since a URL may carry a key. Each node is counted inside the pool,
 fallback and `--cache`, so a page the cache answered is not a request, a `429` the pool moved to
 another node counts on both, and a pruned read counts as an error on the fullnode and a request
 on the archive. Reads made outside the adapter are not counted: name lookups (an `--account` or
-address given as a name), and with `--chain sui`, `transfers` and `balances`, which read the
+address given as a name), `inspect`'s resource reads, and with `--chain sui`, `transfers` and `balances`, which read the
 first node directly. A second Ctrl-C exits at once, without the line.
 
 ### Sui from the command line
 
-Every command but `handles` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
+Every command but `handles` and `inspect` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
 with the same output and exit codes:
 
 ```sh
@@ -4006,6 +4350,83 @@ Network errors, timeouts, `408`, `429` and `5xx` are retried with exponential ba
 Any other status, redirects included, fails at once. The webhook receives only the body,
 the content type, your `--header` values and any signature, and neither the URL, header
 values nor the secret are printed.
+
+**Receive them with `@streamd/receiver`.** `createReceiver` returns a `Request` to `Response`
+handler that does the checks above, parses the events with `parseEvent` and drops any already
+handled, by `eventId`, so a resent batch does not reach `onEvents` again while its store remembers it.
+It depends only on `@streamd/core`, and runs anywhere with `fetch`'s `Request` and Web Crypto:
+Bun, Deno, edge workers and Node 19+ through any Fetch-style server.
+
+```ts
+import { createReceiver } from "@streamd/receiver";
+
+const receive = createReceiver({
+  secret: process.env.STREAMD_WEBHOOK_SECRET!,
+  decode: ["amount"],
+  async onEvents(events) {
+    for (const event of events) await save(event);
+  },
+});
+
+Bun.serve({ port: 8787, fetch: receive });
+```
+
+```sh
+streamd forward --to http://127.0.0.1:8787 --secret "$STREAMD_WEBHOOK_SECRET" 0x1::coin::DepositEvent
+```
+
+Each request is checked in order, and nothing is parsed before the signature holds:
+
+| Answer | When | What `forward` does |
+| --- | --- | --- |
+| `204` | handled, or every event was a repeat | moves on |
+| `405` | not `POST` | stops, exit 1 |
+| `415` | not `application/json` | stops, exit 1 |
+| `413` | body over `maxBodyBytes` (default 4 MiB), by `content-length` or as read | stops, exit 1 |
+| `401` | signature missing, malformed or wrong | stops, exit 1 |
+| `400` | not UTF-8, not a JSON array, or an event `parseEvent` refuses | stops, exit 1 |
+| `500` | the store or `onEvents` threw or rejected, or `seen` answered the wrong number of results | retries |
+| `503` | another delivery of one of these events is still being handled | retries with its backoff |
+
+`onEvents` gets only the events not seen before, in body order, and is not called when there
+are none. They are recorded as handled only after it resolves, so a failure leaves them for the
+retry. That makes handling at least once, not exactly once: when `onEvents` succeeds and
+recording then fails, or the process stops between the two, the retry runs it again. Make
+`onEvents` idempotent where that matters. `onError(error, request)` is told what caused a `400`
+or `500`; the response body never says.
+
+The default store, `MemoryDedupStore`, keeps the last `maxEntries` ids (default 100,000) in
+memory and forgets them on restart. Behind more than one instance, or across restarts, pass a
+`store`: any object with `seen(ids)`, answering a boolean per id in order, and `add(ids)`,
+either of which may be async. Ids are `version:eventIndex`, which repeat across networks and
+chains, so when forwarders for more than one network share a receiver or store, give each its
+own receiver with a `namespace` (`"aptos:mainnet"`), which prefixes every id it stores. Over
+`bun:sqlite`:
+
+```ts
+import { Database } from "bun:sqlite";
+import type { DedupStore } from "@streamd/receiver";
+
+const db = new Database("seen.db");
+db.run("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY)");
+const has = db.query("SELECT 1 FROM seen WHERE id = ?");
+const insert = db.query("INSERT OR IGNORE INTO seen (id) VALUES (?)");
+
+const store: DedupStore = {
+  seen: (ids) => ids.map((id) => has.get(id) !== null),
+  add: db.transaction((ids: readonly string[]) => {
+    for (const id of ids) insert.run(id);
+  }),
+};
+```
+
+The `503` guard covers one process; two instances sharing a store can both handle a resent batch
+that arrives while the first is still running. A handler slower than `--timeout` spends
+`forward`'s `--retries` on `503`s, so keep `onEvents` quick or raise them. The signature has no
+timestamp, so a captured body replays once its ids are forgotten (after a restart with the memory
+store, or past `maxEntries`): use `https` and a durable store where that matters. A body over `maxBodyBytes` stops `forward`, so
+lower `--batch-size` rather than raising the limit far. Alert payloads from `streamd alert` are a
+different body; check those with `verifyWebhook` and deduplicate on their `id`.
 
 **To a Redis stream.** Give `--to` a Redis URL, `redis://[user:password@]host[:port][/db]` or
 `rediss://` for TLS, and `--stream` the stream key. Each batch becomes one entry, added with
@@ -4177,8 +4598,8 @@ written, or `--to-version` is above the head; `2` for invalid arguments. Run it 
 ### Alert on thresholds
 
 `streamd alert` follows the rules in a JSON file and POSTs one alert to a webhook the first time
-a rule's count or sum of matching events in a window reaches its threshold. Delivery, signing,
-retries and the cursor file work as for `forward`.
+a rule's count or sum of matching events in a window reaches its threshold, or leaves the band its
+recent windows set. Delivery, signing, retries and the cursor file work as for `forward`.
 
 ```sh
 # signed with STREAMD_WEBHOOK_SECRET when it is set
@@ -4211,7 +4632,7 @@ streamd alert --rules rules.json --to https://hooks.example.com/alerts --cursor-
 | `descriptor` | `eventType` (a type or a list), `account` and `resource`, combined as the `tail` flags of those names are (required) |
 | `where`, `sender`, `function`, `decode` | arrays of strings, exactly as the repeatable `--where`, `--sender`, `--function` and `--decode` flags |
 | `window` | `<n>s`, `<n>m`, `<n>h` or `<n>d` (required) |
-| `threshold` | `{ "count": n }`, at least `n` matching events, or `{ "sum": "<path>", "gte": "<integer>" }`, the field at that path summed at full precision (`gte` a decimal string or a safe integer) (required) |
+| `threshold` | `{ "count": n }`, at least `n` matching events, or `{ "sum": "<path>", "gte": "<integer>" }`, the field at that path summed at full precision (`gte` a decimal string or a safe integer), or `{ "anomaly": { ... } }`, below (required) |
 
 The file is read once, before anything reaches the chain. Any other key, a missing field, or a
 value the flags would refuse exits `1` with a message naming the file, the rule and the field, such
@@ -4238,6 +4659,47 @@ the command with exit `1`.
 threshold. Later events in that window count but send nothing, and nothing waits for a window to
 close. A summed field that is present and not an integer is reported and that event skipped.
 
+**Anomaly thresholds** fire when a window's count or sum leaves the band its rule's previous
+closed windows set, rather than at a fixed number:
+
+```json
+{
+  "name": "fee-rate",
+  "descriptor": { "eventType": "0x1::transaction_fee::FeeStatement" },
+  "window": "1m",
+  "threshold": { "anomaly": { "metric": "count", "k": 3, "baseline": 30, "minBaseline": 10, "direction": "both" } }
+}
+```
+
+| `anomaly` field | Meaning |
+| --- | --- |
+| `metric` | `count`, matching events per window, or `sum` with `sum` the field path summed as above (required) |
+| `k` | band multiplier, a positive decimal with at most 4 fractional digits, number or string (default `3`) |
+| `baseline` | how many closed windows the band is taken from, 3 to 1000 (default `30`) |
+| `minBaseline` | closed windows needed before the rule can fire, 1 to `baseline` (default 10, or `baseline` when smaller) |
+| `direction` | `above`, `below` or `both` (default `both`) |
+
+The band is `median ± k × 1.4826 × MAD` over the baseline, where MAD is the median of each
+window's distance from the median; the 1.4826 makes `k` read as standard deviations for normally
+distributed values. A value fires only strictly outside the band. Everything is exact: medians are
+taken over integers (the mean of the two middle values for an even baseline) and compared without
+floating point, so sums past 2^64 work. When more than half the baseline's windows equal its
+median, as when they are all equal or a sparse type is mostly empty, the MAD is 0, so the band is
+the median alone and any other value fires; choose a longer window for such a type.
+
+A window with no matching events counts as zero. A window closes when an event lands in a later
+one, and every window skipped in between closes as a zero too and joins the baseline, the oldest
+dropping out past `baseline`. A run of empty windows is judged once, at its first window with a long enough baseline, so one
+outage sends at most one alert. The first window a rule opens after its start (the head,
+`--from-version` or `--from-time`), before any window was saved, is left out of the baseline and
+never fires, since the start may fall mid-window and undercount it; empty windows between the
+start and that first event are not counted either.
+
+`above` fires on the event that first takes the value past the band, as a count threshold does.
+`below` waits for the window to close, since a count still open may grow, and is carried by the
+event that closed it, which is also the event in its payload. As with every threshold, nothing
+uses the wall clock: a type that stops entirely closes no window, so it is never reported as below.
+
 Each rule has its own subscription; rules over the same descriptor, start and poll interval share
 one fetch per interval, except when starting at the head.
 
@@ -4250,17 +4712,26 @@ signs:
 
 Times are microseconds since the epoch and integers are decimal strings; `event` is the crossing
 event as `tail` prints it, and `threshold` is `{"count":"n"}` or `{"sum":"<path>","gte":"n"}`.
+
+An anomaly alert's `threshold` echoes the rule with its defaults filled in, `value` is the
+window's count or sum, and one more field says how it left the band, as exact decimals with
+trailing zeros trimmed (`mad` unscaled, `low` and `high` the band's bounds):
+
+```json
+{"id":"fee-rate:1763130060000000","rule":"fee-rate","windowStart":"1763130060000000","windowEnd":"1763130120000000","threshold":{"anomaly":{"metric":"count","k":"3","baseline":"30","minBaseline":"10","direction":"both"}},"value":"412","anomaly":{"side":"above","median":"201.5","mad":"18","low":"121.4396","high":"281.5604","baselineWindows":"30"},"event":{...}}
+```
 `id` is the rule and the window start, the same on every redelivery, so a receiver can
 deduplicate on it.
 
 **The cursor file** holds one JSON object: each rule's cursor beside its open window (start,
-count or sum, and whether it alerted), written atomically after each delivered page and on exit.
+count or sum, and whether it alerted; for an anomaly rule also `history`, the baseline's values
+oldest first, and `partial` on the first window), written atomically after each delivered page and on exit.
 The window saved is always the one as of the end of the page the cursor follows, and it is saved
 only after that page's alerts were acknowledged, so a restart resumes the window without losing an
 alert. Delivery is at least once: a crash, a failed delivery, or a stop while a page's alerts are
 being sent replays that page, resending its alerts with the same `id`. A stop between pages
 repeats nothing. An entry records what its rule counts; changing a rule's descriptor, filter,
-decode, window or threshold makes the next run exit `1` naming it, until its entry is removed or
+decode, window or threshold (any `anomaly` field included) makes the next run exit `1` naming it, until its entry is removed or
 another cursor file is used. Entries for rules no longer in the file are kept.
 
 Exit codes: `0` on Ctrl-C or `SIGTERM`; `1` when the rules file or the cursor file cannot be read
@@ -4321,6 +4792,51 @@ streamd query --cache pages.db --from-version 7984000000 --to-version 7984001000
   a read or write that fails later, counts as a miss: the page comes from the node, and the first
   such failure is reported on stderr.
 - **Sui.** `SuiAdapter` never marks a page settled, so `--cache` with `--chain sui` is refused.
+
+### Inspect a resource over time
+
+`streamd inspect` prints what each transaction in a range did to one resource, one JSON line per
+write or delete, listing every field it changed:
+
+```sh
+streamd inspect 0x1 --resource 0x1::stake::ValidatorPerformance --from-version 8071200052 --to-version 8071200082
+# {"version":"8071200082","transactionHash":"0xd768...","timestamp":"1794796910359480","change":"updated","changes":[{"path":"validators.6.successful_proposals","before":"302","after":"303"}]}
+```
+
+- **Changes.** `change` is `updated`, with `changes` listing each leaf that differs as
+  `{ path, before, after }` (possibly none, for a write that left the value as it was); `created`,
+  with the whole new `value`; or `deleted`. A path is dotted, array elements by index, the form
+  `--where` reads; a field that appears or disappears has no `before` or no `after`, and a field
+  that changes shape, such as an object becoming a string, is one change with both values whole.
+  Bigints in the line are decimal strings.
+- **The first change** is diffed against the value at `--from-version - 1`, read once at the start.
+  If the node has pruned that version and there is no `--archive`, the first change is printed as
+  `written`, with its whole `value`, and a note on stderr says so.
+- **Range.** `--from-version` is required and `--to-version` is a version or `head` (the default,
+  read once at the start). `--limit <n>` stops after `n` changes. Changes come from transaction write
+  sets through a scan of every transaction in the range, so keep ranges short: a thousand mainnet
+  versions took about 25 seconds, in 5 requests, against the public fullnode. A range the node has pruned goes
+  to `--archive`, as `query`'s does.
+- **`--at <n>`** prints the resource's value at one version, `{"version":"<n>","value":...}`, with
+  `value` `null` when the account did not hold it then:
+
+  ```sh
+  streamd inspect 0x1 --resource "0x1::coin::CoinInfo<0x1::aptos_coin::AptosCoin>" --at 8071200057
+  streamd inspect 0x1 --resource 0x1::block::BlockResource --at 100 --archive default
+  ```
+
+- **`--format pretty`** prints a line of version, UTC time and change, then one indented
+  `path: before -> after` line per field, `(absent)` for a missing side; `--at` prints the value
+  as indented JSON. Control characters in on-chain text print as `?`.
+- **Reads.** The value before the range and `--at` are one
+  `/accounts/<address>/resource/<type>?ledger_version=` read on the first `--node-url`, sent to
+  `--archive` only when that node answers `410`; any other failure, such as a version above the
+  head, exits 1. These reads are not counted by `--stats`.
+- **Aptos only.** `--chain sui` is refused: Sui reads object state only at the head, so there is
+  no value before a range or at a past version to read.
+
+Exit codes are `query`'s: 0 when finished, interrupted or piped into something that stops reading,
+1 on a failed read or write, 2 for bad usage.
 
 ### Follow or query transfers
 
@@ -4777,6 +5293,95 @@ already through `decode` passes. Extra fields pass, so an upgraded module's new 
 break old checks, and values of a type parameter are not checked. It checks shape, not
 identity: two event types with the same fields pass each other's check.
 
+`--arbitraries` also writes an `arbitrary<Type>(rng)` generator for every generated type,
+returning a random value in the JSON form the node reports, with no dependencies. Use them to
+fill a `MemoryAdapter` with thousands of valid events for a property test:
+
+```ts
+import { MemoryAdapter, StreamdClient } from "@streamd/core";
+import { arbitraryFungibleAsset_Deposit, FungibleAsset_Deposit, streamdEvent, streamdRng } from "./events.js";
+
+const rng = streamdRng(42); // the same seed gives the same events on every run
+const events = Array.from({ length: 1000 }, (_, i) =>
+  streamdEvent(FungibleAsset_Deposit, arbitraryFungibleAsset_Deposit(rng), BigInt(i + 1)),
+);
+const client = new StreamdClient({ adapter: new MemoryAdapter(events) });
+const deposits = await client.getEvents(FungibleAsset_Deposit, { fromVersion: 0n });
+```
+
+- **`streamdRng(seed)`** is a seeded mulberry32, a `StreamdRng`: a function returning a uint32
+  per call. Any function with that contract works in its place.
+- **A generic type's generator takes one generator per type parameter** after `rng`, each
+  `(rng) => T`, so `arbitraryCoin_Deposit(rng, myGenerator)` or another `arbitrary<Type>`
+  fills its `T0` fields. A phantom parameter still takes one, so the arity matches the type.
+- **`streamdEvent(descriptor, data, version, eventIndex = 0)`** builds a `StreamdEvent` of the
+  descriptor's one event type, `sequenceNumber` `0n`; a descriptor over several types throws.
+  Give each event a distinct `(version, eventIndex)`, since `MemoryAdapter` keys them on it.
+- **Values follow the table below:** integers in range as numbers or decimal strings,
+  addresses in lowercase hex with leading zeros dropped (`0x1`, and 63 digits one time in
+  sixteen, as the fullnode writes them), `vector<u8>` as `0x` hex, `Option` as `{ vec: [] }` or
+  `{ vec: [x] }`, enums one variant chosen uniformly. With `--chain sui`, addresses and object
+  ids are long form, bytes base64 and options `null` or the value.
+- **Edge values come up often:** a quarter of integers are their minimum, maximum, `0` or `1`,
+  and the rest vary in magnitude; a quarter of vectors, byte vectors and strings are empty, and
+  half of options are none. Strings include multi-byte characters.
+- **Sizes are bounded:** vectors hold 0 to 4 elements and byte vectors 0 to 32 bytes. Move
+  allows no recursive types, so every value is finite.
+- Every generated value passes the `--validators` check of its type. A struct named
+  `StreamdRng`, `StreamdEvent` or `ModuleEventDescriptor` is refused, since the generated file
+  uses those names.
+
+`--sql sqlite` or `--sql postgres` also writes `streamdTables`, one table per event type with a
+column per field, and `streamdSchema`, that dialect's `CREATE TABLE IF NOT EXISTS` statements,
+one per string, for a migration tool. `storeTables` in [`@streamd/store-sqlite`](#typed-event-tables)
+or [`@streamd/store-postgres`](#store-events-in-postgres) creates the tables itself and fills
+them from the chain:
+
+```sh
+streamd codegen --sql sqlite --out src/events.ts 0x1::fungible_asset
+```
+
+```ts
+import { Database } from "bun:sqlite";
+import { SqliteEventStore, storeTables } from "@streamd/store-sqlite";
+import { streamdTables } from "./events.js";
+
+storeTables(streamd, new SqliteEventStore(new Database("events.db")), streamdTables, { name: "fa", fromVersion: -10_000n });
+// SELECT store, amount FROM fungible_asset_deposit WHERE sender = '0x...' ORDER BY version DESC
+```
+
+- **A table is named `<module>_<struct>` in snake case** (`fungible_asset_deposit`,
+  `pool_v3_swap_event_v3`). A name two generated structs share (one module and struct at two
+  addresses, such as two DEXes' `pool::SwapEvent`) or one over Postgres's 63 bytes is cut and
+  suffixed with 8 hex digits of a SHA-256 of the long-form type, so adding a struct that shares
+  a table's name renames both: generate such modules together from the start, or rename the
+  table yourself. A name starting `streamd_`, `sqlite_` or `pg_` gets `move_` in front.
+- **Columns are the field names, lowercased,** after the standard ones: `version`,
+  `event_index`, `transaction_hash` (hex lowercased), `timestamp` (microseconds), `sender` (long
+  form), and for a generic event `type_arguments`, the text inside its type's outer `<...>`. A
+  field that would collide with one of them, with an earlier field or with a Postgres system
+  column (`xmin`, `ctid` and the like) gets `_` appended (`timestamp_`), or, at 63 bytes, a hash. The key is `(version, event_index)`, and a redelivered event replaces its row.
+- **Nothing is lossy.** Integers wider than 32 bits are exact decimal text on SQLite, so compare
+  them as numbers with care (`CAST` reads past 2^63 as a float), and `numeric` on Postgres.
+  Postgres `text` and `jsonb` cannot hold NUL or a lone surrogate, which become U+FFFD there.
+- **Nested values are JSON,** one column per field rather than flattened, so names stay stable.
+  An enum event has `variant` and `data`, the whole payload.
+- Every name is checked (lowercase letters, digits and `_`, at most 63 bytes) and quoted, and
+  every value is a bound parameter. A struct named `StreamdEventTable` is refused, since the
+  file imports that name.
+
+| Move | Column | SQLite | Postgres |
+| --- | --- | --- | --- |
+| `u8`, `u16`, `i8`, `i16`, `i32` | the integer | `INTEGER` | `integer` |
+| `u32` | the integer | `INTEGER` | `bigint` |
+| `u64`, `u128`, `u256`, `i64`, `i128`, `i256` | the integer | `TEXT` (decimal) | `numeric(20\|39\|78, 0)`, `bigint` for `i64` |
+| `bool` | | `INTEGER` (0, 1) | `boolean` |
+| `address`, `Object<T>`, Sui `ID` and `UID` | long-form address | `TEXT` | `text` |
+| `String`, `vector<u8>` as the node writes it, Sui `ascii::String`, `Url`, `TypeName` | the text | `TEXT` | `text` |
+| Sui `Balance<T>` | as `u64` | | |
+| `Option<T>` | `T`'s column, `NULL` when none | | |
+| other structs, `vector<T>`, type parameters | JSON, bigints as strings | `TEXT` | `jsonb` |
+
 A bare address covers every module published there, skipping the ones with no `#[event]` struct,
 event handle or `#[view]` function, and mixes with named modules:
 
@@ -4854,6 +5459,8 @@ and works the same with `--chain sui`.
 | --- | --- |
 | `--out <file>` | write to this file instead of stdout |
 | `--check` | compare with the `--out` file instead of writing it |
+| `--validators`, `--arbitraries` | also write runtime checks, random payload generators |
+| `--sql <sqlite\|postgres>` | also write a table per event type and its DDL |
 | `--chain <aptos\|sui>` | the chain to read (default `aptos`); see below |
 
 `--network` and `--node-url` work as for `tail`. Exit codes: `0` once the file is written, or
@@ -4906,6 +5513,48 @@ Each type describes the JSON a Sui node returns, as `SuiAdapter` delivers it:
 
 A generic event's descriptor passes its type arguments through as given; the node matches either
 form, but `event.type` carries long-form addresses, so pass long form to compare against it.
+
+### Event coverage for Move tests
+
+`streamd coverage` tells you which `#[event]` structs your tests never emit. It starts an Aptos
+localnet with the installed `aptos` CLI (through [`@streamd/testing`](#test-against-a-localnet)),
+publishes the Move package from a funded account, runs your test command against that localnet,
+then prints one JSON line per event struct the package declares:
+
+```sh
+streamd coverage ./move/counter -- bun test tests/move
+# {"event":"0x396c...::counter::Bumped","emitted":true,"count":3,"first":{"version":"33","eventIndex":0,"transactionHash":"0x77e2...","function":"0x396c...::counter::bump","sender":"0x396c..."}}
+# {"event":"0x396c...::counter::Reset","emitted":false,"count":0}
+```
+
+- **The test command** is everything after `--`, run without a shell, with its stdout sent to
+  stderr so it cannot mix with the report. It finds the localnet in its environment:
+  `STREAMD_NODE_URL`, `STREAMD_FAUCET_URL`, `STREAMD_PACKAGE_ADDRESS` (long form) and
+  `STREAMD_PUBLISHER_KEY`, the publisher's Ed25519 private key in AIP-80 form
+  (`ed25519-priv-0x...`, which `new Ed25519PrivateKey(...)` reads), so it can call entry
+  functions only the publisher may. A TypeScript test can pass the first two to `attachLocalnet`. Move unit tests
+  (`aptos move test`) run with no node, so their events cannot be counted; drive the package
+  through transactions instead.
+- **Publishing.** Every named address the package's `Move.toml` leaves as `"_"` in `[addresses]`
+  is set to the publisher's address. Events `init_module` emits count, with
+  `0x1::code::publish_package_txn` as their call.
+- **What counts.** The `#[event]` structs of every module at the package address, read from the
+  node's ABIs after the command exits; events of a generic struct count under the struct, whatever
+  their type arguments. Events are read with one `getEvents` from the publish to the head.
+- **Each line** has `event`, `emitted`, `count` and, when emitted, `first`: the version, event
+  index, transaction hash, entry function (`null` for a script) and sender of the earliest event.
+  Lines are sorted by type. A summary such as `streamd: 3 of 4 event structs emitted` goes to
+  stderr. `--format pretty` prints one plain line per struct instead.
+- **Exit codes.** 0 when the command passed, 1 when it failed (the report still prints) or when the
+  localnet, compile or publish failed, 2 for bad usage. The summary reports a command killed by a
+  signal as exiting `128 +` its number, as a shell does.
+- **Interrupts.** On the first SIGINT, SIGTERM or SIGHUP the run waits for the command (Ctrl-C
+  reaches it through the terminal; SIGTERM and SIGHUP are passed on), stops the localnet and exits
+  130 with no report, since Ctrl-C reaches the node too. A signal before the command starts skips
+  it. A second signal kills the command, or exits at once when none is running. Only SIGKILL
+  leaves the node running.
+- **Aptos only**, and one package per run. `bun run test:localnet` in `packages/cli` runs it for real
+  on a fixture package; the normal test run skips it.
 
 ## Development
 

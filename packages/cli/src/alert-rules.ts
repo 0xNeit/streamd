@@ -1,10 +1,22 @@
 import { sum } from "@streamd/core";
 import type { EventDescriptor } from "@streamd/core";
+import { K_PATTERN } from "./anomaly.js";
 import { descriptor } from "./args.js";
 import { parseDecode, parseFilter } from "./filter.js";
 import type { CliFilter } from "./filter.js";
 
-export type Threshold = { count: bigint } | { sum: string; gte: bigint };
+/** A band threshold over the rule's previous closed windows; `k` is a normalised decimal string. */
+export interface Anomaly {
+  metric: "count" | "sum";
+  /** The summed field path, for metric `sum` only. */
+  sum?: string;
+  k: string;
+  baseline: number;
+  minBaseline: number;
+  direction: "above" | "below" | "both";
+}
+
+export type Threshold = { count: bigint } | { sum: string; gte: bigint } | { anomaly: Anomaly };
 
 export interface AlertRule {
   name: string;
@@ -18,6 +30,8 @@ export interface AlertRule {
   fingerprint: string;
 }
 
+const ANOMALY_KEYS = new Set(["metric", "sum", "k", "baseline", "minBaseline", "direction"]);
+const DIRECTIONS = new Set(["above", "below", "both"]);
 const RULE_KEYS = new Set(["name", "descriptor", "where", "sender", "function", "decode", "window", "threshold"]);
 const DESCRIPTOR_KEYS = new Set(["eventType", "account", "resource"]);
 const HANDLE_KEYS = new Set(["handle", "field", "creationNumber"]);
@@ -75,6 +89,56 @@ function integer(raw: unknown): bigint | undefined {
   return typeof raw === "string" && /^-?\d+$/.test(raw) ? BigInt(raw) : undefined;
 }
 
+function sumPath(raw: unknown, at: string): string {
+  if (typeof raw !== "string") throw new Error(`${at}sum must be a field path`);
+  try {
+    sum(raw);
+  } catch (err) {
+    throw new Error(`${at}sum: ${reason(err)}`);
+  }
+  return raw;
+}
+
+function bandK(raw: unknown): string {
+  const text = raw === undefined ? "3" : typeof raw === "number" ? String(raw) : raw;
+  if (typeof text !== "string" || !K_PATTERN.test(text) || !/[1-9]/.test(text)) {
+    throw new Error("threshold: anomaly: k must be a positive decimal with at most 4 fractional digits");
+  }
+  return text.includes(".") ? text.replace(/\.?0+$/, "") : text;
+}
+
+function windows(raw: unknown, fallback: number, min: number, max: number, field: string, range: string): number {
+  const value = raw === undefined ? fallback : raw;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`threshold: anomaly: ${field} must be an integer from ${range}`);
+  }
+  return value;
+}
+
+function anomaly(raw: unknown): Anomaly {
+  const at = "threshold: anomaly: ";
+  if (!isObject(raw)) throw new Error(`${at}must be an object`);
+  for (const key of Object.keys(raw)) {
+    if (!ANOMALY_KEYS.has(key)) throw new Error(`${at}unknown field ${JSON.stringify(key)}`);
+  }
+  const { metric, direction = "both" } = raw;
+  if (metric !== "count" && metric !== "sum") throw new Error(`${at}metric must be "count" or "sum"`);
+  if (metric === "count" && raw.sum !== undefined) throw new Error(`${at}sum is only for metric "sum"`);
+  const path = metric === "sum" ? sumPath(raw.sum, at) : undefined;
+  const k = bandK(raw.k);
+  const baseline = windows(raw.baseline, 30, 3, 1000, "baseline", "3 to 1000");
+  const minBaseline = windows(raw.minBaseline, Math.min(10, baseline), 1, baseline, "minBaseline", `1 to baseline (${baseline})`);
+  if (typeof direction !== "string" || !DIRECTIONS.has(direction)) throw new Error(`${at}direction must be "above", "below" or "both"`);
+  return {
+    metric,
+    ...(path !== undefined && { sum: path }),
+    k,
+    baseline,
+    minBaseline,
+    direction: direction as Anomaly["direction"],
+  };
+}
+
 function threshold(raw: unknown): Threshold {
   if (!isObject(raw)) throw new Error("threshold: must be an object");
   const keys = Object.keys(raw).sort().join(",");
@@ -83,18 +147,14 @@ function threshold(raw: unknown): Threshold {
     if (count === undefined || count < 1n) throw new Error("threshold: count must be a positive integer");
     return { count };
   }
+  if (keys === "anomaly") return { anomaly: anomaly(raw.anomaly) };
   if (keys === "gte,sum") {
-    if (typeof raw.sum !== "string") throw new Error("threshold: sum must be a field path");
-    try {
-      sum(raw.sum);
-    } catch (err) {
-      throw new Error(`threshold: sum: ${reason(err)}`);
-    }
+    const path = sumPath(raw.sum, "threshold: ");
     const gte = integer(raw.gte);
     if (gte === undefined) throw new Error("threshold: gte must be an integer, as a decimal string or a safe integer");
-    return { sum: raw.sum, gte };
+    return { sum: path, gte };
   }
-  throw new Error('threshold: must be { "count": n } or { "sum": "<path>", "gte": "<integer>" }');
+  throw new Error('threshold: must be { "count": n }, { "sum": "<path>", "gte": "<integer>" } or { "anomaly": { ... } }');
 }
 
 function rule(raw: unknown, sui: boolean): AlertRule {

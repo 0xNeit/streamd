@@ -1,7 +1,7 @@
-import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { Aptos, AptosConfig, Network, getAptosFullNode } from "@aptos-labs/ts-sdk";
 import type { Client, ClientRequest, ClientResponse } from "@aptos-labs/ts-sdk";
 import { AptosClient, FullnodeScanAdapter, checkDescriptor, networks, primaryName, resolveName } from "@streamd/aptos";
-import { ArchiveFallbackAdapter, CachingAdapter, PoolAdapter } from "@streamd/core";
+import { ArchiveFallbackAdapter, CachingAdapter, PoolAdapter, StreamdError, StreamdNetworkError, toStreamdError } from "@streamd/core";
 import type { CachingAdapterOptions, EventAdapter, ModuleEventDescriptor, StreamdClient } from "@streamd/core";
 import type { Endpoint } from "./args.js";
 import type { TypeChecks } from "./check.js";
@@ -92,16 +92,68 @@ export function readThrough(first: HeadAdapter, others: readonly HeadAdapter[] =
   return archive === undefined ? fullnode : (new ArchiveFallbackAdapter(fullnode, archive) as unknown as HeadAdapter);
 }
 
+/** The `--archive` node, with the API key it gets, or `undefined` without one. */
+function archiveEndpoint(endpoint: Endpoint): Pick<Endpoint, "network" | "nodeUrl" | "apiKey"> | undefined {
+  if (endpoint.archive === undefined) return undefined;
+  if (endpoint.archive !== "default") return { network: endpoint.network, nodeUrl: endpoint.archive };
+  // The key goes to Aptos Labs' archive only when it already goes to Aptos Labs' fullnode.
+  const apiKey = endpoint.nodeUrl === undefined ? endpoint.apiKey : undefined;
+  return { network: "mainnet", nodeUrl: networks.aptosMainnetArchive.fullnode, ...(apiKey !== undefined && { apiKey }) };
+}
+
+const pruned = (err: unknown) => err instanceof StreamdNetworkError && err.statusCode === 410;
+
+/**
+ * Reads one resource at a ledger version from the endpoint's first node, and
+ * from `--archive` when that node refuses the version as pruned. Resolves to
+ * the value, or `null` when the resource did not exist at that version.
+ * `address` is long form. Aptos only.
+ */
+export function resourceReader(
+  endpoint: Endpoint,
+  address: string,
+  resourceType: string,
+  client?: Client,
+): (version: bigint) => Promise<unknown> {
+  // The type carries <, > and , in its type arguments.
+  const path = `accounts/${address}/resource/${encodeURIComponent(resourceType)}`;
+  const read = async (config: AptosConfig, version: bigint): Promise<unknown> => {
+    try {
+      const { data } = await getAptosFullNode<{}, object>({
+        aptosConfig: config,
+        originMethod: "inspect",
+        path,
+        params: { ledger_version: version.toString() },
+      });
+      if (typeof data !== "object" || data === null || !("data" in data)) {
+        throw new StreamdError(`Fullnode returned a malformed ${resourceType} at version ${version}`);
+      }
+      return data.data;
+    } catch (err) {
+      const { status, data } = (err ?? {}) as { status?: unknown; data?: { error_code?: unknown } };
+      if (status === 404 && data?.error_code === "resource_not_found") return null;
+      throw toStreamdError(err, `${resourceType} at ${address}, version ${version}`);
+    }
+  };
+  const first = aptosConfig(endpoint, client);
+  const archive = archiveEndpoint(endpoint);
+  return async (version) => {
+    try {
+      return await read(first, version);
+    } catch (err) {
+      if (archive === undefined || !pruned(err)) throw err;
+      return read(aptosConfig(archive, client), version);
+    }
+  };
+}
+
 function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: RequestStats): Chain {
   const config = aptosConfig(endpoint);
   const node = (nodeUrl: string, client?: Client) =>
     new FullnodeScanAdapter(new Aptos(aptosConfig({ network: endpoint.network, nodeUrl }, client)));
   const archive = () => {
-    if (endpoint.archive !== "default") return endpoint.archive === undefined ? undefined : node(endpoint.archive);
-    // The key goes to Aptos Labs' archive only when it already goes to Aptos Labs' fullnode.
-    const apiKey = endpoint.nodeUrl === undefined ? endpoint.apiKey : undefined;
-    const nodeUrl = networks.aptosMainnetArchive.fullnode;
-    return new FullnodeScanAdapter(new Aptos(aptosConfig({ network: "mainnet", nodeUrl, ...(apiKey !== undefined && { apiKey }) })));
+    const at = archiveEndpoint(endpoint);
+    return at === undefined ? undefined : new FullnodeScanAdapter(new Aptos(aptosConfig(at)));
   };
   const nodes = (client?: Client) => [
     new FullnodeScanAdapter(new Aptos(aptosConfig(endpoint, client))),

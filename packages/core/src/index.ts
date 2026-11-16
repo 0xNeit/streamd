@@ -23,6 +23,8 @@ export { RequestLimiter } from "./limiter.js";
 export { UNSIGNED_INTEGER, fieldDecoder } from "./decode.js";
 export { descriptorKey, onAbort, raceAbort, sleep } from "./utils.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
+export { STANDARD_COLUMNS, eventTableRows, requireEventTables } from "./tables.js";
+export type { EventTableRow } from "./tables.js";
 export { count, groupBy, latest, sum } from "./reducers.js";
 export type { Fold } from "./reducers.js";
 export { startReduction } from "./reduce.js";
@@ -153,6 +155,9 @@ export type {
   EventGuid,
   EventPage,
   EventPredicate,
+  EventColumn,
+  EventColumnType,
+  EventTable,
   SyncEventPredicate,
   EventStream,
   EventExpectation,
@@ -188,6 +193,7 @@ export type {
   SubscriptionError,
   SubscriptionInfo,
   SubscriptionStatus,
+  ResourceChange,
   TransactionEvents,
   TransactionSimulation,
   ViewRequest,

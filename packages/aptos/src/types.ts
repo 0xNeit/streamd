@@ -1,10 +1,12 @@
 import type { MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
+import type { IndexerAccountAdapter } from "./indexer.js";
 import type {
   EntryFunctionCall,
   EventFilter,
   EventPredicate,
   NameOptions,
   ReduceOptions,
+  ResourceChange,
   StreamdEvent,
   SubscriptionOptions,
   Transfer,
@@ -161,6 +163,38 @@ export type SwapListenerOptions = SubscriptionOptions & SwapOptions;
 
 /** Filter for `AptosClient.getSwaps`. */
 export type SwapFilter = EventFilter & SwapOptions;
+
+/**
+ * One oracle price, the `data` of the records `prices` delivers and what
+ * `priceAt` resolves. Integers only: the price is `price × 10^exponent`, and
+ * `confidence` is at the same exponent. Times are microseconds since the Unix
+ * epoch, as `StreamdEvent.timestamp` is, so `staleness` compares directly with
+ * chain time.
+ */
+export interface Price {
+  /** The oracle that published it. */
+  oracle: "pyth";
+  /** The feed's id: Pyth's 32-byte price id, `0x` and 64 lowercase hex digits. */
+  feedId: string;
+  /** Signed mantissa. */
+  price: bigint;
+  /** Unsigned mantissa, at `exponent`. */
+  confidence: bigint;
+  /** Signed power of ten, such as -8. */
+  exponent: number;
+  /** When the oracle published the price (Pyth's seconds, scaled to microseconds). */
+  publishTime: bigint;
+  /**
+   * The chain time the price was seen at: the update's block for `prices`,
+   * the block holding the version read for `priceAt`.
+   */
+  observedAt: bigint;
+  /** `observedAt - publishTime`, microseconds; negative when the publisher's clock ran ahead of the chain's. */
+  staleness: bigint;
+}
+
+/** Options for `AptosClient.prices`. */
+export type PriceListenerOptions = SubscriptionOptions;
 
 /** An NFT marketplace whose fill events `sales` and `getSales` read. */
 export type SaleMarketplace = "wapal" | "tradeport";
@@ -532,4 +566,132 @@ export interface PackageUpgrade {
   events: AbiChanges<EventStructSignature>;
   entryFunctions: AbiChanges<FunctionSignature>;
   views: AbiChanges<FunctionSignature>;
+}
+
+/** One property of a `0x4::property_map::PropertyMap`, decoded from its BCS bytes. */
+export interface TokenProperty {
+  key: string;
+  /** The Move type: `bool`, `u8` to `u256`, `address`, `vector<u8>` or `0x1::string::String`. */
+  type: string;
+  /** Integers as `bigint`, an address in long form, bytes as `0x` hex. */
+  value: boolean | bigint | string;
+}
+
+/** What one transaction did to the object, as `Provenance.actions` lists it. Addresses are long form. */
+export type ProvenanceAction =
+  /** A `0x4::collection` mint event named the object. */
+  | { kind: "mint"; collection?: string }
+  | { kind: "transfer"; from: string; to: string }
+  /** A `0x4::token` or `0x4::collection` mutation event; the legacy collection one carries no values. */
+  | { kind: "mutation"; field: string; oldValue?: string; newValue?: string }
+  /** A `0x4::collection` burn event named the object, or the object was deleted without one. */
+  | { kind: "burn"; collection?: string; previousOwner?: string };
+
+/**
+ * One transaction that touched an object, the `data` of the records
+ * `provenance` and `getProvenance` deliver; the record's envelope carries
+ * the transaction's hash, sender, timestamp and entry function.
+ */
+export interface Provenance {
+  /** The object, in long form. */
+  object: string;
+  /** False when the transaction aborted, which leaves the object as it was. */
+  success: boolean;
+  /** In event order, then a `burn` when the object was deleted with no burn event. Empty when nothing named the object. */
+  actions: ProvenanceAction[];
+  /**
+   * The object's `PropertyMap` as the transaction left it, every property in
+   * stored order, when the write set holds it. An object's resources form one
+   * group that is written whole, so this appears on any transaction that
+   * wrote the object; a property changed where it differs from the previous
+   * record's.
+   */
+  properties?: TokenProperty[];
+  /** Every resource the transaction wrote or deleted at the object, in write-set order. */
+  changes: ResourceChange[];
+  /**
+   * Under `withNames`, the primary name (`null` for none) of the sender and
+   * of every address in `actions`, keyed by long-form address.
+   */
+  names?: Record<string, string | null>;
+}
+
+/** What lists an object's transactions for `provenance`; `IndexerAccountAdapter` is one. */
+export type TransactionLister = Pick<IndexerAccountAdapter, "getHeadVersion" | "listTransactionVersions">;
+
+export interface ProvenanceOptions {
+  /**
+   * Lists the transactions that touched the object (default: an
+   * `IndexerAccountAdapter` over the client's `aptos`, anonymous). Pass one
+   * built with an `apiKey` for more than the anonymous rate.
+   */
+  indexer?: TransactionLister;
+}
+
+/** Options for `AptosClient.provenance`. */
+export type ProvenanceListenerOptions = SubscriptionOptions & ProvenanceOptions;
+
+/** Filter for `AptosClient.getProvenance`. */
+export type ProvenanceFilter = EventFilter & ProvenanceOptions;
+
+/** Options for `AptosClient.trace`. */
+export interface TraceOptions extends Pick<EventFilter, "retries" | "signal"> {
+  /** How many hops from the root to follow, 1 to 6; default 1. */
+  hops?: number;
+  /** Follow transfers a node sent (`out`), received (`in`), or both; default `both`. */
+  direction?: "out" | "in" | "both";
+  /** Start of the range every node is read over, as `getEvents` takes it. */
+  fromVersion?: bigint;
+  /** End of the range; `"head"`, the default, is read once when the trace starts. */
+  toVersion?: bigint | "head";
+  /** Transfers below this many base units are ignored, whatever their asset. */
+  minAmount?: bigint;
+  /** Only transfers of this asset, in any form `TransferOptions.asset` takes. */
+  asset?: string;
+  /** Most nodes the graph may hold, root included; default 100. */
+  maxNodes?: number;
+  /** Most adapter calls the trace may make, the head read, page reads and views alike; default 1000. One call can be several HTTP requests. */
+  maxRequests?: number;
+  /** Addresses kept as nodes but never expanded, such as exchanges and routers. */
+  stop?: readonly string[];
+  /** An address that ends the walk as soon as it joins the graph. */
+  target?: string;
+}
+
+/** One address in a `FundFlowGraph`. */
+export interface TraceNode {
+  /** Long form. */
+  address: string;
+  /** Hops from the root, which is 0. */
+  hop: number;
+  /** Whether its transfers were read: false at the hop cap, on the stop list, or when the walk stopped first. */
+  expanded: boolean;
+}
+
+/** Every transfer of one asset from one address to another that the trace saw, summed. */
+export interface TraceEdge {
+  from: string;
+  to: string;
+  /** In `Transfer.asset`'s form. */
+  asset: string;
+  /** Base units, summed. */
+  amount: bigint;
+  /** How many transfers the sum is over. */
+  transfers: number;
+  firstVersion: bigint;
+  lastVersion: bigint;
+}
+
+/** What `AptosClient.trace` resolves with. */
+export interface FundFlowGraph {
+  /** Long form. */
+  root: string;
+  /** In the order they joined, breadth first. */
+  nodes: TraceNode[];
+  /** In the order first seen. */
+  edges: TraceEdge[];
+  /** Why the walk ended before reading every node within `hops`, when it did. */
+  stoppedBy?: "nodes" | "requests" | "target";
+  /** Adapter calls made. */
+  requests: number;
 }

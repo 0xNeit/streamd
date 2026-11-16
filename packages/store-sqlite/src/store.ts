@@ -1,5 +1,5 @@
-import { StreamdError, normalizeAddress, parseEvent, requireAddress, serializeEvent } from "@streamd/core";
-import type { StreamdEvent, Transfer } from "@streamd/core";
+import { StreamdError, eventTableRows, normalizeAddress, parseEvent, requireAddress, requireEventTables, serializeEvent } from "@streamd/core";
+import type { EventTable, StreamdEvent, Transfer } from "@streamd/core";
 import {
   PRUNED_BEFORE,
   TRANSFER_SCHEMA,
@@ -13,6 +13,7 @@ import {
   versionKey,
 } from "./schema.js";
 import type { SqliteDatabase, SqliteStatement } from "./schema.js";
+import { eventTableSchema, eventTableUpsert } from "./tables.js";
 
 /** A source cursor to save under `name` alongside a write. */
 export interface StoreCheckpoint {
@@ -155,6 +156,7 @@ export class SqliteEventStore {
   private readonly listCursors: SqliteStatement;
   private readonly dropCursor: SqliteStatement;
   private upsertTransfer?: SqliteStatement;
+  private readonly tableUpserts = new WeakMap<readonly EventTable[], Map<EventTable, SqliteStatement>>();
 
   constructor(db: SqliteDatabase) {
     ensureSchema(db);
@@ -191,17 +193,17 @@ export class SqliteEventStore {
          account_address = coalesce(excluded.account_address, account_address),
          transaction_hash = excluded.transaction_hash`,
     );
-    this.upsertAll(this.upsert, rows, checkpoint);
+    this.upsertAll(rows.map((row) => [this.upsert!, row]), checkpoint);
   }
 
-  private upsertAll(upsert: SqliteStatement, rows: unknown[][], checkpoint: StoreCheckpoint | undefined): void {
+  private upsertAll(writes: [SqliteStatement, unknown[]][], checkpoint: StoreCheckpoint | undefined): void {
     const name = checkpoint === undefined ? undefined : requireName(checkpoint.name);
     const cursor = checkpoint?.cursor;
     if (cursor !== undefined && typeof cursor !== "string") {
       throw new StreamdError("A checkpoint cursor must be a string or undefined");
     }
     transaction(this.db, () => {
-      for (const row of rows) upsert.run(...row);
+      for (const [upsert, row] of writes) upsert.run(...row);
       if (name !== undefined && cursor !== undefined) this.saveCursor.run(name, cursor);
     });
   }
@@ -223,7 +225,30 @@ export class SqliteEventStore {
          to_address = excluded.to_address, symbol = excluded.symbol, decimals = excluded.decimals,
          transfer = excluded.transfer`,
     );
-    this.upsertAll(this.upsertTransfer, rows, checkpoint);
+    this.upsertAll(rows.map((row) => [this.upsertTransfer!, row]), checkpoint);
+  }
+
+  /**
+   * Upserts each event into its table of `tables`, creating them on first
+   * use, and, given a checkpoint, saves its cursor, all in one transaction.
+   * Idempotent on `(version, eventIndex)`. An event with no table, or a value
+   * its column refuses, writes nothing.
+   */
+  writeTables(tables: readonly EventTable[], events: readonly StreamdEvent[], checkpoint?: StoreCheckpoint): void {
+    const rows = eventTableRows(tables, events);
+    let upserts = this.tableUpserts.get(tables);
+    if (upserts === undefined) {
+      const spec = requireEventTables(tables);
+      for (const statement of eventTableSchema(spec)) this.db.exec(statement);
+      upserts = new Map(spec.map((table) => [table, this.db.prepare(eventTableUpsert(table))]));
+      this.tableUpserts.set(tables, upserts);
+    }
+    const writes = rows.map(({ table, values }): [SqliteStatement, unknown[]] => [
+      upserts.get(table)!,
+      // Not every driver binds booleans.
+      values.map((v) => (typeof v === "boolean" ? Number(v) : v)),
+    ]);
+    this.upsertAll(writes, checkpoint);
   }
 
   /**

@@ -1,7 +1,17 @@
-import { StreamdError, eventId, normalizeAddress, parseEvent, requireAddress, serializeEvent } from "@streamd/core";
-import type { StreamdEvent, Transfer } from "@streamd/core";
+import {
+  StreamdError,
+  eventId,
+  eventTableRows,
+  normalizeAddress,
+  parseEvent,
+  requireAddress,
+  requireEventTables,
+  serializeEvent,
+} from "@streamd/core";
+import type { EventTable, StreamdEvent, Transfer } from "@streamd/core";
 import { EDGE, PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, hashKey, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
+import { eventTableSchema, eventTablesWrite } from "./tables.js";
 
 /** A source cursor to save under `name` alongside a write. */
 export interface StoreCheckpoint {
@@ -103,6 +113,10 @@ function columnText(value: string): string {
   return value.replaceAll("\0", "\uFFFD");
 }
 
+// Nor can `jsonb` parse a lone surrogate, which a JavaScript string from a custom adapter may hold.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const tableText = (value: string) => columnText(value).replace(LONE_SURROGATE, "\uFFFD");
+
 function optionalText(value: unknown, field: string): string | null {
   if (value === undefined) return null;
   if (typeof value !== "string") throw new StreamdError(`Not a valid transfer ${field}: ${String(value)}`);
@@ -132,6 +146,15 @@ function transferRowOf(record: StreamdEvent<Transfer>): TransferRow {
     decimals ?? null,
     json,
   ];
+}
+
+function checkpointParams(checkpoint: StoreCheckpoint | undefined): [string | null, string | null] {
+  const name = checkpoint === undefined ? null : requireName(checkpoint.name);
+  const cursor = checkpoint?.cursor;
+  if (cursor !== undefined && typeof cursor !== "string") {
+    throw new StreamdError("A checkpoint cursor must be a string or undefined");
+  }
+  return [name, cursor ?? null];
 }
 
 function requireName(name: unknown): string {
@@ -251,14 +274,36 @@ export class PostgresEventStore {
     checkpoint: StoreCheckpoint | undefined,
     table?: readonly string[],
   ): Promise<void> {
-    const name = checkpoint === undefined ? null : requireName(checkpoint.name);
-    const cursor = checkpoint?.cursor;
-    if (cursor !== undefined && typeof cursor !== "string") {
-      throw new StreamdError("A checkpoint cursor must be a string or undefined");
-    }
+    const [name, cursor] = checkpointParams(checkpoint);
     await ensureSchema(this.client);
     if (table !== undefined) await ensureSchema(this.client, table);
-    await this.client.query(statement, [JSON.stringify(rows), name, cursor ?? null]);
+    await this.client.query(statement, [JSON.stringify(rows), name, cursor]);
+  }
+
+  /**
+   * Upserts each event into its table of `tables`, creating them on first
+   * use, and, given a checkpoint, saves its cursor, in one statement.
+   * Idempotent on `(version, eventIndex)`. An event with no table, or a value
+   * its column refuses, writes nothing.
+   */
+  async writeTables(tables: readonly EventTable[], events: readonly StreamdEvent[], checkpoint?: StoreCheckpoint): Promise<void> {
+    const rows = eventTableRows(tables, events, tableText);
+    const [name, cursor] = checkpointParams(checkpoint);
+    const spec = requireEventTables(tables);
+    // One statement cannot update a row twice, so a repeated id keeps its last copy.
+    const byTable = new Map<EventTable, Map<string, unknown[]>>();
+    rows.forEach(({ table, values }, i) => {
+      if (!byTable.has(table)) byTable.set(table, new Map());
+      byTable.get(table)!.set(eventId(events[i]!), values);
+    });
+    await ensureSchema(this.client);
+    await ensureSchema(this.client, eventTableSchema(spec));
+    const present = spec.filter((t) => byTable.has(t));
+    if (present.length === 0 && (name === null || cursor === null)) return;
+    const params = present.map((t) =>
+      JSON.stringify([...byTable.get(t)!.values()], (_, v: unknown) => (typeof v === "bigint" ? v.toString() : v)),
+    );
+    await this.client.query(eventTablesWrite(present), [...params, name, cursor]);
   }
 
   /**

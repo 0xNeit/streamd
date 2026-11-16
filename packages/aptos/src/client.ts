@@ -1,5 +1,5 @@
 import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, requireAddress, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -16,15 +16,19 @@ import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
 import { explain } from "./explain.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
+import { IndexerAccountAdapter } from "./indexer.js";
+import { provenanceDescriptor, provenanceSource } from "./provenance.js";
 import { governanceSource, startProposals } from "./governance.js";
 import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
+import { PYTH_DESCRIPTOR, priceSource, pythPriceReader, requireFeedId } from "./prices.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { saleDescriptor, saleSource } from "./sales.js";
 import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
+import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
-import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -36,11 +40,12 @@ export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
  * A `StreamdClient` for Aptos: everything the chain-neutral client does, plus
  * asset transfers and balances, transaction lookups, simulations and the
  * assertions on them, and Aptos names wherever an account is taken. On
- * mainnet and a localnet, `withNames` attaches each sender's primary name
- * through `primaryName`; elsewhere it is refused at the call.
+ * mainnet, `withNames` attaches each sender's primary name through
+ * `primaryName`; elsewhere it is refused at the call.
  */
 export class AptosClient extends StreamdClient {
   protected readonly aptos: Aptos;
+  private readonly pythPrice: (feedId: string, version: bigint) => Promise<Price | undefined>;
 
   constructor(config: AptosClientConfig) {
     const aptos = config?.aptos instanceof Aptos ? config.aptos : config?.aptos === undefined ? undefined : new Aptos(config.aptos);
@@ -48,10 +53,12 @@ export class AptosClient extends StreamdClient {
     const { aptos: _given, ...rest } = config;
     super({ ...rest, adapter: config.adapter ?? new FullnodeScanAdapter(aptos) });
     this.aptos = aptos;
-    // Testnet's ANS router is gone, so only mainnet and a localnet can answer.
+    this.pythPrice = pythPriceReader(aptos, (task) => this.limiter.run(task));
+    // Testnet's ANS router is gone, and a localnet has none published at the
+    // SDK's local router address, so only mainnet can answer.
     const network = aptos.config?.network;
     this.names.serve(
-      network === Network.MAINNET || network === Network.LOCAL
+      network === Network.MAINNET
         ? (address) => primaryName(aptos, address)
         : `withNames needs Aptos names, which network ${network} does not serve`,
     );
@@ -130,11 +137,27 @@ export class AptosClient extends StreamdClient {
     return new EventQuery(source, this.limiter, this.names).getEvents<Activity>(descriptor, rest);
   }
 
+  /**
+   * Follow the funds around `address` (an address or Aptos name) for up to
+   * `hops` hops and resolve a counterparty graph: each node's transfers read
+   * as `getActivity` reads them, one node at a time over one range, so the
+   * client's adapter must serve `account` with `received: true`
+   * (`IndexerAccountAdapter` routed beside a fullnode). Edges sum transfers
+   * per `(from, to, asset)` as bigints, a transfer seen from both ends once.
+   * `maxNodes`, `maxRequests` and `target` end the walk early, named in
+   * `stoppedBy`; `stop` keeps addresses unexpanded. `tracePath` reads a path
+   * out of the result.
+   */
+  async trace(address: string, options: TraceOptions = {}): Promise<FundFlowGraph> {
+    if (typeof address !== "string") throw new StreamdError("trace needs an address or Aptos name");
+    return trace(this.adapter, this.limiter, this.accountOf(address)!, options, this.requestTimeout);
+  }
+
   /** The descriptor, lazy address and name lookup an activity call reads with, refusing bad input at the call. */
   private activityOf(address: string, withNames: unknown) {
     if (typeof address !== "string") throw new StreamdError("activity needs an address or Aptos name");
     const ttl = this.names.ttl(withNames);
-    const name = ttl === undefined ? undefined : (a: string) => this.names.name(a, ttl);
+    const name = ttl === undefined ? undefined : (a: string) => this.names.nameWithinSlot(a, ttl);
     return [activityDescriptor(addressOrName(address) ?? address), this.accountOf(address)!, name] as const;
   }
 
@@ -278,6 +301,53 @@ export class AptosClient extends StreamdClient {
   }
 
   /**
+   * Follow the transactions that touch one Aptos object (a `0x4` token or any
+   * `0x1::object` object) as the Indexer processes them, one record per
+   * transaction whose `data` is a `Provenance`: its mint, transfers, field
+   * mutations, `PropertyMap` and burn, and every write-set change at the
+   * object. Transactions are listed by `indexer`'s `account_transactions`,
+   * which trails the fullnode by hundreds of versions, so the live head is
+   * its processed version; each is read through the adapter's
+   * `getTransactionEventsByVersion`, one at a time and outside
+   * `maxConcurrentRequests`, within the page's `requestTimeout`. Under
+   * `withNames`, `names` holds the sender's and every action address's
+   * primary name. Like `activity()`, it is not a listener for `off()` or
+   * `listenerCount()`.
+   */
+  provenance(object: string, callback: EventCallback<Provenance>, options: ProvenanceListenerOptions = {}): Subscription {
+    const { indexer, ...rest } = options;
+    const [descriptor, source] = this.provenanceOf(object, indexer, rest.withNames);
+    return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, () => source);
+  }
+
+  /**
+   * The history of one object, built as `provenance()` builds it, from
+   * version 0 unless the filter names a start, over the range and options
+   * `getEvents` takes; `where` and `limit` apply to the records. A
+   * transaction the fullnode pruned rejects with its 410 unless the adapter
+   * is an `ArchiveFallbackAdapter`.
+   */
+  async getProvenance(object: string, filter: ProvenanceFilter = {}): Promise<StreamdEvent<Provenance>[]> {
+    const { indexer, ...rest } = filter;
+    const [descriptor, source] = this.provenanceOf(object, indexer, rest.withNames);
+    const start = rest.fromVersion ?? rest.fromTime ?? rest.fromBlock;
+    const range = start === undefined ? { ...rest, fromVersion: 0n } : rest;
+    return new EventQuery(source, this.limiter, this.names).getEvents<Provenance>(descriptor, range);
+  }
+
+  private provenanceOf(object: string, indexer: TransactionLister | undefined, withNames: unknown) {
+    if (typeof object !== "string") throw new StreamdError("provenance needs an object address");
+    const address = requireAddress(object);
+    if (indexer !== undefined && (typeof indexer.getHeadVersion !== "function" || typeof indexer.listTransactionVersions !== "function")) {
+      throw new StreamdError("indexer must implement getHeadVersion and listTransactionVersions");
+    }
+    const ttl = this.names.ttl(withNames);
+    const name = ttl === undefined ? undefined : (a: string) => this.names.nameWithinSlot(a, ttl);
+    const source = provenanceSource(indexer ?? new IndexerAccountAdapter(this.aptos), this.adapter, address, name);
+    return [provenanceDescriptor(address), source] as const;
+  }
+
+  /**
    * Keep one wallet's balances current, by reading each at the head every
    * `pollInterval`, so it cannot drift or fall behind. `asset` names what to
    * follow, one or a list, since no view lists a wallet's assets; without
@@ -321,6 +391,45 @@ export class AptosClient extends StreamdClient {
     if (typeof adapter.view !== "function") throw new StreamdError("balanceAt needs an adapter that implements view");
     const owner = this.accountOf(address)!;
     return APTOS_BALANCES.read(adapter, await owner(), key!, version);
+  }
+
+  /**
+   * Follow Pyth price updates for one feed or a list, each delivered as an
+   * event whose `data` is a `Price`, its staleness measured against the
+   * update's own block time. Every Pyth feed updates through one legacy
+   * handle at Pyth's address, so the walk reads every update and keeps the
+   * named feeds; `cursor` is that handle's sequence number, and with no
+   * `cursor`, `fromVersion` or `fromTime` it starts one version below the head. A feed id is
+   * Pyth's 32-byte price id. Like `swaps()`, it is not a listener for `off()`
+   * or `listenerCount()`. Pyth stopped publishing on Aptos in September 2026,
+   * so this replays history from a past position and a follow from the head
+   * delivers nothing new.
+   */
+  prices(feedId: string | readonly string[], callback: EventCallback<Price>, options: PriceListenerOptions = {}): Subscription {
+    const ids: readonly unknown[] = typeof feedId === "string" ? [feedId] : Array.isArray(feedId) ? feedId : [feedId];
+    if (ids.length === 0) throw new StreamdError("prices needs a Pyth price feed id, or a non-empty list of them");
+    const feeds = new Set(ids.map(requireFeedId));
+    // A handle walk with no start reads from sequence 0 on FullnodeScanAdapter,
+    // so starting at the head is asked for explicitly, by version, which it seeks.
+    const unplaced = options.cursor === undefined && options.fromVersion === undefined && options.fromTime === undefined;
+    const listener = unplaced ? { ...options, fromVersion: -1n } : options;
+    return this.subscribe(PYTH_DESCRIPTOR, callback as EventCallback, listener, undefined, options.id, (source) =>
+      priceSource(source, feeds),
+    );
+  }
+
+  /**
+   * The price Pyth held for `feedId` at `version`, from its latest-price
+   * table, observed at the time of the block holding `version`, so a feed
+   * nobody updated reads as stale; `undefined` when the table had no entry for
+   * the feed then. Reads through the client's `aptos` (Pyth has no view), each
+   * request through the limiter and `requestTimeout`, with no retry. A pruned
+   * version rejects with the fullnode's 410 unless `aptos` is an archive node,
+   * and one above the head with 404.
+   */
+  async priceAt(feedId: string, version: bigint): Promise<Price | undefined> {
+    const id = requireFeedId(feedId);
+    return this.pythPrice(id, requireLedgerVersion(version));
   }
 
   /**

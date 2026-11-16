@@ -35,6 +35,7 @@
         "@streamd/store-postgres": "workspace:*",
         "@streamd/store-sqlite": "workspace:*",
         "@streamd/sui": "workspace:*",
+        "@streamd/testing": "workspace:*",
       },
       "devDependencies": {
         "@aptos-labs/ts-sdk": "^6.3.1",
@@ -84,6 +85,13 @@
         "react": ">=18",
       },
     },
+    "packages/receiver": {
+      "name": "@streamd/receiver",
+      "version": "0.1.0",
+      "dependencies": {
+        "@streamd/core": "workspace:*",
+      },
+    },
     "packages/store-postgres": {
       "name": "@streamd/store-postgres",
       "version": "0.1.0",
@@ -122,6 +130,20 @@
       },
       "peerDependencies": {
         "@mysten/sui": "2.39.1",
+      },
+    },
+    "packages/testing": {
+      "name": "@streamd/testing",
+      "version": "0.1.0",
+      "dependencies": {
+        "@streamd/aptos": "workspace:*",
+        "@streamd/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@aptos-labs/ts-sdk": "^6.3.1",
+      },
+      "peerDependencies": {
+        "@aptos-labs/ts-sdk": ">=1.0.0",
       },
     },
   },
@@ -182,11 +204,15 @@
 
     "@streamd/react": ["@streamd/react@workspace:packages/react"],
 
+    "@streamd/receiver": ["@streamd/receiver@workspace:packages/receiver"],
+
     "@streamd/store-postgres": ["@streamd/store-postgres@workspace:packages/store-postgres"],
 
     "@streamd/store-sqlite": ["@streamd/store-sqlite@workspace:packages/store-sqlite"],
 
     "@streamd/sui": ["@streamd/sui@workspace:packages/sui"],
+
+    "@streamd/testing": ["@streamd/testing@workspace:packages/testing"],
 
     "@szmarczak/http-timer": ["@szmarczak/http-timer@4.0.6", "", { "dependencies": { "defer-to-connect": "^2.0.0" } }, "sha512-4BAffykYOgO+5nzBWYwE3W90sBgLJoUPRWWcL8wlyiM8IB8ipJz3UMJ9KXQd1RKQXpKp8Tutn80HZtWsu2u76w=="],
 

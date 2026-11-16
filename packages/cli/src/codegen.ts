@@ -1,5 +1,9 @@
 import { normalizeAddress, StreamdError } from "@streamd/core";
 import type { FieldAbi, ModuleAbi, MoveType, StructAbi, ViewAbi } from "./abi.js";
+import { arbitraryWriter, BYTE_LENGTH } from "./arbitraries.js";
+import type { ArbitraryContext } from "./arbitraries.js";
+import { eventTables, renderTables, TABLES_IMPORT } from "./sql.js";
+import type { ColumnContext, ColumnMapping, SqlDialect } from "./sql.js";
 
 /** One module, or every module at `address` when `module` is unset. */
 export interface ModuleRef {
@@ -20,6 +24,10 @@ export interface GenerateOptions {
   handles?: boolean;
   /** Writes an `is<Type>` runtime check per generated type; default false. */
   validators?: boolean;
+  /** Writes an `arbitrary<Type>` random payload generator per generated type; default false. */
+  arbitraries?: boolean;
+  /** Writes a table spec per event type and its DDL in this SQL dialect; default none. */
+  sql?: SqlDialect;
   /** How the chain's node writes values as JSON; default Aptos's. */
   dialect?: Dialect;
 }
@@ -42,6 +50,10 @@ export interface Builtin {
   /** Its TypeScript type, given its type arguments' types. */
   type: (args: string[]) => string;
   check: (value: string, ctx: CheckContext) => string;
+  /** An expression for a random value, with `rng` in scope. */
+  arbitrary: (ctx: ArbitraryContext) => string;
+  /** Where its value is stored in an event table; a JSON column when unset. */
+  column?: (ctx: ColumnContext) => ColumnMapping;
   /** Its type arguments never appear in its JSON, so their structs are not generated. */
   opaque?: boolean;
 }
@@ -53,6 +65,9 @@ export interface Dialect {
   variantKey: string;
   /** Source of `streamdIsBytes`, the check of a `vector<u8>`. */
   bytes: string;
+  /** Sources of `streamdAddress` and `streamdBytes`, random values of `address` and `vector<u8>`. */
+  arbitraryAddress: string;
+  arbitraryBytes: string;
   /** The header line saying how wide integers arrive. */
   note: string;
 }
@@ -94,18 +109,32 @@ function builtin(t: StructType) {
 }
 
 const APTOS_BUILTINS: Record<"String" | "Option" | "Object", Builtin> = {
-  String: { type: () => "string", check: (v) => `typeof ${v} === "string"` },
+  String: {
+    type: () => "string",
+    check: (v) => `typeof ${v} === "string"`,
+    arbitrary: (c) => c.use("string"),
+    column: () => ({ type: "text", path: [], nullable: false }),
+  },
   Object: {
     opaque: true,
+    column: () => ({ type: "address", path: ["inner"], nullable: false }),
     type: () => "{ inner: string }",
     check: (v, c) => `${c.use("record", v)} && ${c.use("address", `${v}["inner"]`)}`,
+    // Parenthesised, since a lambda's `=> { inner: ... }` would be a block, returning undefined.
+    arbitrary: (c) => `({ inner: ${c.use("address")} })`,
   },
   Option: {
     type: ([inner]) => `{ vec: [] | [${inner}] }`,
     check: (v, c) => {
       const inner = c.inner(c.args[0]!, c.item);
       const vec = `${v}["vec"]`;
-      return `${c.use("record", v)} && Array.isArray(${vec}) && ${vec}.length <= 1 && ${vec}.every((${c.item}: unknown) => ${inner})`;
+      const items = inner === "true" ? "" : ` && ${vec}.every((${c.item}: unknown) => ${inner})`;
+      return `${c.use("record", v)} && Array.isArray(${vec}) && ${vec}.length <= 1${items}`;
+    },
+    arbitrary: (c) => c.use("option", `rng, (rng) => ${c.inner(c.args[0]!)}`),
+    column: (c) => {
+      const inner = c.inner(c.args[0]!);
+      return { type: inner.type, path: ["vec", 0, ...inner.path], nullable: true };
     },
   },
 };
@@ -117,6 +146,13 @@ const APTOS: Dialect = {
   },
   variantKey: "__variant__",
   bytes: "const streamdIsBytes = (v: unknown) => typeof v === \"string\" && /^0x(?:[0-9a-fA-F]{2})*$/.test(v);",
+  // The fullnode drops an address's leading zeros: 0x1, and 63 digits one time in sixteen.
+  arbitraryAddress:
+    "const streamdAddress = (rng: StreamdRng) => `0x${(rng() % 4 === 0 ? BigInt(rng() % 16) : streamdBits(rng, 256)).toString(16)}`;",
+  arbitraryBytes: [
+    "const streamdBytes = (rng: StreamdRng) =>",
+    `  \`0x\${Array.from({ length: ${BYTE_LENGTH} }, () => (rng() % 256).toString(16).padStart(2, "0")).join("")}\`;`,
+  ].join("\n"),
   note: "// u64, u128, u256, i64, i128 and i256 values are decimal strings, as the fullnode returns them.",
 };
 
@@ -456,7 +492,9 @@ function check(t: MoveType, value: string, guards: Map<string, string>, used: Se
     case "vector": {
       if (t.of.kind === "primitive" && t.of.name === "u8") return use("bytes");
       const item = `v${depth}`;
-      return `Array.isArray(${value}) && ${value}.every((${item}: unknown) => ${check(t.of, item, guards, used, d, depth + 1)})`;
+      const inner = check(t.of, item, guards, used, d, depth + 1);
+      // A vector of a type parameter checks nothing per item, and an unused callback parameter fails noUnusedParameters.
+      return inner === "true" ? `Array.isArray(${value})` : `Array.isArray(${value}) && ${value}.every((${item}: unknown) => ${inner})`;
     }
     case "struct": {
       const known = d.builtin(t);
@@ -552,24 +590,52 @@ export async function generateEventTypes(
       guards.set(e.key, guard);
     }
   }
+  if (options.sql !== undefined) {
+    const clash = entries.find((e) => names.get(e.key) === "StreamdEventTable");
+    if (clash !== undefined) throw new StreamdError(`${qualified(clash)} is named StreamdEventTable, which the generated tables use`);
+  }
+  const generators = new Map<string, string>();
+  if (options.arbitraries) {
+    const reserved = new Set(["StreamdRng", "StreamdEvent", "ModuleEventDescriptor"]);
+    const clash = entries.find((e) => reserved.has(names.get(e.key)!));
+    if (clash !== undefined) {
+      throw new StreamdError(`${qualified(clash)} is named ${names.get(clash.key)}, which the generated generators use`);
+    }
+    for (const e of entries) {
+      let generator = `arbitrary${names.get(e.key)!}`;
+      while (taken.has(generator)) generator += "_";
+      taken.add(generator);
+      generators.set(e.key, generator);
+    }
+  }
   const used = new Set<Helper>();
   const checks = options.validators ? entries.map((e) => renderGuard(e, names.get(e.key)!, guards.get(e.key)!, guards, used, dialect)) : [];
+  const arbitrary = arbitraryWriter(dialect, (t) => generators.get(`${moduleKey(t.address, t.module)}::${t.name}`)!);
+  const arbitraries = options.arbitraries
+    ? entries.map((e) => arbitrary.render({ qualified: qualified(e), type: names.get(e.key)!, generator: generators.get(e.key)!, struct: e.struct }))
+    : [];
+  const hasEvents = entries.some((e) => e.struct.isEvent);
   const header = [
     `// Generated by streamd codegen from the on-chain ABIs of ${targets
       .map((t) => (t.module === undefined ? t.address : `${t.address}::${t.module}`))
       .join(", ")}.`,
     "// Do not edit: regenerate after a module upgrade.",
     dialect.note,
-    ...(entries.some((e) => e.struct.isEvent) ? ['import { defineEvent } from "@streamd/core";'] : []),
+    ...(hasEvents ? ['import { defineEvent } from "@streamd/core";'] : []),
+    ...(options.arbitraries && hasEvents ? ['import type { ModuleEventDescriptor, StreamdEvent } from "@streamd/core";'] : []),
     ...(views.length > 0 ? ['import type { ViewRequest } from "@streamd/core";'] : []),
     ...(handles.length > 0 ? ['import type { HandleEventDescriptor } from "@streamd/core";'] : []),
+    ...(options.sql !== undefined ? [TABLES_IMPORT] : []),
   ];
+  const events = entries.filter((e) => e.struct.isEvent).map((e) => ({ address: e.module.address, module: e.module.name, struct: e.struct }));
   const sections = [
     header.join("\n"),
     ...entries.map((e) => render(e, names, dialect)),
     ...views.map((v, i) => renderView(v, builders[i]!)),
     ...handles.map((h, i) => renderHandle(h, handleBuilders[i]!, names)),
     ...(checks.length > 0 ? [(Object.keys(HELPERS) as Helper[]).filter((h) => used.has(h)).map((h) => (h === "bytes" ? dialect.bytes : HELPERS[h])).join("\n"), ...checks] : []),
+    ...(options.arbitraries ? [...arbitrary.preamble(hasEvents), ...arbitraries] : []),
+    ...(options.sql !== undefined ? [renderTables(eventTables(events, dialect), options.sql)] : []),
   ];
   return `${sections.join("\n\n")}\n`;
 }

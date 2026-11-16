@@ -1,5 +1,6 @@
 import { normalizeAddress, StreamdError } from "@streamd/core";
 import type { FieldAbi, ModuleAbi, MoveType, Primitive, StructAbi } from "./abi.js";
+import { BYTE_LENGTH } from "./arbitraries.js";
 import type { Builtin, Dialect, LoadModule, ModuleRef } from "./codegen.js";
 
 /** The part of a `SuiGrpcClient`'s `movePackageService` codegen reads. */
@@ -269,20 +270,39 @@ export function suiCodegen(service: SuiPackageService): {
   return { targets, load };
 }
 
-const STRING: Builtin = { type: () => "string", check: (v) => `typeof ${v} === "string"` };
-const ID: Builtin = { type: () => "string", check: (v, c) => c.use("address", v) };
+const STRING: Builtin = {
+  type: () => "string",
+  check: (v) => `typeof ${v} === "string"`,
+  arbitrary: (c) => c.use("string"),
+  column: () => ({ type: "text", path: [], nullable: false }),
+};
+const ASCII: Builtin = { ...STRING, arbitrary: (c) => c.use("ascii") };
+const ID: Builtin = {
+  type: () => "string",
+  check: (v, c) => c.use("address", v),
+  arbitrary: (c) => c.use("address"),
+  column: () => ({ type: "address", path: [], nullable: false }),
+};
 
 const SUI_BUILTINS: Record<string, Builtin> = {
   [`${long("0x1")}::string::String`]: STRING,
-  [`${long("0x1")}::ascii::String`]: STRING,
-  [`${long("0x1")}::type_name::TypeName`]: STRING,
-  [`${long("0x2")}::url::Url`]: STRING,
+  [`${long("0x1")}::ascii::String`]: ASCII,
+  [`${long("0x1")}::type_name::TypeName`]: { ...STRING, arbitrary: (c) => c.use("typeName") },
+  [`${long("0x2")}::url::Url`]: ASCII,
   [`${long("0x2")}::object::ID`]: ID,
   [`${long("0x2")}::object::UID`]: ID,
-  [`${long("0x2")}::balance::Balance`]: { opaque: true, type: () => "string", check: (v, c) => c.use("uint", v) },
+  [`${long("0x2")}::balance::Balance`]: {
+    opaque: true,
+    type: () => "string",
+    check: (v, c) => c.use("uint", v),
+    arbitrary: (c) => `String(${c.use("int", "rng, 64, false")})`,
+    column: () => ({ type: "u64", path: [], nullable: false }),
+  },
   [`${long("0x1")}::option::Option`]: {
     type: ([inner]) => `${inner} | null`,
     check: (v, c) => `(${v} === null || ${c.inner(c.args[0]!, v)})`,
+    arbitrary: (c) => `(rng() % 2 === 0 ? null : ${c.inner(c.args[0]!)})`,
+    column: (c) => ({ ...c.inner(c.args[0]!), nullable: true }),
   },
 };
 
@@ -292,5 +312,19 @@ export const SUI_DIALECT: Dialect = {
   variantKey: "@variant",
   bytes:
     "const streamdIsBytes = (v: unknown) => typeof v === \"string\" && /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(v);",
+  arbitraryAddress:
+    "const streamdAddress = (rng: StreamdRng) =>\n  `0x${(rng() % 4 === 0 ? BigInt(rng() % 16) : streamdBits(rng, 256)).toString(16).padStart(64, \"0\")}`;",
+  arbitraryBytes: [
+    "function streamdBytes(rng: StreamdRng): string {",
+    "  const abc = \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\";",
+    `  const b = Array.from({ length: ${BYTE_LENGTH} }, () => rng() % 256);`,
+    "  let out = \"\";",
+    "  for (let i = 0; i < b.length; i += 3) {",
+    "    const n = (b[i]! << 16) | ((b[i + 1] ?? 0) << 8) | (b[i + 2] ?? 0);",
+    "    out += abc[n >> 18]! + abc[(n >> 12) & 63]! + (i + 1 < b.length ? abc[(n >> 6) & 63]! : \"=\") + (i + 2 < b.length ? abc[n & 63]! : \"=\");",
+    "  }",
+    "  return out;",
+    "}",
+  ].join("\n"),
   note: "// u64, u128 and u256 values are decimal strings, and vector<u8> values base64, as the Sui node returns them.",
 };

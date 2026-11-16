@@ -198,14 +198,14 @@ describe("withNames", () => {
   });
 
   it("names a live subscription's events", async () => {
-    const { client } = named(Network.LOCAL);
+    const { client } = named(Network.MAINNET);
     const seen = await client.once({ kind: "module", eventType: TYPE }, { fromVersion: 0n, withNames: true });
     expect(seen.senderName).toBe("alice.apt");
     client.destroy();
   });
 
   it("is refused at the call on networks without Aptos names, which still work without it", async () => {
-    for (const network of [Network.TESTNET, Network.DEVNET, Network.CUSTOM]) {
+    for (const network of [Network.TESTNET, Network.DEVNET, Network.LOCAL, Network.CUSTOM]) {
       const aptos = new Aptos(new AptosConfig({ network, clientConfig: { http2: false }, ...(network === Network.CUSTOM && { fullnode: "http://127.0.0.1:1/v1" }) }));
       const client = testClient({ adapter: new MemoryAdapter(HISTORY), aptos });
       expect(() => client.on({ kind: "module", eventType: TYPE }, () => {}, { withNames: true })).toThrow(

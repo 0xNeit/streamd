@@ -1,6 +1,8 @@
 import { count, serializeEvent, sum } from "@streamd/core";
 import type { Fold, StreamdClient, StreamdEvent, Subscription } from "@streamd/core";
-import type { AlertRule } from "./alert-rules.js";
+import type { AlertRule, Anomaly } from "./alert-rules.js";
+import { band, decimal, outside } from "./anomaly.js";
+import type { Band } from "./anomaly.js";
 import type { AlertOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { filterPredicate } from "./filter.js";
@@ -22,6 +24,16 @@ export interface AlertWindow {
   start: bigint;
   value: bigint;
   fired: boolean;
+  /** Anomaly rules only: the values of the closed windows before this one, oldest first. Replaced, never mutated. */
+  history?: readonly bigint[];
+  /** Anomaly rules only: the first window after a fresh start, which may have begun mid-window. */
+  partial?: boolean;
+}
+
+/** One alert to send: the window it is about and, for an anomaly, how it left its band. */
+export interface Fire {
+  window: AlertWindow;
+  anomaly?: { side: "above" | "below"; band: Band; baselineWindows: number };
 }
 
 /** A cursor and the window as of the end of the page that cursor follows. */
@@ -33,7 +45,8 @@ interface Position {
 interface Entry {
   rule: AlertRule;
   fold: Fold<bigint>;
-  limit: bigint;
+  /** The count or sum threshold; undefined for an anomaly rule. */
+  limit: bigint | undefined;
   /** The last position known to be consistent; what the cursor file holds for this rule. */
   confirmed?: Position;
   /** The window after the last page delivered, which the next page continues. */
@@ -45,13 +58,21 @@ interface Entry {
 
 const INTEGER = /^-?\d+$/;
 
+const isInteger = (value: unknown): value is string => typeof value === "string" && INTEGER.test(value);
+
 function savedWindow(raw: unknown): AlertWindow | undefined {
   if (raw === undefined) return undefined;
-  const { start, value, fired } = (raw ?? {}) as Record<string, unknown>;
-  if (typeof start !== "string" || !INTEGER.test(start) || typeof value !== "string" || !INTEGER.test(value) || typeof fired !== "boolean") {
-    throw new Error("malformed window");
-  }
-  return { start: BigInt(start), value: BigInt(value), fired };
+  const { start, value, fired, history, partial } = (raw ?? {}) as Record<string, unknown>;
+  if (!isInteger(start) || !isInteger(value) || typeof fired !== "boolean") throw new Error("malformed window");
+  if (history !== undefined && !(Array.isArray(history) && history.every(isInteger))) throw new Error("malformed window");
+  if (partial !== undefined && partial !== true) throw new Error("malformed window");
+  return {
+    start: BigInt(start),
+    value: BigInt(value),
+    fired,
+    ...(history !== undefined && { history: history.map((v: string) => BigInt(v)) }),
+    ...(partial === true && { partial }),
+  };
 }
 
 /** Every saved entry by rule name, each still raw so entries for rules no longer in the file are kept as they are. */
@@ -95,40 +116,134 @@ function serialized(entry: Entry, position: Position) {
   return {
     rule: entry.rule.fingerprint,
     cursor: position.cursor,
-    ...(window !== undefined && { window: { start: `${window.start}`, value: `${window.value}`, fired: window.fired } }),
+    ...(window !== undefined && {
+      window: {
+        start: `${window.start}`,
+        value: `${window.value}`,
+        fired: window.fired,
+        ...(window.history !== undefined && { history: window.history.map(String) }),
+        ...(window.partial === true && { partial: true }),
+      },
+    }),
   };
 }
 
+// History arrays are never mutated, so a band computed once serves every event of its window.
+const bands = new WeakMap<readonly bigint[], Band>();
+
 /**
- * The window after `event`, and whether it crossed the threshold; throws when
- * the event has no timestamp, which places no window.
+ * The alert for a window outside its band, marking it fired; undefined when it
+ * fired already, is partial, has too short a baseline, lies inside the band,
+ * or lies on a side the rule ignores. An open window can only fire `above`,
+ * since a count that is low now may still grow.
+ */
+function judge(anomaly: Anomaly, window: AlertWindow, closed: boolean): Fire | undefined {
+  const history = window.history ?? [];
+  if (window.fired || window.partial === true || history.length < anomaly.minBaseline) return undefined;
+  let b = bands.get(history);
+  if (b === undefined) bands.set(history, (b = band(history, anomaly.k)));
+  const side = outside(b, window.value);
+  if (side === undefined || (!closed && side === "below") || (anomaly.direction !== "both" && anomaly.direction !== side)) return undefined;
+  window.fired = true;
+  return { window, anomaly: { side, band: b, baselineWindows: history.length } };
+}
+
+const appended = (history: readonly bigint[], value: bigint, max: number) => [...history, value].slice(-max);
+
+/**
+ * Closes `window` and every empty window before the one starting at `start`,
+ * and returns the new open window with the baseline they leave. A run of
+ * empty windows is judged once, so one outage sends one alert rather than
+ * one per window.
+ */
+function close(anomaly: Anomaly, length: bigint, window: AlertWindow, start: bigint, fires: Fire[]): AlertWindow {
+  const closing = { ...window };
+  const fire = judge(anomaly, closing, true);
+  if (fire !== undefined) fires.push(fire);
+  let history = closing.partial === true ? (closing.history ?? []) : appended(closing.history ?? [], closing.value, anomaly.baseline);
+  const gap = (start - closing.start) / length - 1n;
+  if (gap > 0n) {
+    // Past `baseline` empty windows the baseline is all zeros whatever the gap.
+    const empty = gap < BigInt(anomaly.baseline) ? Number(gap) : anomaly.baseline;
+    // The run is judged at its first window whose baseline is long enough, which may lie inside the gap.
+    const judged = Math.max(0, anomaly.minBaseline - history.length);
+    if (judged < empty) {
+      const before = [...history, ...Array<bigint>(judged).fill(0n)];
+      const at = closing.start + BigInt(judged + 1) * length;
+      const zero = judge(anomaly, { start: at, value: 0n, fired: false, history: before }, true);
+      if (zero !== undefined) fires.push(zero);
+    }
+    history = [...history, ...Array<bigint>(empty).fill(0n)].slice(-anomaly.baseline);
+  }
+  return { start, value: 0n, fired: false, history };
+}
+
+/**
+ * The window after `event`, and the alerts it raised; throws when the event
+ * has no timestamp, which places no window, or when the fold refuses it,
+ * leaving the window as it was.
  */
 export function advance(
   entry: Pick<Entry, "rule" | "fold" | "limit">,
   window: AlertWindow | undefined,
   event: StreamdEvent,
-): { window: AlertWindow; fire: boolean } {
+): { window: AlertWindow; fires: Fire[] } {
   const { timestamp } = event;
   if (timestamp === undefined) {
     throw new Error(`the event at version ${event.version} has no timestamp, so no window can be placed`);
   }
-  const start = timestamp - (timestamp % entry.rule.window);
-  const open = window?.start === start ? window : { start, value: entry.fold.initial, fired: false };
-  const value = entry.fold(open.value, event);
-  const fire = !open.fired && value >= entry.limit;
-  return { window: { start, value, fired: open.fired || fire }, fire };
+  const { rule, fold, limit } = entry;
+  const start = timestamp - (timestamp % rule.window);
+  if (!("anomaly" in rule.threshold)) {
+    const open = window?.start === start ? window : { start, value: fold.initial, fired: false };
+    const value = fold(open.value, event);
+    const fire = !open.fired && value >= limit!;
+    const next = { start, value, fired: open.fired || fire };
+    return { window: next, fires: fire ? [{ window: next }] : [] };
+  }
+  const { anomaly } = rule.threshold;
+  const fires: Fire[] = [];
+  const open =
+    window === undefined
+      ? { start, value: fold.initial, fired: false, history: [], partial: true }
+      : // Timestamps never decrease along an Aptos or Sui walk; an earlier one counts in the open window rather than reopening the past.
+        start <= window.start
+        ? window
+        : close(anomaly, rule.window, window, start, fires);
+  const next: AlertWindow = { ...open, value: fold(open.value, event) };
+  const fire = judge(anomaly, next, false);
+  if (fire !== undefined) fires.push(fire);
+  return { window: next, fires };
+}
+
+function thresholdJson(rule: AlertRule): unknown {
+  const { threshold } = rule;
+  if ("count" in threshold) return { count: `${threshold.count}` };
+  if ("gte" in threshold) return { sum: threshold.sum, gte: `${threshold.gte}` };
+  const { baseline, minBaseline, ...rest } = threshold.anomaly;
+  return { anomaly: { ...rest, baseline: `${baseline}`, minBaseline: `${minBaseline}` } };
 }
 
 /** The JSON body POSTed for an alert; `id` is the same on every redelivery. */
-export function alertBody(rule: AlertRule, window: AlertWindow, event: StreamdEvent): string {
-  const { threshold } = rule;
+export function alertBody(rule: AlertRule, fire: Fire, event: StreamdEvent): string {
+  const { window, anomaly } = fire;
   const head = JSON.stringify({
     id: `${rule.name}:${window.start}`,
     rule: rule.name,
     windowStart: `${window.start}`,
     windowEnd: `${window.start + rule.window}`,
-    threshold: "count" in threshold ? { count: `${threshold.count}` } : { sum: threshold.sum, gte: `${threshold.gte}` },
+    threshold: thresholdJson(rule),
     value: `${window.value}`,
+    ...(anomaly !== undefined && {
+      anomaly: {
+        side: anomaly.side,
+        median: decimal(anomaly.band.median),
+        mad: decimal(anomaly.band.mad),
+        low: decimal(anomaly.band.low),
+        high: decimal(anomaly.band.high),
+        baselineWindows: `${anomaly.baselineWindows}`,
+      },
+    }),
   });
   return `${head.slice(0, -1)},"event":${serializeEvent(event)}}`;
 }
@@ -150,8 +265,10 @@ export function runAlert(options: AlertOptions, rules: readonly AlertRule[], io:
   try {
     raw = readState(options.cursorFile);
     for (const rule of rules) {
-      const fold = "count" in rule.threshold ? count() : sum(rule.threshold.sum);
-      const limit = "count" in rule.threshold ? rule.threshold.count : rule.threshold.gte;
+      const { threshold } = rule;
+      const summed = "anomaly" in threshold ? threshold.anomaly.sum : "sum" in threshold ? threshold.sum : undefined;
+      const fold = summed === undefined ? count() : sum(summed);
+      const limit = "count" in threshold ? threshold.count : "gte" in threshold ? threshold.gte : undefined;
       const entry: Entry = { rule, fold, limit };
       if (Object.hasOwn(raw, rule.name)) {
         entry.confirmed = savedPosition(raw[rule.name], rule, options.cursorFile);
@@ -231,11 +348,14 @@ export function runAlert(options: AlertOptions, rules: readonly AlertRule[], io:
               continue;
             }
             window = next.window;
-            if (next.fire && !(await deliver(alertBody(rule, window, event), sink, options.retries, io))) {
-              if (!io.signal.aborted) report(`rule ${name}: the alert for the window at ${window.start} was not delivered`);
-              ok = false;
-              break;
+            for (const fire of next.fires) {
+              if (!(await deliver(alertBody(rule, fire, event), sink, options.retries, io))) {
+                if (!io.signal.aborted) report(`rule ${name}: the alert for the window at ${fire.window.start} was not delivered`);
+                ok = false;
+                break;
+              }
             }
+            if (!ok) break;
           }
         } catch (err) {
           ok = false;

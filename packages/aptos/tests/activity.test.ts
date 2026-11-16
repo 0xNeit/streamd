@@ -184,6 +184,14 @@ describe("activity through the client", () => {
     expect(reads.filter((r) => r.startsWith("primary"))).toHaveLength(2);
   });
 
+  it("names records under maxConcurrentRequests: 1, whose only slot the page holds", async () => {
+    const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig: { http2: false } }));
+    aptos.getPrimaryName = async () => undefined;
+    const client = testClient({ adapter: adapter(HISTORY), aptos, maxConcurrentRequests: 1, requestTimeout: 1000 });
+    const records = await client.getActivity(ALICE, { fromVersion: 0n, toVersion: 1n, withNames: true });
+    expect(records.map((r) => r.data.names)).toEqual([{ [ALICE]: null, [BOB]: null }]);
+  });
+
   it("follows live, delivering pushed transactions once, as no listener", async () => {
     const memory = new MemoryAdapter(HISTORY.slice(0, 2));
     const base: EventAdapter = { ...adapter([]), fetchEvents: (d, o) => memory.fetchEvents(d, o) };
