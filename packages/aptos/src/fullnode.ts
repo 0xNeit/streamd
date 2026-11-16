@@ -473,11 +473,21 @@ export class FullnodeScanAdapter implements EventAdapter {
         options: { ledgerVersion: version },
       });
     } catch (err) {
-      const status = (err as { status?: unknown } | null)?.status;
+      const status = (err as { status?: unknown; data?: { vm_error_code?: unknown; error_code?: unknown } } | null)?.status;
       const message = `Fullnode view ${fn} at version ${version} failed: ${
         err instanceof Error ? err.message : "unknown error"
       }`;
-      if (status === 400) throw new StreamdError(message);
+      if (status === 400) {
+        const data = (err as { data?: { vm_error_code?: unknown; error_code?: unknown } } | null)?.data;
+        const failure = new StreamdError(message);
+        if (
+          (data?.vm_error_code !== undefined && data.vm_error_code !== 4016) ||
+          (data?.error_code !== undefined && data.error_code !== "vm_error")
+        ) {
+          Object.assign(failure, { aborted: false });
+        }
+        throw failure;
+      }
       throw new StreamdNetworkError(message, typeof status === "number" ? status : undefined);
     }
   }

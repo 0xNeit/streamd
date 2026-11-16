@@ -1,7 +1,8 @@
+import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { testClient } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
-import { MemoryAdapter } from "@streamd/core";
-import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import { MemoryAdapter, RoutingAdapter, StreamdError, StreamdNetworkError } from "@streamd/core";
+import { FullnodeScanAdapter } from "../src/fullnode.js";
 import { TRANSFER_DESCRIPTOR, formatAmount, transferSource } from "../src/transfers.js";
 import type { EventAdapter, FetchOptions, StreamdEvent, ViewRequest } from "@streamd/core";
 import type { Transfer } from "../src/types.js";
@@ -505,7 +506,9 @@ describe("transferSource with asset info", () => {
         return inner.adapter.view!(request, version, descriptor);
       },
     };
-    await expect(fetch(transferSource(adapter, undefined, undefined, true))).rejects.toThrow("malformed");
+    const err = await fetch(transferSource(adapter, undefined, undefined, true)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("malformed");
   });
 });
 
@@ -782,5 +785,99 @@ describe("transfers with requestTimeout", () => {
     });
     client.destroy();
     expect(record.data.amount).toBe(100n);
+  });
+
+  it("fails instead of skipping on non-abort 400 view errors from FullnodeScanAdapter", async () => {
+    let viewCalls = 0;
+    const aptos = new Aptos(
+      new AptosConfig({
+        network: Network.LOCAL,
+        fullnode: "http://fake/v1",
+        client: {
+          provider: async <Req, Res>() => {
+            viewCalls++;
+            return {
+              status: 400,
+              statusText: "Bad Request",
+              data: { message: "bad args", error_code: "invalid_input" } as unknown as Res,
+              headers: {},
+            };
+          },
+        },
+      }),
+    );
+    const fullnode = new FullnodeScanAdapter(aptos);
+    const memory = new MemoryAdapter([fa(9, 0, "Deposit", "b1", "1")]);
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => memory.fetchEvents(d, o),
+      view: (req, version) => fullnode.view(req, version),
+    };
+    const err = await transferSource(adapter).fetchEvents(TRANSFER_DESCRIPTOR, all).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect(viewCalls).toBe(1);
+
+    const coinMemory = new MemoryAdapter([coin(9, 0, "Deposit", ALICE, "5")]);
+    const infoAdapter: EventAdapter = {
+      fetchEvents: (d, o) => coinMemory.fetchEvents(d, o),
+      view: (req, version) => fullnode.view(req, version),
+    };
+    const infoErr = await transferSource(infoAdapter, undefined, undefined, true)
+      .fetchEvents(TRANSFER_DESCRIPTOR, all)
+      .catch((e: unknown) => e);
+    expect(infoErr).toBeInstanceOf(StreamdError);
+    expect(infoErr).not.toBeInstanceOf(StreamdNetworkError);
+  });
+
+  it("fails instead of hiding tokens when a routed adapter lacks view", async () => {
+    const routed = new RoutingAdapter({
+      module: new MemoryAdapter([moved(4, 2, NFT, ALICE, BOB)]),
+      default: withViews([]).adapter,
+    });
+    const source = transferSource(routed);
+    const err = await source.fetchEvents(TRANSFER_DESCRIPTOR, all).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("does not run views");
+  });
+
+  it("retries malformed view address or metadata answers under maxErrors", async () => {
+    for (const kind of ["address", "metadata"] as const) {
+      let attempt = 0;
+      const base = withViews([fa(1, 0, "Deposit", "b1", "7")], (call) => {
+        if (kind === "address" && attempt === 1 && call.function === METADATA) return [];
+        return undefined;
+      });
+      const adapter: EventAdapter = {
+        ...base.adapter,
+        fetchEvents: async (d, o) => {
+          attempt++;
+          return base.adapter.fetchEvents(d, o);
+        },
+        view: async (req, v, d) => {
+          if (kind === "metadata" && attempt === 1 && req.function.endsWith("::symbol")) return [7];
+          if (kind === "metadata" && attempt === 1 && req.function.endsWith("::decimals")) return [8];
+          return base.adapter.view!(req, v, d);
+        },
+      };
+      const errors: unknown[] = [];
+      const client = testClient({ adapter });
+      const record = await new Promise<StreamdEvent<Transfer>>((resolve, reject) => {
+        client.transfers(resolve, {
+          fromVersion: 0n,
+          pollInterval: 1,
+          maxBackoff: 1,
+          maxErrors: 2,
+          withAssetInfo: kind === "metadata",
+          onError: (err) => {
+            errors.push(err);
+            if (errors.length > 1) reject(err);
+          },
+        });
+      });
+      client.destroy();
+      expect(record.data.amount).toBe(7n);
+      expect(errors).toHaveLength(1);
+    }
   });
 });

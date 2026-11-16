@@ -1078,8 +1078,9 @@ Adapter calls start at least `1000 / maxRequestsPerSecond` ms apart, with no bur
 every subscription and query on the client. A fraction is allowed: `0.5` is one call every two
 seconds. It counts what `maxConcurrentRequests` counts, shares its queue, and combines with
 it. The unit is one adapter call, so a module-event scan may make several HTTP requests per
-call and needs a lower number. `ownedBy` predicates read through the SDK directly and are
-not counted.
+call and needs a lower number. `ownedBy` predicates read through the SDK directly, and the
+internal `view` reads inside `transfers()` / `getTransfers()` (up to 4 concurrent per call) and
+`balances()` run inside their page fetch, so none of those are spaced by `maxRequestsPerSecond`.
 
 ### Limit concurrent requests
 
@@ -2512,7 +2513,9 @@ wallet.unsubscribe();
   token object rejects `ready`.
 - **Cost.** One head read and one view per followed asset every `pollInterval`
   (default 1 second), so raise it for a long list on the anonymous rate limit.
-  `onChange` sees each poll's result, not every transaction in between.
+  `onChange` sees each poll's result, not every transaction in between. The
+  inner asset views run inside the poll fetch (when fetching through a `streamd` client
+  with `maxRequestsPerSecond`, they are not spaced separately).
 - **Failures.** `ready` rejects if the first read fails. A later failed read retries
   with backoff, and `maxErrors` stops it; a view that aborts stops it at once. A balances handle is not a listener for
   `off()` or `listenerCount()`.

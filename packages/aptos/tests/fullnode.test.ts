@@ -1455,15 +1455,31 @@ describe("FullnodeScanAdapter view", () => {
     expect((args as Error).message).not.toContain("secret-arg");
   });
 
-  it("refuses an aborting view as invalid input, with no cause", async () => {
+  it("refuses an aborting view as invalid input, and marks non-abort 400s aborted: false", async () => {
     const { aptos } = fakeNode(() => ({ status: 400, data: { message: "nope" } }));
     const err = await new FullnodeScanAdapter(aptos)
       .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as { aborted?: boolean }).aborted).toBeUndefined();
     expect((err as StreamdError).cause).toBeUndefined();
     expect((err as Error).message).toContain(`${BALANCE} at version 5`);
+
+    const invalid = fakeNode(() => ({ status: 400, data: { message: "bad args", error_code: "invalid_input" } }));
+    const rejected = await new FullnodeScanAdapter(invalid.aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(rejected).toBeInstanceOf(StreamdError);
+    expect(rejected).not.toBeInstanceOf(StreamdNetworkError);
+    expect((rejected as { aborted?: boolean }).aborted).toBe(false);
+
+    const otherVm = fakeNode(() => ({ status: 400, data: { message: "out of gas", error_code: "vm_error", vm_error_code: 4002 } }));
+    const nonAbortVm = await new FullnodeScanAdapter(otherVm.aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(nonAbortVm).toBeInstanceOf(StreamdError);
+    expect((nonAbortVm as { aborted?: boolean }).aborted).toBe(false);
   });
 
   it("rejects a pruned version and other node errors as network errors with status and no cause", async () => {
