@@ -15,6 +15,7 @@ export type { AptosClientConfig } from "./client.js";
 export { primaryName, resolveName } from "./names.js";
 export { formatAmount } from "./transfers.js";
 export { proposalState } from "./governance.js";
+export { tracePath } from "./trace.js";
 export type {
   AbiChanges,
   AccountBalanceChange,
@@ -38,6 +39,7 @@ export type {
   ExpectPreviewOptions,
   ExplainOptions,
   FunctionSignature,
+  FundFlowGraph,
   GasUsage,
   PackageUpgrade,
   PreviewEventsOptions,
@@ -69,6 +71,9 @@ export type {
   SwapOptions,
   SwapProtocol,
   TokenProperty,
+  TraceEdge,
+  TraceNode,
+  TraceOptions,
   TransactionExplanation,
   TransactionLister,
   Transfer,

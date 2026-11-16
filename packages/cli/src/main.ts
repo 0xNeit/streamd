@@ -1,5 +1,8 @@
+import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { writeFile } from "node:fs/promises";
 import { Aptos, getAptosFullNode } from "@aptos-labs/ts-sdk";
 import { listEventHandles } from "@streamd/aptos";
@@ -13,9 +16,11 @@ import type {
   CheckOptions,
   CodegenOptions,
   CompareOptions,
+  CoverageOptions,
   Endpoint,
   ForwardOptions,
   HandlesOptions,
+  InspectOptions,
   MonitorOptions,
   NameOptions,
   ParsedCommand,
@@ -33,17 +38,20 @@ import type { AlertRule } from "./alert-rules.js";
 import { runBalances } from "./balances.js";
 import { openCache } from "./cache.js";
 import type { PageCache } from "./cache.js";
-import { aptosConfig, chainFor } from "./chain.js";
+import { aptosConfig, chainFor, resourceReader } from "./chain.js";
 import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
 import { generateEventTypes } from "./codegen.js";
+import { runCoverage } from "./coverage.js";
 import { checkGenerated } from "./codegen-check.js";
 import { SUI_DIALECT, suiCodegen } from "./sui-abi.js";
 import { loadSui } from "./sui.js";
 import type { SuiNetworkPreset } from "@streamd/sui";
+import { startLocalnet } from "@streamd/testing";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
 import { runHandles } from "./handles.js";
+import { runInspect } from "./inspect.js";
 import { runMonitor, serveMetrics } from "./monitor.js";
 import { runName } from "./name.js";
 import { runQuery } from "./query.js";
@@ -271,6 +279,23 @@ async function watch(options: WatchCommandOptions): Promise<number> {
   }
 }
 
+async function inspect(options: InspectOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runInspect(options, {
+      client,
+      read: resourceReader(options, options.address, options.resourceType),
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
 async function handles(options: HandlesOptions): Promise<number> {
   const controller = new AbortController();
   const out = stdout(controller);
@@ -366,7 +391,12 @@ async function suiSource(options: CodegenOptions): Promise<string> {
   const preset = suiNetworks[options.network as SuiNetworkPreset["network"]];
   const grpc = new SuiGrpcClient({ ...preset, ...(options.nodeUrl !== undefined && { baseUrl: options.nodeUrl }) });
   const { targets, load } = suiCodegen(grpc.movePackageService);
-  return generateEventTypes(await targets(options.modules), load, { dialect: SUI_DIALECT, validators: options.validators === true });
+  return generateEventTypes(await targets(options.modules), load, {
+    dialect: SUI_DIALECT,
+    validators: options.validators === true,
+    arbitraries: options.arbitraries === true,
+    ...(options.sql !== undefined && { sql: options.sql }),
+  });
 }
 
 async function write(options: CodegenOptions, source: string): Promise<number> {
@@ -423,11 +453,52 @@ async function codegen(options: CodegenOptions): Promise<number> {
     } while (start !== undefined);
     return abis;
   };
-  return write(options, await generateEventTypes(options.modules, load, { list, validators: options.validators === true }));
+  return write(options, await generateEventTypes(options.modules, load, {
+    list,
+    validators: options.validators === true,
+    arbitraries: options.arbitraries === true,
+    ...(options.sql !== undefined && { sql: options.sql }),
+  }));
+}
+
+async function coverage(options: CoverageOptions): Promise<number> {
+  const out = stdout(new AbortController());
+  const interrupted = new AbortController();
+  let child: ChildProcess | undefined;
+  // The first signal is waited out so the localnet is stopped rather than left running. Ctrl-C
+  // already reaches the command through the process group, so only SIGTERM and SIGHUP are
+  // passed on. A second signal kills the command, or with none running exits, where the
+  // testing kit's exit hook kills the node.
+  const interrupt = (signal: NodeJS.Signals) => {
+    if (!interrupted.signal.aborted) {
+      interrupted.abort();
+      if (signal !== "SIGINT") child?.kill(signal);
+    } else if (child !== undefined) child.kill("SIGKILL");
+    else process.exit(130);
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, interrupt);
+  const code = await runCoverage(options, {
+    start: () => startLocalnet(),
+    // The command's stdout goes to stderr, so it cannot mix with the report.
+    run: (command, env) =>
+      new Promise((resolve, reject) => {
+        child = spawn(command[0]!, command.slice(1), { stdio: ["inherit", 2, "inherit"], env: { ...process.env, ...env } });
+        child.once("error", reject);
+        child.once("close", (exit, signal) => {
+          child = undefined;
+          resolve(exit ?? 128 + (signal === null ? 0 : osConstants.signals[signal]));
+        });
+      }),
+    write: out.write,
+    error: (message) => process.stderr.write(`${message}\n`),
+    signal: interrupted.signal,
+  });
+  return out.exitCode(code);
 }
 
 async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise<number> {
   if (parsed.command === "codegen") return codegen(parsed.options);
+  if (parsed.command === "coverage") return coverage(parsed.options);
   if (parsed.command === "compare") return compare(parsed.options);
   if (parsed.command === "monitor") return monitor(parsed.options);
   if (parsed.command === "store") return store(parsed.options);
@@ -439,6 +510,7 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "transfers") return transfers(parsed.options);
   if (parsed.command === "balances") return balances(parsed.options);
   if (parsed.command === "watch") return watch(parsed.options);
+  if (parsed.command === "inspect") return inspect(parsed.options);
   if (parsed.command === "handles") return handles(parsed.options);
   if (parsed.command === "name") return name(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
@@ -451,7 +523,7 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return 0;
   }
-  if (parsed.options.stats !== true) return run(parsed);
+  if (!("stats" in parsed.options) || parsed.options.stats !== true) return run(parsed);
   const counted = (stats = new RequestStats());
   const stop = onStatsSignal(() => process.stderr.write(counted.line()));
   try {

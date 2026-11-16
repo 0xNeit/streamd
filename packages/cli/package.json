@@ -13,14 +13,16 @@
     "build": "bun build.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "test:integration": "STREAMD_INTEGRATION=1 bun test tests/integration"
+    "test:integration": "STREAMD_INTEGRATION=1 bun test tests/integration",
+    "test:localnet": "STREAMD_LOCALNET=1 bun test tests/integration/coverage.test.ts"
   },
   "dependencies": {
     "@streamd/aptos": "workspace:*",
     "@streamd/core": "workspace:*",
     "@streamd/store-postgres": "workspace:*",
     "@streamd/store-sqlite": "workspace:*",
-    "@streamd/sui": "workspace:*"
+    "@streamd/sui": "workspace:*",
+    "@streamd/testing": "workspace:*"
   },
   "peerDependencies": {
     "@aptos-labs/ts-sdk": ">=1.0.0",

@@ -166,6 +166,30 @@ export interface WatchCommandOptions extends Endpoint {
   decode?: string[];
 }
 
+/** Aptos only. Exactly one of `at` and `fromVersion` is set. */
+export interface InspectOptions extends Endpoint {
+  /** Long form. */
+  address: string;
+  resourceType: string;
+  /** `--at`: print the value at this version instead of a range's changes. */
+  at?: bigint;
+  fromVersion?: bigint;
+  /** Set with `fromVersion`. */
+  toVersion?: bigint | "head";
+  /** Records printed, with `fromVersion`. */
+  limit?: number;
+  format: "json" | "pretty";
+}
+
+/** Runs on a localnet it starts itself, so it takes no endpoint. */
+export interface CoverageOptions {
+  /** The Move package directory, holding `Move.toml`. */
+  packageDir: string;
+  /** The test command and its arguments, run after the publish; never empty. */
+  command: string[];
+  format: "json" | "pretty";
+}
+
 /** Aptos only: Sui has no event handles. */
 export interface HandlesOptions extends Endpoint {
   /** An address or name; validated and resolved by `listEventHandles`. */
@@ -230,6 +254,10 @@ export interface CodegenOptions extends Endpoint {
   out?: string;
   /** Also write an `is<Type>` runtime check per generated type. */
   validators?: boolean;
+  /** Also write an `arbitrary<Type>` random payload generator per generated type. */
+  arbitraries?: boolean;
+  /** Also write a table spec per event type and its DDL in this SQL dialect. */
+  sql?: "sqlite" | "postgres";
   /** Compare with `out` instead of writing it; set only with `out`. */
   check?: boolean;
 }
@@ -247,9 +275,11 @@ export type ParsedCommand =
   | { command: "transfers"; options: TransfersOptions }
   | { command: "balances"; options: BalancesCommandOptions }
   | { command: "watch"; options: WatchCommandOptions }
+  | { command: "inspect"; options: InspectOptions }
   | { command: "handles"; options: HandlesOptions }
   | { command: "name"; options: NameOptions }
   | { command: "codegen"; options: CodegenOptions }
+  | { command: "coverage"; options: CoverageOptions }
   | { command: "compare"; options: CompareOptions }
   | { command: "monitor"; options: MonitorOptions };
 
@@ -427,6 +457,17 @@ const WATCH_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const INSPECT_OPTIONS = {
+  ...READ_OPTIONS,
+  resource: { type: "string" },
+  at: { type: "string" },
+  "from-version": { type: "string" },
+  "to-version": { type: "string" },
+  limit: { type: "string" },
+  format: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 /** `handles` and `name`: one positional and the endpoint. */
 const HANDLES_OPTIONS = {
   ...ENDPOINT_OPTIONS,
@@ -444,10 +485,17 @@ const CHECK_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const COVERAGE_OPTIONS = {
+  format: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const CODEGEN_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   out: { type: "string" },
   validators: { type: "boolean" },
+  arbitraries: { type: "boolean" },
+  sql: { type: "string" },
   check: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -485,13 +533,16 @@ export const USAGE = `Usage:
   streamd transfers [--asset <asset>] [--account <address | name>] [--to-version <n | head>] [options]
   streamd balances <address | name> [--asset <asset>]... [options]
   streamd watch <address>... [--cursor-file <path>] [options]
+  streamd inspect <address> --resource <type> --from-version <n> [--to-version <n | head>] [options]
+  streamd inspect <address> --resource <type> --at <n> [options]
   streamd handles <address | name>
   streamd name <name | address>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] [--cache <file>] <eventType>...
-  streamd codegen [--out <file> [--check]] [--validators] (<address> | <address>::<module>)...
+  streamd codegen [--out <file> [--check]] [--validators] [--arbitraries] [--sql <sqlite|postgres>] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
   streamd monitor --node-url <url> --node-url <url>... [options] [<eventType>...]
+  streamd coverage <package> [--format pretty] -- <command> [<arg>...]
 
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array, or
@@ -512,6 +563,9 @@ balances prints a wallet's balance of each asset once, then a JSON line each
 time one changes, read at the head every --poll-interval.
 watch follows the transactions each address sent, one walk per address, and
 prints each event as a JSON line with the watched address as "address".
+inspect prints each write or delete of one resource over a range as a JSON
+line of the paths it changed, the first diffed against the value just before
+the range; with --at, the resource's value at that version (Aptos only).
 handles lists every event handle on an Aptos account as a JSON line, with
 its descriptor and the tail flags that follow it.
 name resolves a name to its address, or an address (0x...) to its primary
@@ -530,7 +584,12 @@ With --check it compares what it would write with --out instead, and exits 1
 if the file differs or is missing.
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
-Every command but handles takes --chain sui to read Sui instead of Aptos.
+coverage starts an Aptos localnet with the aptos CLI, publishes the Move package
+from a funded account, runs the command against it (with STREAMD_NODE_URL,
+STREAMD_FAUCET_URL, STREAMD_PACKAGE_ADDRESS and STREAMD_PUBLISHER_KEY set), then
+prints one JSON line per #[event] struct of the package: whether the run emitted
+it, how often, and the call that first did. It exits 1 if the command failed.
+Every command but handles, inspect and coverage takes --chain sui to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
 --decode, which checks integer fields before --where runs.
@@ -545,7 +604,9 @@ Options:
   --handle <struct>      legacy event handle struct (with --account and --field)
   --field <name>         event handle field name
   --creation-number <n>  event handle by creation number (with --account)
-  --resource <type>      every change to this resource (with --account)
+  --resource <type>      every change to this resource (with --account); inspect: the
+                         resource to inspect (required)
+  --at <n>               inspect: print the resource's value at this version, null if absent
   --network <name>       mainnet, testnet, devnet, movement-mainnet, or movement-testnet
                          (default: mainnet)
   --node-url <url>       fullnode URL, overriding the network's default; repeatable on
@@ -571,7 +632,7 @@ Options:
                          field that is not an unsigned integer is an error: query exits 1,
                          tail, forward, store and watch report it and skip the event
   --limit <n>            tail, transfers, watch: exit after printing n; balances: after n changes;
-                         record, query: stop after n; compare: page size; monitor: rounds
+                         record, query, inspect: stop after n; compare: page size; monitor: rounds
   --rules <file>         alert: the rules file (required)
   --to <url>             forward, alert: webhook URL (http or https, required); forward also
                          takes redis://[user:password@]host[:port][/db] or rediss:// (TLS),
@@ -589,7 +650,9 @@ Options:
                          address's position, as one JSON object; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
                          and open window (default: ${DEFAULT_ALERT_CURSOR_FILE})
-  --format <name>        tail: json, or pretty for aligned lines in UTC (default: json)
+  --format <name>        tail: json, or pretty for aligned lines in UTC (default: json);
+                         inspect: json, or pretty for one line per changed path;
+                         coverage: json, or pretty for one line per event struct
   --retries <n>          forward, alert: retries per batch or alert (default: ${DEFAULT_RETRIES})
   --timeout <ms>         forward, alert: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx: wait for commit (default: 20000)
@@ -603,6 +666,7 @@ Options:
                          PGPASSWORD keeps the password out of it and out of ps
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
   --to-version <n>       record: end of the range (required); query: default the head;
+                         inspect: a version or head (default: head);
                          forward: deliver up to here, then exit 0; transfers: a version or
                          head, read the range instead of following (needs a start)
   --batch-size <n>       forward: most events per POST (default: 25); transfers (following):
@@ -614,8 +678,14 @@ Options:
   --stats                commands that read events (not check, codegen, handles, name or
                          compare): print each node's request counts and latencies to stderr
                          as one JSON line {"stats":...} on exit and on SIGUSR1 (not Windows);
-                         reads made outside the adapter, such as name lookups, are not counted
+                         reads made outside the adapter, such as name lookups and inspect's
+                         resource reads, are not counted
   --validators           codegen: also write an is<Type> runtime check per type
+  --arbitraries          codegen: also write an arbitrary<Type>(rng) random payload generator
+                         per type, a seeded streamdRng and streamdEvent for MemoryAdapter
+  --sql <dialect>        codegen: also write streamdTables, a table per event type with a
+                         column per field, and streamdSchema, its sqlite or postgres DDL;
+                         storeTables in @streamd/store-sqlite or -postgres fills them
   --check                codegen: compare with the --out file, writing nothing; exit 1 if
                          it differs or is missing, naming the first line that differs
   --chain <name>         aptos or sui (default: aptos); with sui, --network is mainnet,
@@ -1317,6 +1387,47 @@ function parseWatch(args: string[]): ParsedCommand {
   return { command: "watch", options: withFilter(options, values) };
 }
 
+function parseInspect(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: INSPECT_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (chain(values.chain)) {
+    throw new UsageError("inspect is not available with --chain sui: Sui reads object state only at the head");
+  }
+  const [raw, ...rest] = positionals;
+  if (raw === undefined || rest.length > 0) throw new UsageError("inspect needs one address");
+  if (values.resource === undefined) throw new UsageError("inspect needs --resource");
+  const format = values.format ?? "json";
+  if (format !== "json" && format !== "pretty") throw new UsageError(`--format must be json or pretty: ${format}`);
+  const options: InspectOptions = {
+    address: wrap(() => requireAddress(raw)),
+    resourceType: wrap(() => requireResourceType(values.resource)),
+    ...endpoint(values, false),
+    format,
+  };
+  withKey(options, values["api-key"]);
+  const at = version(values.at, "at");
+  const fromVersion = version(values["from-version"]);
+  if (at !== undefined) {
+    for (const flag of ["from-version", "to-version", "limit"] as const) {
+      if (values[flag] !== undefined) throw new UsageError(`set --at or --${flag}, not both`);
+    }
+    options.at = at;
+    return { command: "inspect", options };
+  }
+  if (fromVersion === undefined) throw new UsageError("inspect needs --at or --from-version");
+  const toVersion = values["to-version"] === "head" ? "head" : (version(values["to-version"], "to-version") ?? "head");
+  if (toVersion !== "head" && toVersion < fromVersion) {
+    throw new UsageError("--to-version must not be below --from-version");
+  }
+  options.fromVersion = fromVersion;
+  options.toVersion = toVersion;
+  const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  if (limit !== undefined) options.limit = limit;
+  return { command: "inspect", options };
+}
+
 function parseHandles(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: HANDLES_OPTIONS, allowPositionals: true, strict: true }),
@@ -1459,11 +1570,34 @@ function parseCodegen(args: string[]): ParsedCommand {
     options.out = values.out;
   }
   if (values.validators) options.validators = true;
+  if (values.arbitraries) options.arbitraries = true;
+  if (values.sql !== undefined) {
+    if (values.sql !== "sqlite" && values.sql !== "postgres") throw new UsageError(`--sql must be sqlite or postgres: ${values.sql}`);
+    options.sql = values.sql;
+  }
   if (values.check) {
     if (options.out === undefined) throw new UsageError("--check needs --out <file> to compare with");
     options.check = true;
   }
   return { command: "codegen", options };
+}
+
+function parseCoverage(args: string[]): ParsedCommand {
+  const split = args.indexOf("--");
+  const own = split === -1 ? args : args.slice(0, split);
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args: own, options: COVERAGE_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const [packageDir, ...rest] = positionals;
+  if (packageDir === undefined || packageDir === "" || rest.length > 0) {
+    throw new UsageError("coverage needs one Move package directory, then -- and the test command");
+  }
+  const command = split === -1 ? [] : args.slice(split + 1);
+  if (command.length === 0 || command[0] === "") throw new UsageError("coverage needs a test command after --");
+  const format = values.format ?? "json";
+  if (format !== "json" && format !== "pretty") throw new UsageError("--format must be json or pretty");
+  return { command: "coverage", options: { packageDir, command, format } };
 }
 
 /** Parses `argv` (without the node and script paths) into a command. */
@@ -1483,9 +1617,11 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "transfers") return parseTransfers(rest);
   if (command === "balances") return parseBalances(rest);
   if (command === "watch") return parseWatch(rest);
+  if (command === "inspect") return parseInspect(rest);
   if (command === "handles") return parseHandles(rest);
   if (command === "name") return parseName(rest);
   if (command === "codegen") return parseCodegen(rest);
+  if (command === "coverage") return parseCoverage(rest);
   if (command === "compare") return parseCompare(rest);
   if (command === "monitor") return parseMonitor(rest);
   throw new UsageError(`unknown command: ${command}`);

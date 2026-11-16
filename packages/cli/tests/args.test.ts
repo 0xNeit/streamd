@@ -463,6 +463,34 @@ describe("parseCommand codegen", () => {
     expect(parseCommand(["codegen", "0x1::coin"])).not.toMatchObject({ options: { validators: true } });
   });
 
+  it("takes --arbitraries on both chains and beside --check", () => {
+    expect(parseCommand(["codegen", "--arbitraries", "0x1::coin"])).toMatchObject({ options: { arbitraries: true } });
+    expect(parseCommand(["codegen", "0x1::coin"])).not.toMatchObject({ options: { arbitraries: true } });
+    expect(parseCommand(["codegen", "--chain", "sui", "--arbitraries", "--validators", "0x2::kiosk"])).toEqual({
+      command: "codegen",
+      options: { chain: "sui", modules: [{ address: "0x2", module: "kiosk" }], network: "mainnet", validators: true, arbitraries: true },
+    });
+    expect(parseCommand(["codegen", "--check", "--out", "events.ts", "--arbitraries", "0x1"])).toEqual({
+      command: "codegen",
+      options: { modules: [{ address: ADDR }], network: "mainnet", out: "events.ts", arbitraries: true, check: true },
+    });
+  });
+
+  it("takes --sql sqlite or postgres on both chains and beside --check", () => {
+    expect(parseCommand(["codegen", "--sql", "sqlite", "0x1::coin"])).toMatchObject({ options: { sql: "sqlite" } });
+    expect(parseCommand(["codegen", "0x1::coin"])).not.toMatchObject({ options: { sql: expect.anything() } });
+    expect(parseCommand(["codegen", "--chain", "sui", "--sql", "postgres", "0x2::kiosk"])).toEqual({
+      command: "codegen",
+      options: { chain: "sui", modules: [{ address: "0x2", module: "kiosk" }], network: "mainnet", sql: "postgres" },
+    });
+    expect(parseCommand(["codegen", "--check", "--out", "events.ts", "--sql", "postgres", "0x1"])).toEqual({
+      command: "codegen",
+      options: { modules: [{ address: ADDR }], network: "mainnet", out: "events.ts", sql: "postgres", check: true },
+    });
+    expect(() => parseCommand(["codegen", "--sql", "mysql", "0x1"])).toThrow("--sql must be sqlite or postgres: mysql");
+    expect(() => parseCommand(["codegen", "--sql", "0x1"])).toThrow(UsageError);
+  });
+
   it("takes --check with --out, beside the other flags", () => {
     expect(parseCommand(["codegen", "--check", "--out", "events.ts", "--validators", "0x1"])).toEqual({
       command: "codegen",
@@ -1307,6 +1335,72 @@ describe("parseCommand handles", () => {
   });
 });
 
+describe("parseCommand inspect", () => {
+  const RESOURCE = "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>";
+  const inspect = (...argv: string[]) => {
+    const parsed = parseCommand(["inspect", ...argv]);
+    if (parsed.command !== "inspect") throw new Error("expected an inspect command");
+    return parsed.options;
+  };
+
+  it("takes a range, to the head by default", () => {
+    expect(inspect("0x1", "--resource", RESOURCE, "--from-version", "10")).toEqual({
+      address: LONG_ADDR,
+      resourceType: RESOURCE,
+      network: "mainnet",
+      format: "json",
+      fromVersion: 10n,
+      toVersion: "head",
+    });
+    const bounded = inspect("0x1", "--resource", RESOURCE, "--from-version", "10", "--to-version", "20", "--limit", "3");
+    expect([bounded.toVersion, bounded.limit]).toEqual([20n, 3]);
+    expect(inspect("0x1", "--resource", RESOURCE, "--from-version", "10", "--to-version", "head").toVersion).toBe("head");
+    expect(inspect("0x1", "--resource", RESOURCE, "--from-version", "10", "--to-version", "10").toVersion).toBe(10n);
+  });
+
+  it("takes --at, pretty output and the read flags", () => {
+    expect(
+      inspect("0x1", "--resource", RESOURCE, "--at", "5", "--format", "pretty", "--archive", "default", "--stats", "--api-key", "k"),
+    ).toEqual({
+      address: LONG_ADDR,
+      resourceType: RESOURCE,
+      network: "mainnet",
+      archive: "default",
+      stats: true,
+      apiKey: "k",
+      format: "pretty",
+      at: 5n,
+    });
+    expect(inspect("0x1", "--resource", RESOURCE, "--at", "0", "--node-url", "https://a.example/v1", "--node-url", "https://b.example/v1")).toMatchObject({
+      at: 0n,
+      nodeUrl: "https://a.example/v1",
+      extraNodeUrls: ["https://b.example/v1"],
+    });
+  });
+
+  it.each([
+    [[], /inspect needs one address/],
+    [["0x1", "0x2", "--resource", RESOURCE, "--at", "1"], /inspect needs one address/],
+    [["nope", "--resource", RESOURCE, "--at", "1"], /address/i],
+    [["0x1", "--at", "1"], /inspect needs --resource/],
+    [["0x1", "--resource", "not a type", "--at", "1"], /type/i],
+    [["0x1", "--resource", RESOURCE], /inspect needs --at or --from-version/],
+    [["0x1", "--resource", RESOURCE, "--to-version", "5"], /inspect needs --at or --from-version/],
+    [["0x1", "--resource", RESOURCE, "--at", "1", "--from-version", "1"], /set --at or --from-version, not both/],
+    [["0x1", "--resource", RESOURCE, "--at", "1", "--to-version", "2"], /set --at or --to-version, not both/],
+    [["0x1", "--resource", RESOURCE, "--at", "1", "--limit", "2"], /set --at or --limit, not both/],
+    [["0x1", "--resource", RESOURCE, "--at", "1.5"], /--at must be a non-negative integer/],
+    [["0x1", "--resource", RESOURCE, "--from-version", "5", "--to-version", "4"], /--to-version must not be below --from-version/],
+    [["0x1", "--resource", RESOURCE, "--from-version", "5", "--to-version", "later"], /--to-version must be a non-negative integer/],
+    [["0x1", "--resource", RESOURCE, "--from-version", "5", "--limit", "0"], /--limit must be an integer/],
+    [["0x1", "--resource", RESOURCE, "--at", "1", "--format", "yaml"], /--format must be json or pretty/],
+    [["0x1", "--resource", RESOURCE, "--at", "1", "--chain", "sui"], /inspect is not available with --chain sui/],
+    [["0x1", "--resource", RESOURCE, "--at", "1", "--where", "a==1"], /Unknown option '--where'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(["inspect", ...args], message);
+  });
+});
+
 describe("parseCommand name", () => {
   const name = (...argv: string[]) => {
     const parsed = parseCommand(["name", ...argv]);
@@ -1652,5 +1746,37 @@ describe("parseCommand monitor", () => {
     [[...base, "--cache", "c.db"], /--cache/],
   ])("rejects %j", (argv, message) => {
     rejects(argv as string[], message as RegExp);
+  });
+});
+
+describe("parseCommand coverage", () => {
+  const coverage = (...argv: string[]) => {
+    const parsed = parseCommand(["coverage", ...argv]);
+    if (parsed.command !== "coverage") throw new Error("expected a coverage command");
+    return parsed.options;
+  };
+
+  it("takes the package, then everything after -- as the command", () => {
+    expect(coverage("./move/pkg", "--", "bun", "test", "--timeout", "5000")).toEqual({
+      packageDir: "./move/pkg",
+      command: ["bun", "test", "--timeout", "5000"],
+      format: "json",
+    });
+    expect(coverage("--format", "pretty", "pkg", "--", "sh", "-c", "x -- y").command).toEqual(["sh", "-c", "x -- y"]);
+    expect(coverage("pkg", "--format", "pretty", "--", "t").format).toBe("pretty");
+  });
+
+  it("refuses a missing package, a missing command and a bad format", () => {
+    expect(() => parseCommand(["coverage", "--", "bun", "test"])).toThrow(UsageError);
+    expect(() => parseCommand(["coverage", "a", "b", "--", "t"])).toThrow(UsageError);
+    expect(() => parseCommand(["coverage", "pkg"])).toThrow("coverage needs a test command after --");
+    expect(() => parseCommand(["coverage", "pkg", "--"])).toThrow(UsageError);
+    expect(() => parseCommand(["coverage", "pkg", "--", ""])).toThrow(UsageError);
+    expect(() => parseCommand(["coverage", "pkg", "--format", "yaml", "--", "t"])).toThrow("--format must be json or pretty");
+    expect(() => parseCommand(["coverage", "pkg", "--network", "testnet", "--", "t"])).toThrow(UsageError);
+  });
+
+  it("shows help", () => {
+    expect(parseCommand(["coverage", "--help"])).toEqual({ command: "help" });
   });
 });
