@@ -166,6 +166,21 @@ export interface WatchCommandOptions extends Endpoint {
   decode?: string[];
 }
 
+/** Aptos only. Exactly one of `at` and `fromVersion` is set. */
+export interface InspectOptions extends Endpoint {
+  /** Long form. */
+  address: string;
+  resourceType: string;
+  /** `--at`: print the value at this version instead of a range's changes. */
+  at?: bigint;
+  fromVersion?: bigint;
+  /** Set with `fromVersion`. */
+  toVersion?: bigint | "head";
+  /** Records printed, with `fromVersion`. */
+  limit?: number;
+  format: "json" | "pretty";
+}
+
 /** Aptos only: Sui has no event handles. */
 export interface HandlesOptions extends Endpoint {
   /** An address or name; validated and resolved by `listEventHandles`. */
@@ -247,6 +262,7 @@ export type ParsedCommand =
   | { command: "transfers"; options: TransfersOptions }
   | { command: "balances"; options: BalancesCommandOptions }
   | { command: "watch"; options: WatchCommandOptions }
+  | { command: "inspect"; options: InspectOptions }
   | { command: "handles"; options: HandlesOptions }
   | { command: "name"; options: NameOptions }
   | { command: "codegen"; options: CodegenOptions }
@@ -428,6 +444,17 @@ const WATCH_OPTIONS = {
 } as const;
 
 /** `handles` and `name`: one positional and the endpoint. */
+const INSPECT_OPTIONS = {
+  ...READ_OPTIONS,
+  resource: { type: "string" },
+  at: { type: "string" },
+  "from-version": { type: "string" },
+  "to-version": { type: "string" },
+  limit: { type: "string" },
+  format: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const HANDLES_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   help: { type: "boolean", short: "h" },
@@ -485,6 +512,8 @@ export const USAGE = `Usage:
   streamd transfers [--asset <asset>] [--account <address | name>] [--to-version <n | head>] [options]
   streamd balances <address | name> [--asset <asset>]... [options]
   streamd watch <address>... [--cursor-file <path>] [options]
+  streamd inspect <address> --resource <type> --from-version <n> [--to-version <n | head>] [options]
+  streamd inspect <address> --resource <type> --at <n> [options]
   streamd handles <address | name>
   streamd name <name | address>
   streamd check <eventType>...
@@ -512,6 +541,9 @@ balances prints a wallet's balance of each asset once, then a JSON line each
 time one changes, read at the head every --poll-interval.
 watch follows the transactions each address sent, one walk per address, and
 prints each event as a JSON line with the watched address as "address".
+inspect prints each write or delete of one resource over a range as a JSON
+line of the paths it changed, the first diffed against the value just before
+the range; with --at, the resource's value at that version (Aptos only).
 handles lists every event handle on an Aptos account as a JSON line, with
 its descriptor and the tail flags that follow it.
 name resolves a name to its address, or an address (0x...) to its primary
@@ -530,7 +562,7 @@ With --check it compares what it would write with --out instead, and exits 1
 if the file differs or is missing.
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
-Every command but handles takes --chain sui to read Sui instead of Aptos.
+Every command but handles and inspect takes --chain sui to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
 --decode, which checks integer fields before --where runs.
@@ -545,7 +577,9 @@ Options:
   --handle <struct>      legacy event handle struct (with --account and --field)
   --field <name>         event handle field name
   --creation-number <n>  event handle by creation number (with --account)
-  --resource <type>      every change to this resource (with --account)
+  --resource <type>      every change to this resource (with --account); inspect: the
+                         resource to inspect (required)
+  --at <n>               inspect: print the resource's value at this version, null if absent
   --network <name>       mainnet, testnet, devnet, movement-mainnet, or movement-testnet
                          (default: mainnet)
   --node-url <url>       fullnode URL, overriding the network's default; repeatable on
@@ -571,7 +605,7 @@ Options:
                          field that is not an unsigned integer is an error: query exits 1,
                          tail, forward, store and watch report it and skip the event
   --limit <n>            tail, transfers, watch: exit after printing n; balances: after n changes;
-                         record, query: stop after n; compare: page size; monitor: rounds
+                         record, query, inspect: stop after n; compare: page size; monitor: rounds
   --rules <file>         alert: the rules file (required)
   --to <url>             forward, alert: webhook URL (http or https, required); forward also
                          takes redis://[user:password@]host[:port][/db] or rediss:// (TLS),
@@ -589,7 +623,8 @@ Options:
                          address's position, as one JSON object; forward: cursor file
                          (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
                          and open window (default: ${DEFAULT_ALERT_CURSOR_FILE})
-  --format <name>        tail: json, or pretty for aligned lines in UTC (default: json)
+  --format <name>        tail: json, or pretty for aligned lines in UTC (default: json);
+                         inspect: json, or pretty for one line per changed path
   --retries <n>          forward, alert: retries per batch or alert (default: ${DEFAULT_RETRIES})
   --timeout <ms>         forward, alert: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx: wait for commit (default: 20000)
@@ -603,6 +638,7 @@ Options:
                          PGPASSWORD keeps the password out of it and out of ps
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
   --to-version <n>       record: end of the range (required); query: default the head;
+                         inspect: a version or head (default: head);
                          forward: deliver up to here, then exit 0; transfers: a version or
                          head, read the range instead of following (needs a start)
   --batch-size <n>       forward: most events per POST (default: 25); transfers (following):
@@ -614,7 +650,8 @@ Options:
   --stats                commands that read events (not check, codegen, handles, name or
                          compare): print each node's request counts and latencies to stderr
                          as one JSON line {"stats":...} on exit and on SIGUSR1 (not Windows);
-                         reads made outside the adapter, such as name lookups, are not counted
+                         reads made outside the adapter, such as name lookups and inspect's
+                         resource reads, are not counted
   --validators           codegen: also write an is<Type> runtime check per type
   --check                codegen: compare with the --out file, writing nothing; exit 1 if
                          it differs or is missing, naming the first line that differs
@@ -1317,6 +1354,47 @@ function parseWatch(args: string[]): ParsedCommand {
   return { command: "watch", options: withFilter(options, values) };
 }
 
+function parseInspect(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: INSPECT_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (chain(values.chain)) {
+    throw new UsageError("inspect is not available with --chain sui: Sui reads object state only at the head");
+  }
+  const [raw, ...rest] = positionals;
+  if (raw === undefined || rest.length > 0) throw new UsageError("inspect needs one address");
+  if (values.resource === undefined) throw new UsageError("inspect needs --resource");
+  const format = values.format ?? "json";
+  if (format !== "json" && format !== "pretty") throw new UsageError(`--format must be json or pretty: ${format}`);
+  const options: InspectOptions = {
+    address: wrap(() => requireAddress(raw)),
+    resourceType: wrap(() => requireResourceType(values.resource)),
+    ...endpoint(values, false),
+    format,
+  };
+  withKey(options, values["api-key"]);
+  const at = version(values.at, "at");
+  const fromVersion = version(values["from-version"]);
+  if (at !== undefined) {
+    for (const flag of ["from-version", "to-version", "limit"] as const) {
+      if (values[flag] !== undefined) throw new UsageError(`set --at or --${flag}, not both`);
+    }
+    options.at = at;
+    return { command: "inspect", options };
+  }
+  if (fromVersion === undefined) throw new UsageError("inspect needs --at or --from-version");
+  const toVersion = values["to-version"] === "head" ? "head" : (version(values["to-version"], "to-version") ?? "head");
+  if (toVersion !== "head" && toVersion < fromVersion) {
+    throw new UsageError("--to-version must not be below --from-version");
+  }
+  options.fromVersion = fromVersion;
+  options.toVersion = toVersion;
+  const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  if (limit !== undefined) options.limit = limit;
+  return { command: "inspect", options };
+}
+
 function parseHandles(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: HANDLES_OPTIONS, allowPositionals: true, strict: true }),
@@ -1483,6 +1561,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "transfers") return parseTransfers(rest);
   if (command === "balances") return parseBalances(rest);
   if (command === "watch") return parseWatch(rest);
+  if (command === "inspect") return parseInspect(rest);
   if (command === "handles") return parseHandles(rest);
   if (command === "name") return parseName(rest);
   if (command === "codegen") return parseCodegen(rest);

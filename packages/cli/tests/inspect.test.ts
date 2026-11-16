@@ -1,6 +1,9 @@
-import { describe, expect, it } from "bun:test";
-import type { StreamdEvent } from "@streamd/core";
-import { changeLine, changeRecord, diffValues, prettyChange, valueLine } from "../src/inspect.js";
+import { afterEach, describe, expect, it } from "bun:test";
+import { MemoryAdapter, StreamdClient, StreamdError, StreamdNetworkError } from "@streamd/core";
+import type { EventAdapter, StreamdEvent } from "@streamd/core";
+import type { InspectOptions } from "../src/args.js";
+import { resourceReader, sendOnce } from "../src/chain.js";
+import { changeLine, changeRecord, diffValues, prettyChange, runInspect, valueLine } from "../src/inspect.js";
 
 const TYPE = "0x1::block::BlockResource";
 
@@ -113,5 +116,180 @@ describe("valueLine", () => {
 
   it("prints indented JSON for pretty, control characters as ?", () => {
     expect(valueLine(7n, { s: "x\u0085y" }, true)).toBe('{\n  "s": "x?y"\n}\n');
+  });
+});
+
+describe("runInspect", () => {
+  const LONG = `0x${"0".repeat(63)}1`;
+  const options = (extra: Partial<InspectOptions> = {}): InspectOptions => ({
+    address: LONG,
+    resourceType: TYPE,
+    network: "mainnet",
+    format: "json",
+    fromVersion: 10n,
+    toVersion: 20n,
+    ...extra,
+  });
+  const at = (version: number, data: unknown): StreamdEvent => change(data, { version: BigInt(version) });
+  const history = [at(5, { h: "0" }), at(10, { h: "1" }), at(12, null), at(15, { h: "2" }), at(25, { h: "3" })];
+
+  async function run(
+    opts: InspectOptions,
+    read: (version: bigint) => Promise<unknown>,
+    adapter: EventAdapter = new MemoryAdapter(history),
+    write?: (text: string) => void,
+  ) {
+    const out: string[] = [];
+    const errors: string[] = [];
+    const reads: bigint[] = [];
+    const client = new StreamdClient({ adapter });
+    const code = await runInspect(opts, {
+      client,
+      read: (version) => (reads.push(version), read(version)),
+      write: write ?? ((text) => void out.push(text)),
+      error: (m) => errors.push(m),
+      signal: new AbortController().signal,
+    });
+    client.destroy();
+    return { code, out, errors, reads, records: opts.format === "json" ? out.map((l) => JSON.parse(l) as Record<string, unknown>) : [] };
+  }
+
+  it("diffs each change in range against the one before, the first against the value before the range", async () => {
+    const { code, records, reads, errors } = await run(options(), async () => ({ h: "0" }));
+    expect([code, errors, reads]).toEqual([0, [], [9n]]);
+    expect(records).toEqual([
+      { version: "10", change: "updated", changes: [{ path: "h", before: "0", after: "1" }] },
+      { version: "12", change: "deleted" },
+      { version: "15", change: "created", value: { h: "2" } },
+    ]);
+  });
+
+  it("takes the resource as absent before version 0, with no read", async () => {
+    const { records, reads } = await run(options({ fromVersion: 0n, toVersion: 5n }), async () => {
+      throw new Error("not read");
+    });
+    expect(reads).toEqual([]);
+    expect(records).toEqual([{ version: "5", change: "created", value: { h: "0" } }]);
+  });
+
+  it("prints nothing for a range with no change", async () => {
+    const { code, out } = await run(options({ fromVersion: 16n, toVersion: 24n }), async () => ({ h: "2" }));
+    expect([code, out]).toEqual([0, []]);
+  });
+
+  it("stops after --limit records", async () => {
+    const { records } = await run(options({ limit: 2 }), async () => ({ h: "0" }));
+    expect(records.map((r) => r.version)).toEqual(["10", "12"]);
+  });
+
+  it("prints the first change whole, with a note, when the value before is pruned", async () => {
+    const pruned = async () => {
+      throw new StreamdNetworkError("pruned", 410);
+    };
+    const { code, records, errors } = await run(options({ toVersion: 11n }), pruned);
+    expect(code).toBe(0);
+    expect(records).toEqual([{ version: "10", change: "written", value: { h: "1" } }]);
+    expect(errors).toEqual(["streamd: version 9 is pruned on this node; pass --archive to diff it, so the first change is printed whole"]);
+    const archived = await run(options({ toVersion: 11n, archive: "default" }), pruned);
+    expect(archived.errors[0]).toContain("pruned on this node and the archive");
+  });
+
+  it("exits 1 when the value before fails any other way, before reading the range", async () => {
+    let fetched = false;
+    const adapter = new MemoryAdapter(history);
+    const watched: EventAdapter = { ...adapter, fetchEvents: (d, o) => ((fetched = true), adapter.fetchEvents(d, o)) };
+    const { code, out, errors } = await run(options(), async () => Promise.reject(new StreamdError("Fullnode request failed")), watched);
+    expect([code, out, errors, fetched]).toEqual([1, [], ["streamd: Fullnode request failed"], false]);
+  });
+
+  it("prints pretty records", async () => {
+    const { out } = await run(options({ format: "pretty", toVersion: 11n }), async () => ({ h: "0" }));
+    expect(out).toEqual(['10  -  updated\n  h: "0" -> "1"\n']);
+  });
+
+  it("prints the value at --at, null when absent", async () => {
+    const present = await run(options({ at: 7n }), async () => ({ h: "0" }));
+    expect([present.code, present.out, present.reads]).toEqual([0, ['{"version":"7","value":{"h":"0"}}\n'], [7n]]);
+    const absent = await run(options({ at: 3n }), async () => null);
+    expect(absent.out).toEqual(['{"version":"3","value":null}\n']);
+    const failed = await run(options({ at: 3n }), async () => Promise.reject(new StreamdNetworkError("pruned", 410)));
+    expect([failed.code, failed.errors]).toEqual([1, ["streamd: pruned"]]);
+  });
+
+  it("exits 1 when a write fails", async () => {
+    const { code, errors } = await run(options(), async () => ({ h: "0" }), undefined, () => {
+      throw new Error("EIO");
+    });
+    expect([code, errors]).toEqual([1, ["streamd: EIO"]]);
+  });
+});
+
+describe("resourceReader", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+  const STORE = "0x1::coin::CoinStore<0x1::aptos_coin::AptosCoin>";
+  const LONG = `0x${"0".repeat(63)}1`;
+  const PRUNED = { error_code: "version_pruned", message: "Ledger version(1) has been pruned" };
+
+  /** Answers each URL by its host, recording what was asked. */
+  function serve(answers: Record<string, [number, unknown]>): URL[] {
+    const seen: URL[] = [];
+    globalThis.fetch = (async (input: string | URL) => {
+      const url = new URL(String(input));
+      seen.push(url);
+      const [status, body] = answers[url.host] ?? [500, { message: "no answer" }];
+      return Response.json(body, { status });
+    }) as unknown as typeof fetch;
+    return seen;
+  }
+
+  const reader = (extra: Partial<InspectOptions> = {}) =>
+    resourceReader({ network: "mainnet", nodeUrl: "https://a.example/v1", ...extra }, LONG, STORE, sendOnce());
+
+  it("reads the resource's data at the version, the type encoded in the path", async () => {
+    const seen = serve({ "a.example": [200, { type: STORE, data: { coin: { value: "5" } } }] });
+    expect(await reader()(42n)).toEqual({ coin: { value: "5" } });
+    expect(seen[0]!.pathname).toBe(`/v1/accounts/${LONG}/resource/${encodeURIComponent(STORE)}`);
+    expect(seen[0]!.searchParams.get("ledger_version")).toBe("42");
+  });
+
+  it("gives null for a resource the account did not hold, and fails on any other 404", async () => {
+    serve({ "a.example": [404, { error_code: "resource_not_found", message: "Resource not found" }] });
+    expect(await reader()(42n)).toBeNull();
+    serve({ "a.example": [404, { error_code: "version_not_found", message: "Ledger version not found" }] });
+    const err = await reader()(42n).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as StreamdNetworkError).statusCode).toBe(404);
+  });
+
+  it("rejects a body with no data", async () => {
+    serve({ "a.example": [200, { type: STORE }] });
+    await expect(reader()(42n)).rejects.toThrow(/malformed/);
+  });
+
+  it("asks the archive only for a pruned version, and fails with the 410 without one", async () => {
+    serve({ "a.example": [410, PRUNED] });
+    const err = await reader()(1n).catch((e: unknown) => e);
+    expect((err as StreamdNetworkError).statusCode).toBe(410);
+    const seen = serve({ "a.example": [410, PRUNED], "archive.example": [200, { type: STORE, data: { n: "1" } }] });
+    expect(await reader({ archive: "https://archive.example/v1" })(1n)).toEqual({ n: "1" });
+    expect(seen.map((u) => u.host)).toEqual(["a.example", "archive.example"]);
+    const other = serve({ "a.example": [500, { message: "down" }] });
+    await expect(reader({ archive: "https://archive.example/v1" })(1n)).rejects.toBeInstanceOf(StreamdNetworkError);
+    expect(other.map((u) => u.host)).toEqual(["a.example"]);
+  });
+
+  it("sends the key to Aptos Labs' archive only without --node-url", async () => {
+    const keys: (string | null)[] = [];
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      keys.push(new Headers(init?.headers).get("authorization"));
+      const archive = String(input).startsWith("https://archive.mainnet.aptoslabs.com/");
+      return Response.json(archive ? { data: {} } : PRUNED, { status: archive ? 200 : 410 });
+    }) as unknown as typeof fetch;
+    await resourceReader({ network: "mainnet", archive: "default", apiKey: "k" }, LONG, STORE, sendOnce())(1n);
+    await resourceReader({ network: "mainnet", nodeUrl: "https://a.example/v1", archive: "default", apiKey: "k" }, LONG, STORE, sendOnce())(1n);
+    expect(keys).toEqual(["Bearer k", "Bearer k", "Bearer k", null]);
   });
 });
