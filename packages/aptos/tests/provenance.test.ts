@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
-import { StreamdError } from "@streamd/core";
-import type { StreamdEvent, TransactionEvents } from "@streamd/core";
-import { decodeProperties, toProvenance } from "../src/provenance.js";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import type { EventAdapter, StreamdEvent, TransactionEvents } from "@streamd/core";
+import { decodeProperties, provenanceDescriptor, provenanceSource, toProvenance, type TransactionLister } from "../src/provenance.js";
 
 const long = (short: string) => `0x${short.replace(/^0x/, "").padStart(64, "0")}`;
 const TOKEN = long("70c");
@@ -202,5 +202,143 @@ describe("toProvenance", () => {
       expect(() => toProvenance(TOKEN, txn([bad]))).toThrow(StreamdError);
     }
     expect(actions(txn([ev("0xbad::object::Transfer", { object: TOKEN, from: "x", to: "y" })]))).toEqual([]);
+  });
+});
+
+/** A lister over `versions` with `head` as its processed version, recording each listing. */
+function lister(versions: bigint[], head: () => bigint) {
+  const listings: [bigint, bigint, number][] = [];
+  const indexer: TransactionLister = {
+    getHeadVersion: async () => head(),
+    listTransactionVersions: async (_address, from, to, limit) => {
+      listings.push([from, to, limit]);
+      return versions.filter((v) => v >= from && v <= to).slice(0, limit);
+    },
+  };
+  return { indexer, listings };
+}
+
+/** An adapter whose by-version lookup gives each version one transfer of the token, recording reads. */
+function node(onRead: (version: bigint) => void = () => {}) {
+  const reads: [bigint, unknown][] = [];
+  const adapter: EventAdapter = {
+    fetchEvents: async () => ({ events: [], hasMore: false }),
+    getTransactionEventsByVersion: async (version, descriptor) => {
+      reads.push([version, descriptor]);
+      onRead(version);
+      const transfer = ev("0x1::object::Transfer", { object: TOKEN, from: ALICE, to: BOB }, 0, { version, sender: "0xa11ce" });
+      return { version, success: true, vmStatus: "", events: [transfer], changes: [] };
+    },
+  };
+  return { adapter, reads };
+}
+
+describe("provenanceSource", () => {
+  const descriptor = provenanceDescriptor(TOKEN);
+
+  it("lists from fromVersion to the processed version and reads each version, routed as a resource", async () => {
+    const { indexer, listings } = lister([3n, 7n, 50n], () => 40n);
+    const { adapter, reads } = node();
+    const page = await provenanceSource(indexer, adapter, TOKEN).fetchEvents(descriptor, { fromVersion: 0n, limit: 10 });
+    expect(page.events.map((e) => e.version)).toEqual([3n, 7n]);
+    expect(page.events[0]!.data).toMatchObject({ object: TOKEN, actions: [{ kind: "transfer", from: ALICE, to: BOB }] });
+    expect(page).toMatchObject({ nextCursor: "41", hasMore: false, throughVersion: 40n });
+    expect(listings).toEqual([[0n, 40n, 10]]);
+    expect(reads).toEqual([
+      [3n, descriptor],
+      [7n, descriptor],
+    ]);
+  });
+
+  it("pages a full listing on from the version after its last, and stops at toVersion", async () => {
+    const versions = Array.from({ length: 250 }, (_, i) => BigInt(i * 2));
+    const { indexer, listings } = lister(versions, () => 1000n);
+    const source = provenanceSource(indexer, node().adapter, TOKEN);
+    const first = await source.fetchEvents(descriptor, { fromVersion: 0n, limit: 500 });
+    expect(first.events.length).toBe(100);
+    expect(first).toMatchObject({ nextCursor: "199", hasMore: true, throughVersion: 198n });
+    const second = await source.fetchEvents(descriptor, { cursor: first.nextCursor, toVersion: 260n, limit: 500 });
+    expect(second.events.map((e) => e.version)).toEqual(versions.filter((v) => v >= 199n && v <= 260n));
+    expect(second).toMatchObject({ nextCursor: "261", hasMore: false, throughVersion: 260n });
+    expect(listings).toEqual([
+      [0n, 1000n, 100],
+      [199n, 260n, 100],
+    ]);
+  });
+
+  it("starts at the processed version with no start, and lists nothing past it", async () => {
+    let head = 10n;
+    const { indexer, listings } = lister([10n, 12n], () => head);
+    const source = provenanceSource(indexer, node().adapter, TOKEN);
+    const first = await source.fetchEvents(descriptor, {});
+    expect(first.events.map((e) => e.version)).toEqual([10n]);
+    expect(await source.fetchEvents(descriptor, { cursor: first.nextCursor })).toEqual({ events: [], nextCursor: "11", hasMore: false });
+    head = 12n;
+    expect((await source.fetchEvents(descriptor, { cursor: first.nextCursor })).events.map((e) => e.version)).toEqual([12n]);
+    expect(listings).toEqual([
+      [10n, 10n, 25],
+      [11n, 12n, 25],
+    ]);
+    expect(await source.getHeadVersion!(descriptor)).toBe(12n);
+  });
+
+  it("attaches the names of the sender and of every address an action names", async () => {
+    const asked: string[] = [];
+    const name = async (a: string) => (asked.push(a), a === BOB ? "bob.apt" : null);
+    const { indexer } = lister([5n], () => 5n);
+    const page = await provenanceSource(indexer, node().adapter, TOKEN, name).fetchEvents(descriptor, { fromVersion: 0n });
+    expect(page.events[0]!.data).toMatchObject({ names: { [ALICE]: null, [BOB]: "bob.apt" } });
+    expect(asked.sort()).toEqual([ALICE, BOB].sort());
+  });
+
+  it("fails the page as a network error when the node does not have a listed version yet", async () => {
+    const { indexer } = lister([5n], () => 5n);
+    const adapter: EventAdapter = { ...node().adapter, getTransactionEventsByVersion: async () => undefined };
+    const err = await provenanceSource(indexer, adapter, TOKEN).fetchEvents(descriptor, { fromVersion: 0n }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+  });
+
+  it("stops reading a page given up on once the next page starts", async () => {
+    let release = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const { indexer } = lister([1n, 2n, 3n], () => 3n);
+    const { adapter, reads } = node();
+    const slow: EventAdapter = {
+      ...adapter,
+      getTransactionEventsByVersion: async (version, d) => {
+        const found = await adapter.getTransactionEventsByVersion!(version, d);
+        if (version === 1n) await gate;
+        return found;
+      },
+    };
+    const source = provenanceSource(indexer, slow, TOKEN);
+    const abandoned = source.fetchEvents(descriptor, { fromVersion: 0n });
+    await new Promise((r) => setTimeout(r, 0));
+    const retry = source.fetchEvents(descriptor, { fromVersion: 2n });
+    release();
+    expect(await abandoned.catch((e: unknown) => e)).toBeInstanceOf(StreamdNetworkError);
+    expect((await retry).events.map((e) => e.version)).toEqual([2n, 3n]);
+    expect(reads.map(([v]) => v)).toEqual([1n, 2n, 3n]);
+  });
+
+  it("refuses an adapter without by-version lookups, and offset", async () => {
+    const { indexer } = lister([], () => 0n);
+    expect(() => provenanceSource(indexer, { fetchEvents: node().adapter.fetchEvents }, TOKEN)).toThrow(
+      "getTransactionEventsByVersion",
+    );
+    await expect(provenanceSource(indexer, node().adapter, TOKEN).fetchEvents(descriptor, { offset: 1 })).rejects.toThrow("offset");
+  });
+
+  it("passes block reads through under its own descriptor", async () => {
+    const seen: unknown[] = [];
+    const adapter: EventAdapter = {
+      ...node().adapter,
+      getBlock: async (d, height) => (seen.push(d), { height, firstVersion: 0n, lastVersion: 1n, timestamp: 0n }),
+      getBlockHeights: async (d) => (seen.push(d), { oldest: 0n, newest: 1n }),
+    };
+    const source = provenanceSource(lister([], () => 0n).indexer, adapter, TOKEN);
+    await source.getBlock!({ kind: "account", accountAddress: "0x1" }, 1n);
+    await source.getBlockHeights!({ kind: "account", accountAddress: "0x1" });
+    expect(seen).toEqual([descriptor, descriptor]);
   });
 });
