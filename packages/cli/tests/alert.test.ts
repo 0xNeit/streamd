@@ -448,6 +448,17 @@ describe("advance with an anomaly rule", () => {
     expect(window).toEqual({ start: far, value: 1n, fired: false, history: [0n, 0n, 0n] });
     const short = advance(entryOf({ direction: "below" }), open([5n, 5n, 5n], 5n), ev(1, T0 + 3n * MINUTE, "1"));
     expect(short.window.history).toEqual([5n, 0n, 0n]);
+    expect(short.fires).toHaveLength(1);
+  });
+
+  it("judges a run of empty windows where its baseline first reaches minBaseline", () => {
+    const entry = entryOf({ direction: "below", baseline: 5, minBaseline: 3 });
+    const { fires, window } = advance(entry, open([5n], 5n), ev(1, T0 + 11n * MINUTE, "1"));
+    // Closing minute 0 leaves 5, 5; minute 1 is judged against too short a baseline, minute 2 against 5, 5, 0.
+    expect(fires.map((f) => [f.window.start, f.anomaly?.baselineWindows])).toEqual([[T0 + 2n * MINUTE, 3]]);
+    expect(window.history).toEqual([0n, 0n, 0n, 0n, 0n]);
+    // A gap too short to reach it judges nothing.
+    expect(advance(entry, open([5n], 5n), ev(1, T0 + 2n * MINUTE, "1")).fires).toEqual([]);
   });
 
   it("ignores the side its direction leaves out", () => {

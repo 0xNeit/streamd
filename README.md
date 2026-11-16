@@ -4524,7 +4524,7 @@ the median alone and any other value fires; choose a longer window for such a ty
 
 A window with no matching events counts as zero. A window closes when an event lands in a later
 one, and every window skipped in between closes as a zero too and joins the baseline, the oldest
-dropping out past `baseline`. A run of empty windows is judged once, at its first window, so one
+dropping out past `baseline`. A run of empty windows is judged once, at its first window with a long enough baseline, so one
 outage sends at most one alert. The first window a rule opens after its start (the head,
 `--from-version` or `--from-time`), before any window was saved, is left out of the baseline and
 never fires, since the start may fall mid-window and undercount it; empty windows between the

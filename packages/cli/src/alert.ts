@@ -153,8 +153,8 @@ const appended = (history: readonly bigint[], value: bigint, max: number) => [..
 /**
  * Closes `window` and every empty window before the one starting at `start`,
  * and returns the new open window with the baseline they leave. A run of
- * empty windows is judged once, at its first, so one outage sends one alert
- * rather than one per window.
+ * empty windows is judged once, so one outage sends one alert rather than
+ * one per window.
  */
 function close(anomaly: Anomaly, length: bigint, window: AlertWindow, start: bigint, fires: Fire[]): AlertWindow {
   const closing = { ...window };
@@ -163,10 +163,16 @@ function close(anomaly: Anomaly, length: bigint, window: AlertWindow, start: big
   let history = closing.partial === true ? (closing.history ?? []) : appended(closing.history ?? [], closing.value, anomaly.baseline);
   const gap = (start - closing.start) / length - 1n;
   if (gap > 0n) {
-    const zero = judge(anomaly, { start: closing.start + length, value: 0n, fired: false, history }, true);
-    if (zero !== undefined) fires.push(zero);
     // Past `baseline` empty windows the baseline is all zeros whatever the gap.
     const empty = gap < BigInt(anomaly.baseline) ? Number(gap) : anomaly.baseline;
+    // The run is judged at its first window whose baseline is long enough, which may lie inside the gap.
+    const judged = Math.max(0, anomaly.minBaseline - history.length);
+    if (judged < empty) {
+      const before = [...history, ...Array<bigint>(judged).fill(0n)];
+      const at = closing.start + BigInt(judged + 1) * length;
+      const zero = judge(anomaly, { start: at, value: 0n, fired: false, history: before }, true);
+      if (zero !== undefined) fires.push(zero);
+    }
     history = [...history, ...Array<bigint>(empty).fill(0n)].slice(-anomaly.baseline);
   }
   return { start, value: 0n, fired: false, history };
