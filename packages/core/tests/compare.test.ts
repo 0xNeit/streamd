@@ -138,6 +138,21 @@ describe("compareAdapters", () => {
     expect(report.missing).toEqual([]);
   });
 
+  it("flags tail differences when an ended source omits throughVersion", async () => {
+    const rich = scripted([page([ev(10), ev(20), ev(30)])]);
+    const stale = scripted([page([ev(10)])]);
+    const report = await compareAdapters(rich, stale, desc, { fromVersion: 0n, toVersion: 100n });
+    expect(report.coverage).toEqual({ a: 30n, b: 10n });
+    expect(report.window).toEqual({ fromVersion: 0n, toVersion: 30n });
+    expect(report.missing.map((e) => e.version)).toEqual([20n, 30n]);
+    expect(report.ok).toBe(false);
+
+    const reverse = await compareAdapters(stale, rich, desc, { fromVersion: 0n, toVersion: 100n });
+    expect(reverse.window).toEqual({ fromVersion: 0n, toVersion: 30n });
+    expect(reverse.extra.map((e) => e.version)).toEqual([20n, 30n]);
+    expect(reverse.ok).toBe(false);
+  });
+
   it("stops a walk once it passed toVersion, even if the source ignores it", async () => {
     const ignoring = scripted([page([ev(11), ev(30)], { hasMore: true })]);
     const report = await compareAdapters(ignoring, new MemoryAdapter([ev(11)]), desc, range);
