@@ -326,6 +326,7 @@ const SHADOWED = new Set([
   "Object",
   "Record",
   "String",
+  "TypeError",
   "Uint8Array",
   "ViewRequest",
   "atob",

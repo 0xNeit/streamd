@@ -767,8 +767,17 @@ describe("generateEventTypes validators", () => {
           struct("Record", [["x", "u8"]]),
           struct("Uint8Array", [["x", "u8"]]),
           struct("Math", [["x", "u8"]]),
+          struct("TypeError", [["x", "u8"]]),
           struct("HandleEventDescriptor", [["x", "u8"]]),
           struct("ViewRequest", [["x", "u8"]]),
+          {
+            name: "Empty",
+            is_event: true,
+            is_enum: true,
+            generic_type_params: [],
+            fields: [],
+            variants: [],
+          },
           {
             name: "Holder",
             is_event: false,
@@ -791,10 +800,13 @@ describe("generateEventTypes validators", () => {
       { validators: true, arbitraries: true },
     );
     expect(source).toContain("export interface Shadow_Number {");
+    expect(source).toContain("export interface Shadow_TypeError {");
+    expect(source).toContain("export const Shadow_TypeError = defineEvent<Shadow_TypeError>");
     expect(source).toContain("export const Shadow_Number = defineEvent<Shadow_Number>");
     expect(source).toContain("export function isShadow_Number(value: unknown): value is Shadow_Number");
     expect(source).toContain("export function arbitraryShadow_Number(rng: StreamdRng): Shadow_Number");
     expect(source).not.toContain("export const Number =");
+    expect(source).not.toContain("export const TypeError =");
     expect(source).not.toContain("export const Array =");
     expect(source).not.toContain("export const Object =");
     expect(source).not.toContain("export const String =");
