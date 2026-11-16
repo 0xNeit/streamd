@@ -25,7 +25,8 @@
     "build": "bun build.ts",
     "test": "bun test",
     "test:watch": "bun test --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "node -e \"if (!process.versions.bun) { console.error('Publish with bun publish so workspace:* ranges are rewritten'); process.exit(1); }\""
   },
   "license": "MIT"
 }

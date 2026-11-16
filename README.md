@@ -35,7 +35,7 @@ bun install
 bun run build
 ```
 
-The repository is a Turborepo monorepo on Bun workspaces. Every package ships ESM, CommonJS and
+The repository is a Turborepo monorepo on Bun workspaces. Workspace packages declare internal links as `workspace:*`, so publishing uses `bun publish` (guarded by `prepublishOnly`) to rewrite those ranges. Every package ships ESM, CommonJS and
 TypeScript types:
 
 - `@streamd/core` (`packages/core`) - the client engine: subscriptions, queries, merges,
@@ -4217,8 +4217,8 @@ streamd check --chain sui 0x3::validator::StakingRequestEvent
   a `defined-elsewhere` line adds the package id events name the type by.
 - `store`'s default cursor name starts `sui:`, as `sui:mainnet:<descriptor>`, so one database
   can hold both chains without either resuming from the other's cursor.
-- `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`; without `@mysten/sui`
-  installed, it exits 1 with `--chain sui needs @mysten/sui installed`.
+- `@streamd/sui` and `@mysten/sui` are optional peer dependencies imported only for `--chain sui`;
+  without them installed, `--chain sui` exits 1 with `--chain sui needs @mysten/sui installed`.
 
 ### Filter events
 
