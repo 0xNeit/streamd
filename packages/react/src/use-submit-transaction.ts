@@ -26,7 +26,8 @@ export interface UseSubmitTransactionOptions<TTransaction, TData = unknown>
   extends Pick<EventsOfOptions, "decode" | "where" | "timeout"> {
   /**
    * Signs and submits `transaction`, through a wallet or a local signer. The
-   * signal aborts when the component unmounts or `reset()` is called.
+   * signal aborts when the component unmounts, an `<Activity>` hides
+   * it, or `reset()` is called.
    */
   signAndSubmit: (transaction: TTransaction, context: { signal: AbortSignal }) => Promise<SubmittedTransaction>;
   /** Keep only the events this descriptor matches, in the preview and the result. */

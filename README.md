@@ -3813,7 +3813,7 @@ function Feed() {
     `submit` resolves with the run's final state and never rejects. Calling it while a run is
     going starts nothing and returns that run's promise, so a double click signs once (and a
     `signAndSubmit` must not await `submit`, which would wait on itself).
-  - **Unmount or `reset()`** abandons the run: the signal given to `signAndSubmit` and
+  - **Unmount, `reset()` or an `<Activity>` hiding the component** abandons the run: the signal given to `signAndSubmit` and
     `eventsOf` aborts, and a run still previewing never reaches `signAndSubmit`. A transaction
     already submitted stays submitted, and a wallet prompt already open can still be approved
     unless your `signAndSubmit` honours the signal. `reset()` returns to `"idle"` and the

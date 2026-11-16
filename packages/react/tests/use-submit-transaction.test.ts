@@ -417,7 +417,7 @@ describe("useSubmitTransaction", () => {
       await rerender(root, shown("visible"));
       await waitFor(() => expect(t.last().status).toBe("failed"));
       expect(t.last().hash).toBe(A);
-      expect(t.last().error!.message).toContain("Stopped waiting");
+      expect(t.last().error!.message).toBe("Stopped waiting for the transaction");
       await unmount(root);
     });
 
@@ -502,6 +502,20 @@ describe("useSubmitTransaction", () => {
         expect(t.last()).toMatchObject({ status: "idle", hash: undefined });
         await unmount(root);
       }
+    });
+
+    it("never resolves confirmed after reset, even when eventsOf ignores the signal", async () => {
+      const t = setup();
+      let resolveLookup!: () => void;
+      t.client.eventsOf = (() => new Promise((r) => (resolveLookup = () => r([])))) as typeof t.client.eventsOf;
+      const root = await render(t.el());
+      const promise = t.last().submit(TX);
+      await waitFor(() => expect(t.last().status).toBe("confirming"));
+      t.last().reset();
+      resolveLookup();
+      expect(await promise).toMatchObject({ status: "failed", hash: A });
+      await waitFor(() => expect(t.last().status).toBe("idle"));
+      await unmount(root);
     });
 
     it("a signAndSubmit that calls submit again still signs once", async () => {
