@@ -465,11 +465,16 @@ async function coverage(options: CoverageOptions): Promise<number> {
   const out = stdout(new AbortController());
   const interrupted = new AbortController();
   let child: ChildProcess | undefined;
-  // Ctrl-C reaches the test command too. The first signal is passed on and waited out, so
-  // the localnet is stopped rather than left running; a second one kills the command.
+  // The first signal is waited out so the localnet is stopped rather than left running. Ctrl-C
+  // already reaches the command through the process group, so only SIGTERM and SIGHUP are
+  // passed on. A second signal kills the command, or with none running exits, where the
+  // testing kit's exit hook kills the node.
   const interrupt = (signal: NodeJS.Signals) => {
-    if (interrupted.signal.aborted) child?.kill("SIGKILL");
-    else (interrupted.abort(), child?.kill(signal));
+    if (!interrupted.signal.aborted) {
+      interrupted.abort();
+      if (signal !== "SIGINT") child?.kill(signal);
+    } else if (child !== undefined) child.kill("SIGKILL");
+    else process.exit(130);
   };
   for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, interrupt);
   const code = await runCoverage(options, {
@@ -479,7 +484,10 @@ async function coverage(options: CoverageOptions): Promise<number> {
       new Promise((resolve, reject) => {
         child = spawn(command[0]!, command.slice(1), { stdio: ["inherit", 2, "inherit"], env: { ...process.env, ...env } });
         child.once("error", reject);
-        child.once("close", (exit, signal) => resolve(exit ?? 128 + (signal === null ? 0 : osConstants.signals[signal])));
+        child.once("close", (exit, signal) => {
+          child = undefined;
+          resolve(exit ?? 128 + (signal === null ? 0 : osConstants.signals[signal]));
+        });
       }),
     write: out.write,
     error: (message) => process.stderr.write(`${message}\n`),

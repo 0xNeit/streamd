@@ -135,6 +135,7 @@ export async function runCoverage(options: CoverageOptions, io: CoverageIO): Pro
   try {
     localnet = await io.start();
   } catch (err) {
+    if (io.signal.aborted) return interrupted(io);
     io.error(`streamd: cannot start a localnet: ${message(err)}`);
     return 1;
   }
@@ -165,6 +166,8 @@ export async function runCoverage(options: CoverageOptions, io: CoverageIO): Pro
     io.error(`streamd: ${emitted} of ${report.length} event structs emitted${code === 0 ? "" : `; the test command exited ${code}`}`);
     return code === 0 ? 0 : 1;
   } catch (err) {
+    // Ctrl-C stops the node and the compiler too; their failures are the interrupt's.
+    if (io.signal.aborted) return interrupted(io);
     io.error(`streamd: ${message(err)}`);
     return 1;
   } finally {

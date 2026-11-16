@@ -284,6 +284,18 @@ describe("runCoverage", () => {
     expect(calls.stopped).toBe(1);
   });
 
+  it("reports an interrupt, not the failure it caused, during startup or publish", async () => {
+    const dir = await packageDir();
+    const startFails = io(() => Promise.reject(new Error("The localnet exited before it was ready")), 0, AbortSignal.abort());
+    expect(await runCoverage({ packageDir: dir, command: ["true"], format: "json" }, startFails.coverageIO)).toBe(130);
+    expect(startFails.out.errors).toEqual(["streamd: interrupted; no coverage report"]);
+    const { localnet, calls } = fakeLocalnet({ publish: () => Promise.reject(new Error("Compiling failed")) });
+    const publishFails = io(localnet, 0, AbortSignal.abort());
+    expect(await runCoverage({ packageDir: dir, command: ["true"], format: "json" }, publishFails.coverageIO)).toBe(130);
+    expect(publishFails.out.errors).toEqual(["streamd: interrupted; no coverage report"]);
+    expect(calls.stopped).toBe(1);
+  });
+
   it("exits 1 when the localnet does not start", async () => {
     const dir = await packageDir();
     const { coverageIO, out } = io(() => Promise.reject(new Error("aptos CLI not found")));

@@ -5407,12 +5407,13 @@ streamd coverage ./move/counter -- bun test tests/move
   Lines are sorted by type. A summary such as `streamd: 3 of 4 event structs emitted` goes to
   stderr. `--format pretty` prints one plain line per struct instead.
 - **Exit codes.** 0 when the command passed, 1 when it failed (the report still prints) or when the
-  localnet, compile or publish failed, 2 for bad usage. A command killed by a signal counts as
-  exiting `128 +` its number, as in a shell.
-- **Interrupts.** The first SIGINT, SIGTERM or SIGHUP is passed to the command and waited out, then
-  the localnet is stopped and the run exits 130 with no report (Ctrl-C reaches the node too, so
-  there is nothing left to read). A second signal kills the command. Only SIGKILL leaves the node
-  running.
+  localnet, compile or publish failed, 2 for bad usage. The summary reports a command killed by a
+  signal as exiting `128 +` its number, as a shell does.
+- **Interrupts.** On the first SIGINT, SIGTERM or SIGHUP the run waits for the command (Ctrl-C
+  reaches it through the terminal; SIGTERM and SIGHUP are passed on), stops the localnet and exits
+  130 with no report, since Ctrl-C reaches the node too. A signal before the command starts skips
+  it. A second signal kills the command, or exits at once when none is running. Only SIGKILL
+  leaves the node running.
 - **Aptos only**, and one package per run. `bun run test:localnet` in `packages/cli` runs it for real
   on a fixture package; the normal test run skips it.
 
