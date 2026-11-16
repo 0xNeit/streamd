@@ -2363,8 +2363,9 @@ for (const { version, data } of await streamd.getProvenance(token, { withNames: 
   with `from` and `to`), `mutation` (`0x4::token::Mutation`, `0x4::collection::Mutation` and
   their legacy handle events, with the field and its old and new values when the event has
   them) and `burn` (`0x4::collection::Burn`, `BurnEvent`, `ConcurrentBurnEvent`), each kept only
-  when it names this object, then a bare `burn` when the transaction deleted the `ObjectCore`
-  with no burn event.
+  when it names this object, then a bare `burn` when the transaction deleted the object (an
+  `ObjectCore` delete, or the `0x1::object::ObjectGroup` delete the fullnode reports when the
+  whole group goes) with no burn event.
 - **Changes and properties.** `changes` holds every resource the transaction wrote or deleted at
   the object (`data` `null` on delete), so a record with no actions still says what it touched,
   such as a fungible store's balance. An object's resources are one resource group, written

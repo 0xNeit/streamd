@@ -5,6 +5,7 @@ import type { Provenance, ProvenanceAction, TokenProperty, TransactionLister } f
 
 const PROPERTY_MAP = "0x4::property_map::PropertyMap";
 const OBJECT_CORE = "0x1::object::ObjectCore";
+const OBJECT_GROUP = "0x1::object::ObjectGroup";
 /** Indexed by the type tag `0x4::property_map` stores beside each value. */
 const PROPERTY_TYPES = ["bool", "u8", "u16", "u32", "u64", "u128", "u256", "address", "vector<u8>", "0x1::string::String"];
 
@@ -117,7 +118,7 @@ function mutation(d: Fields, event: StreamdEvent): ProvenanceAction {
 /**
  * The record of one transaction that touched `object` (long form): the
  * actions its framework events name the object in, a `burn` when it deleted
- * the `ObjectCore` with no burn event, every change at the object, and the
+ * the object with no burn event, every change at the object, and the
  * `PropertyMap` it wrote, decoded.
  */
 export function toProvenance(object: string, found: TransactionEvents): StreamdEvent<Provenance> {
@@ -129,7 +130,9 @@ export function toProvenance(object: string, found: TransactionEvents): StreamdE
   const changes: ResourceChange[] = (found.changes ?? []).filter((c) => c.address === object);
   // A write set holds at most one change per resource.
   const map = changes.find((c) => c.type === PROPERTY_MAP && c.data !== null);
-  if (changes.some((c) => c.type === OBJECT_CORE && c.data === null) && !actions.some((a) => a.kind === "burn")) {
+  // Deleting an object deletes its resource group, which the fullnode reports as one `ObjectGroup` delete.
+  const deleted = changes.some((c) => (c.type === OBJECT_CORE || c.type === OBJECT_GROUP) && c.data === null);
+  if (deleted && !actions.some((a) => a.kind === "burn")) {
     actions.push({ kind: "burn" });
   }
   const first = found.events[0];

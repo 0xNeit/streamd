@@ -139,7 +139,7 @@ describe("toProvenance", () => {
     ]);
   });
 
-  it("reads burns from each burn event, and a deleted ObjectCore with no burn event as a burn", () => {
+  it("reads burns from each burn event, and a deleted ObjectCore or ObjectGroup with no burn event as a burn", () => {
     const guid = { creationNumber: 3n, accountAddress: "0xc011" };
     const deleted = [{ address: TOKEN, type: "0x1::object::ObjectCore", data: null }];
     expect(
@@ -159,6 +159,7 @@ describe("toProvenance", () => {
       { kind: "burn", collection: COLLECTION },
     ]);
     expect(actions(txn([], deleted))).toEqual([{ kind: "burn" }]);
+    expect(actions(txn([], [{ address: TOKEN, type: "0x1::object::ObjectGroup", data: null }]))).toEqual([{ kind: "burn" }]);
     expect(actions(txn([], [{ address: OTHER, type: "0x1::object::ObjectCore", data: null }]))).toEqual([]);
   });
 

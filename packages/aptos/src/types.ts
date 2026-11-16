@@ -552,7 +552,7 @@ export type ProvenanceAction =
   | { kind: "transfer"; from: string; to: string }
   /** A `0x4::token` or `0x4::collection` mutation event; the legacy collection one carries no values. */
   | { kind: "mutation"; field: string; oldValue?: string; newValue?: string }
-  /** A `0x4::collection` burn event named the object, or its `ObjectCore` was deleted without one. */
+  /** A `0x4::collection` burn event named the object, or the object was deleted without one. */
   | { kind: "burn"; collection?: string; previousOwner?: string };
 
 /**
@@ -565,7 +565,7 @@ export interface Provenance {
   object: string;
   /** False when the transaction aborted, which leaves the object as it was. */
   success: boolean;
-  /** In event order, then a `burn` from a deleted `ObjectCore`. Empty when nothing named the object. */
+  /** In event order, then a `burn` when the object was deleted with no burn event. Empty when nothing named the object. */
   actions: ProvenanceAction[];
   /**
    * The object's `PropertyMap` as the transaction left it, every property in
