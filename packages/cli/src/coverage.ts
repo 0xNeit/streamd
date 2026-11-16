@@ -1,6 +1,13 @@
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
+import type { Ed25519Account } from "@aptos-labs/ts-sdk";
 import { normalizeAddress } from "@streamd/core";
-import type { StreamdEvent } from "@streamd/core";
+import type { MoveEventType, StreamdEvent } from "@streamd/core";
+import type { Localnet } from "@streamd/testing";
+import { parseModuleAbi } from "./abi.js";
 import type { ModuleAbi } from "./abi.js";
+import type { CoverageOptions } from "./args.js";
+import { message } from "./format.js";
 
 /** The call behind the first event of one struct. */
 export interface FirstEmit {
@@ -46,9 +53,9 @@ function typeKey(type: string): string {
 }
 
 /** Every `#[event]` struct in the modules, as `<long address>::<module>::<Struct>`, sorted. */
-export function eventStructTypes(abis: readonly ModuleAbi[]): string[] {
+export function eventStructTypes(abis: readonly ModuleAbi[]): MoveEventType[] {
   const types = abis.flatMap((abi) => abi.structs.filter((s) => s.isEvent).map((s) => typeKey(`${abi.address}::${abi.name}::${s.name}`)));
-  return [...new Set(types)].sort();
+  return [...new Set(types)].sort() as MoveEventType[];
 }
 
 /**
@@ -93,4 +100,68 @@ export function prettyCoverageLine(entry: CoverageEntry): string {
   const { event, count, first } = entry;
   if (first === undefined) return `missed   ${event}\n`;
   return `emitted  ${event}  x${count}  first at ${first.version} by ${first.function ?? "(no entry function)"}\n`;
+}
+
+export interface CoverageIO {
+  /** Starts the localnet the run uses; `runCoverage` stops it. */
+  start(): Promise<Localnet>;
+  /** Runs the test command with `env` added to its environment, resolving its exit code. */
+  run(command: string[], env: Record<string, string>): Promise<number>;
+  /** Writes one output line; a returned promise is awaited before the next line. */
+  write(line: string): void | Promise<void>;
+  /** Reports one diagnostic message, without a trailing newline. */
+  error(message: string): void;
+}
+
+/**
+ * Publishes the package to a fresh localnet from a funded account, runs the
+ * test command against it, then prints one line per `#[event]` struct the
+ * package declares. Resolves 0 when the command passed, 1 when it or any step
+ * before the report failed; the report still prints after a failed command.
+ */
+export async function runCoverage(options: CoverageOptions, io: CoverageIO): Promise<number> {
+  const manifest = join(options.packageDir, "Move.toml");
+  let toml: string;
+  try {
+    toml = await readFile(manifest, "utf8");
+  } catch (err) {
+    io.error(`streamd: cannot read ${manifest}: ${message(err)}`);
+    return 1;
+  }
+  let localnet: Localnet;
+  try {
+    localnet = await io.start();
+  } catch (err) {
+    io.error(`streamd: cannot start a localnet: ${message(err)}`);
+    return 1;
+  }
+  try {
+    const account = await localnet.fundedAccount();
+    const address = account.accountAddress.toStringLong();
+    const namedAddresses = Object.fromEntries(unboundAddresses(toml).map((name) => [name, address]));
+    const published = await localnet.publish(options.packageDir, { account, namedAddresses });
+    const code = await io.run(options.command, {
+      STREAMD_NODE_URL: localnet.nodeUrl,
+      STREAMD_FAUCET_URL: localnet.faucetUrl ?? "",
+      STREAMD_PACKAGE_ADDRESS: address,
+      // fundedAccount generates an Ed25519 account; the key is a throwaway on this localnet.
+      STREAMD_PUBLISHER_KEY: (account as Ed25519Account).privateKey.toString(),
+    });
+    const modules = await localnet.aptos.getAccountModules({ accountAddress: address });
+    const types = eventStructTypes(modules.map(parseModuleAbi));
+    const events = types.length === 0
+      ? []
+      : await localnet.client.getEvents({ kind: "module", eventType: types }, { fromVersion: published.version, toVersion: "head" });
+    const report = coverageReport(types, events);
+    const line = options.format === "pretty" ? prettyCoverageLine : coverageLine;
+    for (const entry of report) await io.write(line(entry));
+    const emitted = report.filter((entry) => entry.count > 0).length;
+    io.error(`streamd: ${emitted} of ${report.length} event structs emitted${code === 0 ? "" : `; the test command exited ${code}`}`);
+    return code === 0 ? 0 : 1;
+  } catch (err) {
+    io.error(`streamd: ${message(err)}`);
+    return 1;
+  } finally {
+    await localnet.stop();
+  }
 }

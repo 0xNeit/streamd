@@ -1,7 +1,13 @@
 import { describe, expect, it } from "bun:test";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Account, type Ed25519Account } from "@aptos-labs/ts-sdk";
 import type { StreamdEvent } from "@streamd/core";
+import type { Localnet } from "@streamd/testing";
 import type { ModuleAbi, StructAbi } from "../src/abi.js";
-import { coverageLine, coverageReport, eventStructTypes, prettyCoverageLine, unboundAddresses } from "../src/coverage.js";
+import { coverageLine, coverageReport, eventStructTypes, prettyCoverageLine, runCoverage, unboundAddresses } from "../src/coverage.js";
+import type { CoverageIO } from "../src/coverage.js";
 
 const ADDR = `0x00${"ab".repeat(31)}`;
 
@@ -112,5 +118,139 @@ describe("coverage lines", () => {
     expect(prettyCoverageLine({ event: "e", count: 3, first })).toBe("emitted  e  x3  first at 12 by 0x1::code::publish_package_txn\n");
     expect(prettyCoverageLine({ event: "e", count: 1, first: { ...first, function: null } })).toContain("(no entry function)");
     expect(prettyCoverageLine({ event: "e", count: 0 })).toBe("missed   e\n");
+  });
+});
+
+describe("runCoverage", () => {
+  const PUBLISHER = Account.generate();
+  const LONG = PUBLISHER.accountAddress.toStringLong();
+  const moduleJson = (structs: { name: string; is_event: boolean }[]) => ({
+    abi: {
+      address: LONG,
+      name: "m",
+      structs: structs.map((s) => ({ ...s, is_enum: false, abilities: ["drop"], generic_type_params: [], fields: [] })),
+      exposed_functions: [],
+    },
+  });
+
+  async function packageDir(toml = '[package]\nname = "m"\n[addresses]\nm = "_"\nadmin = "_"\n'): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "streamd-coverage-test-"));
+    await writeFile(join(dir, "Move.toml"), toml);
+    return dir;
+  }
+
+  function fakeLocalnet(options: { structs?: { name: string; is_event: boolean }[]; events?: StreamdEvent[]; publish?: () => Promise<unknown> } = {}) {
+    const calls = { published: [] as unknown[], queried: [] as unknown[], stopped: 0 };
+    const localnet = {
+      nodeUrl: "http://127.0.0.1:9/v1",
+      faucetUrl: "http://127.0.0.1:10",
+      fundedAccount: async () => PUBLISHER,
+      publish: async (dir: string, opts: unknown) => {
+        calls.published.push([dir, opts]);
+        if (options.publish !== undefined) return options.publish();
+        return { transactionHash: "0xp", version: 7n };
+      },
+      aptos: { getAccountModules: async () => [moduleJson(options.structs ?? [{ name: "Bumped", is_event: true }, { name: "Never", is_event: true }])] },
+      client: {
+        getEvents: async (descriptor: unknown, filter: unknown) => {
+          calls.queried.push([descriptor, filter]);
+          return options.events ?? [ev(`${LONG}::m::Bumped`, 8n, 0, `${LONG}::m::bump`)];
+        },
+      },
+      stop: async () => void calls.stopped++,
+    } as unknown as Localnet;
+    return { localnet, calls };
+  }
+
+  function io(localnet: Localnet | (() => Promise<Localnet>), code: number | Error = 0) {
+    const out = { lines: [] as string[], errors: [] as string[], runs: [] as [string[], Record<string, string>][] };
+    const coverageIO: CoverageIO = {
+      start: typeof localnet === "function" ? localnet : async () => localnet,
+      run: async (command, env) => {
+        out.runs.push([command, env]);
+        if (code instanceof Error) throw code;
+        return code;
+      },
+      write: (line) => void out.lines.push(line),
+      error: (message) => void out.errors.push(message),
+    };
+    return { coverageIO, out };
+  }
+
+  it("publishes with unbound names bound, runs the command and reports from the publish version", async () => {
+    const dir = await packageDir();
+    const { localnet, calls } = fakeLocalnet();
+    const { coverageIO, out } = io(localnet);
+    expect(await runCoverage({ packageDir: dir, command: ["bun", "t.ts"], format: "json" }, coverageIO)).toBe(0);
+    expect(calls.published).toEqual([[dir, { account: PUBLISHER, namedAddresses: { m: LONG, admin: LONG } }]]);
+    expect(out.runs).toEqual([[["bun", "t.ts"], {
+      STREAMD_NODE_URL: "http://127.0.0.1:9/v1",
+      STREAMD_FAUCET_URL: "http://127.0.0.1:10",
+      STREAMD_PACKAGE_ADDRESS: LONG,
+      STREAMD_PUBLISHER_KEY: (PUBLISHER as Ed25519Account).privateKey.toString(),
+    }]]);
+    expect(calls.queried).toEqual([[{ kind: "module", eventType: [`${LONG}::m::Bumped`, `${LONG}::m::Never`] }, { fromVersion: 7n, toVersion: "head" }]]);
+    expect(out.lines.map((line) => JSON.parse(line).event)).toEqual([`${LONG}::m::Bumped`, `${LONG}::m::Never`]);
+    expect(JSON.parse(out.lines[0]!).first.function).toBe(`${LONG}::m::bump`);
+    expect(out.errors).toEqual(["streamd: 1 of 2 event structs emitted"]);
+    expect(calls.stopped).toBe(1);
+    await rm(dir, { recursive: true });
+  });
+
+  it("still reports after a failed command, and exits 1", async () => {
+    const dir = await packageDir();
+    const { localnet, calls } = fakeLocalnet();
+    const { coverageIO, out } = io(localnet, 3);
+    expect(await runCoverage({ packageDir: dir, command: ["false"], format: "pretty" }, coverageIO)).toBe(1);
+    expect(out.lines[1]).toBe(`missed   ${LONG}::m::Never\n`);
+    expect(out.errors).toEqual(["streamd: 1 of 2 event structs emitted; the test command exited 3"]);
+    expect(calls.stopped).toBe(1);
+    await rm(dir, { recursive: true });
+  });
+
+  it("reads no events when the package declares none", async () => {
+    const dir = await packageDir();
+    const { localnet, calls } = fakeLocalnet({ structs: [{ name: "Config", is_event: false }] });
+    const { coverageIO, out } = io(localnet);
+    expect(await runCoverage({ packageDir: dir, command: ["true"], format: "json" }, coverageIO)).toBe(0);
+    expect(calls.queried).toEqual([]);
+    expect(out.lines).toEqual([]);
+    expect(out.errors).toEqual(["streamd: 0 of 0 event structs emitted"]);
+  });
+
+  it("exits 1 without running the command when the publish fails, and stops the localnet", async () => {
+    const dir = await packageDir();
+    const { localnet, calls } = fakeLocalnet({ publish: () => Promise.reject(new Error("Compiling failed: boom")) });
+    const { coverageIO, out } = io(localnet);
+    expect(await runCoverage({ packageDir: dir, command: ["true"], format: "json" }, coverageIO)).toBe(1);
+    expect(out.runs).toEqual([]);
+    expect(out.lines).toEqual([]);
+    expect(out.errors).toEqual(["streamd: Compiling failed: boom"]);
+    expect(calls.stopped).toBe(1);
+  });
+
+  it("exits 1 when the command cannot be spawned, and stops the localnet", async () => {
+    const dir = await packageDir();
+    const { localnet, calls } = fakeLocalnet();
+    const { coverageIO, out } = io(localnet, new Error("spawn nope ENOENT"));
+    expect(await runCoverage({ packageDir: dir, command: ["nope"], format: "json" }, coverageIO)).toBe(1);
+    expect(out.errors).toEqual(["streamd: spawn nope ENOENT"]);
+    expect(calls.stopped).toBe(1);
+  });
+
+  it("exits 1 before starting anything when Move.toml is missing", async () => {
+    let started = false;
+    const { coverageIO, out } = io(async () => ((started = true), fakeLocalnet().localnet));
+    expect(await runCoverage({ packageDir: join(tmpdir(), "streamd-no-such-package"), command: ["true"], format: "json" }, coverageIO)).toBe(1);
+    expect(started).toBe(false);
+    expect(out.errors[0]).toStartWith("streamd: cannot read ");
+  });
+
+  it("exits 1 when the localnet does not start", async () => {
+    const dir = await packageDir();
+    const { coverageIO, out } = io(() => Promise.reject(new Error("aptos CLI not found")));
+    expect(await runCoverage({ packageDir: dir, command: ["true"], format: "json" }, coverageIO)).toBe(1);
+    expect(out.runs).toEqual([]);
+    expect(out.errors).toEqual(["streamd: cannot start a localnet: aptos CLI not found"]);
   });
 });

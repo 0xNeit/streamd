@@ -181,6 +181,15 @@ export interface InspectOptions extends Endpoint {
   format: "json" | "pretty";
 }
 
+/** Runs on a localnet it starts itself, so it takes no endpoint. */
+export interface CoverageOptions {
+  /** The Move package directory, holding `Move.toml`. */
+  packageDir: string;
+  /** The test command and its arguments, run after the publish; never empty. */
+  command: string[];
+  format: "json" | "pretty";
+}
+
 /** Aptos only: Sui has no event handles. */
 export interface HandlesOptions extends Endpoint {
   /** An address or name; validated and resolved by `listEventHandles`. */
