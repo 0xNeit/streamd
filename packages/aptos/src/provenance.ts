@@ -116,9 +116,9 @@ function mutation(d: Fields, event: StreamdEvent): ProvenanceAction {
 
 /**
  * The record of one transaction that touched `object` (long form): the
- * actions its framework events name the object in, a `properties` action
- * when it wrote the object's `PropertyMap`, a `burn` when it deleted the
- * `ObjectCore` with no burn event, and every change at the object.
+ * actions its framework events name the object in, a `burn` when it deleted
+ * the `ObjectCore` with no burn event, every change at the object, and the
+ * `PropertyMap` it wrote, decoded.
  */
 export function toProvenance(object: string, found: TransactionEvents): StreamdEvent<Provenance> {
   const actions: ProvenanceAction[] = [];
@@ -128,14 +128,15 @@ export function toProvenance(object: string, found: TransactionEvents): StreamdE
   }
   const changes: ResourceChange[] = (found.changes ?? []).filter((c) => c.address === object);
   // A write set holds at most one change per resource.
-  const properties = changes.find((c) => c.type === PROPERTY_MAP && c.data !== null);
-  if (properties !== undefined) actions.push({ kind: "properties", properties: decodeProperties(properties.data) });
+  const map = changes.find((c) => c.type === PROPERTY_MAP && c.data !== null);
   if (changes.some((c) => c.type === OBJECT_CORE && c.data === null) && !actions.some((a) => a.kind === "burn")) {
     actions.push({ kind: "burn" });
   }
   const first = found.events[0];
   const envelope = first ?? { type: OBJECT_CORE, version: found.version, sequenceNumber: 0n, eventIndex: 0 };
-  return { ...envelope, data: { object, success: found.success, actions, changes } };
+  const data: Provenance = { object, success: found.success, actions, changes };
+  if (map !== undefined) data.properties = decodeProperties(map.data);
+  return { ...envelope, data };
 }
 
 /** The most versions one Indexer listing returns. */

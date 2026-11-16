@@ -2328,7 +2328,7 @@ const past = await streamd.getUpgrades("0x1", { fromVersion: 7454757100n, toVers
 `getProvenance(object, filter?)` returns the history of one Aptos object, a `0x4` token or any
 `0x1::object` object, as one record per transaction that touched it, and
 `provenance(object, callback, options?)` follows new ones. Each record's `data` is a
-`Provenance { object, success, actions, changes, names? }`:
+`Provenance { object, success, actions, changes, properties?, names? }`:
 
 ```ts
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
@@ -2363,13 +2363,15 @@ for (const { version, data } of await streamd.getProvenance(token, { withNames: 
   with `from` and `to`), `mutation` (`0x4::token::Mutation`, `0x4::collection::Mutation` and
   their legacy handle events, with the field and its old and new values when the event has
   them) and `burn` (`0x4::collection::Burn`, `BurnEvent`, `ConcurrentBurnEvent`), each kept only
-  when it names this object. Then `properties`, the object's whole `PropertyMap` as the
-  transaction wrote it, each value decoded from its BCS bytes (integers as `bigint`); compare it
-  with the previous record's to see what changed. Last, a bare `burn` when the transaction
-  deleted the `ObjectCore` with no burn event.
-- **Changes.** `changes` holds every resource the transaction wrote or deleted at the object
-  (`data` `null` on delete), so a record with no actions still says what it touched, such as a
-  fungible store's balance.
+  when it names this object, then a bare `burn` when the transaction deleted the `ObjectCore`
+  with no burn event.
+- **Changes and properties.** `changes` holds every resource the transaction wrote or deleted at
+  the object (`data` `null` on delete), so a record with no actions still says what it touched,
+  such as a fungible store's balance. An object's resources are one resource group, written
+  whole, so any write to the object lists all of them, unchanged ones included. `properties` is
+  the object's `PropertyMap` as the transaction left it, each value decoded from its BCS bytes
+  (integers as `bigint`); `0x4::property_map` emits no event, so a property changed where a
+  record's `properties` differs from the previous record's.
 - **Range.** `getProvenance` starts at version 0 unless `fromVersion`, `fromTime` or
   `fromBlock` says otherwise, and ends at the Indexer's processed version, which trails the
   fullnode by a few hundred versions; `provenance()` starts there and follows it. `limit`,

@@ -170,14 +170,13 @@ describe("toProvenance", () => {
     expect(record.data).toEqual({
       object: TOKEN,
       success: true,
-      actions: [
-        { kind: "transfer", from: ALICE, to: BOB },
-        { kind: "properties", properties: [{ key: "level", type: "u64", value: 5n }] },
-      ],
+      actions: [{ kind: "transfer", from: ALICE, to: BOB }],
       changes: [core, map],
+      properties: [{ key: "level", type: "u64", value: 5n }],
     });
     const removed = { address: TOKEN, type: "0x4::property_map::PropertyMap", data: null };
-    expect(actions(txn([], [removed]))).toEqual([]);
+    expect(toProvenance(TOKEN, txn([], [removed])).data.properties).toBeUndefined();
+    expect(toProvenance(TOKEN, txn([], [elsewhere])).data.properties).toBeUndefined();
   });
 
   it("keeps the first event's envelope, or a bare one when the transaction emitted none", () => {
