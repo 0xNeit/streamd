@@ -2,6 +2,8 @@ import { normalizeAddress, StreamdError } from "@streamd/core";
 import type { FieldAbi, ModuleAbi, MoveType, StructAbi, ViewAbi } from "./abi.js";
 import { arbitraryWriter, BYTE_LENGTH } from "./arbitraries.js";
 import type { ArbitraryContext } from "./arbitraries.js";
+import { eventTables, renderTables, TABLES_IMPORT } from "./sql.js";
+import type { ColumnContext, ColumnMapping, SqlDialect } from "./sql.js";
 
 /** One module, or every module at `address` when `module` is unset. */
 export interface ModuleRef {
@@ -24,6 +26,8 @@ export interface GenerateOptions {
   validators?: boolean;
   /** Writes an `arbitrary<Type>` random payload generator per generated type; default false. */
   arbitraries?: boolean;
+  /** Writes a table spec per event type and its DDL in this SQL dialect; default none. */
+  sql?: SqlDialect;
   /** How the chain's node writes values as JSON; default Aptos's. */
   dialect?: Dialect;
 }
@@ -48,6 +52,8 @@ export interface Builtin {
   check: (value: string, ctx: CheckContext) => string;
   /** An expression for a random value, with `rng` in scope. */
   arbitrary: (ctx: ArbitraryContext) => string;
+  /** Where its value is stored in an event table; a JSON column when unset. */
+  column?: (ctx: ColumnContext) => ColumnMapping;
   /** Its type arguments never appear in its JSON, so their structs are not generated. */
   opaque?: boolean;
 }
@@ -103,9 +109,15 @@ function builtin(t: StructType) {
 }
 
 const APTOS_BUILTINS: Record<"String" | "Option" | "Object", Builtin> = {
-  String: { type: () => "string", check: (v) => `typeof ${v} === "string"`, arbitrary: (c) => c.use("string") },
+  String: {
+    type: () => "string",
+    check: (v) => `typeof ${v} === "string"`,
+    arbitrary: (c) => c.use("string"),
+    column: () => ({ type: "text", path: [], nullable: false }),
+  },
   Object: {
     opaque: true,
+    column: () => ({ type: "address", path: ["inner"], nullable: false }),
     type: () => "{ inner: string }",
     check: (v, c) => `${c.use("record", v)} && ${c.use("address", `${v}["inner"]`)}`,
     // Parenthesised, since a lambda's `=> { inner: ... }` would be a block, returning undefined.
@@ -120,6 +132,10 @@ const APTOS_BUILTINS: Record<"String" | "Option" | "Object", Builtin> = {
       return `${c.use("record", v)} && Array.isArray(${vec}) && ${vec}.length <= 1${items}`;
     },
     arbitrary: (c) => c.use("option", `rng, (rng) => ${c.inner(c.args[0]!)}`),
+    column: (c) => {
+      const inner = c.inner(c.args[0]!);
+      return { type: inner.type, path: ["vec", 0, ...inner.path], nullable: true };
+    },
   },
 };
 
@@ -574,6 +590,10 @@ export async function generateEventTypes(
       guards.set(e.key, guard);
     }
   }
+  if (options.sql !== undefined) {
+    const clash = entries.find((e) => names.get(e.key) === "StreamdEventTable");
+    if (clash !== undefined) throw new StreamdError(`${qualified(clash)} is named StreamdEventTable, which the generated tables use`);
+  }
   const generators = new Map<string, string>();
   if (options.arbitraries) {
     const reserved = new Set(["StreamdRng", "StreamdEvent", "ModuleEventDescriptor"]);
@@ -605,7 +625,9 @@ export async function generateEventTypes(
     ...(options.arbitraries && hasEvents ? ['import type { ModuleEventDescriptor, StreamdEvent } from "@streamd/core";'] : []),
     ...(views.length > 0 ? ['import type { ViewRequest } from "@streamd/core";'] : []),
     ...(handles.length > 0 ? ['import type { HandleEventDescriptor } from "@streamd/core";'] : []),
+    ...(options.sql !== undefined ? [TABLES_IMPORT] : []),
   ];
+  const events = entries.filter((e) => e.struct.isEvent).map((e) => ({ address: e.module.address, module: e.module.name, struct: e.struct }));
   const sections = [
     header.join("\n"),
     ...entries.map((e) => render(e, names, dialect)),
@@ -613,6 +635,7 @@ export async function generateEventTypes(
     ...handles.map((h, i) => renderHandle(h, handleBuilders[i]!, names)),
     ...(checks.length > 0 ? [(Object.keys(HELPERS) as Helper[]).filter((h) => used.has(h)).map((h) => (h === "bytes" ? dialect.bytes : HELPERS[h])).join("\n"), ...checks] : []),
     ...(options.arbitraries ? [...arbitrary.preamble(hasEvents), ...arbitraries] : []),
+    ...(options.sql !== undefined ? [renderTables(eventTables(events, dialect), options.sql)] : []),
   ];
   return `${sections.join("\n\n")}\n`;
 }

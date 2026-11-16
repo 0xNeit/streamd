@@ -270,9 +270,19 @@ export function suiCodegen(service: SuiPackageService): {
   return { targets, load };
 }
 
-const STRING: Builtin = { type: () => "string", check: (v) => `typeof ${v} === "string"`, arbitrary: (c) => c.use("string") };
+const STRING: Builtin = {
+  type: () => "string",
+  check: (v) => `typeof ${v} === "string"`,
+  arbitrary: (c) => c.use("string"),
+  column: () => ({ type: "text", path: [], nullable: false }),
+};
 const ASCII: Builtin = { ...STRING, arbitrary: (c) => c.use("ascii") };
-const ID: Builtin = { type: () => "string", check: (v, c) => c.use("address", v), arbitrary: (c) => c.use("address") };
+const ID: Builtin = {
+  type: () => "string",
+  check: (v, c) => c.use("address", v),
+  arbitrary: (c) => c.use("address"),
+  column: () => ({ type: "address", path: [], nullable: false }),
+};
 
 const SUI_BUILTINS: Record<string, Builtin> = {
   [`${long("0x1")}::string::String`]: STRING,
@@ -286,11 +296,13 @@ const SUI_BUILTINS: Record<string, Builtin> = {
     type: () => "string",
     check: (v, c) => c.use("uint", v),
     arbitrary: (c) => `String(${c.use("int", "rng, 64, false")})`,
+    column: () => ({ type: "u64", path: [], nullable: false }),
   },
   [`${long("0x1")}::option::Option`]: {
     type: ([inner]) => `${inner} | null`,
     check: (v, c) => `(${v} === null || ${c.inner(c.args[0]!, v)})`,
     arbitrary: (c) => `(rng() % 2 === 0 ? null : ${c.inner(c.args[0]!)})`,
+    column: (c) => ({ ...c.inner(c.args[0]!), nullable: true }),
   },
 };
 
