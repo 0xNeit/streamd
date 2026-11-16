@@ -1,3 +1,6 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "bun:test";
 import { AptosClient, FullnodeScanAdapter } from "@streamd/aptos";
 import { SuiAdapter, SuiClient } from "@streamd/sui";
@@ -245,5 +248,42 @@ describe("isMissingModule", () => {
     expect(isMissingModule(Object.assign(new Error("x"), { code: "ERR_MODULE_NOT_FOUND" }))).toBe(true);
     expect(isMissingModule(new Error("Cannot find package '@mysten/sui' from '/x/cli.js'"))).toBe(true);
     expect(isMissingModule(new SyntaxError("Unexpected token"))).toBe(false);
+  });
+});
+
+describe("package manifests and tarballs", () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+  it("keeps @streamd/sui as an optional CLI peer and guards publishing with Bun", () => {
+    const cli = JSON.parse(readFileSync(resolve(root, "packages/cli/package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+      peerDependencies: Record<string, string>;
+      peerDependenciesMeta: Record<string, { optional?: boolean }>;
+    };
+    const core = JSON.parse(readFileSync(resolve(root, "packages/core/package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    expect(cli.dependencies["@streamd/sui"]).toBeUndefined();
+    expect(cli.devDependencies["@streamd/sui"]).toBe("workspace:*");
+    expect(cli.peerDependencies["@streamd/sui"]).toBe("^0.1.0");
+    expect(cli.peerDependenciesMeta["@streamd/sui"]).toEqual({ optional: true });
+    for (const manifest of [cli, core]) {
+      expect(manifest.scripts.prepublishOnly).toContain("process.versions.bun");
+    }
+  });
+
+  it("includes README.md and LICENSE in @streamd/core and @streamd/cli tarballs", () => {
+    for (const pkg of ["packages/core", "packages/cli"]) {
+      const dir = resolve(root, pkg);
+      expect(existsSync(resolve(dir, "README.md"))).toBe(true);
+      expect(existsSync(resolve(dir, "LICENSE"))).toBe(true);
+      const pack = Bun.spawnSync(["bun", "pm", "pack", "--dry-run"], { cwd: dir });
+      expect(pack.exitCode).toBe(0);
+      const output = pack.stdout.toString() + pack.stderr.toString();
+      expect(output).toContain("README.md");
+      expect(output).toContain("LICENSE");
+    }
   });
 });
