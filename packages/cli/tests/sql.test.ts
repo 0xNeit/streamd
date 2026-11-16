@@ -136,12 +136,15 @@ describe("generateEventTypes sql", () => {
 
   it("hashes again when stepping a 63-byte column name would pass the limit", async () => {
     const long = "a".repeat(63);
-    const tables = await tablesOf([module(DEX, "w", [struct("Wide", [[long, "u8"], [long.toUpperCase(), "u8"], [`${long.slice(0, 62)}B`, "u8"]], true)])]);
+    // The second field takes the name a key that never changes between attempts would hash to, which looped forever.
+    const trap = `${"a".repeat(54)}_0c9f8b61`;
+    const tables = await tablesOf([
+      module(DEX, "w", [struct("Wide", [[long, "u8"], [trap, "u8"], [long.toUpperCase(), "u8"], [`${long.slice(0, 62)}B`, "u8"]], true)]),
+    ]);
     const names = tables[0]!.columns.map((c) => c.name);
-    expect(names[0]).toBe(long);
-    expect(new Set(names).size).toBe(3);
+    expect(names.slice(0, 3)).toEqual([long, trap, `${"a".repeat(54)}_c915b29c`]);
+    expect(new Set(names).size).toBe(4);
     for (const name of names) expect(name.length).toBeLessThanOrEqual(63);
-    expect(names[1]).toMatch(/^a{54}_[0-9a-f]{8}$/);
   });
 
   it("steps around Postgres's pg_ prefix and writes empty lists for a module with no events", async () => {
