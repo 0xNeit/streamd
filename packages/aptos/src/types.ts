@@ -618,7 +618,7 @@ export interface TraceOptions extends Pick<EventFilter, "retries" | "signal"> {
   asset?: string;
   /** Most nodes the graph may hold, root included; default 100. */
   maxNodes?: number;
-  /** Most adapter calls the trace may make, page reads and views alike; default 1000. */
+  /** Most adapter calls the trace may make, the head read, page reads and views alike; default 1000. One call can be several HTTP requests. */
   maxRequests?: number;
   /** Addresses kept as nodes but never expanded, such as exchanges and routers. */
   stop?: readonly string[];

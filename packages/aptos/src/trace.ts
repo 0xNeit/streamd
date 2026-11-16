@@ -1,5 +1,5 @@
-import { EventQuery, StreamdError, requireAddress } from "@streamd/core";
-import type { EventAdapter, RequestLimiter, Transfer } from "@streamd/core";
+import { EventQuery, StreamdError, StreamdNetworkError, requireAddress } from "@streamd/core";
+import type { AccountEventDescriptor, EventAdapter, RequestLimiter, Transfer } from "@streamd/core";
 import { activityDescriptor, activitySource } from "./activity.js";
 import { assetKey, requireAsset } from "./transfers.js";
 import type { Activity, FundFlowGraph, TraceEdge, TraceNode, TraceOptions } from "./types.js";
@@ -27,30 +27,36 @@ export interface WalkOptions {
 /** Thrown by `countedAdapter` once the budget is spent; a caller's limit, so never retried. */
 export class TraceBudgetError extends StreamdError {}
 
-/** Every method `adapter` has, its own and its class's. */
-function methodNames(adapter: EventAdapter): Set<string> {
-  const names = new Set<string>();
-  for (let o: object | null = adapter; o !== null && o !== Object.prototype; o = Object.getPrototypeOf(o)) {
-    for (const name of Object.getOwnPropertyNames(o)) {
-      if (name !== "constructor" && typeof (adapter as unknown as Record<string, unknown>)[name] === "function") names.add(name);
-    }
-  }
-  return names;
-}
+// What a node read can call: the methods activitySource passes on, and the head read.
+const METHODS = ["fetchEvents", "getHeadVersion", "getEarliestVersion", "getBlock", "getBlockHeights", "view"] as const;
 
-/** `adapter` with every call counted, refusing those past `max`. */
-export function countedAdapter(adapter: EventAdapter, max: number): { adapter: EventAdapter; requests: () => number } {
+/**
+ * `adapter` with every call counted, refusing those past `max`. `refused`
+ * matters because transferSource reads a refused view as an absent store and
+ * finishes the page without that transfer.
+ */
+export function countedAdapter(
+  adapter: EventAdapter,
+  max: number,
+): { adapter: EventAdapter; requests: () => number; refused: () => boolean } {
   let requests = 0;
-  const counted = {} as Record<string, unknown>;
-  for (const name of methodNames(adapter)) {
-    const method = (adapter as unknown as Record<string, (...args: unknown[]) => unknown>)[name]!;
-    counted[name] = (...args: unknown[]) => {
-      if (requests >= max) return Promise.reject(new TraceBudgetError(`trace spent its maxRequests of ${max}`));
-      requests++;
-      return method.apply(adapter, args);
-    };
+  let refused = false;
+  const counted = {} as EventAdapter;
+  for (const name of METHODS) {
+    const method = adapter[name] as ((...args: unknown[]) => Promise<unknown>) | undefined;
+    if (typeof method !== "function") continue;
+    Object.assign(counted, {
+      [name]: (...args: unknown[]) => {
+        if (requests >= max) {
+          refused = true;
+          return Promise.reject(new TraceBudgetError(`trace spent its maxRequests of ${max}`));
+        }
+        requests++;
+        return method.apply(adapter, args);
+      },
+    });
   }
-  return { adapter: counted as unknown as EventAdapter, requests: () => requests };
+  return { adapter: counted, requests: () => requests, refused: () => refused };
 }
 
 /**
@@ -128,8 +134,8 @@ function addEdge(edges: Map<string, TraceEdge>, from: string, to: string, asset:
   }
   edge.amount += amount;
   edge.transfers++;
-  if (version < edge.firstVersion) edge.firstVersion = version;
-  if (version > edge.lastVersion) edge.lastVersion = version;
+  // Each node's history is read in ascending order, and the first end read sees every transfer on the edge.
+  edge.lastVersion = version;
 }
 
 /**
@@ -139,11 +145,13 @@ function addEdge(edges: Map<string, TraceEdge>, from: string, to: string, asset:
  */
 export function tracePath(graph: FundFlowGraph, from: string, to: string): TraceEdge[] | undefined {
   const [start, end] = [requireAddress(from), requireAddress(to)];
+  const out = new Map<string, TraceEdge[]>();
+  for (const edge of graph.edges) out.set(edge.from, [...(out.get(edge.from) ?? []), edge]);
   const via = new Map<string, TraceEdge | null>([[start, null]]);
   const queue = [start];
   for (let i = 0; i < queue.length && !via.has(end); i++) {
-    for (const edge of graph.edges) {
-      if (edge.from !== queue[i] || via.has(edge.to)) continue;
+    for (const edge of out.get(queue[i]!) ?? []) {
+      if (via.has(edge.to)) continue;
       via.set(edge.to, edge);
       queue.push(edge.to);
     }
@@ -187,6 +195,26 @@ export function walkOptions(options: TraceOptions): WalkOptions & { maxRequests:
   };
 }
 
+/** The head through `limiter`, retried as a query retries a page. */
+async function headOf(
+  adapter: EventAdapter,
+  limiter: RequestLimiter,
+  descriptor: AccountEventDescriptor,
+  retries: number,
+  signal: AbortSignal | undefined,
+): Promise<bigint> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const head = await limiter.run(() => adapter.getHeadVersion!(descriptor), signal, signal);
+      if (typeof head !== "bigint" || head < 0n) throw new StreamdError(`getHeadVersion returned ${String(head)}`);
+      return head;
+    } catch (err) {
+      if (!(err instanceof StreamdNetworkError) || attempt >= retries || signal?.aborted) throw err;
+      await new Promise((resolve) => setTimeout(resolve, Math.min(500 * 2 ** attempt, 10_000)));
+    }
+  }
+}
+
 /**
  * The trace behind `AptosClient.trace`: every node read as `getActivity` reads
  * it, one at a time, over one range fixed at the start, through `limiter`.
@@ -208,18 +236,23 @@ export async function trace(
       throw new StreamdError(`trace needs an adapter with getHeadVersion, for a toVersion of "head" or a negative fromVersion`);
     }
     // Read once, so every node is read over the same range.
-    const head = await counted.adapter.getHeadVersion(activityDescriptor(address));
+    const head = await headOf(counted.adapter, limiter, activityDescriptor(address), retries ?? 0, signal);
     if (toVersion === "head") toVersion = head;
     if (fromVersion !== undefined && fromVersion < 0n) fromVersion = head + fromVersion < 0n ? 0n : head + fromVersion;
   }
-  const read: TraceReader = async (node) => {
-    const source = activitySource(counted.adapter, () => Promise.resolve(node), false, requestTimeout);
+  // One source for the whole trace, so its store reads are memoized across nodes;
+  // nodes are read one at a time, as one getActivity reads its pages.
+  let node = address;
+  const source = activitySource(counted.adapter, () => Promise.resolve(node), false, requestTimeout);
+  const read: TraceReader = async (next) => {
+    node = next;
     const records = await new EventQuery(source, limiter).getEvents<Activity>(activityDescriptor(node), {
       ...(fromVersion !== undefined && { fromVersion }),
       toVersion,
       ...(retries !== undefined && { retries }),
       ...(signal !== undefined && { signal }),
     });
+    if (counted.refused()) throw new TraceBudgetError(`trace spent its maxRequests of ${walk.maxRequests}`);
     return records.map(({ version, data }) => ({ version, transfers: data.transfers }));
   };
   const graph = await walkTransfers(read, address, walk);

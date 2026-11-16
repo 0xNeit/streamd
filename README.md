@@ -2037,22 +2037,27 @@ const path = tracePath(graph, "0x1234...", "0x9abc...");
   `getActivity`.
 - **Bounds.** `maxNodes` (default 100) caps the graph, root included: the transfer that would
   add one more node is left out and the walk ends. `maxRequests` (default 1000) caps adapter
-  calls, the head read, page reads and the views that resolve fungible stores alike; the node
-  being read when it runs out keeps `expanded: false` and its partial read is dropped.
+  calls, the head read, page reads and the views that resolve fungible stores alike, though
+  one page read on `IndexerAccountAdapter` is several HTTP requests (a listing, then one
+  fullnode read per transaction). The node being read when it runs out, in a page or in one
+  of its views, keeps `expanded: false` and its partial read is dropped.
   `target` ends the walk as soon as that address joins. Whichever ended it is `stoppedBy`
-  (`"nodes"`, `"requests"` or `"target"`), absent when every node within `hops` was read, and
-  `requests` counts the calls made. `retries` and `signal` apply to each read as for
-  `getEvents`, and any other failure rejects the trace.
+  (`"nodes"`, `"requests"` or `"target"`), absent when the walk ran to its end (stop-listed
+  nodes are never read either way), and
+  `requests` counts the calls made. `retries` and `signal` apply to the head read and to each node's
+  read as for `getEvents`, and any other failure rejects the trace.
 - **Paths.** `tracePath(graph, from, to)` follows edges in their direction and returns the
   fewest edges from `from` to `to`, `[]` for the same address, or `undefined` when the graph
   holds no such chain. It only knows the graph: a trace that stopped early, or a `minAmount`,
   can hide a path that exists on chain.
 - **Source.** The client's adapter must serve an `account` descriptor with `received: true`:
   `IndexerAccountAdapter` routed beside a fullnode, as above, since the fullnode alone sees
-  only transactions an account signed. Page reads take the client's `maxConcurrentRequests`
-  slots; the store views run beside them, as for `transfers()`. Each node's read costs pages
-  in proportion to the transactions it made, so an exchange or router left off `stop` spends
-  the budget fast.
+  only transactions an account signed. The head and page reads take the client's
+  `maxConcurrentRequests` slots and `maxRequestsPerSecond` pacing; the store views run beside
+  them, up to 4 at a time and not paced, as for `transfers()`, and store metadata is read once
+  per trace. Each node's read costs calls in proportion to the transactions it made, so an
+  exchange or router left off `stop` can spend the whole budget and, as its partial read is
+  dropped, add nothing.
 - **Aptos only.** Over `getTransfers({ account })` every node would scan every transaction
   in the range, so the walk stays on the account path. There is no `SuiClient.trace`.
 

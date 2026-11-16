@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { MemoryAdapter, StreamdError } from "@streamd/core";
+import { MemoryAdapter, StreamdError, StreamdNetworkError } from "@streamd/core";
 import type { AccountEventDescriptor, EventAdapter, StreamdEvent, Transfer } from "@streamd/core";
 import { testClient } from "./helpers.js";
 import { TraceBudgetError, countedAdapter, tracePath, walkTransfers } from "../src/trace.js";
@@ -141,11 +141,11 @@ describe("tracePath", () => {
 
 describe("countedAdapter", () => {
   it("counts every method, a class's included, and refuses calls past the cap", async () => {
-    const { adapter, requests } = countedAdapter(new MemoryAdapter([]), 2);
+    const { adapter, requests, refused } = countedAdapter(new MemoryAdapter([]), 2);
     await adapter.getHeadVersion!({ kind: "module", eventType: "0x1::a::B" });
     await adapter.fetchEvents({ kind: "module", eventType: "0x1::a::B" }, {});
     await expect(adapter.fetchEvents({ kind: "module", eventType: "0x1::a::B" }, {})).rejects.toThrow(TraceBudgetError);
-    expect(requests()).toBe(2);
+    expect([requests(), refused()]).toEqual([2, true]);
   });
 });
 
@@ -200,6 +200,45 @@ describe("AptosClient.trace", () => {
     expect(graph.stoppedBy).toBe("requests");
     expect(graph.requests).toBe(2);
     expect(graph.nodes.map((n) => [n.address, n.expanded])).toEqual([[A, true], [B, false]]);
+  });
+
+  it("stops, not drops, when the budget runs out inside a page's view reads", async () => {
+    const STORES: Record<string, string> = { [long("51")]: A, [long("52")]: B };
+    const fa = (i: number, side: string, store: string): StreamdEvent => ({
+      type: `0x1::fungible_asset::${side}`,
+      data: { store, amount: "70" },
+      version: 1n,
+      sequenceNumber: 0n,
+      eventIndex: i,
+      sender: A,
+    });
+    const views: string[] = [];
+    const base: EventAdapter = {
+      fetchEvents: (d, o) => new MemoryAdapter([fa(0, "Withdraw", long("51")), fa(1, "Deposit", long("52"))]).fetchEvents(d, o),
+      getHeadVersion: async () => 5n,
+      view: async (request) => {
+        views.push(request.function);
+        const store = String(request.functionArguments![0]);
+        return request.function === "0x1::object::owner" ? [STORES[store]] : [{ inner: APT }];
+      },
+    };
+    const full = await testClient({ adapter: base }).trace(A);
+    expect(full.edges.map((e) => [e.from, e.to, e.asset, e.amount])).toEqual([[A, B, APT, 70n]]);
+    expect(full.requests).toBe(2 + views.length);
+    for (let max = 3; max < full.requests; max++) {
+      const cut = await testClient({ adapter: base }).trace(A, { maxRequests: max });
+      expect([cut.stoppedBy, cut.edges, cut.nodes[0]!.expanded, cut.requests]).toEqual(["requests", [], false, max]);
+    }
+  });
+
+  it("retries the head read and passes signal on", async () => {
+    let heads = 0;
+    const flaky = { ...indexer(HISTORY), getHeadVersion: async () => (++heads === 1 ? Promise.reject(new StreamdNetworkError("429", 429)) : 5n) };
+    expect((await testClient({ adapter: flaky }).trace(A, { retries: 1 })).edges).toHaveLength(1);
+    heads = 0;
+    await expect(testClient({ adapter: flaky }).trace(A)).rejects.toThrow("429");
+    const aborted = AbortSignal.abort(new StreamdError("stopped"));
+    await expect(testClient({ adapter: indexer(HISTORY) }).trace(A, { signal: aborted, toVersion: 5n })).rejects.toThrow("stopped");
   });
 
   it("resolves a name root once", async () => {
