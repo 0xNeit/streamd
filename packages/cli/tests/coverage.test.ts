@@ -40,6 +40,9 @@ describe("unboundAddresses", () => {
       "",
       "[addresses]",
       'pkg = "_"   # bound at publish',
+      "single = '_'",
+      '"quoted" = "_"',
+      '"mismatched\' = "_"',
       'admin="_"',
       'std = "0x1"',
       '# old = "_"',
@@ -49,7 +52,7 @@ describe("unboundAddresses", () => {
       "[dependencies.AptosFramework]",
       'rev = "_"',
     ].join("\r\n");
-    expect(unboundAddresses(toml)).toEqual(["pkg", "admin"]);
+    expect(unboundAddresses(toml)).toEqual(["pkg", "single", "quoted", "admin"]);
   });
 
   it("returns none when there is no [addresses] section or nothing unbound", () => {
@@ -139,7 +142,7 @@ describe("runCoverage", () => {
     return dir;
   }
 
-  function fakeLocalnet(options: { structs?: { name: string; is_event: boolean }[]; events?: StreamdEvent[]; publish?: () => Promise<unknown> } = {}) {
+  function fakeLocalnet(options: { structs?: { name: string; is_event: boolean }[]; events?: StreamdEvent[] | Error; publish?: () => Promise<unknown> } = {}) {
     const calls = { published: [] as unknown[], queried: [] as unknown[], stopped: 0 };
     const localnet = {
       nodeUrl: "http://127.0.0.1:9/v1",
@@ -154,6 +157,7 @@ describe("runCoverage", () => {
       client: {
         getEvents: async (descriptor: unknown, filter: unknown) => {
           calls.queried.push([descriptor, filter]);
+          if (options.events instanceof Error) throw options.events;
           return options.events ?? [ev(`${LONG}::m::Bumped`, 8n, 0, `${LONG}::m::bump`)];
         },
       },
@@ -162,9 +166,10 @@ describe("runCoverage", () => {
     return { localnet, calls };
   }
 
-  function io(localnet: Localnet | (() => Promise<Localnet>), code: number | Error = 0) {
+  function io(localnet: Localnet | (() => Promise<Localnet>), code: number | Error = 0, signal = new AbortController().signal) {
     const out = { lines: [] as string[], errors: [] as string[], runs: [] as [string[], Record<string, string>][] };
     const coverageIO: CoverageIO = {
+      signal,
       start: typeof localnet === "function" ? localnet : async () => localnet,
       run: async (command, env) => {
         out.runs.push([command, env]);
@@ -244,6 +249,39 @@ describe("runCoverage", () => {
     expect(await runCoverage({ packageDir: join(tmpdir(), "streamd-no-such-package"), command: ["true"], format: "json" }, coverageIO)).toBe(1);
     expect(started).toBe(false);
     expect(out.errors[0]).toStartWith("streamd: cannot read ");
+  });
+
+  it("exits 1 and stops the localnet when the events read fails after the command", async () => {
+    const dir = await packageDir();
+    const { localnet, calls } = fakeLocalnet({ events: new Error("fetch failed") });
+    const { coverageIO, out } = io(localnet);
+    expect(await runCoverage({ packageDir: dir, command: ["true"], format: "json" }, coverageIO)).toBe(1);
+    expect(out.runs.length).toBe(1);
+    expect(out.errors).toEqual(["streamd: fetch failed"]);
+    expect(calls.stopped).toBe(1);
+  });
+
+  it("prints no report and exits 130 when interrupted during the command", async () => {
+    const dir = await packageDir();
+    const { localnet, calls } = fakeLocalnet();
+    const controller = new AbortController();
+    const { coverageIO, out } = io(localnet, 0, controller.signal);
+    const run = coverageIO.run;
+    coverageIO.run = (command, env) => (controller.abort(), run(command, env));
+    expect(await runCoverage({ packageDir: dir, command: ["true"], format: "json" }, coverageIO)).toBe(130);
+    expect(calls.queried).toEqual([]);
+    expect(out.lines).toEqual([]);
+    expect(out.errors).toEqual(["streamd: interrupted; no coverage report"]);
+    expect(calls.stopped).toBe(1);
+  });
+
+  it("does not start the command when interrupted before it", async () => {
+    const dir = await packageDir();
+    const { localnet, calls } = fakeLocalnet();
+    const { coverageIO, out } = io(localnet, 0, AbortSignal.abort());
+    expect(await runCoverage({ packageDir: dir, command: ["true"], format: "json" }, coverageIO)).toBe(130);
+    expect(out.runs).toEqual([]);
+    expect(calls.stopped).toBe(1);
   });
 
   it("exits 1 when the localnet does not start", async () => {

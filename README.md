@@ -5391,8 +5391,9 @@ streamd coverage ./move/counter -- bun test tests/move
 - **The test command** is everything after `--`, run without a shell, with its stdout sent to
   stderr so it cannot mix with the report. It finds the localnet in its environment:
   `STREAMD_NODE_URL`, `STREAMD_FAUCET_URL`, `STREAMD_PACKAGE_ADDRESS` (long form) and
-  `STREAMD_PUBLISHER_KEY`, the publisher's private key, so it can call entry functions only the
-  publisher may. A TypeScript test can pass the first two to `attachLocalnet`. Move unit tests
+  `STREAMD_PUBLISHER_KEY`, the publisher's Ed25519 private key in AIP-80 form
+  (`ed25519-priv-0x...`, which `new Ed25519PrivateKey(...)` reads), so it can call entry
+  functions only the publisher may. A TypeScript test can pass the first two to `attachLocalnet`. Move unit tests
   (`aptos move test`) run with no node, so their events cannot be counted; drive the package
   through transactions instead.
 - **Publishing.** Every named address the package's `Move.toml` leaves as `"_"` in `[addresses]`
@@ -5404,9 +5405,14 @@ streamd coverage ./move/counter -- bun test tests/move
 - **Each line** has `event`, `emitted`, `count` and, when emitted, `first`: the version, event
   index, transaction hash, entry function (`null` for a script) and sender of the earliest event.
   Lines are sorted by type. A summary such as `streamd: 3 of 4 event structs emitted` goes to
-  stderr. `--format pretty` prints one aligned line per struct instead.
+  stderr. `--format pretty` prints one plain line per struct instead.
 - **Exit codes.** 0 when the command passed, 1 when it failed (the report still prints) or when the
-  localnet, compile or publish failed, 2 for bad usage. The localnet is stopped either way.
+  localnet, compile or publish failed, 2 for bad usage. A command killed by a signal counts as
+  exiting `128 +` its number, as in a shell.
+- **Interrupts.** The first SIGINT, SIGTERM or SIGHUP is passed to the command and waited out, then
+  the localnet is stopped and the run exits 130 with no report (Ctrl-C reaches the node too, so
+  there is nothing left to read). A second signal kills the command. Only SIGKILL leaves the node
+  running.
 - **Aptos only**, and one package per run. `bun run test:localnet` in `packages/cli` runs it for real
   on a fixture package; the normal test run skips it.
 

@@ -1,6 +1,8 @@
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
+import { constants as osConstants } from "node:os";
 import { writeFile } from "node:fs/promises";
 import { Aptos, getAptosFullNode } from "@aptos-labs/ts-sdk";
 import { listEventHandles } from "@streamd/aptos";
@@ -459,25 +461,29 @@ async function codegen(options: CodegenOptions): Promise<number> {
   }));
 }
 
-/** Spawns the test command, its stdout on stderr so it cannot mix with the report. */
-function runTestCommand(command: string[], env: Record<string, string>): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command[0]!, command.slice(1), { stdio: ["inherit", 2, "inherit"], env: { ...process.env, ...env } });
-    child.once("error", reject);
-    child.once("close", (code) => resolve(code ?? 1));
-  });
-}
-
 async function coverage(options: CoverageOptions): Promise<number> {
-  const controller = new AbortController();
-  const out = stdout(controller);
-  // Ctrl-C reaches the test command too; waiting for it lets the localnet be stopped rather than left running.
-  process.on("SIGINT", () => {});
+  const out = stdout(new AbortController());
+  const interrupted = new AbortController();
+  let child: ChildProcess | undefined;
+  // Ctrl-C reaches the test command too. The first signal is passed on and waited out, so
+  // the localnet is stopped rather than left running; a second one kills the command.
+  const interrupt = (signal: NodeJS.Signals) => {
+    if (interrupted.signal.aborted) child?.kill("SIGKILL");
+    else (interrupted.abort(), child?.kill(signal));
+  };
+  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, interrupt);
   const code = await runCoverage(options, {
     start: () => startLocalnet(),
-    run: runTestCommand,
+    // The command's stdout goes to stderr, so it cannot mix with the report.
+    run: (command, env) =>
+      new Promise((resolve, reject) => {
+        child = spawn(command[0]!, command.slice(1), { stdio: ["inherit", 2, "inherit"], env: { ...process.env, ...env } });
+        child.once("error", reject);
+        child.once("close", (exit, signal) => resolve(exit ?? 128 + (signal === null ? 0 : osConstants.signals[signal])));
+      }),
     write: out.write,
     error: (message) => process.stderr.write(`${message}\n`),
+    signal: interrupted.signal,
   });
   return out.exitCode(code);
 }

@@ -27,7 +27,7 @@ export interface CoverageEntry {
   first?: FirstEmit;
 }
 
-const UNBOUND = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"_"\s*(?:#.*)?$/;
+const UNBOUND = /^\s*(["']?)([A-Za-z_][A-Za-z0-9_]*)\1\s*=\s*(["'])_\3\s*(?:#.*)?$/;
 const SECTION = /^\s*\[([^\]]*)\]\s*(?:#.*)?$/;
 
 /** The named addresses a `Move.toml`'s `[addresses]` section leaves as `"_"`, to be bound at publish. */
@@ -41,7 +41,7 @@ export function unboundAddresses(moveToml: string): string[] {
       continue;
     }
     const unbound = inAddresses ? UNBOUND.exec(line) : null;
-    if (unbound !== null) names.push(unbound[1]!);
+    if (unbound !== null) names.push(unbound[2]!);
   }
   return names;
 }
@@ -95,7 +95,7 @@ export function coverageLine(entry: CoverageEntry): string {
   return `${JSON.stringify(record)}\n`;
 }
 
-/** One aligned line for `--format pretty`. */
+/** One line for `--format pretty`. */
 export function prettyCoverageLine(entry: CoverageEntry): string {
   const { event, count, first } = entry;
   if (first === undefined) return `missed   ${event}\n`;
@@ -111,13 +111,16 @@ export interface CoverageIO {
   write(line: string): void | Promise<void>;
   /** Reports one diagnostic message, without a trailing newline. */
   error(message: string): void;
+  /** Aborted on an interrupt: the command is not started, or no report follows it. */
+  signal: AbortSignal;
 }
 
 /**
  * Publishes the package to a fresh localnet from a funded account, runs the
  * test command against it, then prints one line per `#[event]` struct the
  * package declares. Resolves 0 when the command passed, 1 when it or any step
- * before the report failed; the report still prints after a failed command.
+ * before the report failed, 130 when interrupted; the report still prints
+ * after a failed command.
  */
 export async function runCoverage(options: CoverageOptions, io: CoverageIO): Promise<number> {
   const manifest = join(options.packageDir, "Move.toml");
@@ -140,6 +143,7 @@ export async function runCoverage(options: CoverageOptions, io: CoverageIO): Pro
     const address = account.accountAddress.toStringLong();
     const namedAddresses = Object.fromEntries(unboundAddresses(toml).map((name) => [name, address]));
     const published = await localnet.publish(options.packageDir, { account, namedAddresses });
+    if (io.signal.aborted) return interrupted(io);
     const code = await io.run(options.command, {
       STREAMD_NODE_URL: localnet.nodeUrl,
       STREAMD_FAUCET_URL: localnet.faucetUrl ?? "",
@@ -147,6 +151,8 @@ export async function runCoverage(options: CoverageOptions, io: CoverageIO): Pro
       // fundedAccount generates an Ed25519 account; the key is a throwaway on this localnet.
       STREAMD_PUBLISHER_KEY: (account as Ed25519Account).privateKey.toString(),
     });
+    // Ctrl-C reaches the node as well, so after one there is nothing left to read.
+    if (io.signal.aborted) return interrupted(io);
     const modules = await localnet.aptos.getAccountModules({ accountAddress: address });
     const types = eventStructTypes(modules.map(parseModuleAbi));
     const events = types.length === 0
@@ -164,4 +170,9 @@ export async function runCoverage(options: CoverageOptions, io: CoverageIO): Pro
   } finally {
     await localnet.stop();
   }
+}
+
+function interrupted(io: CoverageIO): number {
+  io.error("streamd: interrupted; no coverage report");
+  return 130;
 }

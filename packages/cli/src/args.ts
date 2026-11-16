@@ -1582,7 +1582,6 @@ function parseCodegen(args: string[]): ParsedCommand {
   return { command: "codegen", options };
 }
 
-/** Parses `argv` (without the node and script paths) into a command. */
 function parseCoverage(args: string[]): ParsedCommand {
   const split = args.indexOf("--");
   const own = split === -1 ? args : args.slice(0, split);
@@ -1601,6 +1600,7 @@ function parseCoverage(args: string[]): ParsedCommand {
   return { command: "coverage", options: { packageDir, command, format } };
 }
 
+/** Parses `argv` (without the node and script paths) into a command. */
 export function parseCommand(argv: readonly string[]): ParsedCommand {
   const [command, ...rest] = argv;
   if (command === undefined || command === "-h" || command === "--help") {
