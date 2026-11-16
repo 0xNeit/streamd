@@ -2468,11 +2468,62 @@ const usdcThen = await streamd.balanceAt("alice.apt", usdc, 8038000000n);
 - **Aptos only.** Sui reads a balance only at its latest state, so `SuiClient` has no
   `balanceAt`.
 
+## Oracle prices
+
+`prices(feedId, callback, options?)` follows Pyth price updates for one feed or a list, and
+`priceAt(feedId, version)` reads the price a feed held at a ledger version. Both give a `Price`:
+
+```ts
+const APT_USD = "0x03ae4db29ed4ae33d323568895aa00337e658e348b37509f5372ae51f0af00d5";
+const BTC_USD = "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43";
+
+const then = await streamd.priceAt(APT_USD, 7302080573n);
+// { oracle: "pyth", feedId: APT_USD, price: 77353341n, confidence: 152447n, exponent: -8,
+//   publishTime: 1790009897000000n, observedAt: 1790009907927720n, staleness: 10927720n }
+
+const sub = streamd.prices([APT_USD, BTC_USD], ({ data }) => {
+  if (data.staleness > 60_000_000n) return; // older than a minute when it landed
+  console.log(data.feedId, data.price, data.exponent);
+});
+```
+
+- **Exact numbers.** The price is `price × 10^exponent`, both integers, so APT/USD above is
+  0.77353341. `confidence` is at the same exponent. Nothing is a float.
+- **Times are microseconds** since the Unix epoch, as `StreamdEvent.timestamp` is. Pyth
+  publishes seconds, scaled here. `observedAt` is the chain time the price was seen at, and
+  `staleness` is `observedAt - publishTime`, negative when Pyth's clock ran ahead of the chain's.
+- **Feed ids** are Pyth's 32-byte price ids, with or without `0x`, in any case; the record
+  carries them as `0x` and lowercase hex. Anything else is refused at the call.
+- **`prices()`** reads Pyth's one legacy event handle, which carries every feed's updates, and
+  keeps the feeds named. `observedAt` is the update's block time. With no `cursor`, `fromVersion`
+  or `fromTime` it starts at the head; `cursor` is the handle's sequence number. Like `swaps()`,
+  it is not a listener for `off()` or `listenerCount()`.
+- **`priceAt()`** reads Pyth's latest-price table at `version`, so it is the price a contract
+  calling Pyth would have read then, and `observedAt` is the time of the block holding
+  `version`. A feed with no entry then resolves `undefined`. It costs one table read and one
+  block read through the client's limiter and `requestTimeout`, with no retry, plus one read
+  of the table's handle per client.
+- **Errors.** A malformed feed id or version rejects before anything is sent. Pyth has no view
+  functions, so `priceAt` reads through the client's `aptos`, not the adapter, and an
+  `ArchiveFallbackAdapter` does not answer it: a version the fullnode has pruned rejects with its
+  `StreamdNetworkError`, `statusCode` 410, unless `aptos` points at
+  `https://archive.mainnet.aptoslabs.com/v1`. A version above the head rejects with 404.
+- **Pyth on Aptos is no longer updated.** Its last update on mainnet was at version 7302080573
+  (2026-09-21), and Pyth no longer lists Aptos among the chains it supports. History reads
+  as above, `priceAt` on any later version returns that last price with its staleness growing,
+  and a live `prices()` delivers nothing until updates resume.
+- **Switchboard is not read.** Neither of its Aptos packages has updated a price since
+  2026-08-29 (on-demand) or before the fullnode's retained window (v2).
+
 ## Data sources and their limits
 
 By default streamd reads from a fullnode with `FullnodeScanAdapter`:
 
-- **Handle events** use the dedicated fullnode endpoint. Exact and cheap.
+- **Handle events** use the dedicated fullnode endpoint. Exact and cheap. The endpoint pages
+  by sequence number and cannot seek by version, so a walk given `fromVersion` and no cursor
+  first reads the handle's resource at the version before it and starts at its `counter`, the
+  first event at or after `fromVersion`. A creation-number handle has no resource to read and
+  starts at sequence 0, as does a walk with no start at all.
 - **Account events** walk that account's own transaction history. Cheap even
   far back, but only transactions the account sent; `IndexerAccountAdapter`
   (below) adds the ones it received.
