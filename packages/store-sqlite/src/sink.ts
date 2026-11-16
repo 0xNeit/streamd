@@ -1,7 +1,8 @@
-import { StreamdError } from "@streamd/core";
+import { StreamdError, requireEventTables } from "@streamd/core";
 import type {
   EventCallback,
   EventDescriptor,
+  EventTable,
   StreamdClient,
   StreamdEvent,
   Subscription,
@@ -27,6 +28,7 @@ const SAVE_RETRY_MS = 10;
 
 // Transfer cursors are saved apart from event cursors of the same name.
 const TRANSFER_CURSOR_PREFIX = "transfers:";
+const TABLE_CURSOR_PREFIX = "tables:";
 
 type Write = (events: StreamdEvent[], checkpoint: StoreCheckpoint) => void;
 type Subscribe = (deliver: (events: StreamdEvent[]) => void, options: SubscriptionOptions) => Subscription;
@@ -82,6 +84,32 @@ export function storeTransfers<O extends SubscriptionOptions>(
     listener,
     (records, checkpoint) => store.writeTransfers(records as StreamdEvent<Transfer>[], checkpoint),
     (deliver, resolved) => client.transfers((record) => deliver([record]), resolved as O),
+  );
+}
+
+/**
+ * One `onBatch` subscription over every event type in `tables`, a generic
+ * one in every instantiation, upserting each event into its table together
+ * with the subscription's cursor, in one transaction, as `storeEvents` writes:
+ * the same resume, catch-up save and failure rules. The tables are created
+ * before it subscribes. The cursor is saved under `tables:` and `options.name`.
+ */
+export function storeTables(
+  client: StreamdClient,
+  store: SqliteEventStore,
+  tables: readonly EventTable[],
+  options: StoreEventsOptions,
+): Subscription {
+  const { name, ...listener } = options;
+  if (typeof name !== "string" || name === "") throw new StreamdError("storeTables needs a name to save its cursor under");
+  const eventType = requireEventTables(tables).map((t) => t.eventType);
+  store.writeTables(tables, []);
+  return sink(
+    store,
+    TABLE_CURSOR_PREFIX + name,
+    listener,
+    (events, checkpoint) => store.writeTables(tables, events, checkpoint),
+    (deliver, resolved) => client.onBatch({ kind: "module", eventType }, deliver, resolved),
   );
 }
 

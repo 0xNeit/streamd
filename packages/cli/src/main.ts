@@ -389,6 +389,7 @@ async function suiSource(options: CodegenOptions): Promise<string> {
     dialect: SUI_DIALECT,
     validators: options.validators === true,
     arbitraries: options.arbitraries === true,
+    ...(options.sql !== undefined && { sql: options.sql }),
   });
 }
 
@@ -450,6 +451,7 @@ async function codegen(options: CodegenOptions): Promise<number> {
     list,
     validators: options.validators === true,
     arbitraries: options.arbitraries === true,
+    ...(options.sql !== undefined && { sql: options.sql }),
   }));
 }
 
