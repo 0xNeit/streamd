@@ -35,7 +35,7 @@ bun install
 bun run build
 ```
 
-The repository is a Turborepo monorepo on Bun workspaces. Every package ships ESM, CommonJS and
+The repository is a Turborepo monorepo on Bun workspaces. Workspace packages declare internal links as `workspace:*`, so publishing uses `bun publish` to rewrite those ranges (`@streamd/core` and `@streamd/cli` guard this with `prepublishOnly`). Every package ships ESM, CommonJS and
 TypeScript types:
 
 - `@streamd/core` (`packages/core`) - the client engine: subscriptions, queries, merges,
@@ -4217,8 +4217,8 @@ streamd check --chain sui 0x3::validator::StakingRequestEvent
   a `defined-elsewhere` line adds the package id events name the type by.
 - `store`'s default cursor name starts `sui:`, as `sui:mainnet:<descriptor>`, so one database
   can hold both chains without either resuming from the other's cursor.
-- `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`; without `@mysten/sui`
-  installed, it exits 1 with `--chain sui needs @mysten/sui installed`.
+- `@streamd/sui` and `@mysten/sui` are optional peer dependencies imported only for `--chain sui`;
+  without them installed, `--chain sui` exits 1 with `--chain sui needs @mysten/sui installed`.
 
 ### Filter events
 
@@ -5493,7 +5493,7 @@ streamd codegen --chain sui --out src/protocol.ts 0x<package id>
 - No view or handle builders: Sui has neither. `--validators` works, against the JSON below.
 - `--network` takes `mainnet`, `testnet` or `devnet`, and `--node-url` a Sui gRPC URL.
   `--api-key` is refused and `APTOS_API_KEY` is never read: public Sui nodes take no key.
-- `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`. `@mysten/sui` is an optional peer of `@streamd/cli`, but `@streamd/sui`, a dependency, still declares it as a peer, so package managers may install or ask for it.
+- `@streamd/sui` and `@mysten/sui` are optional peers of `@streamd/cli` and are imported only for `--chain sui`.
 
 Each type describes the JSON a Sui node returns, as `SuiAdapter` delivers it:
 

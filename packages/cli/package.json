@@ -13,6 +13,7 @@
     "build": "bun build.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
+    "prepublishOnly": "node -e \"const b = require('path').win32.basename(process.env.npm_execpath || '').toLowerCase(); if (!(process.env.npm_config_user_agent || '').startsWith('bun/') || (b !== 'bun' && b !== 'bun.exe')) { console.error('Publish with bun publish so workspace:* ranges are rewritten'); process.exit(1); }\"",
     "test:integration": "STREAMD_INTEGRATION=1 bun test tests/integration",
     "test:localnet": "STREAMD_LOCALNET=1 bun test tests/integration/coverage.test.ts"
   },
@@ -21,13 +22,13 @@
     "@streamd/core": "workspace:*",
     "@streamd/store-postgres": "workspace:*",
     "@streamd/store-sqlite": "workspace:*",
-    "@streamd/sui": "workspace:*",
     "@streamd/testing": "workspace:*"
   },
   "peerDependencies": {
     "@aptos-labs/ts-sdk": ">=1.0.0",
     "@confluentinc/kafka-javascript": ">=1",
     "@mysten/sui": "2.39.1",
+    "@streamd/sui": "^0.1.0",
     "ioredis": ">=5",
     "kafkajs": ">=2",
     "pg": ">=8"
@@ -37,6 +38,9 @@
       "optional": true
     },
     "@mysten/sui": {
+      "optional": true
+    },
+    "@streamd/sui": {
       "optional": true
     },
     "ioredis": {
@@ -53,6 +57,7 @@
     "@aptos-labs/ts-sdk": "^6.3.1",
     "@electric-sql/pglite": "^0.5.16",
     "@mysten/sui": "2.39.1",
+    "@streamd/sui": "workspace:*",
     "kafkajs": "2.2.4"
   },
   "license": "MIT"
