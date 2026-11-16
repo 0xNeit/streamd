@@ -139,7 +139,7 @@ describe("runInspect", () => {
     opts: InspectOptions,
     read: (version: bigint) => Promise<unknown>,
     adapter: EventAdapter = new MemoryAdapter(history),
-    write?: (text: string) => void,
+    write?: (text: string) => void | Promise<void>,
   ) {
     const out: string[] = [];
     const errors: string[] = [];
@@ -236,7 +236,9 @@ describe("runInspect", () => {
     release();
     expect(await running).toBe(0);
     expect(out).toHaveLength(3);
-    const rejected = await run(options(), async () => ({ h: "0" }), undefined, () => Promise.reject(new Error("EPIPE")) as never);
+    const rejected = await run(options(), async () => ({ h: "0" }), undefined, () => Promise.reject(new Error("EPIPE")));
+    const atRejected = await run(options({ at: 3n }), async () => null, undefined, () => Promise.reject(new Error("EPIPE")));
+    expect([atRejected.code, atRejected.errors]).toEqual([1, ["streamd: EPIPE"]]);
     expect([rejected.code, rejected.errors]).toEqual([1, ["streamd: EPIPE"]]);
     client.destroy();
   });
