@@ -279,6 +279,7 @@ export type ParsedCommand =
   | { command: "handles"; options: HandlesOptions }
   | { command: "name"; options: NameOptions }
   | { command: "codegen"; options: CodegenOptions }
+  | { command: "coverage"; options: CoverageOptions }
   | { command: "compare"; options: CompareOptions }
   | { command: "monitor"; options: MonitorOptions };
 
@@ -484,6 +485,11 @@ const CHECK_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const COVERAGE_OPTIONS = {
+  format: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const CODEGEN_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   out: { type: "string" },
@@ -536,6 +542,7 @@ export const USAGE = `Usage:
   streamd codegen [--out <file> [--check]] [--validators] [--arbitraries] [--sql <sqlite|postgres>] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
   streamd monitor --node-url <url> --node-url <url>... [options] [<eventType>...]
+  streamd coverage <package> [--format pretty] -- <command> [<arg>...]
 
 tail follows matching events and prints each as one JSON line on stdout.
 forward POSTs each batch of matching events to a webhook as a JSON array, or
@@ -577,7 +584,12 @@ With --check it compares what it would write with --out instead, and exits 1
 if the file differs or is missing.
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
-Every command but handles and inspect takes --chain sui to read Sui instead of Aptos.
+coverage starts an Aptos localnet with the aptos CLI, publishes the Move package
+from a funded account, runs the command against it (with STREAMD_NODE_URL,
+STREAMD_FAUCET_URL, STREAMD_PACKAGE_ADDRESS and STREAMD_PUBLISHER_KEY set), then
+prints one JSON line per #[event] struct of the package: whether the run emitted
+it, how often, and the call that first did. It exits 1 if the command failed.
+Every command but handles, inspect and coverage takes --chain sui to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
 --decode, which checks integer fields before --where runs.
@@ -639,7 +651,8 @@ Options:
                          (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
                          and open window (default: ${DEFAULT_ALERT_CURSOR_FILE})
   --format <name>        tail: json, or pretty for aligned lines in UTC (default: json);
-                         inspect: json, or pretty for one line per changed path
+                         inspect: json, or pretty for one line per changed path;
+                         coverage: json, or pretty for one line per event struct
   --retries <n>          forward, alert: retries per batch or alert (default: ${DEFAULT_RETRIES})
   --timeout <ms>         forward, alert: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx: wait for commit (default: 20000)
@@ -1570,6 +1583,24 @@ function parseCodegen(args: string[]): ParsedCommand {
 }
 
 /** Parses `argv` (without the node and script paths) into a command. */
+function parseCoverage(args: string[]): ParsedCommand {
+  const split = args.indexOf("--");
+  const own = split === -1 ? args : args.slice(0, split);
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args: own, options: COVERAGE_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const [packageDir, ...rest] = positionals;
+  if (packageDir === undefined || packageDir === "" || rest.length > 0) {
+    throw new UsageError("coverage needs one Move package directory, then -- and the test command");
+  }
+  const command = split === -1 ? [] : args.slice(split + 1);
+  if (command.length === 0 || command[0] === "") throw new UsageError("coverage needs a test command after --");
+  const format = values.format ?? "json";
+  if (format !== "json" && format !== "pretty") throw new UsageError("--format must be json or pretty");
+  return { command: "coverage", options: { packageDir, command, format } };
+}
+
 export function parseCommand(argv: readonly string[]): ParsedCommand {
   const [command, ...rest] = argv;
   if (command === undefined || command === "-h" || command === "--help") {
@@ -1590,6 +1621,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "handles") return parseHandles(rest);
   if (command === "name") return parseName(rest);
   if (command === "codegen") return parseCodegen(rest);
+  if (command === "coverage") return parseCoverage(rest);
   if (command === "compare") return parseCompare(rest);
   if (command === "monitor") return parseMonitor(rest);
   throw new UsageError(`unknown command: ${command}`);

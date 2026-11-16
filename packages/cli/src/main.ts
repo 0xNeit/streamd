@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { writeFile } from "node:fs/promises";
@@ -13,6 +14,7 @@ import type {
   CheckOptions,
   CodegenOptions,
   CompareOptions,
+  CoverageOptions,
   Endpoint,
   ForwardOptions,
   HandlesOptions,
@@ -38,10 +40,12 @@ import { aptosConfig, chainFor, resourceReader } from "./chain.js";
 import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
 import { generateEventTypes } from "./codegen.js";
+import { runCoverage } from "./coverage.js";
 import { checkGenerated } from "./codegen-check.js";
 import { SUI_DIALECT, suiCodegen } from "./sui-abi.js";
 import { loadSui } from "./sui.js";
 import type { SuiNetworkPreset } from "@streamd/sui";
+import { startLocalnet } from "@streamd/testing";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
 import { runHandles } from "./handles.js";
@@ -455,8 +459,32 @@ async function codegen(options: CodegenOptions): Promise<number> {
   }));
 }
 
+/** Spawns the test command, its stdout on stderr so it cannot mix with the report. */
+function runTestCommand(command: string[], env: Record<string, string>): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command[0]!, command.slice(1), { stdio: ["inherit", 2, "inherit"], env: { ...process.env, ...env } });
+    child.once("error", reject);
+    child.once("close", (code) => resolve(code ?? 1));
+  });
+}
+
+async function coverage(options: CoverageOptions): Promise<number> {
+  const controller = new AbortController();
+  const out = stdout(controller);
+  // Ctrl-C reaches the test command too; waiting for it lets the localnet be stopped rather than left running.
+  process.on("SIGINT", () => {});
+  const code = await runCoverage(options, {
+    start: () => startLocalnet(),
+    run: runTestCommand,
+    write: out.write,
+    error: (message) => process.stderr.write(`${message}\n`),
+  });
+  return out.exitCode(code);
+}
+
 async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise<number> {
   if (parsed.command === "codegen") return codegen(parsed.options);
+  if (parsed.command === "coverage") return coverage(parsed.options);
   if (parsed.command === "compare") return compare(parsed.options);
   if (parsed.command === "monitor") return monitor(parsed.options);
   if (parsed.command === "store") return store(parsed.options);
@@ -481,7 +509,7 @@ async function main(argv: string[]): Promise<number> {
     process.stdout.write(USAGE);
     return 0;
   }
-  if (parsed.options.stats !== true) return run(parsed);
+  if (!("stats" in parsed.options) || parsed.options.stats !== true) return run(parsed);
   const counted = (stats = new RequestStats());
   const stop = onStatsSignal(() => process.stderr.write(counted.line()));
   try {

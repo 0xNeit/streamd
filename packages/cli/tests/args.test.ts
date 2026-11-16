@@ -1748,3 +1748,35 @@ describe("parseCommand monitor", () => {
     rejects(argv as string[], message as RegExp);
   });
 });
+
+describe("parseCommand coverage", () => {
+  const coverage = (...argv: string[]) => {
+    const parsed = parseCommand(["coverage", ...argv]);
+    if (parsed.command !== "coverage") throw new Error("expected a coverage command");
+    return parsed.options;
+  };
+
+  it("takes the package, then everything after -- as the command", () => {
+    expect(coverage("./move/pkg", "--", "bun", "test", "--timeout", "5000")).toEqual({
+      packageDir: "./move/pkg",
+      command: ["bun", "test", "--timeout", "5000"],
+      format: "json",
+    });
+    expect(coverage("--format", "pretty", "pkg", "--", "sh", "-c", "x -- y").command).toEqual(["sh", "-c", "x -- y"]);
+    expect(coverage("pkg", "--format", "pretty", "--", "t").format).toBe("pretty");
+  });
+
+  it("refuses a missing package, a missing command and a bad format", () => {
+    expect(() => parseCommand(["coverage", "--", "bun", "test"])).toThrow(UsageError);
+    expect(() => parseCommand(["coverage", "a", "b", "--", "t"])).toThrow(UsageError);
+    expect(() => parseCommand(["coverage", "pkg"])).toThrow("coverage needs a test command after --");
+    expect(() => parseCommand(["coverage", "pkg", "--"])).toThrow(UsageError);
+    expect(() => parseCommand(["coverage", "pkg", "--", ""])).toThrow(UsageError);
+    expect(() => parseCommand(["coverage", "pkg", "--format", "yaml", "--", "t"])).toThrow("--format must be json or pretty");
+    expect(() => parseCommand(["coverage", "pkg", "--network", "testnet", "--", "t"])).toThrow(UsageError);
+  });
+
+  it("shows help", () => {
+    expect(parseCommand(["coverage", "--help"])).toEqual({ command: "help" });
+  });
+});
