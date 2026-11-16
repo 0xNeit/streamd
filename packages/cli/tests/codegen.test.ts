@@ -752,4 +752,90 @@ describe("generateEventTypes validators", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it("qualifies struct names that shadow globals or generated imports", async () => {
+    const shadowed = parseModuleAbi({
+      abi: {
+        address: DEX,
+        name: "shadow",
+        structs: [
+          struct("Number", [["n", "u8"], ["big", "u64"], ["items", "vector<u16>"], ["label", "0x1::string::String"]]),
+          struct("Array", [["bytes", "vector<u8>"]]),
+          struct("Object", [["flag", "bool"]]),
+          struct("String", [["who", "address"]]),
+          struct("BigInt", [["maybe", "0x1::option::Option<u64>"]]),
+          struct("Record", [["x", "u8"]]),
+          struct("Uint8Array", [["x", "u8"]]),
+          struct("Math", [["x", "u8"]]),
+          struct("HandleEventDescriptor", [["x", "u8"]]),
+          struct("ViewRequest", [["x", "u8"]]),
+          {
+            name: "Holder",
+            is_event: false,
+            is_enum: false,
+            abilities: ["key"],
+            generic_type_params: [],
+            fields: [{ name: "events", type: `0x1::event::EventHandle<${DEX}::shadow::Number>` }],
+            variants: [],
+          },
+        ],
+        exposed_functions: [
+          { name: "ping", visibility: "public", is_entry: false, is_view: true, generic_type_params: [], params: ["u8"], return: ["u8"] },
+        ],
+      },
+    });
+
+    const source = await generateEventTypes(
+      [{ address: DEX, module: "shadow" }],
+      loader([shadowed]).load,
+      { validators: true, arbitraries: true },
+    );
+    expect(source).toContain("export interface Shadow_Number {");
+    expect(source).toContain("export const Shadow_Number = defineEvent<Shadow_Number>");
+    expect(source).toContain("export function isShadow_Number(value: unknown): value is Shadow_Number");
+    expect(source).toContain("export function arbitraryShadow_Number(rng: StreamdRng): Shadow_Number");
+    expect(source).not.toContain("export const Number =");
+    expect(source).not.toContain("export const Array =");
+    expect(source).not.toContain("export const Object =");
+    expect(source).not.toContain("export const String =");
+    expect(source).not.toContain("export const BigInt =");
+
+    const dir = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".shadowed-"));
+    try {
+      const file = join(dir, "shadowed.ts");
+      writeFileSync(file, source);
+      writeFileSync(
+        join(dir, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            target: "ES2022",
+            module: "ESNext",
+            moduleResolution: "bundler",
+            strict: true,
+            noUnusedLocals: true,
+            noUnusedParameters: true,
+            noEmit: true,
+            skipLibCheck: true,
+            types: [],
+            paths: { "@streamd/core": [fileURLToPath(new URL("../../core/dist/index.d.ts", import.meta.url))] },
+          },
+          files: ["shadowed.ts"],
+        }),
+      );
+      const tsc = fileURLToPath(new URL("../../../node_modules/.bin/tsc", import.meta.url));
+      const result = Bun.spawnSync([tsc, "-p", dir]);
+      expect(result.stdout.toString() + result.stderr.toString()).toBe("");
+      expect(result.exitCode).toBe(0);
+
+      const mod = (await import(file)) as {
+        streamdRng: (seed: number) => () => number;
+        arbitraryShadow_Number: (rng: () => number) => unknown;
+        isShadow_Number: (value: unknown) => boolean;
+      };
+      const rng = mod.streamdRng(7);
+      expect(mod.isShadow_Number(mod.arbitraryShadow_Number(rng))).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

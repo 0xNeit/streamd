@@ -317,8 +317,24 @@ async function collect(
 const pascal = (snake: string) =>
   snake.split("_").map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join("");
 
-// Lowercase names could be TypeScript keywords, and T0-style names would shadow type parameters.
-const unsafe = (name: string) => !/^[A-Z]/.test(name) || /^T\d+$/.test(name);
+const SHADOWED = new Set([
+  "Array",
+  "BigInt",
+  "HandleEventDescriptor",
+  "Math",
+  "Number",
+  "Object",
+  "Record",
+  "String",
+  "Uint8Array",
+  "ViewRequest",
+  "atob",
+  "defineEvent",
+]);
+
+// Lowercase names could be TypeScript keywords, T0-style names would shadow type parameters,
+// and SHADOWED names would shadow globals or imports the generated code references.
+const unsafe = (name: string) => !/^[A-Z]/.test(name) || /^T\d+$/.test(name) || SHADOWED.has(name);
 
 const count = (names: string[]) => {
   const counts = new Map<string, number>();
