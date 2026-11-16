@@ -2684,6 +2684,121 @@ describe("EventPoller start version", () => {
     expect(poller.cursor).toBe("7");
     poller.stop();
   });
+
+  it("holds the cursor undefined until delivery of the crossing page finishes", async () => {
+    const adapter = createMockAdapter([
+      page([makeEvent(1)], 1, true),
+      page([makeEvent(4), makeEvent(5)], 2, false),
+    ]);
+    let insideCursor: string | undefined = "sentinel";
+    const delivered: bigint[] = [];
+    const poller = new EventPoller(
+      adapter,
+      descriptor,
+      (e: StreamdEvent) => {
+        delivered.push(e.version);
+        insideCursor = poller.cursor;
+        poller.stop();
+      },
+      { fromVersion: 5n, pollInterval: 100 },
+    );
+    poller.start();
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(0);
+    expect(delivered).toEqual([5n]);
+    expect(insideCursor).toBeUndefined();
+    expect(poller.cursor).toBeUndefined();
+
+    // A failed crossing page likewise keeps the prior pre-start token hidden.
+    const adapterFail = createMockAdapter([
+      page([makeEvent(1)], 1, true),
+      page([makeEvent(5)], 2, false),
+    ]);
+    const errors: Error[] = [];
+    const pollerFail = new EventPoller(adapterFail, descriptor, () => {}, {
+      fromVersion: 5n,
+      pollInterval: 100,
+      where: () => Promise.reject(new Error("predicate failed")),
+      onError: (err) => void errors.push(err),
+    });
+    pollerFail.start();
+    await advanceTimersByTimeAsync(0);
+    await advanceTimersByTimeAsync(0);
+    pollerFail.stop();
+    expect(errors).toHaveLength(1);
+    expect(pollerFail.cursor).toBeUndefined();
+  });
+
+  it("reaches a relative, earliest, or time-based start on quiet catch-up without exposing an unreached explicit start", async () => {
+    const headAdapter: EventAdapter = {
+      ...createMockAdapter([{ events: [], nextCursor: "42", hasMore: false }]),
+      getHeadVersion: async () => 100n,
+    };
+    let caughtCursor: string | undefined;
+    const rel = new EventPoller(headAdapter, descriptor, () => {}, {
+      fromVersion: -10n,
+      onCaughtUp: () => {
+        caughtCursor = rel.cursor;
+      },
+    });
+    rel.start();
+    await advanceTimersByTimeAsync(0);
+    rel.stop();
+    expect(caughtCursor).toBe("42");
+
+    const earliestAdapter: EventAdapter = {
+      ...createMockAdapter([page([makeEvent(10)], 11, false)]),
+      getEarliestVersion: async () => 50n,
+    };
+    let earliestCaught: string | undefined;
+    const earliest = new EventPoller(earliestAdapter, descriptor, () => {}, {
+      fromVersion: "earliest",
+      onCaughtUp: () => {
+        earliestCaught = earliest.cursor;
+      },
+    });
+    earliest.start();
+    await advanceTimersByTimeAsync(0);
+    earliest.stop();
+    expect(earliestCaught).toBe("11");
+
+    const timeAdapter: EventAdapter = {
+      ...createMockAdapter([{ events: [], nextCursor: "90", hasMore: false }]),
+      getBlockHeights: async () => ({ oldest: 1n, newest: 2n }),
+      getBlock: async (_d, h) =>
+        h === 1n
+          ? { height: h, firstVersion: 10n, lastVersion: 49n, timestamp: 500n }
+          : { height: h, firstVersion: 50n, lastVersion: 100n, timestamp: 1500n },
+    };
+    let timeCaught: string | undefined;
+    const timed = new EventPoller(timeAdapter, descriptor, () => {}, {
+      fromTime: 1000n,
+      onCaughtUp: () => {
+        timeCaught = timed.cursor;
+      },
+    });
+    timed.start();
+    await advanceTimersByTimeAsync(0);
+    timed.stop();
+    expect(timeCaught).toBe("90");
+
+    let absCaught: string | undefined = "sentinel";
+    const explicit = new EventPoller(
+      createMockAdapter([{ events: [], nextCursor: "20", hasMore: false, throughVersion: 20n }]),
+      descriptor,
+      () => {},
+      {
+        fromVersion: 100n,
+        onCaughtUp: () => {
+          absCaught = explicit.cursor;
+        },
+      },
+    );
+    explicit.start();
+    await advanceTimersByTimeAsync(0);
+    explicit.stop();
+    expect(absCaught).toBeUndefined();
+  });
 });
 
 describe("EventPoller maxPollInterval", () => {
