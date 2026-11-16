@@ -57,9 +57,9 @@ TypeScript types:
 - `@streamd/testing` (`packages/testing`) - start or attach to an Aptos localnet, publish Move
   packages to it and assert their events. Needs the `aptos` CLI. See
   [Test against a localnet](#test-against-a-localnet).
-- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
-  `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents` and `useTransfers` take an
-  `AptosClient`. See [React hooks](#react-hooks).
+- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
+  `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents`, `useSubmitTransaction` and
+  `useTransfers` take an `AptosClient`. See [React hooks](#react-hooks).
 
 ## Usage
 
@@ -3796,6 +3796,37 @@ function Feed() {
   alone. It takes `eventsOf`'s options plus `descriptor`. Nothing from the previous hash is kept,
   and a `null` hash waits for nothing. It needs a client with `eventsOf`
   (`TransactionEventsClient`): an `AptosClient`, or a `SuiClient`, which takes a base58 digest.
+- **`useSubmitTransaction(options)`** sends a transaction and watches it land. `submit(transaction)`
+  simulates it through `client.previewEvents`, passes it to your `signAndSubmit(transaction,
+  { signal })`, then waits through `client.eventsOf`; the hook returns `{ status, preview,
+  previewError, hash, events, error, vmStatus, submit, reset }`. `status` goes `"idle"`,
+  `"previewing"`, `"signing"`, `"confirming"`, then `"confirmed"` or `"failed"`; nothing throws.
+  A failed run sets `error` (the simulation, the wallet, the transaction or the wait) and, when
+  the chain reported one, `vmStatus`. `signAndSubmit` may resolve with a hash or an object with
+  `hash` (the Aptos wallet adapter, `PendingTransactionResponse`) or `digest` (Sui); anything
+  else fails the run.
+  - **A failed preview stops the run** before anything is signed, since the transaction would
+    most likely fail and still cost gas. `submitOnPreviewFailure: true` signs anyway and keeps the
+    reason as `previewError`; `preview: false` skips the simulation.
+  - **One run at a time.** `submit` and `reset` are the same functions on every render, and
+    `submit` resolves with the run's final state and never rejects. Calling it while a run is
+    going starts nothing and returns that run's promise, so a double click signs once.
+  - **Unmount or `reset()`** abandons the run: the signal given to `signAndSubmit` and
+    `eventsOf` aborts, a run still previewing never reaches `signAndSubmit`, and no state is set
+    afterwards. `reset()` returns to `"idle"`. A transaction already submitted stays submitted;
+    the abandoned run's promise still resolves, with its `hash` if the wallet returned one.
+  - It takes `descriptor`, `decode`, `where` and `timeout`, read when `submit` is called and
+    applied to both the preview and the events. The Aptos preview runs without signer keys, so
+    the auth key check is skipped. It needs a client with `eventsOf` and `previewEvents`
+    (`SubmitTransactionClient`): an `AptosClient`, passed a built transaction, or a `SuiClient`,
+    passed built transaction bytes.
+
+  ```tsx
+  const { submit, status, preview, events, vmStatus } = useSubmitTransaction({
+    // A local signer here; a wallet's sign-then-submit goes in the same place.
+    signAndSubmit: (transaction) => aptos.signAndSubmitTransaction({ signer, transaction }),
+  });
+  ```
 - **`useTransfers(options?)`** follows `client.transfers` and returns the same
   `{ events, error, status }` as `useEvents`, with each event's `data` a `Transfer`. It takes
   `asset`, `account` and `maxEvents`; pass `null` to wait. It needs a client with `transfers`
