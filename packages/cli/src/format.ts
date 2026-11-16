@@ -14,7 +14,8 @@ function clip(text: string, width: number): string {
   return text.length > width ? `${text.slice(0, width - 1)}\u2026` : text;
 }
 
-function clock(timestamp: bigint | undefined): string {
+/** A UTC time to the second, or `-` when there is none. */
+export function clock(timestamp: bigint | undefined): string {
   if (timestamp === undefined) return "-";
   const date = new Date(Number(timestamp / 1000n));
   return Number.isNaN(date.getTime()) ? "-" : date.toISOString().slice(0, TIME_WIDTH).replace("T", " ");
@@ -25,18 +26,23 @@ function shortAddress(address: string | undefined): string {
   return address.length > SENDER_WIDTH ? `${address.slice(0, 6)}\u2026${address.slice(-4)}` : address;
 }
 
+/** `text` with every control character shown as `?`, safe to print to a terminal. */
+export function printable(text: string): string {
+  return text.replace(CONTROL, "?");
+}
+
 /** One aligned line for a person watching a stream: UTC time, type, sender, payload. */
 export function prettyEvent(event: StreamdEvent): string {
   const payload =
     JSON.stringify(event.data, (_key, v: unknown) => (typeof v === "bigint" ? v.toString() : v)) ?? "null";
-  return [
-    clock(event.timestamp).padEnd(TIME_WIDTH),
-    clip(event.type.replace(/^[^:]*::/, ""), TYPE_WIDTH).padEnd(TYPE_WIDTH),
-    shortAddress(event.sender).padEnd(SENDER_WIDTH),
-    clip(payload, PAYLOAD_WIDTH),
-  ]
-    .join("  ")
-    .replace(CONTROL, "?");
+  return printable(
+    [
+      clock(event.timestamp).padEnd(TIME_WIDTH),
+      clip(event.type.replace(/^[^:]*::/, ""), TYPE_WIDTH).padEnd(TYPE_WIDTH),
+      shortAddress(event.sender).padEnd(SENDER_WIDTH),
+      clip(payload, PAYLOAD_WIDTH),
+    ].join("  "),
+  );
 }
 
 /** The error's message, plus its cause's when the message does not already carry it. */

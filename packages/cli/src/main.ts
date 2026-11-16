@@ -16,6 +16,7 @@ import type {
   Endpoint,
   ForwardOptions,
   HandlesOptions,
+  InspectOptions,
   MonitorOptions,
   NameOptions,
   ParsedCommand,
@@ -33,7 +34,7 @@ import type { AlertRule } from "./alert-rules.js";
 import { runBalances } from "./balances.js";
 import { openCache } from "./cache.js";
 import type { PageCache } from "./cache.js";
-import { aptosConfig, chainFor } from "./chain.js";
+import { aptosConfig, chainFor, resourceReader } from "./chain.js";
 import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
 import { generateEventTypes } from "./codegen.js";
@@ -44,6 +45,7 @@ import type { SuiNetworkPreset } from "@streamd/sui";
 import { message } from "./format.js";
 import { runForward } from "./forward.js";
 import { runHandles } from "./handles.js";
+import { runInspect } from "./inspect.js";
 import { runMonitor, serveMetrics } from "./monitor.js";
 import { runName } from "./name.js";
 import { runQuery } from "./query.js";
@@ -271,6 +273,23 @@ async function watch(options: WatchCommandOptions): Promise<number> {
   }
 }
 
+async function inspect(options: InspectOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runInspect(options, {
+      client,
+      read: resourceReader(options, options.address, options.resourceType),
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
 async function handles(options: HandlesOptions): Promise<number> {
   const controller = new AbortController();
   const out = stdout(controller);
@@ -439,6 +458,7 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "transfers") return transfers(parsed.options);
   if (parsed.command === "balances") return balances(parsed.options);
   if (parsed.command === "watch") return watch(parsed.options);
+  if (parsed.command === "inspect") return inspect(parsed.options);
   if (parsed.command === "handles") return handles(parsed.options);
   if (parsed.command === "name") return name(parsed.options);
   return parsed.command === "tail" ? tail(parsed.options) : forward(parsed.options);
