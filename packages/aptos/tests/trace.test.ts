@@ -237,6 +237,11 @@ describe("AptosClient.trace", () => {
     expect((await testClient({ adapter: flaky }).trace(A, { retries: 1 })).edges).toHaveLength(1);
     heads = 0;
     await expect(testClient({ adapter: flaky }).trace(A)).rejects.toThrow("429");
+    const waiting = new AbortController();
+    const slow = { ...indexer(HISTORY), getHeadVersion: async () => Promise.reject(new StreamdNetworkError("429", 429, undefined, 30_000)) };
+    const pending = testClient({ adapter: slow }).trace(A, { retries: 1, signal: waiting.signal });
+    setTimeout(() => waiting.abort(new StreamdError("gave up")), 20);
+    await expect(pending).rejects.toThrow("gave up");
     const aborted = AbortSignal.abort(new StreamdError("stopped"));
     await expect(testClient({ adapter: indexer(HISTORY) }).trace(A, { signal: aborted, toVersion: 5n })).rejects.toThrow("stopped");
   });

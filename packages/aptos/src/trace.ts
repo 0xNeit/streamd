@@ -1,4 +1,4 @@
-import { EventQuery, StreamdError, StreamdNetworkError, requireAddress } from "@streamd/core";
+import { EventQuery, StreamdError, StreamdNetworkError, requireAddress, sleep } from "@streamd/core";
 import type { AccountEventDescriptor, EventAdapter, RequestLimiter, Transfer } from "@streamd/core";
 import { activityDescriptor, activitySource } from "./activity.js";
 import { assetKey, requireAsset } from "./transfers.js";
@@ -210,7 +210,8 @@ async function headOf(
       return head;
     } catch (err) {
       if (!(err instanceof StreamdNetworkError) || attempt >= retries || signal?.aborted) throw err;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(500 * 2 ** attempt, 10_000)));
+      const hint = Number.isFinite(err.retryAfter) && err.retryAfter! >= 0 ? err.retryAfter! : 1000 * 2 ** attempt;
+      await sleep(Math.min(hint, 60_000), signal);
     }
   }
 }
