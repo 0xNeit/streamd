@@ -480,12 +480,10 @@ export class FullnodeScanAdapter implements EventAdapter {
       if (status === 400) {
         const data = (err as { data?: { vm_error_code?: unknown; error_code?: unknown } } | null)?.data;
         const failure = new StreamdError(message);
-        if (
-          (data?.vm_error_code !== undefined && data.vm_error_code !== 4016) ||
-          (data?.error_code !== undefined && data.error_code !== "vm_error")
-        ) {
-          Object.assign(failure, { aborted: false });
-        }
+        const isAbort =
+          data?.vm_error_code === 4016 ||
+          (data?.vm_error_code === undefined && data?.error_code === undefined);
+        if (!isAbort) Object.assign(failure, { aborted: false });
         throw failure;
       }
       throw new StreamdNetworkError(message, typeof status === "number" ? status : undefined);

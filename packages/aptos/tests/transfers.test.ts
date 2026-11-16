@@ -793,6 +793,7 @@ describe("transfers with requestTimeout", () => {
       new AptosConfig({
         network: Network.LOCAL,
         fullnode: "http://fake/v1",
+        clientConfig: { http2: false },
         client: {
           provider: async <Req, Res>() => {
             viewCalls++;
@@ -827,6 +828,49 @@ describe("transfers with requestTimeout", () => {
       .catch((e: unknown) => e);
     expect(infoErr).toBeInstanceOf(StreamdError);
     expect(infoErr).not.toBeInstanceOf(StreamdNetworkError);
+  });
+
+  it("still falls back to version - 1 on a genuine FullnodeScanAdapter Move abort (web_framework_error + 4016)", async () => {
+    const abortCalls: (bigint | undefined)[] = [];
+    const aptos = new Aptos(
+      new AptosConfig({
+        network: Network.LOCAL,
+        fullnode: "http://fake/v1",
+        clientConfig: { http2: false },
+        client: {
+          provider: async <Req, Res>(req: { url: string; params?: Record<string, unknown>; body?: unknown }) => {
+            const version = req.params?.ledger_version;
+            const fn = (req.body as { function?: string } | undefined)?.function;
+            if (version === 9n) {
+              abortCalls.push(9n);
+              return {
+                status: 400,
+                statusText: "Bad Request",
+                data: {
+                  message: "Move abort in 0x1::fungible_asset::store_metadata",
+                  error_code: "web_framework_error",
+                  vm_error_code: 4016,
+                } as unknown as Res,
+                headers: {},
+              };
+            }
+            abortCalls.push(8n);
+            const data = fn === OWNER ? [ALICE] : [{ inner: APT }];
+            return { status: 200, statusText: "OK", data: data as unknown as Res, headers: {} };
+          },
+        },
+      }),
+    );
+    const fullnode = new FullnodeScanAdapter(aptos);
+    const memory = new MemoryAdapter([fa(9, 0, "Withdraw", "a1", "3")]);
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => memory.fetchEvents(d, o),
+      view: (req, version) => fullnode.view(req, version),
+    };
+    const records = await transfers(transferSource(adapter));
+    expect(records).toEqual([{ at: "9:0", asset: APT, amount: 3n, from: ALICE, to: undefined }]);
+    expect(abortCalls).toContain(9n);
+    expect(abortCalls).toContain(8n);
   });
 
   it("fails instead of hiding tokens when a routed adapter lacks view", async () => {
