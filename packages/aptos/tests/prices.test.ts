@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { MemoryAdapter, StreamdError, StreamdNetworkError, parseEvent } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
+import { FullnodeScanAdapter } from "../src/fullnode.js";
 import { PYTH, PYTH_DESCRIPTOR, priceSource, requireFeedId, toPrice } from "../src/prices.js";
 import { testClient } from "./helpers.js";
 import type { Price } from "../src/types.js";
@@ -131,6 +132,27 @@ describe("AptosClient.prices", () => {
     expect(() => client.prices("0x1", () => {})).toThrow("Not a Pyth price feed id");
     expect(() => client.prices([], () => {})).toThrow(StreamdError);
     client.destroy();
+  });
+});
+
+describe("AptosClient.prices on FullnodeScanAdapter", () => {
+  const HANDLE_RESOURCE = `accounts/${PYTH}/resource/${encodeURIComponent(`${PYTH}::event::PriceFeedUpdateHandle`)}`;
+  const HANDLE_EVENTS = `accounts/${PYTH}/events/${encodeURIComponent(`${PYTH}::event::PriceFeedUpdateHandle`)}/event`;
+
+  it("starts at the handle's counter just below the head, not at sequence 0", async () => {
+    const { aptos, requests } = fakeNode((path, params) => {
+      if (path === "") return { data: { chain_id: 1, ledger_version: "8070000000", oldest_ledger_version: "0", ledger_timestamp: "1", epoch: "1", block_height: "1", oldest_block_height: "0", node_role: "full_node" } };
+      if (path === HANDLE_RESOURCE) return { data: { type: `${PYTH}::event::PriceFeedUpdateHandle`, data: { event: { counter: "630509392", guid: {} } } } };
+      if (path === HANDLE_EVENTS) return { data: [] };
+      throw new Error(`unexpected path ${path} ${JSON.stringify(params)}`);
+    });
+    const client = testClient({ aptos, adapter: new FullnodeScanAdapter(aptos) });
+    const sub = client.prices(APT_USD, () => {}, { pollInterval: 1 });
+    await sub.caughtUp;
+    sub.unsubscribe();
+    client.destroy();
+    expect(requests.find((r) => r.path === HANDLE_RESOURCE)?.params.ledger_version).toBe("8069999998");
+    expect(requests.filter((r) => r.path === HANDLE_EVENTS).map((r) => r.params.start)[0]).toBe("630509392");
   });
 });
 

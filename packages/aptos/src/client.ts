@@ -381,7 +381,8 @@ export class AptosClient extends StreamdClient {
    * event whose `data` is a `Price`, its staleness measured against the
    * update's own block time. Every Pyth feed updates through one legacy
    * handle at Pyth's address, so the walk reads every update and keeps the
-   * named feeds; `cursor` is that handle's sequence number. A feed id is
+   * named feeds; `cursor` is that handle's sequence number, and with no
+   * `cursor`, `fromVersion` or `fromTime` it starts one version below the head. A feed id is
    * Pyth's 32-byte price id. Like `swaps()`, it is not a listener for `off()`
    * or `listenerCount()`.
    */
@@ -389,7 +390,11 @@ export class AptosClient extends StreamdClient {
     const ids: readonly unknown[] = typeof feedId === "string" ? [feedId] : Array.isArray(feedId) ? feedId : [feedId];
     if (ids.length === 0) throw new StreamdError("prices needs a Pyth price feed id, or a non-empty list of them");
     const feeds = new Set(ids.map(requireFeedId));
-    return this.subscribe(PYTH_DESCRIPTOR, callback as EventCallback, options, undefined, options.id, (source) =>
+    // A handle walk with no start reads from sequence 0 on FullnodeScanAdapter,
+    // so starting at the head is asked for explicitly, by version, which it seeks.
+    const unplaced = options.cursor === undefined && options.fromVersion === undefined && options.fromTime === undefined;
+    const listener = unplaced ? { ...options, fromVersion: -1n } : options;
+    return this.subscribe(PYTH_DESCRIPTOR, callback as EventCallback, listener, undefined, options.id, (source) =>
       priceSource(source, feeds),
     );
   }
