@@ -151,6 +151,15 @@ function memo<T>(keep: (value: T) => boolean, pending?: (drop: () => void) => vo
   };
 }
 
+function isViewAbort(err: unknown): boolean {
+  return (
+    err instanceof StreamdError &&
+    !(err instanceof StreamdNetworkError) &&
+    (err as { aborted?: boolean }).aborted !== false &&
+    !/does not run views|to run a view|No adapter configured|event types span routes/.test(err.message)
+  );
+}
+
 /**
  * Pairs one transaction's legs, in event order: a deposit takes the most
  * recent waiting withdraw of the same asset and amount; withdraws nothing took
@@ -233,14 +242,14 @@ export function transferSource(
       try {
         result = await limiter.run(() => adapter.view!(request, at, TRANSFER_DESCRIPTOR), signal, signal);
       } catch (err) {
-        if (err instanceof StreamdError && !(err instanceof StreamdNetworkError)) continue;
+        if (isViewAbort(err)) continue;
         throw err;
       }
       let value = Array.isArray(result) ? result[0] : undefined;
       if (typeof value === "object" && value !== null) value = (value as { inner?: unknown }).inner;
       const address = typeof value === "string" ? normalizeAddress(value) : undefined;
       if (address === undefined) {
-        throw new StreamdError(`${fn} of ${object} at version ${at} returned no address`);
+        throw new StreamdNetworkError(`${fn} of ${object} at version ${at} returned no address`);
       }
       return address;
     }
@@ -269,13 +278,13 @@ export function transferSource(
     try {
       [symbol, decimals] = await Promise.all([view("symbol"), view("decimals")]);
     } catch (err) {
-      if (err instanceof StreamdError && !(err instanceof StreamdNetworkError)) return undefined;
+      if (isViewAbort(err)) return undefined;
       throw err;
     }
     const raw = decimals?.[0];
     const parsed = typeof raw === "string" && UNSIGNED_INTEGER.test(raw) ? Number(raw) : raw;
     if (typeof symbol?.[0] !== "string" || !Number.isInteger(parsed)) {
-      throw new StreamdError(`The metadata of ${asset} at version ${version} is malformed`);
+      throw new StreamdNetworkError(`The metadata of ${asset} at version ${version} is malformed`);
     }
     return { symbol: symbol[0], decimals: parsed as number };
   };

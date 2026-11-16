@@ -1440,6 +1440,7 @@ describe("FullnodeScanAdapter view", () => {
       const err = await adapter.view(request as never, version as never).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(StreamdError);
       expect(err).not.toBeInstanceOf(StreamdNetworkError);
+      expect((err as { aborted?: boolean }).aborted).toBe(false);
     }
     expect(calls).toHaveLength(0);
   });
@@ -1455,15 +1456,49 @@ describe("FullnodeScanAdapter view", () => {
     expect((args as Error).message).not.toContain("secret-arg");
   });
 
-  it("refuses an aborting view as invalid input, with no cause", async () => {
+  it("refuses an aborting view as invalid input, and marks non-abort 400s aborted: false", async () => {
     const { aptos } = fakeNode(() => ({ status: 400, data: { message: "nope" } }));
     const err = await new FullnodeScanAdapter(aptos)
       .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as { aborted?: boolean }).aborted).toBeUndefined();
     expect((err as StreamdError).cause).toBeUndefined();
     expect((err as Error).message).toContain(`${BALANCE} at version 5`);
+
+    const moveAbort = fakeNode(() => ({
+      status: 400,
+      data: { message: "Move abort in 0x1::object::owner", error_code: "web_framework_error", vm_error_code: 4016 },
+    }));
+    const abortErr = await new FullnodeScanAdapter(moveAbort.aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(abortErr).toBeInstanceOf(StreamdError);
+    expect(abortErr).not.toBeInstanceOf(StreamdNetworkError);
+    expect((abortErr as { aborted?: boolean }).aborted).toBeUndefined();
+
+    const invalid = fakeNode(() => ({ status: 400, data: { message: "bad args", error_code: "invalid_input" } }));
+    const rejected = await new FullnodeScanAdapter(invalid.aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(rejected).toBeInstanceOf(StreamdError);
+    expect(rejected).not.toBeInstanceOf(StreamdNetworkError);
+    expect((rejected as { aborted?: boolean }).aborted).toBe(false);
+
+    const noCodeAbort = fakeNode(() => ({ status: 400, data: { message: "bad request", error_code: "web_framework_error" } }));
+    const nonAbortFramework = await new FullnodeScanAdapter(noCodeAbort.aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(nonAbortFramework).toBeInstanceOf(StreamdError);
+    expect((nonAbortFramework as { aborted?: boolean }).aborted).toBe(false);
+
+    const otherVm = fakeNode(() => ({ status: 400, data: { message: "out of gas", error_code: "vm_error", vm_error_code: 4002 } }));
+    const nonAbortVm = await new FullnodeScanAdapter(otherVm.aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(nonAbortVm).toBeInstanceOf(StreamdError);
+    expect((nonAbortVm as { aborted?: boolean }).aborted).toBe(false);
   });
 
   it("rejects a pruned version and other node errors as network errors with status and no cause", async () => {
@@ -1502,6 +1537,7 @@ describe("FullnodeScanAdapter view", () => {
     const err = await adapter.view({ function: BALANCE, functionArguments: circular }, 1n).catch((e: Error) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as { aborted?: boolean }).aborted).toBe(false);
     expect((err as Error).message).toContain("JSON-serialisable");
     expect(calls).toHaveLength(1);
   });
