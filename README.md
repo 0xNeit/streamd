@@ -2525,8 +2525,11 @@ By default streamd reads from a fullnode with `FullnodeScanAdapter`:
   first event at or after `fromVersion`. A creation-number handle has no resource to read and
   starts at sequence 0, as does a walk with no start at all, and one starting at the node's
   oldest version (where `"earliest"` and an old `fromTime` resolve), whose predecessor it has
-  pruned. A `fromVersion` below the oldest version rejects with the node's 410, which an
-  `ArchiveFallbackAdapter` answers from the archive.
+  pruned. A `fromVersion` below the oldest version rejects with the node's 410. An
+  `ArchiveFallbackAdapter` answers that first page from the archive, but not the pages after
+  it, which the fullnode answers empty: route `handle` to the archive with `RoutingAdapter` to
+  walk pruned handle history, and pass `cursor` (a sequence number) rather than `fromVersion`
+  to start a busy handle's walk at a known point.
 - **Account events** walk that account's own transaction history. Cheap even
   far back, but only transactions the account sent; `IndexerAccountAdapter`
   (below) adds the ones it received.

@@ -781,7 +781,8 @@ export class FullnodeScanAdapter implements EventAdapter {
    * emitted none. A start at the node's oldest version, as `"earliest"` and an
    * old `fromTime` resolve to, has its predecessor pruned: it walks from 0 as
    * before the seek. A start below that is pruned itself, and its 410 is
-   * thrown, so `ArchiveFallbackAdapter` can answer it.
+   * thrown, so `ArchiveFallbackAdapter` answers the first page; later pages
+   * carry a cursor, and the node answers pruned sequence numbers `200 []`.
    */
   private async handleCounterAt(descriptor: HandleEventDescriptor, version: bigint): Promise<bigint> {
     const address = requireAddress(descriptor.accountAddress);
