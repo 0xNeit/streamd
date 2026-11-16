@@ -26,7 +26,7 @@
     "test": "bun test",
     "test:watch": "bun test --watch",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "node -e \"if (!(process.env.npm_config_user_agent || '').startsWith('bun/')) { console.error('Publish with bun publish so workspace:* ranges are rewritten'); process.exit(1); }\""
+    "prepublishOnly": "node -e \"if (!(process.env.npm_config_user_agent || '').startsWith('bun/') || !/[\\\\/]bun(?:\\.exe)?$/.test(process.env.npm_execpath || '')) { console.error('Publish with bun publish so workspace:* ranges are rewritten'); process.exit(1); }\""
   },
   "license": "MIT"
 }

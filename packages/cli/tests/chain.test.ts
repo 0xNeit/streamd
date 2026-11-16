@@ -265,10 +265,36 @@ describe("package manifests and tarballs", () => {
     expect(cli.devDependencies["@streamd/sui"]).toBe("workspace:*");
     expect(cli.peerDependencies["@streamd/sui"]).toBe("^0.1.0");
     expect(cli.peerDependenciesMeta["@streamd/sui"]).toEqual({ optional: true });
+    const cleanEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([k]) => !k.startsWith("npm_")),
+    );
     for (const dir of ["packages/core", "packages/cli"]) {
       const cwd = resolve(root, dir);
-      expect(Bun.spawnSync(["bun", "run", "prepublishOnly"], { cwd }).exitCode).toBe(0);
-      expect(Bun.spawnSync(["npm", "run", "prepublishOnly"], { cwd }).exitCode).toBe(1);
+      const ok = Bun.spawnSync(["bun", "run", "prepublishOnly"], {
+        cwd,
+        env: cleanEnv,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(ok.exitCode).toBe(0);
+
+      const cleanNpm = Bun.spawnSync(["npm", "run", "prepublishOnly"], {
+        cwd,
+        env: cleanEnv,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(cleanNpm.exitCode).toBe(1);
+      expect(new TextDecoder().decode(cleanNpm.stderr)).toContain("bun publish");
+
+      const nestedNpm = Bun.spawnSync(["npm", "run", "prepublishOnly"], {
+        cwd,
+        env: { ...cleanEnv, npm_config_user_agent: "bun/1.3.10 npm/? node/v24.3.0" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(nestedNpm.exitCode).toBe(1);
+      expect(new TextDecoder().decode(nestedNpm.stderr)).toContain("bun publish");
     }
   });
 

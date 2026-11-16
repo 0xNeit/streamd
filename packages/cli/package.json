@@ -13,7 +13,7 @@
     "build": "bun build.ts",
     "test": "bun test",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "node -e \"if (!(process.env.npm_config_user_agent || '').startsWith('bun/')) { console.error('Publish with bun publish so workspace:* ranges are rewritten'); process.exit(1); }\"",
+    "prepublishOnly": "node -e \"if (!(process.env.npm_config_user_agent || '').startsWith('bun/') || !/[\\\\/]bun(?:\\.exe)?$/.test(process.env.npm_execpath || '')) { console.error('Publish with bun publish so workspace:* ranges are rewritten'); process.exit(1); }\"",
     "test:integration": "STREAMD_INTEGRATION=1 bun test tests/integration",
     "test:localnet": "STREAMD_LOCALNET=1 bun test tests/integration/coverage.test.ts"
   },
