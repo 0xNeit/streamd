@@ -152,21 +152,22 @@ const appended = (history: readonly bigint[], value: bigint, max: number) => [..
 
 /**
  * Closes `window` and every empty window before the one starting at `start`,
- * judging each against the baseline as it stood, and returns the new open
- * window with the baseline they leave.
+ * and returns the new open window with the baseline they leave. A run of
+ * empty windows is judged once, at its first, so one outage sends one alert
+ * rather than one per window.
  */
 function close(anomaly: Anomaly, length: bigint, window: AlertWindow, start: bigint, fires: Fire[]): AlertWindow {
   const closing = { ...window };
   const fire = judge(anomaly, closing, true);
   if (fire !== undefined) fires.push(fire);
   let history = closing.partial === true ? (closing.history ?? []) : appended(closing.history ?? [], closing.value, anomaly.baseline);
-  // After `baseline` empty windows the baseline is all zeros, and a zero cannot leave it.
   const gap = (start - closing.start) / length - 1n;
-  const empty = gap < BigInt(anomaly.baseline) ? Number(gap) : anomaly.baseline;
-  for (let i = 1; i <= empty; i++) {
-    const zero = judge(anomaly, { start: closing.start + BigInt(i) * length, value: 0n, fired: false, history }, true);
+  if (gap > 0n) {
+    const zero = judge(anomaly, { start: closing.start + length, value: 0n, fired: false, history }, true);
     if (zero !== undefined) fires.push(zero);
-    history = appended(history, 0n, anomaly.baseline);
+    // Past `baseline` empty windows the baseline is all zeros whatever the gap.
+    const empty = gap < BigInt(anomaly.baseline) ? Number(gap) : anomaly.baseline;
+    history = [...history, ...Array<bigint>(empty).fill(0n)].slice(-anomaly.baseline);
   }
   return { start, value: 0n, fired: false, history };
 }
@@ -199,7 +200,8 @@ export function advance(
   const open =
     window === undefined
       ? { start, value: fold.initial, fired: false, history: [], partial: true }
-      : window.start === start
+      : // Timestamps never decrease along an Aptos or Sui walk; an earlier one counts in the open window rather than reopening the past.
+        start <= window.start
         ? window
         : close(anomaly, rule.window, window, start, fires);
   const next: AlertWindow = { ...open, value: fold(open.value, event) };

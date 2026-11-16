@@ -4518,15 +4518,17 @@ The band is `median ± k × 1.4826 × MAD` over the baseline, where MAD is the m
 window's distance from the median; the 1.4826 makes `k` read as standard deviations for normally
 distributed values. A value fires only strictly outside the band. Everything is exact: medians are
 taken over integers (the mean of the two middle values for an even baseline) and compared without
-floating point, so sums past 2^64 work. A baseline whose windows are all equal has a MAD of 0, so
-its band is the median alone and any other value fires; choose a longer window or a larger
-`minBaseline` for a type that steady.
+floating point, so sums past 2^64 work. When more than half the baseline's windows equal its
+median, as when they are all equal or a sparse type is mostly empty, the MAD is 0, so the band is
+the median alone and any other value fires; choose a longer window for such a type.
 
 A window with no matching events counts as zero. A window closes when an event lands in a later
-one, and every window skipped in between closes as a zero too, each judged against the baseline as
-it stood and then added to it, the oldest dropping out past `baseline`. The first window a rule
-opens with no saved position is left out of the baseline and never fires, since its start (the
-head, `--from-version` or `--from-time`) may fall mid-window and undercount it.
+one, and every window skipped in between closes as a zero too and joins the baseline, the oldest
+dropping out past `baseline`. A run of empty windows is judged once, at its first window, so one
+outage sends at most one alert. The first window a rule opens after its start (the head,
+`--from-version` or `--from-time`), before any window was saved, is left out of the baseline and
+never fires, since the start may fall mid-window and undercount it; empty windows between the
+start and that first event are not counted either.
 
 `above` fires on the event that first takes the value past the band, as a count threshold does.
 `below` waits for the window to close, since a count still open may grow, and is carried by the

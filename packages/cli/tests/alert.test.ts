@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryAdapter, StreamdClient, verifyWebhook } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
-import { advance, runAlert } from "../src/alert.js";
+import { advance, alertBody, runAlert } from "../src/alert.js";
 import type { AlertIO } from "../src/alert.js";
 import { parseRules } from "../src/alert-rules.js";
 import type { AlertOptions } from "../src/args.js";
@@ -429,18 +429,56 @@ describe("anomaly cursor entries", () => {
   });
 });
 
-describe("advance over a long gap", () => {
-  it("judges at most a baseline of empty windows, however many were skipped", () => {
-    const [quiet] = rules(rule("quiet", { anomaly: { metric: "count", k: 1, baseline: 3, minBaseline: 1, direction: "below" } }));
-    const entry = { rule: quiet!, fold: ((n: bigint) => n + 1n) as never, limit: undefined };
-    const open = { start: T0, value: 5n, fired: false, history: [5n, 5n, 5n] };
+describe("advance with an anomaly rule", () => {
+  const entryOf = (fields: Record<string, unknown>) => {
+    const [r] = rules(rule("r", { anomaly: { metric: "sum", sum: "amount", k: 1, baseline: 3, minBaseline: 1, ...fields } }));
+    const fold = Object.assign((n: bigint, e: StreamdEvent) => {
+      const amount = (e.data as { amount: string }).amount;
+      if (!/^-?\d+$/.test(amount)) throw new Error("not an integer");
+      return n + BigInt(amount);
+    }, { initial: 0n });
+    return { rule: r!, fold: fold as never, limit: undefined };
+  };
+  const open = (history: bigint[], value = 0n) => ({ start: T0, value, fired: false, history });
+
+  it("judges a run of empty windows once, however many were skipped", () => {
     const far = T0 + 1_000_000_000n * MINUTE;
-    const { window, fires } = advance(entry, open, ev(1, far));
-    // The baseline 5, 5, 5 leaves 0 below its band twice; then 5, 0, 0 has median 0.
-    expect(fires.map((f) => [f.window.start, f.window.value, f.anomaly?.side])).toEqual([
-      [T0 + MINUTE, 0n, "below"],
-      [T0 + 2n * MINUTE, 0n, "below"],
-    ]);
+    const { window, fires } = advance(entryOf({ direction: "below" }), open([5n, 5n, 5n], 5n), ev(1, far, "1"));
+    expect(fires.map((f) => [f.window.start, f.window.value, f.anomaly?.side])).toEqual([[T0 + MINUTE, 0n, "below"]]);
     expect(window).toEqual({ start: far, value: 1n, fired: false, history: [0n, 0n, 0n] });
+    const short = advance(entryOf({ direction: "below" }), open([5n, 5n, 5n], 5n), ev(1, T0 + 3n * MINUTE, "1"));
+    expect(short.window.history).toEqual([5n, 0n, 0n]);
+  });
+
+  it("ignores the side its direction leaves out", () => {
+    const below = advance(entryOf({ direction: "above" }), open([10n, 10n, 10n], 1n), ev(1, T0 + MINUTE, "1"));
+    expect(below.fires).toEqual([]);
+    const above = advance(entryOf({ direction: "below" }), open([1n, 1n, 1n]), ev(1, T0 + 1n, "50"));
+    expect(above.fires).toEqual([]);
+    expect(advance(entryOf({ direction: "above" }), open([1n, 1n, 1n]), ev(1, T0 + 1n, "50")).fires).toHaveLength(1);
+  });
+
+  it("formats a negative sum's band in the payload", () => {
+    const entry = entryOf({});
+    // An open window only fires below once it closes.
+    expect(advance(entry, open([-10n, -4n, -6n]), ev(1, T0 + 1n, "-20")).fires).toEqual([]);
+    const closer = ev(2, T0 + MINUTE, "0");
+    const { fires } = advance(entry, open([-10n, -4n, -6n], -20n), closer);
+    const body = JSON.parse(alertBody(entry.rule, fires[0]!, closer)) as Alert;
+    expect(body.value).toBe("-20");
+    expect(body.anomaly).toEqual({ side: "below", median: "-6", mad: "2", low: "-8.9652", high: "-3.0348", baselineWindows: "3" });
+    expect(body).toMatchObject({ windowStart: `${T0}`, event: { version: "2" } });
+  });
+
+  it("leaves the old window open when the closing event's field is refused", () => {
+    const before = open([1n, 2n, 3n], 9n);
+    expect(() => advance(entryOf({}), before, ev(1, T0 + MINUTE, "abc"))).toThrow("not an integer");
+    expect(before).toEqual(open([1n, 2n, 3n], 9n));
+  });
+
+  it("counts an event stamped before the open window in that window", () => {
+    const { window, fires } = advance(entryOf({}), { ...open([4n, 4n, 5n], 1n), start: T0 + MINUTE }, ev(1, T0, "1"));
+    expect(window).toEqual({ start: T0 + MINUTE, value: 2n, fired: false, history: [4n, 4n, 5n] });
+    expect(fires).toEqual([]);
   });
 });
