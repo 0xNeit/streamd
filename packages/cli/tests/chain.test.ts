@@ -256,21 +256,19 @@ describe("package manifests and tarballs", () => {
 
   it("keeps @streamd/sui as an optional CLI peer and guards publishing with Bun", () => {
     const cli = JSON.parse(readFileSync(resolve(root, "packages/cli/package.json"), "utf8")) as {
-      scripts: Record<string, string>;
       dependencies: Record<string, string>;
       devDependencies: Record<string, string>;
       peerDependencies: Record<string, string>;
       peerDependenciesMeta: Record<string, { optional?: boolean }>;
     };
-    const core = JSON.parse(readFileSync(resolve(root, "packages/core/package.json"), "utf8")) as {
-      scripts: Record<string, string>;
-    };
     expect(cli.dependencies["@streamd/sui"]).toBeUndefined();
     expect(cli.devDependencies["@streamd/sui"]).toBe("workspace:*");
     expect(cli.peerDependencies["@streamd/sui"]).toBe("^0.1.0");
     expect(cli.peerDependenciesMeta["@streamd/sui"]).toEqual({ optional: true });
-    for (const manifest of [cli, core]) {
-      expect(manifest.scripts.prepublishOnly).toContain("process.versions.bun");
+    for (const dir of ["packages/core", "packages/cli"]) {
+      const cwd = resolve(root, dir);
+      expect(Bun.spawnSync(["bun", "run", "prepublishOnly"], { cwd }).exitCode).toBe(0);
+      expect(Bun.spawnSync(["npm", "run", "prepublishOnly"], { cwd }).exitCode).toBe(1);
     }
   });
 

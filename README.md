@@ -35,7 +35,7 @@ bun install
 bun run build
 ```
 
-The repository is a Turborepo monorepo on Bun workspaces. Workspace packages declare internal links as `workspace:*`, so publishing uses `bun publish` (guarded by `prepublishOnly`) to rewrite those ranges. Every package ships ESM, CommonJS and
+The repository is a Turborepo monorepo on Bun workspaces. Workspace packages declare internal links as `workspace:*`, so publishing uses `bun publish` to rewrite those ranges (`@streamd/core` and `@streamd/cli` guard this with `prepublishOnly`). Every package ships ESM, CommonJS and
 TypeScript types:
 
 - `@streamd/core` (`packages/core`) - the client engine: subscriptions, queries, merges,
@@ -5493,7 +5493,7 @@ streamd codegen --chain sui --out src/protocol.ts 0x<package id>
 - No view or handle builders: Sui has neither. `--validators` works, against the JSON below.
 - `--network` takes `mainnet`, `testnet` or `devnet`, and `--node-url` a Sui gRPC URL.
   `--api-key` is refused and `APTOS_API_KEY` is never read: public Sui nodes take no key.
-- `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`. `@mysten/sui` is an optional peer of `@streamd/cli`, but `@streamd/sui`, a dependency, still declares it as a peer, so package managers may install or ask for it.
+- `@streamd/sui` and `@mysten/sui` are optional peers of `@streamd/cli` and are imported only for `--chain sui`.
 
 Each type describes the JSON a Sui node returns, as `SuiAdapter` delivers it:
 
