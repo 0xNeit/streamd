@@ -272,6 +272,26 @@ describe("createReceiver", () => {
     expect((await receive(await post(bodyOf([ev(1n)])))).status).toBe(500);
   });
 
+  it("leaves no unhandled rejection when an async onError rejects", async () => {
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => void unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      const receive = createReceiver({
+        secret: SECRET,
+        onEvents: () => {},
+        onError: (async () => {
+          throw new Error("logger down");
+        }) as never,
+      });
+      expect((await receive(await post("not json"))).status).toBe(400);
+      await Bun.sleep(0);
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+  });
+
   it("restores decode paths as bigints", async () => {
     const r = recorder();
     const receive = createReceiver({ secret: SECRET, decode: ["amount"], ...r });

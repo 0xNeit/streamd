@@ -2,7 +2,7 @@ import { StreamdError } from "@streamd/core";
 
 /**
  * Where a receiver records the events it has handled, by `eventId`
- * (`version:eventIndex`). Implement it over any database to keep the record
+ * (`version:eventIndex`, prefixed `<namespace>/` when the receiver has one). Implement it over any database to keep the record
  * across restarts and across instances behind one webhook URL.
  */
 export interface DedupStore {

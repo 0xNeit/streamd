@@ -110,7 +110,8 @@ export function createReceiver<TData = unknown>(
   // A throwing logger must not turn a 400 into a rejection the server answers as a retryable 500.
   const report = (err: unknown, request: Request) => {
     try {
-      options.onError?.(err, request);
+      const result: unknown = options.onError?.(err, request);
+      if (result instanceof Promise) result.catch(() => {});
     } catch {}
   };
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
