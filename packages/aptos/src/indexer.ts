@@ -66,7 +66,7 @@ function resolveUrl(aptos: Aptos, indexerUrl: unknown): string {
 
 /** Checks the fields `toStreamdEvents` reads, so a malformed transaction is refused rather than mapped. */
 function requireTransaction(txn: unknown, version: bigint): TransactionWithEvents {
-  const malformed = new StreamdError(`Fullnode returned a malformed transaction at version ${version}`);
+  const malformed = new StreamdNetworkError(`Fullnode returned a malformed transaction at version ${version}`);
   if (!isObject(txn) || toVersion(txn.version) !== version) throw malformed;
   for (const key of ["hash", "sender"]) {
     if (txn[key] !== undefined && typeof txn[key] !== "string") throw malformed;
@@ -242,13 +242,13 @@ export class IndexerAccountAdapter implements EventAdapter {
     });
     const rows = data.account_transactions;
     if (!Array.isArray(rows) || rows.length > limit) {
-      throw new StreamdError("Indexer returned a malformed account_transactions listing");
+      throw new StreamdNetworkError("Indexer returned a malformed account_transactions listing");
     }
     let last = from - 1n;
     return rows.map((row) => {
       const version = isObject(row) ? toVersion(row.transaction_version) : undefined;
       if (version === undefined || version <= last || version > to) {
-        throw new StreamdError("Indexer returned a malformed account_transactions listing");
+        throw new StreamdNetworkError("Indexer returned a malformed account_transactions listing");
       }
       last = version;
       return version;
@@ -275,7 +275,7 @@ export class IndexerAccountAdapter implements EventAdapter {
     const row = Array.isArray(rows) && rows.length === 1 && isObject(rows[0]) ? rows[0] : undefined;
     const version = toVersion(row?.last_success_version);
     if (version === undefined) {
-      throw new StreamdError(`Indexer reported no processed version for ${PROCESSOR}`);
+      throw new StreamdNetworkError(`Indexer reported no processed version for ${PROCESSOR}`);
     }
     return version;
   }
@@ -292,7 +292,7 @@ export class IndexerAccountAdapter implements EventAdapter {
       throw toStreamdError(err, "oldest ledger version");
     }
     const version = toVersion(oldest);
-    if (version === undefined) throw new StreamdError("Fullnode returned a malformed oldest ledger version");
+    if (version === undefined) throw new StreamdNetworkError("Fullnode returned a malformed oldest ledger version");
     return version;
   }
 
@@ -339,7 +339,9 @@ export class IndexerAccountAdapter implements EventAdapter {
     if (isObject(body) && Array.isArray(body.errors) && body.errors.length > 0) {
       throw graphqlFailure(body.errors, retryAfter);
     }
-    if (!isObject(body) || !isObject(body.data)) throw new StreamdError("Indexer returned no data");
+    if (!isObject(body) || !isObject(body.data)) {
+      throw new StreamdNetworkError("Indexer returned no data", response.status, undefined, retryAfter);
+    }
     return body.data;
   }
 }
