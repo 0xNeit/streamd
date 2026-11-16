@@ -601,3 +601,65 @@ export type ProvenanceListenerOptions = SubscriptionOptions & ProvenanceOptions;
 
 /** Filter for `AptosClient.getProvenance`. */
 export type ProvenanceFilter = EventFilter & ProvenanceOptions;
+
+/** Options for `AptosClient.trace`. */
+export interface TraceOptions extends Pick<EventFilter, "retries" | "signal"> {
+  /** How many hops from the root to follow, 1 to 6; default 1. */
+  hops?: number;
+  /** Follow transfers a node sent (`out`), received (`in`), or both; default `both`. */
+  direction?: "out" | "in" | "both";
+  /** Start of the range every node is read over, as `getEvents` takes it. */
+  fromVersion?: bigint;
+  /** End of the range; `"head"`, the default, is read once when the trace starts. */
+  toVersion?: bigint | "head";
+  /** Transfers below this many base units are ignored, whatever their asset. */
+  minAmount?: bigint;
+  /** Only transfers of this asset, in any form `TransferOptions.asset` takes. */
+  asset?: string;
+  /** Most nodes the graph may hold, root included; default 100. */
+  maxNodes?: number;
+  /** Most adapter calls the trace may make, the head read, page reads and views alike; default 1000. One call can be several HTTP requests. */
+  maxRequests?: number;
+  /** Addresses kept as nodes but never expanded, such as exchanges and routers. */
+  stop?: readonly string[];
+  /** An address that ends the walk as soon as it joins the graph. */
+  target?: string;
+}
+
+/** One address in a `FundFlowGraph`. */
+export interface TraceNode {
+  /** Long form. */
+  address: string;
+  /** Hops from the root, which is 0. */
+  hop: number;
+  /** Whether its transfers were read: false at the hop cap, on the stop list, or when the walk stopped first. */
+  expanded: boolean;
+}
+
+/** Every transfer of one asset from one address to another that the trace saw, summed. */
+export interface TraceEdge {
+  from: string;
+  to: string;
+  /** In `Transfer.asset`'s form. */
+  asset: string;
+  /** Base units, summed. */
+  amount: bigint;
+  /** How many transfers the sum is over. */
+  transfers: number;
+  firstVersion: bigint;
+  lastVersion: bigint;
+}
+
+/** What `AptosClient.trace` resolves with. */
+export interface FundFlowGraph {
+  /** Long form. */
+  root: string;
+  /** In the order they joined, breadth first. */
+  nodes: TraceNode[];
+  /** In the order first seen. */
+  edges: TraceEdge[];
+  /** Why the walk ended before reading every node within `hops`, when it did. */
+  stoppedBy?: "nodes" | "requests" | "target";
+  /** Adapter calls made. */
+  requests: number;
+}
