@@ -108,7 +108,8 @@ const APTOS_BUILTINS: Record<"String" | "Option" | "Object", Builtin> = {
     opaque: true,
     type: () => "{ inner: string }",
     check: (v, c) => `${c.use("record", v)} && ${c.use("address", `${v}["inner"]`)}`,
-    arbitrary: (c) => `{ inner: ${c.use("address")} }`,
+    // Parenthesised, since a lambda's `=> { inner: ... }` would be a block, returning undefined.
+    arbitrary: (c) => `({ inner: ${c.use("address")} })`,
   },
   Option: {
     type: ([inner]) => `{ vec: [] | [${inner}] }`,

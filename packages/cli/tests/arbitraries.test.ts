@@ -31,6 +31,7 @@ const shapes = parseModuleAbi({
         ["name", "0x1::string::String"], ["maybe", "0x1::option::Option<u64>"], ["obj", "0x1::object::Object<0x1::object::ObjectCore>"],
         ["list", "vector<vector<u16>>"], ["inner", `${DEX}::shapes::Inner`], ["boxed", `${DEX}::shapes::Boxed<u64, bool>`],
         ["pick", `${DEX}::shapes::Pick`], ["picks", `vector<0x1::option::Option<${DEX}::shapes::Pick>>`], ["empty", `${DEX}::shapes::Empty`],
+        ["objs", "vector<0x1::object::Object<0x1::object::ObjectCore>>"], ["maybeObj", "0x1::option::Option<0x1::object::Object<0x1::object::ObjectCore>>"],
       ], true),
       struct("Inner", [["x", "u64"], ["names", "vector<0x1::string::String>"]]),
       // T1 is phantom: no field mentions it.
@@ -132,6 +133,8 @@ describe("generateEventTypes arbitraries", () => {
       expect(all.every((e) => e.bytes.length <= 66)).toBe(true);
       expect(seen((e) => e.maybe.vec.length)).toEqual(new Set(["0", "1"]));
       expect(seen((e) => e.pick.__variant__)).toEqual(new Set(["None", "Some"]));
+      expect(all.some((e) => e.objs.length > 0 && e.maybeObj.vec.length > 0)).toBe(true);
+      expect(all.every((e) => [...e.objs, ...e.maybeObj.vec].every((o: any) => typeof o?.inner === "string"))).toBe(true);
       // Addresses as the fullnode writes them: lowercase, leading zeros dropped.
       expect(all.every((e) => /^0x(?:0|[1-9a-f][0-9a-f]{0,63})$/.test(e.who))).toBe(true);
       expect(seen((e) => e.who)).toContain("0x1");
@@ -217,13 +220,13 @@ describe("generateEventTypes arbitraries", () => {
     rmSync(phantom.dir, { recursive: true, force: true });
     expect(phantom.source).toContain("_t1: (rng: StreamdRng) => T1");
     expect(phantom.source).toContain("export function arbitraryHolder<T0>(rng: StreamdRng, _t0: (rng: StreamdRng) => T0): Holder<T0> {");
-    // Generated interfaces with a phantom type parameter fail noUnusedParameters on their own,
-    // so Boxed's T1 is used here and Holder left out.
+    // An interface with a phantom type parameter beside a used one fails noUnusedParameters
+    // on its own, so Boxed's T1 is used here; Holder, whose only parameter is phantom, passes.
     const boxed = shapes.structs.find((s) => s.name === "Boxed")!;
     const used = {
       ...shapes,
       structs: shapes.structs
-        .filter((s) => s.name !== "Holder")
+
         .map((s) => (s === boxed ? { ...s, fields: [...s.fields, { name: "tag", type: { kind: "param", index: 1 } as const }] } : s)),
     };
     const { dir, source } = await generated([used], { validators: true, arbitraries: true });
