@@ -182,6 +182,59 @@ describe("generateEventTypes", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  it("loads independent target and referenced modules concurrently while preserving error order", async () => {
+    const modA = abi("0x1", "a", [struct("AEvent", [["x", "0x2::x::X"], ["y", "0x3::y::Y"]])]);
+    const modB = abi("0x1", "b", [struct("BEvent", [["n", "u8"]])]);
+    const modX = abi("0x2", "x", [struct("X", [["v", "u64"]], false)]);
+    const modY = abi("0x3", "y", [struct("Y", [["ok", "bool"]], false)]);
+    const byKey = new Map<string, ModuleAbi>([
+      ["0x1::a", modA],
+      ["0x1::b", modB],
+      ["0x2::x", modX],
+      ["0x3::y", modY],
+    ]);
+
+    const release = new Map<string, () => void>();
+    const wait = (key: string) => new Promise<void>((resolve) => release.set(key, resolve));
+    const started: string[] = [];
+    const concurrentLoad = async (address: string, module: string) => {
+      const key = `${address}::${module}`;
+      started.push(key);
+      await wait(key);
+      return byKey.get(key)!;
+    };
+
+    const runPromise = generateEventTypes(
+      [{ address: "0x1", module: "a" }, { address: "0x1", module: "b" }],
+      concurrentLoad,
+    );
+    await Promise.resolve();
+    // Both target modules must be in flight before either settles.
+    expect(started).toEqual(["0x1::a", "0x1::b"]);
+    release.get("0x1::a")!();
+    release.get("0x1::b")!();
+    for (let i = 0; i < 10 && (!release.has("0x2::x") || !release.has("0x3::y")); i++) {
+      await Promise.resolve();
+    }
+    // Both external field modules must be in flight before either settles.
+    expect(started.slice(2).sort()).toEqual(["0x2::x", "0x3::y"]);
+    release.get("0x2::x")!();
+    release.get("0x3::y")!();
+    const out = await runPromise;
+    expect(out).toContain("export interface AEvent");
+    expect(out).toContain("export interface BEvent");
+
+    // Target 2 rejects immediately, target 1 rejects slightly later: target 1's error wins.
+    const failingLoad = async (_address: string, module: string): Promise<ModuleAbi> => {
+      if (module === "b") throw new StreamdError("second failed");
+      await Bun.sleep(10);
+      throw new StreamdError("first failed");
+    };
+    await expect(
+      generateEventTypes([{ address: "0x1", module: "a" }, { address: "0x1", module: "b" }], failingLoad),
+    ).rejects.toThrow("first failed");
+  });
 });
 
 // Each @ts-expect-error fails the compile if its line does typecheck.

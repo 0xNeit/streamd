@@ -221,6 +221,25 @@ async function collect(
     handles.push(...held);
     return true;
   };
+  // Start all account listings and independent named module loads up front so independent reads
+  // overlap without fetching named modules that a whole-account listing will already supply.
+  const listed = new Map<string, Promise<ModuleAbi[]>>();
+  if (list !== undefined) {
+    for (const { address, module } of targets) {
+      if (module !== undefined) continue;
+      const account = long(address);
+      if (!listed.has(account)) {
+        const pendingList = list(address);
+        void pendingList.catch(() => {});
+        listed.set(account, pendingList);
+      }
+    }
+  }
+  for (const { address, module } of targets) {
+    if (module !== undefined && !listed.has(long(address))) {
+      void getModule(address, module).catch(() => {});
+    }
+  }
   for (const { address, module } of targets) {
     if (module !== undefined) {
       if (!take(await getModule(address, module))) {
@@ -230,7 +249,7 @@ async function collect(
     }
     if (list === undefined) throw new StreamdError(`No module listing to expand ${address}`);
     let found = false;
-    for (const abi of await list(address)) {
+    for (const abi of await listed.get(long(address))!) {
       if (long(abi.address) !== long(address)) {
         throw new StreamdError(`Fullnode listed ${abi.address}::${abi.name} for account ${address}`);
       }
@@ -241,6 +260,19 @@ async function collect(
       throw new StreamdError(`Account ${address} has no modules with event structs, event handles or view functions`);
     }
   }
+
+  const prefetch = (t: MoveType): void => {
+    if (t.kind === "vector") {
+      prefetch(t.of);
+      return;
+    }
+    if (t.kind !== "struct") return;
+    const known = dialect.builtin(t);
+    if (known?.opaque) return;
+    for (const arg of t.args) prefetch(arg);
+    if (known !== undefined) return;
+    void getModule(t.address, t.module).catch(() => {});
+  };
 
   const visit = async (owner: Entry, field: string, t: MoveType): Promise<void> => {
     const where = `field ${field} of ${qualified(owner)}`;
@@ -262,9 +294,17 @@ async function collect(
     if (struct.typeParams !== t.args.length) {
       throw new StreamdError(`Malformed ABI: ${where} gives ${t.name} the wrong number of type arguments`);
     }
-    pending.push(...add(abi, struct));
+    const added = add(abi, struct);
+    for (const entry of added) {
+      for (const f of fieldsOf(entry.struct)) prefetch(f.type);
+    }
+    pending.push(...added);
   };
 
+  for (const h of handles) prefetch(h.payload);
+  for (const entry of pending) {
+    for (const f of fieldsOf(entry.struct)) prefetch(f.type);
+  }
   for (const h of handles) {
     await visit({ key: "", module: h.module, struct: h.struct }, h.field, h.payload);
   }
