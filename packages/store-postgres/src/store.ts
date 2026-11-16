@@ -113,6 +113,10 @@ function columnText(value: string): string {
   return value.replaceAll("\0", "\uFFFD");
 }
 
+// Nor can `jsonb` parse a lone surrogate, which a JavaScript string from a custom adapter may hold.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+const tableText = (value: string) => columnText(value).replace(LONE_SURROGATE, "\uFFFD");
+
 function optionalText(value: unknown, field: string): string | null {
   if (value === undefined) return null;
   if (typeof value !== "string") throw new StreamdError(`Not a valid transfer ${field}: ${String(value)}`);
@@ -283,7 +287,7 @@ export class PostgresEventStore {
    * its column refuses, writes nothing.
    */
   async writeTables(tables: readonly EventTable[], events: readonly StreamdEvent[], checkpoint?: StoreCheckpoint): Promise<void> {
-    const rows = eventTableRows(tables, events, columnText);
+    const rows = eventTableRows(tables, events, tableText);
     const [name, cursor] = checkpointParams(checkpoint);
     const spec = requireEventTables(tables);
     // One statement cannot update a row twice, so a repeated id keeps its last copy.

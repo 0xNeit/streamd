@@ -122,6 +122,25 @@ describe("PostgresEventStore.writeTables", () => {
     expect(await store.readCursor("a")).toBe("c2");
   });
 
+  it("replaces every column of a redelivered event, keeps a batch's last copy, and saves a cursor with no events", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.writeTables(TABLES, [swap(1n)]);
+    await store.writeTables(TABLES, [swap(1n, { fee: 31, memo: { vec: ["x"] } })]);
+    expect(await rows(db, "dex_swap")).toEqual([expect.objectContaining({ fee: 31, memo: "x" })]);
+    await store.writeTables(TABLES, [swap(1n, { fee: 1 }), swap(1n, { fee: 2 })]);
+    expect(await rows(db, "dex_swap")).toEqual([expect.objectContaining({ fee: 2 })]);
+    await store.writeTables(TABLES, [], { name: "a", cursor: "c" });
+    expect(await store.readCursor("a")).toBe("c");
+  });
+
+  it("stores a lone surrogate as U+FFFD rather than failing every retry", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.writeTables(TABLES, [swap(1n, { memo: { vec: ["a\uD800"] }, legs: ["\uDC00b"] })]);
+    expect(await rows(db, "dex_swap")).toEqual([expect.objectContaining({ memo: "a\uFFFD", legs: ["\uFFFDb"] })]);
+  });
+
   it("writes nothing and keeps the cursor when one event is refused", async () => {
     const db = new PGlite();
     const store = new PostgresEventStore(db);
@@ -161,6 +180,14 @@ describe("storeTables", () => {
     expect(seen).toEqual([4n, 5n]);
     expect((await rows(db, "dex_swap")).map((r) => r.version)).toEqual([1, 4]);
     expect((await rows(db, "fungible_asset_deposit")).map((r) => r.amount)).toEqual([5, 7]);
+  });
+
+  it("creates the tables before any event arrives", async () => {
+    const db = new PGlite();
+    const sub = await storeTables(new StreamdClient({ adapter: new MemoryAdapter([]) }), new PostgresEventStore(db), TABLES, { name: "x" });
+    sub.unsubscribe();
+    const { rows } = await db.query<{ t: string | null }>("SELECT to_regclass('dex_swap')::text AS t");
+    expect(rows[0]!.t).toBe("dex_swap");
   });
 
   it("needs a name and valid tables before subscribing", async () => {

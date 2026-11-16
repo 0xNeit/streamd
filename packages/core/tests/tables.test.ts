@@ -120,6 +120,18 @@ describe("eventTableRows", () => {
     expect(() => eventTableRows([DEPOSIT], [ev(DEPOSIT.eventType, data, { version: 2n ** 63n })])).toThrow(/version/);
     expect(() => eventTableRows([DEPOSIT], [ev(DEPOSIT.eventType, data, { timestamp: -1n })])).toThrow(/timestamp/);
     expect(() => eventTableRows([DEPOSIT], [ev(DEPOSIT.eventType, data, { eventIndex: 2 ** 31 })])).toThrow(/eventIndex/);
+    expect(() => eventTableRows([DEPOSIT], [ev(DEPOSIT.eventType, data, { version: -1n })])).toThrow(/version/);
+    expect(() => eventTableRows([DEPOSIT], [ev(DEPOSIT.eventType, data, { version: 1 as never })])).toThrow(/version/);
+    expect(() => eventTableRows([DEPOSIT], [ev(DEPOSIT.eventType, data, { eventIndex: -1 })])).toThrow(/eventIndex/);
+    expect(() => eventTableRows([DEPOSIT], [ev(DEPOSIT.eventType, data, { timestamp: 2n ** 63n })])).toThrow(/timestamp/);
+  });
+
+  it("rewrites strings in the standard columns too", () => {
+    const type = "0x1::coin::CoinDeposit<0x1::m::T\u0000>";
+    const [row] = eventTableRows([COIN], [ev(type, { amount: "1" }, { transactionHash: "a\u0000b", sender: "s\u0000" })], (s) =>
+      s.replaceAll("\0", "?"),
+    );
+    expect(row!.values).toEqual([10n, 2, "a?b", null, "s?", "0x1::m::T?", "1"]);
   });
 });
 
@@ -142,6 +154,9 @@ describe("requireEventTables", () => {
       base({ table: `t${"x".repeat(63)}` }),
       base({ table: "streamd_events" }),
       base({ table: "sqlite_master" }),
+      base({ table: "pg_class" }),
+      base({ columns: [col("xmin", "u64")] }),
+      base({ columns: undefined as never }),
       base({ table: 'x"; DROP TABLE y; --' }),
       base({ eventType: "0x1::fungible_asset::Deposit<u8>" }),
       base({ eventType: "fungible_asset::Deposit" as never }),

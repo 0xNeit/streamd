@@ -16,7 +16,9 @@ export interface EventTableRow {
 // case-sensitive ones agree, and at most Postgres's 63-byte identifier limit.
 const IDENTIFIER = /^[a-z_][a-z0-9_]{0,62}$/;
 const EVENT_TYPE = /^(0x[0-9a-fA-F]{1,64})::([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)$/;
-const RESERVED_TABLE = /^(streamd_|sqlite_)/;
+const RESERVED_TABLE = /^(streamd_|sqlite_|pg_)/;
+// Postgres refuses a column with a system column's name.
+const SYSTEM_COLUMNS: ReadonlySet<string> = new Set(["tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"]);
 const DECIMAL = /^-?\d+$/;
 const I64_MAX = 2n ** 63n - 1n;
 const COLUMN_TYPES: ReadonlySet<string> = new Set<EventColumnType>([
@@ -43,8 +45,8 @@ function typeKey(eventType: string): string | undefined {
 function column(raw: EventColumn, table: string, names: Set<string>): EventColumn {
   const { name, type, path, nullable } = (raw ?? {}) as Partial<EventColumn>;
   if (typeof name !== "string" || !IDENTIFIER.test(name)) invalid(`table ${table} has a bad column name ${JSON.stringify(name)}`);
-  if ((STANDARD_COLUMNS as readonly string[]).includes(name!) || names.has(name!)) {
-    invalid(`table ${table} has column ${name} twice or as a standard column`);
+  if ((STANDARD_COLUMNS as readonly string[]).includes(name!) || SYSTEM_COLUMNS.has(name!) || names.has(name!)) {
+    invalid(`table ${table} has column ${name} twice, as a standard column or as a Postgres system column`);
   }
   names.add(name!);
   if (typeof type !== "string" || !COLUMN_TYPES.has(type)) invalid(`column ${table}.${name} has a bad type ${JSON.stringify(type)}`);

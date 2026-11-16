@@ -11,17 +11,17 @@ const SQL_TYPES: Record<EventColumnType, string> = {
 // Names are validated by requireEventTables, then quoted, so no on-chain name is ever SQL.
 const quote = (name: string) => `"${name}"`;
 
-const allColumns = (table: EventTable): [string, string][] => [
-  ["version", "bigint NOT NULL"],
-  ["event_index", "integer NOT NULL"],
-  ["transaction_hash", "text"],
-  ["timestamp", "bigint"],
-  ["sender", "text"],
-  ...(table.generic ? ([["type_arguments", "text"]] as [string, string][]) : []),
-  ...table.columns.map((c): [string, string] => [c.name, `${SQL_TYPES[c.type]}${c.nullable ? "" : " NOT NULL"}`]),
-];
+type Column = [name: string, type: string, notNull: boolean];
 
-const typeOf = (definition: string) => definition.replace(" NOT NULL", "");
+const allColumns = (table: EventTable): Column[] => [
+  ["version", "bigint", true],
+  ["event_index", "integer", true],
+  ["transaction_hash", "text", false],
+  ["timestamp", "bigint", false],
+  ["sender", "text", false],
+  ...(table.generic ? ([["type_arguments", "text", false]] as Column[]) : []),
+  ...table.columns.map((c): Column => [c.name, SQL_TYPES[c.type], !c.nullable]),
+];
 
 const schemas = new WeakMap<readonly EventTable[], string[]>();
 
@@ -33,7 +33,7 @@ export function eventTableSchema(tables: readonly EventTable[]): string[] {
     schema = spec.map((table) =>
       [
         `CREATE TABLE IF NOT EXISTS ${quote(table.table)} (`,
-        ...allColumns(table).map(([name, type]) => `  ${quote(name)} ${type},`),
+        ...allColumns(table).map(([name, type, notNull]) => `  ${quote(name)} ${type}${notNull ? " NOT NULL" : ""},`),
         '  PRIMARY KEY ("version", "event_index")',
         ")",
       ].join("\n"),
@@ -52,10 +52,7 @@ export function eventTablesWrite(tables: readonly EventTable[]): string {
   const ctes = tables.map((table, i) => {
     const columns = allColumns(table);
     const names = columns.map(([name]) => quote(name));
-    const values = columns.map(([, definition], k) => {
-      const type = typeOf(definition);
-      return type === "text" ? `r->>${k}` : `(r->>${k})::${type}`;
-    });
+    const values = columns.map(([, type], k) => (type === "text" ? `r->>${k}` : `(r->>${k})::${type}`));
     const updated = names.filter((n) => n !== '"version"' && n !== '"event_index"');
     return [
       `w${i} AS (`,

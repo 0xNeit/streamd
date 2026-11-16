@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { normalizeAddress, StreamdError } from "@streamd/core";
+import { normalizeAddress, STANDARD_COLUMNS, StreamdError } from "@streamd/core";
 import type { EventColumn, EventColumnType, EventTable, MoveEventType } from "@streamd/core";
 import { eventTableSchema as postgresSchema } from "@streamd/store-postgres";
 import { eventTableSchema as sqliteSchema } from "@streamd/store-sqlite";
@@ -31,8 +31,9 @@ export interface TableTarget {
 }
 
 const MAX_NAME = 63;
-const STANDARD = new Set(["version", "event_index", "transaction_hash", "timestamp", "sender", "type_arguments"]);
-const RESERVED = /^(streamd_|sqlite_)/;
+// Taken by every table, or refused by Postgres as a column name.
+const TAKEN: readonly string[] = [...STANDARD_COLUMNS, "tableoid", "xmin", "cmin", "xmax", "cmax", "ctid"];
+const RESERVED = /^(streamd_|sqlite_|pg_)/;
 const SCHEMA: Record<SqlDialect, (tables: readonly EventTable[]) => string[]> = { sqlite: sqliteSchema, postgres: postgresSchema };
 
 const json = (): ColumnMapping => ({ type: "json", path: [], nullable: false });
@@ -68,10 +69,10 @@ const shortened = (name: string, key: string) => `${name.slice(0, MAX_NAME - 9)}
 const qualified = (t: TableTarget) => `${normalizeAddress(t.address) ?? t.address}::${t.module}::${t.struct.name}`;
 
 /**
- * `<module>_<struct>` in snake case, whatever else is generated, so a table
- * keeps its name as targets come and go; `move_` in front of a prefix the
- * stores reserve. A name two structs share or too long for Postgres is cut
- * and suffixed with a hash of the qualified type instead.
+ * `<module>_<struct>` in snake case; `move_` in front of a prefix the stores
+ * or Postgres reserve. A name two generated structs share, or one too long for
+ * Postgres, is cut and suffixed with a hash of the long-form qualified type
+ * instead, so generating a second struct with a table's name renames both.
  */
 function tableNames(targets: TableTarget[]): string[] {
   const plain = targets.map((t) => {
@@ -91,8 +92,7 @@ function tableNames(targets: TableTarget[]): string[] {
 function columnName(field: string, taken: Set<string>): string {
   let name = field.toLowerCase();
   if (name.length > MAX_NAME) name = shortened(name, field);
-  while (taken.has(name)) name += "_";
-  if (name.length > MAX_NAME) throw new StreamdError(`Could not give field ${field} a distinct column name`);
+  while (taken.has(name)) name = name.length < MAX_NAME ? `${name}_` : shortened(`${name}_`, `${field}:${taken.size}`);
   taken.add(name);
   return name;
 }
@@ -104,7 +104,7 @@ function columns(struct: StructAbi, d: Dialect): EventColumn[] {
       { name: "data", type: "json", path: [], nullable: false },
     ];
   }
-  const taken = new Set(STANDARD);
+  const taken = new Set(TAKEN);
   return struct.fields.map((f) => {
     const m = columnMapping(f.type, d);
     return { name: columnName(f.name, taken), type: m.type, path: [f.name, ...m.path], nullable: m.nullable };

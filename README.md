@@ -5212,18 +5212,19 @@ storeTables(streamd, new SqliteEventStore(new Database("events.db")), streamdTab
 ```
 
 - **A table is named `<module>_<struct>` in snake case** (`fungible_asset_deposit`,
-  `pool_v3_swap_event_v3`), the same whatever else is generated, so regenerating with more
-  modules renames nothing. A name two structs share (one module and struct at two addresses)
-  or one over Postgres's 63 bytes is cut and suffixed with 8 hex digits of a SHA-256 of the
-  long-form type; a name starting `streamd_` or `sqlite_` gets `move_` in front.
+  `pool_v3_swap_event_v3`). A name two generated structs share (one module and struct at two
+  addresses, such as two DEXes' `pool::SwapEvent`) or one over Postgres's 63 bytes is cut and
+  suffixed with 8 hex digits of a SHA-256 of the long-form type, so adding a struct that shares
+  a table's name renames both: generate such modules together from the start, or rename the
+  table yourself. A name starting `streamd_`, `sqlite_` or `pg_` gets `move_` in front.
 - **Columns are the field names, lowercased,** after the standard ones: `version`,
   `event_index`, `transaction_hash` (hex lowercased), `timestamp` (microseconds), `sender` (long
   form), and for a generic event `type_arguments`, the text inside its type's outer `<...>`. A
-  field that would collide with one of them or with an earlier field gets `_` appended
-  (`timestamp_`). The key is `(version, event_index)`, and a redelivered event replaces its row.
+  field that would collide with one of them, with an earlier field or with a Postgres system
+  column (`xmin`, `ctid` and the like) gets `_` appended (`timestamp_`). The key is `(version, event_index)`, and a redelivered event replaces its row.
 - **Nothing is lossy.** Integers wider than 32 bits are exact decimal text on SQLite, so compare
   them as numbers with care (`CAST` reads past 2^63 as a float), and `numeric` on Postgres.
-  Postgres `text` and `jsonb` cannot hold NUL, which becomes U+FFFD there.
+  Postgres `text` and `jsonb` cannot hold NUL or a lone surrogate, which become U+FFFD there.
 - **Nested values are JSON,** one column per field rather than flattened, so names stay stable.
   An enum event has `variant` and `data`, the whole payload.
 - Every name is checked (lowercase letters, digits and `_`, at most 63 bytes) and quoted, and

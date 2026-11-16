@@ -107,6 +107,16 @@ describe("SqliteEventStore.writeTables", () => {
     expect(store.readCursor("a")).toBe("c2");
   });
 
+  it("replaces every column of a redelivered event, and saves a cursor with no events", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.writeTables(TABLES, [swap(1n)]);
+    store.writeTables(TABLES, [swap(1n, { fee: 31, memo: { vec: ["x"] } })], { name: "a", cursor: "c1" });
+    expect(rows(db, "dex_swap")).toEqual([expect.objectContaining({ fee: 31, memo: "x" })]);
+    store.writeTables(TABLES, [], { name: "a", cursor: "c2" });
+    expect(store.readCursor("a")).toBe("c2");
+  });
+
   it("writes nothing and keeps the cursor when one event is refused", () => {
     const db = new Database(":memory:");
     const store = new SqliteEventStore(db);
@@ -146,6 +156,15 @@ describe("storeTables", () => {
     expect(seen).toEqual([4n, 5n]);
     expect(rows(db, "dex_swap").map((r) => (r as { version: number }).version)).toEqual([1, 4]);
     expect(rows(db, "fungible_asset_deposit").map((r) => (r as { amount: string }).amount)).toEqual(["5", "7"]);
+  });
+
+  it("creates the tables before any event arrives", () => {
+    const db = new Database(":memory:");
+    const sub = storeTables(new StreamdClient({ adapter: new MemoryAdapter([]) }), new SqliteEventStore(db), TABLES, { name: "x" });
+    sub.unsubscribe();
+    const names = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all();
+    expect(names).toContainEqual({ name: "dex_swap" });
+    expect(names).toContainEqual({ name: "fungible_asset_deposit" });
   });
 
   it("needs a name and valid tables before subscribing", () => {

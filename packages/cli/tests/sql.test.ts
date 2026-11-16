@@ -39,7 +39,9 @@ const shapes = module(DEX, "shapes", [
   ], true),
   struct("Inner", [["x", "u64"], ["names", "vector<0x1::string::String>"]]),
   struct("Boxed", [["item", "T0"], ["count", "u64"]], true, 1),
-  struct("Clash", [["version", "u64"], ["Timestamp", "u64"], ["timestamp_", "u8"], ["Amount", "u8"], ["amount", "u8"]], true),
+  struct("Clash", [
+    ["version", "u64"], ["Timestamp", "u64"], ["timestamp_", "u8"], ["Amount", "u8"], ["amount", "u8"], ["xmin", "u8"], ["TIMESTAMP", "u8"],
+  ], true),
   {
     name: "Pick", is_event: true, is_enum: true, generic_type_params: [], fields: [],
     variants: [{ name: "None", fields: [] }, { name: "Some", fields: [{ name: "amount", type: "u64" }] }],
@@ -92,9 +94,11 @@ describe("generateEventTypes sql", () => {
 
   it("steps field columns around standard columns and each other", async () => {
     const tables = await tablesOf([shapes]);
-    expect(Object.keys(columnsOf(tables, "shapes_clash"))).toEqual(["version_", "timestamp_", "timestamp__", "amount", "amount_"]);
+    expect(Object.keys(columnsOf(tables, "shapes_clash"))).toEqual([
+      "version_", "timestamp_", "timestamp__", "amount", "amount_", "xmin_", "timestamp___",
+    ]);
     expect(tables.find((t) => t.table === "shapes_clash")!.columns.map((c) => c.path[0])).toEqual([
-      "version", "Timestamp", "timestamp_", "Amount", "amount",
+      "version", "Timestamp", "timestamp_", "Amount", "amount", "xmin", "TIMESTAMP",
     ]);
   });
 
@@ -122,9 +126,22 @@ describe("generateEventTypes sql", () => {
     expect(names[3]).toHaveLength(63);
     expect(names[3]).toMatch(/_[0-9a-f]{8}$/);
     expect(tables.find((t) => t.table === names[3])!.columns[0]!.name).toHaveLength(63);
+    expect(tables.find((t) => t.table === names[3])!.columns[0]!.name).toMatch(/_[0-9a-f]{8}$/);
+    // Pinned, since a renamed table loses its rows: the hash is of the long-form type.
+    expect(names[0]).toBe("dex_swap_b77a794e");
     // Hashed names are stable across runs.
-    const again = await tablesOf([module(OTHER, "dex", [struct("Swap", [], true)]), module(DEX, "dex", [struct("Swap", [], true)])]);
+    const again = await tablesOf([module(OTHER, "dex", [struct("Swap", [], true)]), module("0xcafe0", "dex", [struct("Swap", [], true)])]);
     expect(again.map((t) => t.table).sort()).toEqual(names.slice(0, 2).sort());
+  });
+
+  it("steps around Postgres's pg_ prefix and writes empty lists for a module with no events", async () => {
+    expect((await tablesOf([module(DEX, "pg", [struct("Class", [], true)])])).map((t) => t.table)).toEqual(["move_pg_class"]);
+    const views = parseModuleAbi({
+      abi: { address: DEX, name: "v", structs: [], exposed_functions: [{ name: "f", is_view: true, generic_type_params: [], params: [] }] },
+    });
+    const source = await generateEventTypes([{ address: DEX, module: "v" }], loader([views]), { sql: "sqlite" });
+    expect(source).toContain("export const streamdTables: readonly StreamdEventTable[] = [];");
+    expect(source).toContain("export const streamdSchema: readonly string[] = [];");
   });
 
   it("maps Sui's builtins to their columns", async () => {
@@ -134,8 +151,10 @@ describe("generateEventTypes sql", () => {
         ["label", "0x1::ascii::String"], ["kind", "0x1::type_name::TypeName"], ["maybe", "0x1::option::Option<u64>"],
         ["bytes", "vector<u8>"], ["name", "0x1::string::String"],
       ], true, 1),
+      { name: "Kind", is_event: true, is_enum: true, generic_type_params: [], fields: [], variants: [{ name: "A", fields: [] }] },
     ]);
     const tables = await tablesOf([sui], { sql: "postgres", dialect: SUI_DIALECT });
+    expect(columnsOf(tables, "pool_kind")).toEqual({ variant: ["text", "@variant", false], data: ["json", "", false] });
     expect(columnsOf(tables, "pool_moved")).toEqual({
       id: ["address", "id", false], uid: ["address", "uid", false], coin: ["u64", "coin", false], link: ["text", "link", false],
       label: ["text", "label", false], kind: ["text", "kind", false], maybe: ["u64", "maybe", true], bytes: ["text", "bytes", false],
