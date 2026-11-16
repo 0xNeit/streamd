@@ -3,6 +3,7 @@ import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdClient } from "../src/client.js";
 import { StreamdError, StreamdNetworkError } from "../src/errors.js";
 import { whereField } from "../src/filter.js";
+import { RequestLimiter } from "../src/limiter.js";
 import { DEFAULT_NAME_TTL, SenderNames } from "../src/names.js";
 import type { EventAdapter, EventDescriptor, StreamdConfig, StreamdEvent } from "../src/types.js";
 
@@ -59,6 +60,17 @@ describe("SenderNames", () => {
     expect(await cache.name(BOB, DEFAULT_NAME_TTL)).toBeNull();
     expect((await cache.attach(ev(ALICE), DEFAULT_NAME_TTL)).senderName).toBe("alice.apt");
     expect(lookups).toEqual([ALICE, BOB]);
+  });
+
+  it("looks a name up within a held slot without queueing on the limiter, sharing the cache", async () => {
+    const limiter = new RequestLimiter(1);
+    const lookups: string[] = [];
+    const cache = new SenderNames(limiter);
+    cache.serve(async (address) => (lookups.push(address), "alice.apt"));
+    const named = await limiter.run(() => cache.nameWithinSlot(ALICE, DEFAULT_NAME_TTL));
+    expect(named).toBe("alice.apt");
+    expect(await cache.name(ALICE, DEFAULT_NAME_TTL)).toBe("alice.apt");
+    expect(lookups).toEqual([ALICE]);
   });
 
   it("caches a miss as null", async () => {

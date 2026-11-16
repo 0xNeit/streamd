@@ -2376,16 +2376,23 @@ for (const { version, data } of await streamd.getProvenance(token, { withNames: 
 - **Range.** `getProvenance` starts at version 0 unless `fromVersion`, `fromTime` or
   `fromBlock` says otherwise, and ends at the Indexer's processed version, which trails the
   fullnode by a few hundred versions; `provenance()` starts there and follows it. `limit`,
-  `where`, `orderBy`, `toVersion` and the cursor work as for `getEvents`.
-- **Reads.** One Indexer listing of up to 100 versions per page, then one fullnode read per
-  version, one at a time and outside `maxConcurrentRequests`; `requestTimeout` bounds the whole
-  page. The anonymous Indexer and archive budgets are small, so an object with a long history
-  wants an API key on both. A version the node does not have yet fails the page as a network
-  error, which retries.
+  `where`, `toVersion` and the cursor work as for `getEvents`. `fromVersion: "earliest"` is
+  refused, since an archive behind the adapter serves every version. `orderBy: "desc"` walks the
+  whole range forward and keeps the tail, as for any adapter, so it reads every transaction in
+  the range however small `limit` is.
+- **Reads.** Each page is one Indexer listing of as many versions as the page size (the
+  query's or the subscription's `batchSize`, at most 100), then one fullnode read per version,
+  one at a time and outside `maxConcurrentRequests`. `requestTimeout` bounds the whole page, so
+  set it well above a page's worth of reads, archive reads included, or a page that cannot
+  finish in time is retried forever. A page given up on stops reading once the next page
+  starts. The anonymous Indexer and archive budgets are small, so an object with a long
+  history wants an API key on both. A version the node does not have yet fails the page as a
+  network error, which retries; a listing out of order or out of range fails it as invalid.
 - **Names.** Under `withNames`, `names` holds the primary name (`null` for none) of the sender
   and every address in `actions`, through the client's name cache.
 - **Identity.** A record keeps the transaction's first event's `(version, eventIndex)`,
-  `transactionHash`, `sender` and `entryFunction`. Like `activity()`, it is not a listener for
+  `transactionHash`, `sender`, `timestamp` and `entryFunction`, with `type`
+  `0x1::object::ObjectCore` whatever that event was. Like `activity()`, it is not a listener for
   `off()` or `listenerCount()`.
 - **Not covered.** Legacy `0x3::token` tokens, which have no object address; transactions that
   touch only an object this object owns, unless the Indexer lists them.

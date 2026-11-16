@@ -92,7 +92,7 @@ function writeSet(txn: TransactionWithEvents): Pick<TransactionEvents, "changes"
   for (const change of txn.changes) {
     const address = typeof change?.address === "string" ? normalizeAddress(change.address) : undefined;
     if (address === undefined) continue;
-    if (change.type === "write_resource" && typeof change.data?.type === "string") {
+    if (change.type === "write_resource" && typeof change.data?.type === "string" && change.data.data !== undefined) {
       changes.push({ address, type: change.data.type, data: change.data.data });
     } else if (change.type === "delete_resource" && typeof change.resource === "string") {
       changes.push({ address, type: change.resource, data: null });

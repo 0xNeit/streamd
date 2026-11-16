@@ -137,7 +137,7 @@ export class AptosClient extends StreamdClient {
   private activityOf(address: string, withNames: unknown) {
     if (typeof address !== "string") throw new StreamdError("activity needs an address or Aptos name");
     const ttl = this.names.ttl(withNames);
-    const name = ttl === undefined ? undefined : (a: string) => this.names.name(a, ttl);
+    const name = ttl === undefined ? undefined : (a: string) => this.names.nameWithinSlot(a, ttl);
     return [activityDescriptor(addressOrName(address) ?? address), this.accountOf(address)!, name] as const;
   }
 
@@ -318,11 +318,11 @@ export class AptosClient extends StreamdClient {
   private provenanceOf(object: string, indexer: TransactionLister | undefined, withNames: unknown) {
     if (typeof object !== "string") throw new StreamdError("provenance needs an object address");
     const address = requireAddress(object);
-    if (indexer !== undefined && (typeof indexer?.getHeadVersion !== "function" || typeof indexer.listTransactionVersions !== "function")) {
+    if (indexer !== undefined && (typeof indexer.getHeadVersion !== "function" || typeof indexer.listTransactionVersions !== "function")) {
       throw new StreamdError("indexer must implement getHeadVersion and listTransactionVersions");
     }
     const ttl = this.names.ttl(withNames);
-    const name = ttl === undefined ? undefined : (a: string) => this.names.name(a, ttl);
+    const name = ttl === undefined ? undefined : (a: string) => this.names.nameWithinSlot(a, ttl);
     const source = provenanceSource(indexer ?? new IndexerAccountAdapter(this.aptos), this.adapter, address, name);
     return [provenanceDescriptor(address), source] as const;
   }

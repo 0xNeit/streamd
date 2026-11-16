@@ -135,11 +135,11 @@ export function toProvenance(object: string, found: TransactionEvents): StreamdE
   if (deleted && !actions.some((a) => a.kind === "burn")) {
     actions.push({ kind: "burn" });
   }
-  const first = found.events[0];
-  const envelope = first ?? { type: OBJECT_CORE, version: found.version, sequenceNumber: 0n, eventIndex: 0 };
+  // The transaction's identity and context, typed as what provenance follows rather than as whichever event came first.
+  const { guid: _guid, ...first } = found.events[0] ?? { version: found.version, sequenceNumber: 0n, eventIndex: 0 };
   const data: Provenance = { object, success: found.success, actions, changes };
   if (map !== undefined) data.properties = decodeProperties(map.data);
-  return { ...envelope, data };
+  return { ...first, type: OBJECT_CORE, data };
 }
 
 /** The most versions one Indexer listing returns. */
@@ -166,6 +166,16 @@ async function withNames(
   addresses.delete(undefined);
   const names = await Promise.all([...addresses].map(async (a) => [a!, await name(a!)] as const));
   return { ...record, data: { ...record.data, names: Object.fromEntries(names) } };
+}
+
+/** Refuses a listing that is not ascending bigints in `[start, end]`, at most `limit` long, so the cursor only moves forward. */
+function requireListing(versions: unknown, start: bigint, end: bigint, limit: number): asserts versions is bigint[] {
+  let last = start - 1n;
+  const ok =
+    Array.isArray(versions) &&
+    versions.length <= limit &&
+    versions.every((v) => typeof v === "bigint" && v > last && v <= end && ((last = v), true));
+  if (!ok) throw new StreamdError("indexer returned a malformed transaction listing");
 }
 
 /**
@@ -199,11 +209,13 @@ export function provenanceSource(
       const wanted = options.limit ?? DEFAULT_LIMIT;
       if (!(wanted > 0)) return { events: [], hasMore: false };
       const head = await lister.getHeadVersion();
+      if (typeof head !== "bigint" || head < 0n) throw new StreamdError("indexer reported a malformed processed version");
       const start = options.cursor !== undefined ? parseCursor(options.cursor) : (options.fromVersion ?? head);
       const end = options.toVersion !== undefined && options.toVersion < head ? options.toVersion : head;
       if (start > end) return { events: [], nextCursor: start.toString(), hasMore: false };
       const limit = Math.min(wanted, LISTING);
       const versions = await lister.listTransactionVersions(object, start, end, limit);
+      requireListing(versions, start, end, limit);
       const events: StreamdEvent<Provenance>[] = [];
       for (const version of versions) {
         signal.throwIfAborted();

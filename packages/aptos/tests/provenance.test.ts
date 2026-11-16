@@ -180,10 +180,12 @@ describe("toProvenance", () => {
     expect(toProvenance(TOKEN, txn([], [elsewhere])).data.properties).toBeUndefined();
   });
 
-  it("keeps the first event's envelope, or a bare one when the transaction emitted none", () => {
+  it("keeps the first event's identity and context, typed as ObjectCore, or a bare one when the transaction emitted none", () => {
     const fee = ev("0x1::transaction_fee::FeeStatement", {}, 0, { transactionHash: "0xab", sender: ALICE, timestamp: 5n });
     const record = toProvenance(TOKEN, txn([fee, ev("0x1::object::Transfer", { object: TOKEN, from: ALICE, to: BOB }, 1)]));
-    expect(record).toMatchObject({ type: fee.type, version: 10n, eventIndex: 0, transactionHash: "0xab", sender: ALICE, timestamp: 5n });
+    expect(record).toMatchObject({ type: "0x1::object::ObjectCore", version: 10n, eventIndex: 0, transactionHash: "0xab", sender: ALICE, timestamp: 5n });
+    const legacy = ev("0x1::object::TransferEvent", { object: TOKEN, from: ALICE, to: BOB }, 0, { guid: { creationNumber: 1n, accountAddress: TOKEN } });
+    expect(toProvenance(TOKEN, txn([legacy])).guid).toBeUndefined();
     const failed = toProvenance(TOKEN, { version: 12n, success: false, vmStatus: "Move abort", events: [] });
     expect(failed).toEqual({
       type: "0x1::object::ObjectCore",
@@ -324,6 +326,15 @@ describe("provenanceSource", () => {
     expect(reads.map(([v]) => v)).toEqual([1n, 2n, 3n]);
   });
 
+  it("refuses a listing that is out of order, out of range, too long or not bigints, and a malformed head", async () => {
+    for (const listed of [[5n, 3n], [3n, 3n], [50n], [3], Array.from({ length: 26 }, (_, i) => BigInt(i + 1))]) {
+      const indexer: TransactionLister = { getHeadVersion: async () => 40n, listTransactionVersions: async () => listed as bigint[] };
+      await expect(provenanceSource(indexer, node().adapter, TOKEN).fetchEvents(descriptor, { fromVersion: 1n })).rejects.toThrow("malformed transaction listing");
+    }
+    const badHead: TransactionLister = { getHeadVersion: async () => 40 as unknown as bigint, listTransactionVersions: async () => [] };
+    await expect(provenanceSource(badHead, node().adapter, TOKEN).fetchEvents(descriptor, {})).rejects.toThrow("processed version");
+  });
+
   it("refuses an adapter without by-version lookups, and offset", async () => {
     const { indexer } = lister([], () => 0n);
     expect(() => provenanceSource(indexer, { fetchEvents: node().adapter.fetchEvents }, TOKEN)).toThrow(
@@ -369,6 +380,17 @@ describe("provenance through the client", () => {
     expect(record!.data.names).toEqual({ [ALICE]: null, [BOB]: "bob.apt" });
   });
 
+  it("names records under maxConcurrentRequests: 1, whose only slot the page holds", async () => {
+    const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig: { http2: false } }));
+    aptos.getPrimaryName = async () => undefined;
+    const client = testClient({ adapter: node().adapter, aptos, maxConcurrentRequests: 1, requestTimeout: 1000 });
+    const records = await client.getProvenance(TOKEN, { indexer: lister([3n, 4n], () => 4n).indexer, withNames: true });
+    expect(records.map((r) => r.data.names)).toEqual([
+      { [ALICE]: null, [BOB]: null },
+      { [ALICE]: null, [BOB]: null },
+    ]);
+  });
+
   it("follows live from the processed version, delivering each new version once, as no listener", async () => {
     let head = 5n;
     const versions = [2n, 5n];
@@ -386,13 +408,13 @@ describe("provenance through the client", () => {
     client.destroy();
   });
 
-  it("refuses at the call a bad address or indexer, and an adapter without by-version lookups", () => {
+  it("refuses at the call a bad address or indexer, and an adapter without by-version lookups", async () => {
     const { indexer } = lister([], () => 0n);
     const client = testClient({ adapter: node().adapter });
     expect(() => client.provenance("not an address", () => {}, { indexer })).toThrow("Not a valid Aptos address");
-    expect(() => client.getProvenance(undefined as unknown as string, { indexer })).toThrow("provenance needs an object address");
+    await expect(client.getProvenance(undefined as unknown as string, { indexer })).rejects.toThrow("provenance needs an object address");
     expect(() => client.provenance(TOKEN, () => {}, { indexer: {} as TransactionLister })).toThrow("indexer must implement");
     const bare = testClient({ adapter: { fetchEvents: async () => ({ events: [], hasMore: false }) } });
-    expect(() => bare.getProvenance(TOKEN, { indexer })).toThrow("getTransactionEventsByVersion");
+    await expect(bare.getProvenance(TOKEN, { indexer })).rejects.toThrow("getTransactionEventsByVersion");
   });
 });
