@@ -64,7 +64,8 @@ export interface SubmitTransactionState<TData> {
 export interface UseSubmitTransactionResult<TTransaction, TData> extends SubmitTransactionState<TData> {
   /**
    * Preview, sign and confirm `transaction`. Resolves with the run's final
-   * state and never rejects; while a run is going, returns its promise and
+   * state (for a run cut short, `idle`, or `failed` with its hash once one was
+   * submitted) and never rejects; while a run is going, returns its promise and
    * starts nothing, so a `signAndSubmit` must not await it.
    */
   submit: (transaction: TTransaction) => Promise<SubmitTransactionState<TData>>;
@@ -107,9 +108,14 @@ export function useSubmitTransaction<TTransaction, TData = unknown>(
     if (running.current) return running.current.promise;
     const controller = new AbortController();
     const { options, client } = latest.current;
+    // A run cut short still shows a late hash, unless a newer run has started.
+    const publish = (state: SubmitTransactionState<TData>) => {
+      if (running.current === undefined || running.current.controller === controller) setState(state);
+    };
     // Started a tick later, so a signAndSubmit that calls submit synchronously already finds this run.
     const promise = Promise.resolve()
-      .then(() => run(transaction, client, options, controller.signal, setState))
+      .then(() => run(transaction, client, options, controller.signal, publish))
+      .then((final) => (controller.signal.aborted ? cutShort(final) : final))
       .finally(() => {
         if (running.current?.controller === controller) running.current = undefined;
       });
@@ -117,10 +123,10 @@ export function useSubmitTransaction<TTransaction, TData = unknown>(
     return promise;
   }, []);
 
-  const abandon = useCallback(() => {
+  const abandon = useCallback((reason?: typeof HIDDEN) => {
     const abandoned = running.current;
     running.current = undefined;
-    abandoned?.controller.abort();
+    abandoned?.controller.abort(reason);
     return abandoned !== undefined;
   }, []);
 
@@ -130,15 +136,10 @@ export function useSubmitTransaction<TTransaction, TData = unknown>(
   }, [abandon]);
 
   // Also runs when <Activity> hides the component, keeping its state: a run cut short there
-  // must not stay shown as in progress, nor hide a hash already submitted.
+  // must not stay shown as in progress, nor hide a hash already submitted or still to come.
   useEffect(
     () => () => {
-      if (!abandon()) return;
-      setState((shown) =>
-        shown.hash === undefined
-          ? idle<TData>()
-          : { ...shown, status: "failed", error: new StreamdError("Stopped waiting for the transaction: the component was hidden") },
-      );
+      if (abandon(HIDDEN)) setState(cutShort<TData>);
     },
     [abandon],
   );
@@ -159,6 +160,7 @@ async function run<TTransaction, TData>(
   const step = (patch: Partial<SubmitTransactionState<TData>>) => {
     state = { ...state, ...patch };
     if (!signal.aborted) publish(state);
+    else if (patch.hash !== undefined && signal.reason === HIDDEN) publish((state = cutShort(state)));
     return state;
   };
   const fail = (err: unknown, patch: Partial<SubmitTransactionState<TData>> = {}) =>
@@ -185,6 +187,16 @@ async function run<TTransaction, TData>(
   } catch (err) {
     return signal.aborted ? state : fail(err);
   }
+}
+
+/** The abort reason of a run cut short by unmount or by `<Activity>` hiding the component, rather than by `reset()`. */
+const HIDDEN = Symbol("hidden");
+
+/** A run cut short: `idle`, or `failed` keeping the hash once one was submitted. */
+function cutShort<TData>(state: SubmitTransactionState<TData>): SubmitTransactionState<TData> {
+  if (state.hash === undefined) return idle<TData>();
+  if (state.status !== "signing" && state.status !== "confirming") return state;
+  return { ...state, status: "failed", error: new StreamdError("Stopped waiting for the transaction: the component was hidden") };
 }
 
 function vmStatusOf(err: unknown): string | undefined {

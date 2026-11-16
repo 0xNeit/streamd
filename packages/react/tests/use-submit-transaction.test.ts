@@ -302,7 +302,7 @@ describe("useSubmitTransaction", () => {
       await unmount(root);
       release();
       const final = await promise;
-      expect(final.status).toBe("previewing");
+      expect(final.status).toBe("idle");
       expect(t.signed).toEqual([]);
     });
 
@@ -316,7 +316,7 @@ describe("useSubmitTransaction", () => {
       expect(t.signals[0]!.aborted).toBe(true);
       expect(t.walletSignals[0]!.aborted).toBe(true);
       const final = await promise;
-      expect(final.status).toBe("confirming");
+      expect(final.status).toBe("failed");
       expect(final.hash).toBe(A);
     });
 
@@ -330,7 +330,7 @@ describe("useSubmitTransaction", () => {
       await unmount(root);
       releaseWallet();
       const final = await promise;
-      expect(final).toMatchObject({ status: "confirming", hash: A });
+      expect(final).toMatchObject({ status: "failed", hash: A });
       expect(t.signals).toEqual([]);
     });
 
@@ -345,7 +345,7 @@ describe("useSubmitTransaction", () => {
       expect(t.signals[0]!.aborted).toBe(true);
       expect(t.last().hash).toBeUndefined();
       release();
-      expect((await abandoned).status).toBe("confirming");
+      expect(await abandoned).toMatchObject({ status: "failed", hash: A });
       const next = await submitted(t);
       expect(next.status).toBe("confirmed");
       expect(t.last().status).toBe("confirmed");
@@ -368,7 +368,7 @@ describe("useSubmitTransaction", () => {
       expect(second).not.toBe(first);
       await waitFor(() => expect(t.last().status).toBe("signing"));
       releaseFirst();
-      expect(await first).toMatchObject({ status: "confirming", hash: FAILED });
+      expect(await first).toMatchObject({ status: "failed", hash: FAILED });
       await new Promise((r) => setTimeout(r, 20));
       expect(t.last()).toMatchObject({ status: "signing", hash: undefined });
       expect(t.last().submit(TX)).toBe(second);
@@ -418,6 +418,46 @@ describe("useSubmitTransaction", () => {
       await waitFor(() => expect(t.last().status).toBe("failed"));
       expect(t.last().hash).toBe(A);
       expect(t.last().error!.message).toContain("hidden");
+      await unmount(root);
+    });
+
+    it("a wallet answering after <Activity> hid and reshowed the run shows its hash, as failed", async () => {
+      const t = setup();
+      let releaseWallet!: () => void;
+      t.answer(() => new Promise((r) => (releaseWallet = () => r(A))));
+      const shown = (mode: "visible" | "hidden") => createElement(Activity, { mode, children: t.el() });
+      const root = await render(shown("visible"));
+      const promise = t.last().submit(TX);
+      await waitFor(() => expect(t.last().status).toBe("signing"));
+      await rerender(root, shown("hidden"));
+      await rerender(root, shown("visible"));
+      await waitFor(() => expect(t.last().status).toBe("idle"));
+      releaseWallet();
+      await waitFor(() => expect(t.last()).toMatchObject({ status: "failed", hash: A }));
+      expect(await promise).toMatchObject({ status: "failed", hash: A });
+      expect(t.signals).toEqual([]);
+      await unmount(root);
+    });
+
+    it("a late wallet answer from a hidden run never overwrites a newer run", async () => {
+      const t = setup();
+      let releaseFirst!: () => void;
+      t.answer(() => new Promise((r) => (releaseFirst = () => r(FAILED))));
+      const shown = (mode: "visible" | "hidden") => createElement(Activity, { mode, children: t.el({ preview: false }) });
+      const root = await render(shown("visible"));
+      const first = t.last().submit(TX);
+      await waitFor(() => expect(t.last().status).toBe("signing"));
+      await rerender(root, shown("hidden"));
+      await rerender(root, shown("visible"));
+      await waitFor(() => expect(t.last().status).toBe("idle"));
+      t.hold("lookup");
+      t.answer(async () => A);
+      t.last().submit(TX);
+      await waitFor(() => expect(t.last()).toMatchObject({ status: "confirming", hash: A }));
+      releaseFirst();
+      expect(await first).toMatchObject({ status: "failed", hash: FAILED });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(t.last()).toMatchObject({ status: "confirming", hash: A });
       await unmount(root);
     });
 

@@ -3814,12 +3814,13 @@ function Feed() {
     going starts nothing and returns that run's promise, so a double click signs once (and a
     `signAndSubmit` must not await `submit`, which would wait on itself).
   - **Unmount or `reset()`** abandons the run: the signal given to `signAndSubmit` and
-    `eventsOf` aborts, a run still previewing never reaches `signAndSubmit`, and no state is set
-    afterwards. `reset()` returns to `"idle"`. A run cut short by an `<Activity>` hiding the
-    component returns to `"idle"` too, or, once the wallet has returned a hash, to `"failed"`
-    keeping that `hash`, so a submitted transaction stays visible. A transaction already submitted stays submitted, and a wallet prompt
-    already open can still be approved unless your `signAndSubmit` honours the signal; the
-    abandoned run's promise still resolves, with its `hash` if the wallet returned one.
+    `eventsOf` aborts, and a run still previewing never reaches `signAndSubmit`. A transaction
+    already submitted stays submitted, and a wallet prompt already open can still be approved
+    unless your `signAndSubmit` honours the signal. `reset()` returns to `"idle"` and the
+    abandoned run sets nothing more. A run cut short by an `<Activity>` hiding the component
+    returns to `"idle"`, or to `"failed"` keeping its `hash` once the wallet has returned one,
+    even after the component is shown again, unless a newer run has started. The abandoned
+    run's promise resolves the same way: `"idle"`, or `"failed"` with the hash.
   - It takes `descriptor`, `decode`, `where` and `timeout`, read when `submit` is called and
     applied to both the preview and the events. The Aptos preview runs without signer keys, so
     the auth key check is skipped. It needs a client with `eventsOf` and, unless `preview: false`,
