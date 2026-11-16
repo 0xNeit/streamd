@@ -711,12 +711,15 @@ export class FullnodeScanAdapter implements EventAdapter {
     const limit = options.limit ?? DEFAULT_LIMIT;
     if (limit <= 0) return { events: [], hasMore: false };
 
+    const path = handlePath(descriptor);
     const start =
       options.cursor !== undefined
         ? parseCursor(options.cursor)
-        : BigInt(options.offset ?? 0);
-
-    const path = handlePath(descriptor);
+        : options.offset !== undefined
+          ? BigInt(options.offset)
+          : options.fromVersion !== undefined && options.fromVersion > 0n && descriptor.creationNumber === undefined
+            ? await this.handleCounterAt(descriptor, options.fromVersion - 1n)
+            : 0n;
 
     // Through the SDK, not bare fetch, so the config's headers and API key apply.
     const { data: raw } = await getAptosFullNode<
@@ -768,6 +771,43 @@ export class FullnodeScanAdapter implements EventAdapter {
     const through = last === undefined ? -1n : BigInt(last.version) - (full ? 1n : 0n);
     if (through >= 0n) page.throughVersion = through;
     return page;
+  }
+
+  /**
+   * How many events the handle had emitted by `version`: the sequence number of
+   * its first event after it. The endpoint cannot seek by version, and walking
+   * from 0 on a busy handle reads its whole history (or, on a node that pruned
+   * it, `200 []` forever). A resource or account not yet created there has
+   * emitted none. A start at the node's oldest version, as `"earliest"` and an
+   * old `fromTime` resolve to, has its predecessor pruned: it walks from 0 as
+   * before the seek. A start below that is pruned itself, and its 410 is
+   * thrown, so `ArchiveFallbackAdapter` answers the first page; later pages
+   * carry a cursor, and the node answers pruned sequence numbers `200 []`.
+   */
+  private async handleCounterAt(descriptor: HandleEventDescriptor, version: bigint): Promise<bigint> {
+    const address = requireAddress(descriptor.accountAddress);
+    let data: unknown;
+    try {
+      ({ data } = await getAptosFullNode<{}, { data?: Record<string, unknown> }>({
+        aptosConfig: this.aptos.config,
+        originMethod: "handleCounterAt",
+        path: `accounts/${address}/resource/${encodeURIComponent(descriptor.eventHandleStruct)}`,
+        params: { ledger_version: version.toString() },
+      }));
+    } catch (err) {
+      const e = err as { status?: unknown; data?: { error_code?: unknown; oldest_ledger_version?: unknown } } | null;
+      if (e?.status === 404 && (e.data?.error_code === "resource_not_found" || e.data?.error_code === "account_not_found")) return 0n;
+      const oldest = e?.data?.oldest_ledger_version;
+      if (e?.status === 410 && e.data?.error_code === "version_pruned" && typeof oldest === "string" && /^\d+$/.test(oldest) && version + 1n >= BigInt(oldest)) {
+        return 0n;
+      }
+      throw err;
+    }
+    const counter = ((data as { data?: Record<string, unknown> } | null)?.data?.[descriptor.fieldName] as { counter?: unknown } | undefined)?.counter;
+    if (typeof counter !== "string" || !/^\d+$/.test(counter)) {
+      throw new StreamdError(`${descriptor.eventHandleStruct} has no event handle ${descriptor.fieldName} at version ${version}`);
+    }
+    return BigInt(counter);
   }
 
   /** Cursor wins over fromVersion; neither means "start at the head". */

@@ -43,6 +43,8 @@ export type {
   GasUsage,
   PackageUpgrade,
   PreviewEventsOptions,
+  Price,
+  PriceListenerOptions,
   Provenance,
   ProvenanceAction,
   ProvenanceFilter,

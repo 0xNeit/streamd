@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { Account, Aptos, AptosConfig, Network, parseTypeTag } from "@aptos-labs/ts-sdk";
 import { FullnodeScanAdapter } from "../src/fullnode.js";
 import { StreamdClient } from "@streamd/core";
-import { FallbackAdapter } from "@streamd/core";
+import { ArchiveFallbackAdapter, FallbackAdapter } from "@streamd/core";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
 import { checkDescriptor } from "../src/index.js";
 import { listEventHandles } from "../src/index.js";
@@ -379,9 +379,18 @@ function handleEvent(seq: number, version: number) {
   return { type: TYPE, data: {}, sequence_number: String(seq), version: String(version) };
 }
 
-/** Serves a handle's events by sequence number. */
+const HANDLE_RESOURCE_PATH = `accounts/0x${"0".repeat(63)}1/resource/0x1%3A%3Atest%3A%3AStore`;
+
+/**
+ * Serves a handle's events by sequence number, and its resource at a
+ * `ledger_version` with the counter of events at or below it.
+ */
 function handle(events: (ReturnType<typeof handleEvent> & { guid?: unknown })[]) {
   return (path: string, params: Record<string, unknown>): Reply => {
+    if (path === HANDLE_RESOURCE_PATH) {
+      const counter = events.filter((e) => BigInt(e.version) <= BigInt(params.ledger_version as string)).length;
+      return { data: { type: "0x1::test::Store", data: { pings: { counter: String(counter), guid: {} } } } };
+    }
     if (path !== HANDLE_PATH) throw new Error(`unexpected path ${path}`);
     const start = Number(params.start ?? 0);
     const limit = Number(params.limit ?? 25);
@@ -394,6 +403,7 @@ describe("FullnodeScanAdapter handle events", () => {
     const events = [handleEvent(0, 3), handleEvent(1, 7), handleEvent(2, 9)];
     const { aptos } = fakeNode(handle(events));
     const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, {
+      offset: 0,
       limit: 2,
       fromVersion: 5n,
     });
@@ -435,6 +445,85 @@ describe("FullnodeScanAdapter handle events", () => {
       adapter.fetchEvents({ ...handleDesc, accountAddress: "0x1/../../transactions?" }, {}),
     ).rejects.toThrow("Not a valid Aptos address");
     expect(calls).toHaveLength(0);
+  });
+
+  it("starts a walk from fromVersion at the handle's counter just below it", async () => {
+    const events = [handleEvent(0, 3), handleEvent(1, 7), handleEvent(2, 7), handleEvent(3, 9)];
+    const { aptos, calls } = fakeNode(handle(events));
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, { fromVersion: 7n, limit: 10 });
+    expect(calls.map((c) => [c.path, c.params.ledger_version ?? c.params.start])).toEqual([
+      [HANDLE_RESOURCE_PATH, "6"],
+      [HANDLE_PATH, "1"],
+    ]);
+    expect(page.events.map((e) => e.sequenceNumber)).toEqual([1n, 2n, 3n]);
+    expect(page.nextCursor).toBe("4");
+  });
+
+  it("reads no resource for a cursor, an offset, fromVersion 0 or a creation number", async () => {
+    const reads = async (descriptor: EventDescriptor, options: Record<string, unknown>) => {
+      const { aptos, calls } = fakeNode((path, params) =>
+        path === CREATION_PATH ? { data: [] } : handle([handleEvent(0, 3)])(path, params),
+      );
+      await new FullnodeScanAdapter(aptos).fetchEvents(descriptor, options);
+      return calls.map((c) => c.path);
+    };
+    expect(await reads(handleDesc, { cursor: "0", fromVersion: 5n })).toEqual([HANDLE_PATH]);
+    expect(await reads(handleDesc, { offset: 0, fromVersion: 5n })).toEqual([HANDLE_PATH]);
+    expect(await reads(handleDesc, { fromVersion: 0n })).toEqual([HANDLE_PATH]);
+    expect(await reads(creationDesc, { fromVersion: 5n })).toEqual([CREATION_PATH]);
+  });
+
+  it("starts at 0 when the handle's resource or account did not exist yet, or the version is pruned", async () => {
+    // "earliest" and an old fromTime resolve to the node's oldest version, whose predecessor it has pruned.
+    const replies = [
+      { status: 404, data: { message: "no", error_code: "resource_not_found" } },
+      { status: 404, data: { message: "no", error_code: "account_not_found" } },
+      { status: 410, data: { message: "pruned", error_code: "version_pruned", oldest_ledger_version: "2" } },
+    ];
+    for (const reply of replies) {
+      const { aptos, calls } = fakeNode((path, params) =>
+        path === HANDLE_RESOURCE_PATH ? reply : handle([handleEvent(0, 3)])(path, params),
+      );
+      const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, { fromVersion: 2n });
+      expect(calls.at(-1)?.params.start).toBe("0");
+      expect(page.events.map((e) => e.version)).toEqual([3n]);
+    }
+  });
+
+  it("rethrows a 410 for a start below the oldest version, so an archive fallback can answer it", async () => {
+    const pruned = (data: Record<string, unknown>) =>
+      fakeNode((path, params) => (path === HANDLE_RESOURCE_PATH ? { status: 410, data } : handle([handleEvent(0, 3)])(path, params))).aptos;
+    for (const data of [
+      { message: "pruned", error_code: "version_pruned", oldest_ledger_version: "3" },
+      { message: "pruned", error_code: "version_pruned" },
+      { message: "gone", error_code: "other", oldest_ledger_version: "2" },
+    ]) {
+      const err = await new FullnodeScanAdapter(pruned(data)).fetchEvents(handleDesc, { fromVersion: 2n }).catch((e) => e);
+      expect(err).toBeInstanceOf(StreamdNetworkError);
+      expect(err.statusCode).toBe(410);
+    }
+    const archive = fakeNode(handle([handleEvent(0, 3)])).aptos;
+    const primary = pruned({ message: "pruned", error_code: "version_pruned", oldest_ledger_version: "9" });
+    const page = await new ArchiveFallbackAdapter(new FullnodeScanAdapter(primary), new FullnodeScanAdapter(archive)).fetchEvents(handleDesc, { fromVersion: 2n });
+    expect(page.events.map((e) => e.version)).toEqual([3n]);
+  });
+
+  it("rejects with the resource read's status, and on a resource without the field", async () => {
+    const failing = (status: number, error_code: string) =>
+      fakeNode((path, params) =>
+        path === HANDLE_RESOURCE_PATH ? { status, data: { message: "no", error_code } } : handle([])(path, params),
+      ).aptos;
+    for (const [status, code] of [[404, "version_not_found"], [503, "service_unavailable"]] as const) {
+      const err = await new FullnodeScanAdapter(failing(status, code)).fetchEvents(handleDesc, { fromVersion: 9n }).catch((e) => e);
+      expect(err).toBeInstanceOf(StreamdNetworkError);
+      expect(err.statusCode).toBe(status);
+    }
+    const { aptos } = fakeNode((path, params) =>
+      path === HANDLE_RESOURCE_PATH ? { data: { type: "0x1::test::Store", data: { other: {} } } } : handle([])(path, params),
+    );
+    await expect(new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, { fromVersion: 9n })).rejects.toThrow(
+      "0x1::test::Store has no event handle pings at version 8",
+    );
   });
 
   it("sends the configured headers and API key", async () => {
@@ -609,7 +698,9 @@ describe("FullnodeScanAdapter page finality", () => {
       return (await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, options)).final;
     };
     expect(await fetch({ limit: 2 })).toBe(true);
-    expect(await fetch({ limit: 2, fromVersion: 8n })).toBe(true);
+    expect(await fetch({ offset: 0, limit: 2, fromVersion: 8n })).toBe(true);
+    // Seeking settles too: the counter below fromVersion never changes.
+    expect(await fetch({ limit: 1, fromVersion: 8n })).toBe(true);
     expect(await fetch({ cursor: "2", limit: 2 })).toBeUndefined();
   });
 });
@@ -659,7 +750,7 @@ describe("FullnodeScanAdapter scan progress", () => {
   it("settles a full handle page only below its last event's version", async () => {
     expect(await handleThrough({ limit: 2 })).toBe(6n);
     expect(await handleThrough({ cursor: "2", limit: 2 })).toBe(7n);
-    expect(await handleThrough({ limit: 5, fromVersion: 8n })).toBe(7n);
+    expect(await handleThrough({ offset: 0, limit: 5, fromVersion: 8n })).toBe(7n);
     expect(await handleThrough({ cursor: "3", limit: 2 })).toBeUndefined();
   });
 

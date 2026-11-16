@@ -21,13 +21,14 @@ import { provenanceDescriptor, provenanceSource } from "./provenance.js";
 import { governanceSource, startProposals } from "./governance.js";
 import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
+import { PYTH_DESCRIPTOR, priceSource, pythPriceReader, requireFeedId } from "./prices.js";
 import { eventsOf, previewEvents } from "./transaction.js";
 import { saleDescriptor, saleSource } from "./sales.js";
 import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
-import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -44,6 +45,7 @@ export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
  */
 export class AptosClient extends StreamdClient {
   protected readonly aptos: Aptos;
+  private readonly pythPrice: (feedId: string, version: bigint) => Promise<Price | undefined>;
 
   constructor(config: AptosClientConfig) {
     const aptos = config?.aptos instanceof Aptos ? config.aptos : config?.aptos === undefined ? undefined : new Aptos(config.aptos);
@@ -51,6 +53,7 @@ export class AptosClient extends StreamdClient {
     const { aptos: _given, ...rest } = config;
     super({ ...rest, adapter: config.adapter ?? new FullnodeScanAdapter(aptos) });
     this.aptos = aptos;
+    this.pythPrice = pythPriceReader(aptos, (task) => this.limiter.run(task));
     // Testnet's ANS router is gone, and a localnet has none published at the
     // SDK's local router address, so only mainnet can answer.
     const network = aptos.config?.network;
@@ -388,6 +391,45 @@ export class AptosClient extends StreamdClient {
     if (typeof adapter.view !== "function") throw new StreamdError("balanceAt needs an adapter that implements view");
     const owner = this.accountOf(address)!;
     return APTOS_BALANCES.read(adapter, await owner(), key!, version);
+  }
+
+  /**
+   * Follow Pyth price updates for one feed or a list, each delivered as an
+   * event whose `data` is a `Price`, its staleness measured against the
+   * update's own block time. Every Pyth feed updates through one legacy
+   * handle at Pyth's address, so the walk reads every update and keeps the
+   * named feeds; `cursor` is that handle's sequence number, and with no
+   * `cursor`, `fromVersion` or `fromTime` it starts one version below the head. A feed id is
+   * Pyth's 32-byte price id. Like `swaps()`, it is not a listener for `off()`
+   * or `listenerCount()`. Pyth stopped publishing on Aptos in September 2026,
+   * so this replays history from a past position and a follow from the head
+   * delivers nothing new.
+   */
+  prices(feedId: string | readonly string[], callback: EventCallback<Price>, options: PriceListenerOptions = {}): Subscription {
+    const ids: readonly unknown[] = typeof feedId === "string" ? [feedId] : Array.isArray(feedId) ? feedId : [feedId];
+    if (ids.length === 0) throw new StreamdError("prices needs a Pyth price feed id, or a non-empty list of them");
+    const feeds = new Set(ids.map(requireFeedId));
+    // A handle walk with no start reads from sequence 0 on FullnodeScanAdapter,
+    // so starting at the head is asked for explicitly, by version, which it seeks.
+    const unplaced = options.cursor === undefined && options.fromVersion === undefined && options.fromTime === undefined;
+    const listener = unplaced ? { ...options, fromVersion: -1n } : options;
+    return this.subscribe(PYTH_DESCRIPTOR, callback as EventCallback, listener, undefined, options.id, (source) =>
+      priceSource(source, feeds),
+    );
+  }
+
+  /**
+   * The price Pyth held for `feedId` at `version`, from its latest-price
+   * table, observed at the time of the block holding `version`, so a feed
+   * nobody updated reads as stale; `undefined` when the table had no entry for
+   * the feed then. Reads through the client's `aptos` (Pyth has no view), each
+   * request through the limiter and `requestTimeout`, with no retry. A pruned
+   * version rejects with the fullnode's 410 unless `aptos` is an archive node,
+   * and one above the head with 404.
+   */
+  async priceAt(feedId: string, version: bigint): Promise<Price | undefined> {
+    const id = requireFeedId(feedId);
+    return this.pythPrice(id, requireLedgerVersion(version));
   }
 
   /**
