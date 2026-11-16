@@ -1,4 +1,5 @@
 import type { MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
+import type { IndexerAccountAdapter } from "./indexer.js";
 import type {
   EntryFunctionCall,
   EventFilter,
@@ -576,3 +577,21 @@ export interface Provenance {
    */
   names?: Record<string, string | null>;
 }
+
+/** What lists an object's transactions for `provenance`; `IndexerAccountAdapter` is one. */
+export type TransactionLister = Pick<IndexerAccountAdapter, "getHeadVersion" | "listTransactionVersions">;
+
+export interface ProvenanceOptions {
+  /**
+   * Lists the transactions that touched the object (default: an
+   * `IndexerAccountAdapter` over the client's `aptos`, anonymous). Pass one
+   * built with an `apiKey` for more than the anonymous rate.
+   */
+  indexer?: TransactionLister;
+}
+
+/** Options for `AptosClient.provenance`. */
+export type ProvenanceListenerOptions = SubscriptionOptions & ProvenanceOptions;
+
+/** Filter for `AptosClient.getProvenance`. */
+export type ProvenanceFilter = EventFilter & ProvenanceOptions;

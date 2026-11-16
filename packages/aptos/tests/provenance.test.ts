@@ -1,7 +1,10 @@
 import { describe, it, expect } from "bun:test";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
 import type { EventAdapter, StreamdEvent, TransactionEvents } from "@streamd/core";
-import { decodeProperties, provenanceDescriptor, provenanceSource, toProvenance, type TransactionLister } from "../src/provenance.js";
+import { decodeProperties, provenanceDescriptor, provenanceSource, toProvenance } from "../src/provenance.js";
+import type { Provenance, TransactionLister } from "../src/types.js";
+import { AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { testClient } from "./helpers.js";
 
 const long = (short: string) => `0x${short.replace(/^0x/, "").padStart(64, "0")}`;
 const TOKEN = long("70c");
@@ -340,5 +343,56 @@ describe("provenanceSource", () => {
     await source.getBlock!({ kind: "account", accountAddress: "0x1" }, 1n);
     await source.getBlockHeights!({ kind: "account", accountAddress: "0x1" });
     expect(seen).toEqual([descriptor, descriptor]);
+  });
+});
+
+describe("provenance through the client", () => {
+  it("returns the history from version 0, with toVersion, limit, where and desc", async () => {
+    const { indexer, listings } = lister([3n, 7n, 9n, 12n], () => 20n);
+    const client = testClient({ adapter: node().adapter });
+    const all = await client.getProvenance("0x70c", { indexer });
+    expect(all.map((r) => r.version)).toEqual([3n, 7n, 9n, 12n]);
+    expect(listings[0]![0]).toBe(0n);
+    expect((await client.getProvenance(TOKEN, { indexer, toVersion: 8n })).map((r) => r.version)).toEqual([3n, 7n]);
+    expect((await client.getProvenance(TOKEN, { indexer, limit: 2, orderBy: "desc" })).map((r) => r.version)).toEqual([12n, 9n]);
+    expect((await client.getProvenance(TOKEN, { indexer, fromVersion: 8n, limit: 1 })).map((r) => r.version)).toEqual([9n]);
+    const where = (r: StreamdEvent) => (r as StreamdEvent<Provenance>).version > 5n;
+    expect((await client.getProvenance(TOKEN, { indexer, where })).map((r) => r.version)).toEqual([7n, 9n, 12n]);
+  });
+
+  it("names the sender and every action address under withNames, on mainnet", async () => {
+    const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig: { http2: false } }));
+    aptos.getPrimaryName = async ({ address }) => (address.toString() === BOB ? "bob" : undefined);
+    aptos.getTargetAddress = async ({ name }) => (name === "bob.apt" ? AccountAddress.from(BOB) : undefined);
+    const client = testClient({ adapter: node().adapter, aptos });
+    const [record] = await client.getProvenance(TOKEN, { indexer: lister([3n], () => 3n).indexer, withNames: true });
+    expect(record!.data.names).toEqual({ [ALICE]: null, [BOB]: "bob.apt" });
+  });
+
+  it("follows live from the processed version, delivering each new version once, as no listener", async () => {
+    let head = 5n;
+    const versions = [2n, 5n];
+    const { indexer } = lister(versions, () => head);
+    const client = testClient({ adapter: node().adapter });
+    const seen: bigint[] = [];
+    const sub = client.provenance(TOKEN, (r) => void seen.push(r.version), { indexer, pollInterval: 1 });
+    expect(client.listenerCount()).toBe(0);
+    for (let i = 0; i < 200 && seen.length < 1; i++) await new Promise((r) => setTimeout(r, 2));
+    versions.push(8n);
+    head = 9n;
+    for (let i = 0; i < 200 && seen.length < 2; i++) await new Promise((r) => setTimeout(r, 2));
+    expect(seen).toEqual([5n, 8n]);
+    sub.unsubscribe();
+    client.destroy();
+  });
+
+  it("refuses at the call a bad address or indexer, and an adapter without by-version lookups", () => {
+    const { indexer } = lister([], () => 0n);
+    const client = testClient({ adapter: node().adapter });
+    expect(() => client.provenance("not an address", () => {}, { indexer })).toThrow("Not a valid Aptos address");
+    expect(() => client.getProvenance(undefined as unknown as string, { indexer })).toThrow("provenance needs an object address");
+    expect(() => client.provenance(TOKEN, () => {}, { indexer: {} as TransactionLister })).toThrow("indexer must implement");
+    const bare = testClient({ adapter: { fetchEvents: async () => ({ events: [], hasMore: false }) } });
+    expect(() => bare.getProvenance(TOKEN, { indexer })).toThrow("getTransactionEventsByVersion");
   });
 });

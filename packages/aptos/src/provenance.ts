@@ -1,8 +1,7 @@
 import { DEFAULT_LIMIT, StreamdError, StreamdNetworkError, normalizeAddress, parseCursor } from "@streamd/core";
 import type { EventAdapter, EventPage, ResourceChange, ResourceDescriptor, StreamdEvent, TransactionEvents } from "@streamd/core";
-import type { IndexerAccountAdapter } from "./indexer.js";
 import { addr, malformed, object, type Fields } from "./records.js";
-import type { Provenance, ProvenanceAction, TokenProperty } from "./types.js";
+import type { Provenance, ProvenanceAction, TokenProperty, TransactionLister } from "./types.js";
 
 const PROPERTY_MAP = "0x4::property_map::PropertyMap";
 const OBJECT_CORE = "0x1::object::ObjectCore";
@@ -138,9 +137,6 @@ export function toProvenance(object: string, found: TransactionEvents): StreamdE
   const envelope = first ?? { type: OBJECT_CORE, version: found.version, sequenceNumber: 0n, eventIndex: 0 };
   return { ...envelope, data: { object, success: found.success, actions, changes } };
 }
-
-/** What `provenanceSource` lists an object's transactions with; `IndexerAccountAdapter` is one. */
-export type TransactionLister = Pick<IndexerAccountAdapter, "getHeadVersion" | "listTransactionVersions">;
 
 /** The most versions one Indexer listing returns. */
 const LISTING = 100;
