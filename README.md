@@ -4433,8 +4433,8 @@ written, or `--to-version` is above the head; `2` for invalid arguments. Run it 
 ### Alert on thresholds
 
 `streamd alert` follows the rules in a JSON file and POSTs one alert to a webhook the first time
-a rule's count or sum of matching events in a window reaches its threshold. Delivery, signing,
-retries and the cursor file work as for `forward`.
+a rule's count or sum of matching events in a window reaches its threshold, or leaves the band its
+recent windows set. Delivery, signing, retries and the cursor file work as for `forward`.
 
 ```sh
 # signed with STREAMD_WEBHOOK_SECRET when it is set
@@ -4467,7 +4467,7 @@ streamd alert --rules rules.json --to https://hooks.example.com/alerts --cursor-
 | `descriptor` | `eventType` (a type or a list), `account` and `resource`, combined as the `tail` flags of those names are (required) |
 | `where`, `sender`, `function`, `decode` | arrays of strings, exactly as the repeatable `--where`, `--sender`, `--function` and `--decode` flags |
 | `window` | `<n>s`, `<n>m`, `<n>h` or `<n>d` (required) |
-| `threshold` | `{ "count": n }`, at least `n` matching events, or `{ "sum": "<path>", "gte": "<integer>" }`, the field at that path summed at full precision (`gte` a decimal string or a safe integer) (required) |
+| `threshold` | `{ "count": n }`, at least `n` matching events, or `{ "sum": "<path>", "gte": "<integer>" }`, the field at that path summed at full precision (`gte` a decimal string or a safe integer), or `{ "anomaly": { ... } }`, below (required) |
 
 The file is read once, before anything reaches the chain. Any other key, a missing field, or a
 value the flags would refuse exits `1` with a message naming the file, the rule and the field, such
@@ -4494,6 +4494,47 @@ the command with exit `1`.
 threshold. Later events in that window count but send nothing, and nothing waits for a window to
 close. A summed field that is present and not an integer is reported and that event skipped.
 
+**Anomaly thresholds** fire when a window's count or sum leaves the band its rule's previous
+closed windows set, rather than at a fixed number:
+
+```json
+{
+  "name": "fee-rate",
+  "descriptor": { "eventType": "0x1::transaction_fee::FeeStatement" },
+  "window": "1m",
+  "threshold": { "anomaly": { "metric": "count", "k": 3, "baseline": 30, "minBaseline": 10, "direction": "both" } }
+}
+```
+
+| `anomaly` field | Meaning |
+| --- | --- |
+| `metric` | `count`, matching events per window, or `sum` with `sum` the field path summed as above (required) |
+| `k` | band multiplier, a positive decimal with at most 4 fractional digits, number or string (default `3`) |
+| `baseline` | how many closed windows the band is taken from, 3 to 1000 (default `30`) |
+| `minBaseline` | closed windows needed before the rule can fire, 1 to `baseline` (default 10, or `baseline` when smaller) |
+| `direction` | `above`, `below` or `both` (default `both`) |
+
+The band is `median ± k × 1.4826 × MAD` over the baseline, where MAD is the median of each
+window's distance from the median; the 1.4826 makes `k` read as standard deviations for normally
+distributed values. A value fires only strictly outside the band. Everything is exact: medians are
+taken over integers (the mean of the two middle values for an even baseline) and compared without
+floating point, so sums past 2^64 work. When more than half the baseline's windows equal its
+median, as when they are all equal or a sparse type is mostly empty, the MAD is 0, so the band is
+the median alone and any other value fires; choose a longer window for such a type.
+
+A window with no matching events counts as zero. A window closes when an event lands in a later
+one, and every window skipped in between closes as a zero too and joins the baseline, the oldest
+dropping out past `baseline`. A run of empty windows is judged once, at its first window with a long enough baseline, so one
+outage sends at most one alert. The first window a rule opens after its start (the head,
+`--from-version` or `--from-time`), before any window was saved, is left out of the baseline and
+never fires, since the start may fall mid-window and undercount it; empty windows between the
+start and that first event are not counted either.
+
+`above` fires on the event that first takes the value past the band, as a count threshold does.
+`below` waits for the window to close, since a count still open may grow, and is carried by the
+event that closed it, which is also the event in its payload. As with every threshold, nothing
+uses the wall clock: a type that stops entirely closes no window, so it is never reported as below.
+
 Each rule has its own subscription; rules over the same descriptor, start and poll interval share
 one fetch per interval, except when starting at the head.
 
@@ -4506,17 +4547,26 @@ signs:
 
 Times are microseconds since the epoch and integers are decimal strings; `event` is the crossing
 event as `tail` prints it, and `threshold` is `{"count":"n"}` or `{"sum":"<path>","gte":"n"}`.
+
+An anomaly alert's `threshold` echoes the rule with its defaults filled in, `value` is the
+window's count or sum, and one more field says how it left the band, as exact decimals with
+trailing zeros trimmed (`mad` unscaled, `low` and `high` the band's bounds):
+
+```json
+{"id":"fee-rate:1763130060000000","rule":"fee-rate","windowStart":"1763130060000000","windowEnd":"1763130120000000","threshold":{"anomaly":{"metric":"count","k":"3","baseline":"30","minBaseline":"10","direction":"both"}},"value":"412","anomaly":{"side":"above","median":"201.5","mad":"18","low":"121.4396","high":"281.5604","baselineWindows":"30"},"event":{...}}
+```
 `id` is the rule and the window start, the same on every redelivery, so a receiver can
 deduplicate on it.
 
 **The cursor file** holds one JSON object: each rule's cursor beside its open window (start,
-count or sum, and whether it alerted), written atomically after each delivered page and on exit.
+count or sum, and whether it alerted; for an anomaly rule also `history`, the baseline's values
+oldest first, and `partial` on the first window), written atomically after each delivered page and on exit.
 The window saved is always the one as of the end of the page the cursor follows, and it is saved
 only after that page's alerts were acknowledged, so a restart resumes the window without losing an
 alert. Delivery is at least once: a crash, a failed delivery, or a stop while a page's alerts are
 being sent replays that page, resending its alerts with the same `id`. A stop between pages
 repeats nothing. An entry records what its rule counts; changing a rule's descriptor, filter,
-decode, window or threshold makes the next run exit `1` naming it, until its entry is removed or
+decode, window or threshold (any `anomaly` field included) makes the next run exit `1` naming it, until its entry is removed or
 another cursor file is used. Entries for rules no longer in the file are kept.
 
 Exit codes: `0` on Ctrl-C or `SIGTERM`; `1` when the rules file or the cursor file cannot be read
