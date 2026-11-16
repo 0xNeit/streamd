@@ -316,6 +316,25 @@ describe("IndexerAccountAdapter fetchEvents", () => {
     expect(page).toMatchObject({ nextCursor: "21", hasMore: false, throughVersion: 20n });
   });
 
+  it("keeps hasMore true and rejects with StreamdNetworkError once past indexed when toVersion exceeds head", async () => {
+    const { make, state } = chain([10, 60], 50);
+    const adapter = make();
+    const first = await adapter.fetchEvents(account, { fromVersion: 0n, toVersion: 60n });
+    expect(ids(first)).toEqual(["10:0", "10:1"]);
+    expect(first).toMatchObject({ nextCursor: "51", hasMore: true, throughVersion: 50n });
+
+    const caught = await adapter
+      .fetchEvents(account, { cursor: first.nextCursor, toVersion: 60n })
+      .catch((e: unknown) => e);
+    expect(caught).toBeInstanceOf(StreamdNetworkError);
+    expect((caught as Error).message).toContain("behind toVersion 60");
+
+    state.indexed = 60;
+    const second = await adapter.fetchEvents(account, { cursor: first.nextCursor, toVersion: 60n });
+    expect(ids(second)).toEqual(["60:0", "60:1"]);
+    expect(second).toMatchObject({ nextCursor: "61", hasMore: false, throughVersion: 60n });
+  });
+
   it("leaves the cursor where it was while the Indexer is behind it", async () => {
     const { make, calls } = chain([10], 50);
     const page = await make().fetchEvents(account, { cursor: "60" });

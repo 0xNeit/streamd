@@ -104,10 +104,12 @@ function graphqlFailure(errors: unknown[], retryAfter: number | undefined): Stre
  *
  * Reads never pass the Indexer's processed version (`getHeadVersion`): a
  * listing above it is incomplete, and paging past a gap would skip it for
- * good. The cursor is the next ledger version to read. Without one,
- * `fromVersion` is raised to the fullnode's oldest version, since older
- * events cannot be read, and with neither the walk starts at the processed
- * version. Pages are never `final`.
+ * good. When a bounded `toVersion` exceeds `getHeadVersion`, walks page up to
+ * that head with `hasMore: true`, and reject with `StreamdNetworkError` once the
+ * cursor passes it while the Indexer is still behind `toVersion`. The cursor is
+ * the next ledger version to read. Without one, `fromVersion` is raised to the
+ * fullnode's oldest version, since older events cannot be read, and with
+ * neither the walk starts at the processed version. Pages are never `final`.
  */
 export class IndexerAccountAdapter implements EventAdapter {
   private readonly url: string;
@@ -156,12 +158,22 @@ export class IndexerAccountAdapter implements EventAdapter {
       const earliest = await this.getEarliestVersion();
       start = options.fromVersion > earliest ? options.fromVersion : earliest;
     }
+    if (options.toVersion !== undefined && start <= options.toVersion && start > indexed) {
+      throw new StreamdNetworkError(
+        `Indexer has only processed through version ${indexed}, behind toVersion ${options.toVersion}`,
+      );
+    }
     const end =
       options.toVersion !== undefined && options.toVersion < indexed ? options.toVersion : indexed;
     const { events, next } = await this.walk(descriptor, address, start, end, wanted);
 
     if (options.orderBy === "desc") events.reverse();
-    const page: EventPage = { events, nextCursor: next.toString(), hasMore: next <= end };
+    const targetEnd = options.toVersion !== undefined ? options.toVersion : end;
+    const page: EventPage = {
+      events,
+      nextCursor: next.toString(),
+      hasMore: start <= targetEnd && next <= targetEnd,
+    };
     if (next > start) page.throughVersion = next - 1n;
     return page;
   }
