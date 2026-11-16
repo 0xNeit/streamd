@@ -5163,7 +5163,8 @@ const deposits = await client.getEvents(FungibleAsset_Deposit, { fromVersion: 0n
 - **Sizes are bounded:** vectors hold 0 to 4 elements and byte vectors 0 to 32 bytes. Move
   allows no recursive types, so every value is finite.
 - Every generated value passes the `--validators` check of its type. A struct named
-  `StreamdRng` is refused, since the generators use that name.
+  `StreamdRng`, `StreamdEvent` or `ModuleEventDescriptor` is refused, since the generated file
+  uses those names.
 
 A bare address covers every module published there, skipping the ones with no `#[event]` struct,
 event handle or `#[view]` function, and mixes with named modules:

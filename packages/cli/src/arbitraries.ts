@@ -98,12 +98,15 @@ export interface ArbitraryTarget {
   struct: StructAbi;
 }
 
-const mentions = (t: MoveType, index: number): boolean =>
+// An opaque builtin such as Object<T> generates nothing from T, so its generator would go unused.
+const mentions = (t: MoveType, index: number, d: Dialect): boolean =>
   (t.kind === "param" && t.index === index) ||
-  (t.kind === "vector" && mentions(t.of, index)) ||
-  (t.kind === "struct" && t.args.some((a) => mentions(a, index)));
+  (t.kind === "vector" && mentions(t.of, index, d)) ||
+  (t.kind === "struct" && !d.builtin(t)?.opaque && t.args.some((a) => mentions(a, index, d)));
 
-const propertyName = (key: string) => (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key));
+// A literal `__proto__:` key, quoted or not, sets the prototype instead of making a field.
+const propertyName = (key: string) =>
+  key === "__proto__" ? '["__proto__"]' : /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(key) ? key : JSON.stringify(key);
 
 /** Renders generators for one file, recording which helpers they call. */
 export function arbitraryWriter(d: Dialect, generatorOf: (t: StructType) => string) {
@@ -151,7 +154,7 @@ export function arbitraryWriter(d: Dialect, generatorOf: (t: StructType) => stri
     const typeParams = Array.from({ length: struct.typeParams }, (_, i) => `T${i}`);
     const params = [
       `${usesRng ? "" : "_"}rng: StreamdRng`,
-      ...typeParams.map((p, i) => `${all.some((f) => mentions(f.type, i)) ? "" : "_"}t${i}: (rng: StreamdRng) => ${p}`),
+      ...typeParams.map((p, i) => `${all.some((f) => mentions(f.type, i, d)) ? "" : "_"}t${i}: (rng: StreamdRng) => ${p}`),
     ];
     const generics = typeParams.length === 0 ? "" : `<${typeParams.join(", ")}>`;
     const head = [

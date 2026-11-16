@@ -115,7 +115,8 @@ const APTOS_BUILTINS: Record<"String" | "Option" | "Object", Builtin> = {
     check: (v, c) => {
       const inner = c.inner(c.args[0]!, c.item);
       const vec = `${v}["vec"]`;
-      return `${c.use("record", v)} && Array.isArray(${vec}) && ${vec}.length <= 1 && ${vec}.every((${c.item}: unknown) => ${inner})`;
+      const items = inner === "true" ? "" : ` && ${vec}.every((${c.item}: unknown) => ${inner})`;
+      return `${c.use("record", v)} && Array.isArray(${vec}) && ${vec}.length <= 1${items}`;
     },
     arbitrary: (c) => c.use("option", `rng, (rng) => ${c.inner(c.args[0]!)}`),
   },
@@ -574,8 +575,11 @@ export async function generateEventTypes(
   }
   const generators = new Map<string, string>();
   if (options.arbitraries) {
-    const clash = entries.find((e) => names.get(e.key) === "StreamdRng");
-    if (clash !== undefined) throw new StreamdError(`${qualified(clash)} is named StreamdRng, which the generated generators use`);
+    const reserved = new Set(["StreamdRng", "StreamdEvent", "ModuleEventDescriptor"]);
+    const clash = entries.find((e) => reserved.has(names.get(e.key)!));
+    if (clash !== undefined) {
+      throw new StreamdError(`${qualified(clash)} is named ${names.get(clash.key)}, which the generated generators use`);
+    }
     for (const e of entries) {
       let generator = `arbitrary${names.get(e.key)!}`;
       while (taken.has(generator)) generator += "_";
