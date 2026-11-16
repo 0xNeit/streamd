@@ -3579,6 +3579,29 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
   first use, and `streamd_transfers` on the first transfer write or prune.
 
+### Typed event tables
+
+`storeTables(client, store, tables, { name })` follows every event type in `tables`, a generic
+one in every instantiation, and upserts each event into its own table, one column per field,
+with the subscription's cursor in the same transaction. `streamd codegen --sql sqlite` writes
+`tables` from the module ABIs ([Generate event types](#generate-event-types) has the mapping):
+
+```ts
+import { SqliteEventStore, storeTables } from "@streamd/store-sqlite";
+import { streamdTables } from "./events.js"; // streamd codegen --sql sqlite
+
+const sub = storeTables(streamd, new SqliteEventStore(db), streamdTables, { name: "fa", fromVersion: -10_000n });
+```
+
+It creates the tables before subscribing and keeps `storeEvents`'s rules: resume from the cursor
+saved under `tables:` and `name` (listed by `cursors()`, apart from any `storeEvents` cursor of
+the same name), save it again on first catching up, and end before the cursor moves when a write
+fails. An event whose value its column refuses (a `u16` out of range, a missing required field)
+is such a failure, named by table, column and event. `store.writeTables(tables, events,
+checkpoint)` writes one batch in a savepoint. `prune` and `stats` leave these tables alone. An
+upgraded module keeps its event structs' fields, so a table stays valid; an enum's new variant
+lands in `data`.
+
 ## Store events in Postgres
 
 `@streamd/store-postgres` does what `@streamd/store-sqlite` does, over a Postgres client you
@@ -3609,6 +3632,9 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   driver's array encoding matters and the parameter count is the same for any batch.
 - **No gaps, no duplicates,** as with SQLite: rows are keyed on `(version, eventIndex)`, a
   repeated write replaces its row, and the cursor moves only after its batch is stored.
+- **[Typed event tables](#typed-event-tables)** work the same, from `streamd codegen --sql
+  postgres`: `await storeTables(client, store, streamdTables, { name })`, each batch, every
+  table it touches and the cursor in one statement.
 - **Queryable.** `streamd_events` holds `version` (`numeric`, exact for every u64), `event_index`,
   `type`, `sender`, `guid_address`, `guid_creation`, `account_address`, `transaction_hash` and the event as the JSON text `serializeEvent`
   writes, so `SELECT event::jsonb->'data'->>'amount' FROM streamd_events WHERE type = '...'` works.
@@ -5166,6 +5192,56 @@ const deposits = await client.getEvents(FungibleAsset_Deposit, { fromVersion: 0n
   `StreamdRng`, `StreamdEvent` or `ModuleEventDescriptor` is refused, since the generated file
   uses those names.
 
+`--sql sqlite` or `--sql postgres` also writes `streamdTables`, one table per event type with a
+column per field, and `streamdSchema`, that dialect's `CREATE TABLE IF NOT EXISTS` statements,
+one per string, for a migration tool. `storeTables` in [`@streamd/store-sqlite`](#typed-event-tables)
+or [`@streamd/store-postgres`](#store-events-in-postgres) creates the tables itself and fills
+them from the chain:
+
+```sh
+streamd codegen --sql sqlite --out src/events.ts 0x1::fungible_asset
+```
+
+```ts
+import { Database } from "bun:sqlite";
+import { SqliteEventStore, storeTables } from "@streamd/store-sqlite";
+import { streamdTables } from "./events.js";
+
+storeTables(streamd, new SqliteEventStore(new Database("events.db")), streamdTables, { name: "fa", fromVersion: -10_000n });
+// SELECT store, amount FROM fungible_asset_deposit WHERE sender = '0x...' ORDER BY version DESC
+```
+
+- **A table is named `<module>_<struct>` in snake case** (`fungible_asset_deposit`,
+  `pool_v3_swap_event_v3`), the same whatever else is generated, so regenerating with more
+  modules renames nothing. A name two structs share (one module and struct at two addresses)
+  or one over Postgres's 63 bytes is cut and suffixed with 8 hex digits of a SHA-256 of the
+  long-form type; a name starting `streamd_` or `sqlite_` gets `move_` in front.
+- **Columns are the field names, lowercased,** after the standard ones: `version`,
+  `event_index`, `transaction_hash` (hex lowercased), `timestamp` (microseconds), `sender` (long
+  form), and for a generic event `type_arguments`, the text inside its type's outer `<...>`. A
+  field that would collide with one of them or with an earlier field gets `_` appended
+  (`timestamp_`). The key is `(version, event_index)`, and a redelivered event replaces its row.
+- **Nothing is lossy.** Integers wider than 32 bits are exact decimal text on SQLite, so compare
+  them as numbers with care (`CAST` reads past 2^63 as a float), and `numeric` on Postgres.
+  Postgres `text` and `jsonb` cannot hold NUL, which becomes U+FFFD there.
+- **Nested values are JSON,** one column per field rather than flattened, so names stay stable.
+  An enum event has `variant` and `data`, the whole payload.
+- Every name is checked (lowercase letters, digits and `_`, at most 63 bytes) and quoted, and
+  every value is a bound parameter. A struct named `StreamdEventTable` is refused, since the
+  file imports that name.
+
+| Move | Column | SQLite | Postgres |
+| --- | --- | --- | --- |
+| `u8`, `u16`, `i8`, `i16`, `i32` | the integer | `INTEGER` | `integer` |
+| `u32` | the integer | `INTEGER` | `bigint` |
+| `u64`, `u128`, `u256`, `i64`, `i128`, `i256` | the integer | `TEXT` (decimal) | `numeric(20\|39\|78, 0)`, `bigint` for `i64` |
+| `bool` | | `INTEGER` (0, 1) | `boolean` |
+| `address`, `Object<T>`, Sui `ID` and `UID` | long-form address | `TEXT` | `text` |
+| `String`, `vector<u8>` as the node writes it, Sui `ascii::String`, `Url`, `TypeName` | the text | `TEXT` | `text` |
+| Sui `Balance<T>` | as `u64` | | |
+| `Option<T>` | `T`'s column, `NULL` when none | | |
+| other structs, `vector<T>`, type parameters | JSON, bigints as strings | `TEXT` | `jsonb` |
+
 A bare address covers every module published there, skipping the ones with no `#[event]` struct,
 event handle or `#[view]` function, and mixes with named modules:
 
@@ -5243,6 +5319,8 @@ and works the same with `--chain sui`.
 | --- | --- |
 | `--out <file>` | write to this file instead of stdout |
 | `--check` | compare with the `--out` file instead of writing it |
+| `--validators`, `--arbitraries` | also write runtime checks, random payload generators |
+| `--sql <sqlite\|postgres>` | also write a table per event type and its DDL |
 | `--chain <aptos\|sui>` | the chain to read (default `aptos`); see below |
 
 `--network` and `--node-url` work as for `tail`. Exit codes: `0` once the file is written, or

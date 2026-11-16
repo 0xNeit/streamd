@@ -476,6 +476,21 @@ describe("parseCommand codegen", () => {
     });
   });
 
+  it("takes --sql sqlite or postgres on both chains and beside --check", () => {
+    expect(parseCommand(["codegen", "--sql", "sqlite", "0x1::coin"])).toMatchObject({ options: { sql: "sqlite" } });
+    expect(parseCommand(["codegen", "0x1::coin"])).not.toMatchObject({ options: { sql: expect.anything() } });
+    expect(parseCommand(["codegen", "--chain", "sui", "--sql", "postgres", "0x2::kiosk"])).toEqual({
+      command: "codegen",
+      options: { chain: "sui", modules: [{ address: "0x2", module: "kiosk" }], network: "mainnet", sql: "postgres" },
+    });
+    expect(parseCommand(["codegen", "--check", "--out", "events.ts", "--sql", "postgres", "0x1"])).toEqual({
+      command: "codegen",
+      options: { modules: [{ address: ADDR }], network: "mainnet", out: "events.ts", sql: "postgres", check: true },
+    });
+    expect(() => parseCommand(["codegen", "--sql", "mysql", "0x1"])).toThrow("--sql must be sqlite or postgres: mysql");
+    expect(() => parseCommand(["codegen", "--sql", "0x1"])).toThrow(UsageError);
+  });
+
   it("takes --check with --out, beside the other flags", () => {
     expect(parseCommand(["codegen", "--check", "--out", "events.ts", "--validators", "0x1"])).toEqual({
       command: "codegen",

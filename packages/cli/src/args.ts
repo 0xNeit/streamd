@@ -247,6 +247,8 @@ export interface CodegenOptions extends Endpoint {
   validators?: boolean;
   /** Also write an `arbitrary<Type>` random payload generator per generated type. */
   arbitraries?: boolean;
+  /** Also write a table spec per event type and its DDL in this SQL dialect. */
+  sql?: "sqlite" | "postgres";
   /** Compare with `out` instead of writing it; set only with `out`. */
   check?: boolean;
 }
@@ -478,6 +480,7 @@ const CODEGEN_OPTIONS = {
   out: { type: "string" },
   validators: { type: "boolean" },
   arbitraries: { type: "boolean" },
+  sql: { type: "string" },
   check: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
@@ -521,7 +524,7 @@ export const USAGE = `Usage:
   streamd name <name | address>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] [--cache <file>] <eventType>...
-  streamd codegen [--out <file> [--check]] [--validators] [--arbitraries] (<address> | <address>::<module>)...
+  streamd codegen [--out <file> [--check]] [--validators] [--arbitraries] [--sql <sqlite|postgres>] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
   streamd monitor --node-url <url> --node-url <url>... [options] [<eventType>...]
 
@@ -658,6 +661,9 @@ Options:
   --validators           codegen: also write an is<Type> runtime check per type
   --arbitraries          codegen: also write an arbitrary<Type>(rng) random payload generator
                          per type, a seeded streamdRng and streamdEvent for MemoryAdapter
+  --sql <dialect>        codegen: also write streamdTables, a table per event type with a
+                         column per field, and streamdSchema, its sqlite or postgres DDL;
+                         storeTables in @streamd/store-sqlite or -postgres fills them
   --check                codegen: compare with the --out file, writing nothing; exit 1 if
                          it differs or is missing, naming the first line that differs
   --chain <name>         aptos or sui (default: aptos); with sui, --network is mainnet,
@@ -1543,6 +1549,10 @@ function parseCodegen(args: string[]): ParsedCommand {
   }
   if (values.validators) options.validators = true;
   if (values.arbitraries) options.arbitraries = true;
+  if (values.sql !== undefined) {
+    if (values.sql !== "sqlite" && values.sql !== "postgres") throw new UsageError(`--sql must be sqlite or postgres: ${values.sql}`);
+    options.sql = values.sql;
+  }
   if (values.check) {
     if (options.out === undefined) throw new UsageError("--check needs --out <file> to compare with");
     options.check = true;
