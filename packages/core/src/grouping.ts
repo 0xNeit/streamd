@@ -11,7 +11,7 @@ import type {
   TransactionCallback,
   TransactionGroup,
 } from "./types.js";
-import type { Delivery } from "./poller.js";
+import { DEFAULT_BATCH_SIZE, type Delivery } from "./poller.js";
 import { StreamdError } from "./errors.js";
 import { sameValue } from "./compare.js";
 import { CursorManager } from "./cursor.js";
@@ -31,6 +31,7 @@ export interface TransactionHost {
     id: string | undefined,
     wrap: ((source: EventAdapter) => EventAdapter) | undefined,
   ): Subscription;
+  track: (stop: () => void) => () => void;
 }
 
 function highestOf(page: EventPage): bigint | undefined {
@@ -153,7 +154,6 @@ export function startTransactions(
     throw new StreamdError("cursor cannot resume several descriptors; pass one descriptor");
   }
 
-  const DEFAULT_BATCH_SIZE = 25;
   const maxBuffered = (options.batchSize ?? host.defaults.batchSize ?? DEFAULT_BATCH_SIZE) * 4;
   const buffer = new Map<bigint, Map<number, StreamdEvent>>();
   const versions: bigint[] = [];
@@ -167,6 +167,8 @@ export function startTransactions(
   let checkpoint = options.cursor;
   let releasing = Promise.resolve();
   let waiters: (() => void)[] = [];
+  let untrack = () => {};
+  let detachAbort = () => {};
 
   const report = (error: Error) => {
     try {
@@ -185,13 +187,13 @@ export function startTransactions(
     for (const resolve of list) resolve();
   };
   const waitDrain = () => new Promise<void>((resolve) => waiters.push(resolve));
-  const detachAbort = onAbort(options.signal, wake);
   const ahead = (walk: number) => {
     const mine = bounds[walk];
     if (mine === undefined) return false;
     return bounds.some((b) => b === undefined || b < mine);
   };
   const end = () => {
+    untrack();
     detachAbort();
     for (const w of walks) w.unsubscribe();
     wake();
@@ -284,6 +286,11 @@ export function startTransactions(
     );
     walks.push(sub);
   });
+
+  if (live()) {
+    untrack = host.track(end);
+    detachAbort = onAbort(options.signal, end);
+  }
 
   const allCaughtUp = Promise.all(walks.map((w) => w.caughtUp)).then(() => {});
   allCaughtUp.catch(() => {});

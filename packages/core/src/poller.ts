@@ -27,7 +27,7 @@ import { nameTtl, type SenderNames } from "./names.js";
 import { isThenable } from "./filter.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
-const DEFAULT_BATCH_SIZE = 25;
+export const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_MAX_ERRORS = 10;
 const DEFAULT_MAX_BACKOFF = 60_000;
 const MAX_DELAY = 2_147_483_647;

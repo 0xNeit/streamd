@@ -160,6 +160,7 @@ describe("onTransaction, one descriptor", () => {
     expect(sub.status.cursor).toBeUndefined();
     await advanceTimersByTimeAsync(1);
     expect(log).toEqual([50n]);
+    expect(mockedCursor(adapter, 1)).toBe("a");
     expect(sub.cursor).toBe("b");
     client.destroy();
 
@@ -299,10 +300,10 @@ describe("onTransaction, one descriptor", () => {
   });
 });
 
-function mockedCursor(adapter: EventAdapter): string | undefined {
+function mockedCursor(adapter: EventAdapter, call = 0): string | undefined {
   const calls = (adapter.fetchEvents as unknown as { mock: { calls: [unknown, { cursor?: string }][] } })
     .mock.calls;
-  return calls[0]?.[1].cursor;
+  return calls[call]?.[1].cursor;
 }
 
 describe("onTransaction, several descriptors", () => {
@@ -656,5 +657,39 @@ describe("onTransaction, several descriptors", () => {
     await (sub2 as unknown as { [Symbol.asyncDispose]?: () => Promise<void> })[Symbol.asyncDispose]?.();
     expect(sub2.active).toBe(false);
     client2.destroy();
+  });
+
+  it("wakes a back-pressured walk on unsubscribe and resolves client.close() without waiting for timeout", async () => {
+    const startSlowBackpressure = () => {
+      let callsA = 0;
+      const adapter: EventAdapter = {
+        fetchEvents: vi.fn(async (d: EventDescriptor) => {
+          if (typeOf(d) === A) {
+            callsA++;
+            return { events: [ev(callsA, 0, A)], nextCursor: `a${callsA}`, hasMore: true, throughVersion: BigInt(callsA) };
+          }
+          return new Promise<EventPage>(() => {});
+        }),
+      };
+      const client = new StreamdClient({ adapter });
+      const sub = client.onTransaction([onA, onB], () => {}, {
+        batchSize: 1,
+        pollInterval: 5,
+      });
+      return { client, sub, getCallsA: () => callsA };
+    };
+
+    const unsubCase = startSlowBackpressure();
+    await advanceTimersByTimeAsync(50);
+    expect(unsubCase.getCallsA()).toBe(5);
+    unsubCase.sub.unsubscribe();
+    expect(unsubCase.sub.active).toBe(false);
+    await expect(unsubCase.client.close({ timeout: 50 })).resolves.toBe(true);
+
+    const closeCase = startSlowBackpressure();
+    await advanceTimersByTimeAsync(50);
+    expect(closeCase.getCallsA()).toBe(5);
+    await expect(closeCase.client.close({ timeout: 50 })).resolves.toBe(true);
+    expect(closeCase.sub.active).toBe(false);
   });
 });

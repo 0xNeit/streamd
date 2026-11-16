@@ -256,6 +256,7 @@ export class StreamdClient {
       unshared: this.shared.view(0),
       subscribe: (d, delivery, options, id, wrap) =>
         this.subscribe(d, delivery, options, undefined, id, wrap),
+      track: (stop) => (this.streams.add(stop), () => void this.streams.delete(stop)),
     };
   }
 
