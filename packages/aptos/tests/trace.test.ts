@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import { AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { MemoryAdapter, StreamdError } from "@streamd/core";
-import type { Transfer } from "@streamd/core";
+import type { AccountEventDescriptor, EventAdapter, StreamdEvent, Transfer } from "@streamd/core";
+import { testClient } from "./helpers.js";
 import { TraceBudgetError, countedAdapter, tracePath, walkTransfers } from "../src/trace.js";
 import type { TracedTransaction, WalkOptions } from "../src/trace.js";
 
@@ -144,5 +146,96 @@ describe("countedAdapter", () => {
     await adapter.fetchEvents({ kind: "module", eventType: "0x1::a::B" }, {});
     await expect(adapter.fetchEvents({ kind: "module", eventType: "0x1::a::B" }, {})).rejects.toThrow(TraceBudgetError);
     expect(requests()).toBe(2);
+  });
+});
+
+describe("AptosClient.trace", () => {
+  const COIN = "0x1::aptos_coin::AptosCoin";
+  const coin = (v: number, from: string, to: string, amount: string): StreamdEvent[] =>
+    (["Withdraw", "Deposit"] as const).map((side, i) => ({
+      type: `0x1::coin::Coin${side}`,
+      data: { coin_type: COIN, account: side === "Withdraw" ? from : to, amount },
+      version: BigInt(v),
+      sequenceNumber: 0n,
+      eventIndex: i,
+      sender: from,
+    }));
+  const HISTORY = [...coin(1, A, B, "100"), ...coin(2, B, C, "60"), ...coin(3, C, D, "30"), ...coin(9, A, E, "1")];
+
+  /** An Indexer-like source: an `account` read gets the transactions that account took part in. */
+  function indexer(events: StreamdEvent[]): EventAdapter & { reads: string[] } {
+    const reads: string[] = [];
+    return {
+      reads,
+      fetchEvents: (d, o) => {
+        const who = (d as AccountEventDescriptor).accountAddress;
+        reads.push(who);
+        const versions = new Set(events.filter((e) => (e.data as { account: string }).account === who).map((e) => e.version));
+        return new MemoryAdapter(events.filter((e) => versions.has(e.version))).fetchEvents(d, o);
+      },
+      getHeadVersion: async () => 5n,
+      view: async () => [],
+    };
+  }
+
+  it("reads every node over one range fixed at the start, counting each adapter call", async () => {
+    const source = indexer(HISTORY);
+    const graph = await testClient({ adapter: source }).trace(A, { hops: 2 });
+    expect(graph.root).toBe(A);
+    expect(graph.nodes.map((n) => [n.address, n.hop, n.expanded])).toEqual([[A, 0, true], [B, 1, true], [C, 2, false]]);
+    expect(graph.edges).toEqual([
+      { from: A, to: B, asset: COIN, amount: 100n, transfers: 1, firstVersion: 1n, lastVersion: 1n },
+      { from: B, to: C, asset: COIN, amount: 60n, transfers: 1, firstVersion: 2n, lastVersion: 2n },
+    ]);
+    expect(graph.stoppedBy).toBeUndefined();
+    expect(source.reads).toEqual([A, B]);
+    expect(graph.requests).toBe(3);
+    const late = await testClient({ adapter: source }).trace(A, { toVersion: 9n, fromVersion: -8n });
+    expect(late.edges.map((e) => e.to)).toEqual([B, E]);
+    expect((await testClient({ adapter: source }).trace(A, { fromVersion: -3n })).edges).toEqual([]);
+  });
+
+  it("stops when maxRequests is spent, leaving the node it was reading unexpanded", async () => {
+    const graph = await testClient({ adapter: indexer(HISTORY) }).trace(A, { hops: 3, maxRequests: 2 });
+    expect(graph.stoppedBy).toBe("requests");
+    expect(graph.requests).toBe(2);
+    expect(graph.nodes.map((n) => [n.address, n.expanded])).toEqual([[A, true], [B, false]]);
+  });
+
+  it("resolves a name root once", async () => {
+    const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig: { http2: false } }));
+    let lookups = 0;
+    aptos.getTargetAddress = async () => (lookups++, AccountAddress.from(B));
+    const graph = await testClient({ adapter: indexer(HISTORY), aptos }).trace("bob.apt", { direction: "out" });
+    expect(graph.root).toBe(B);
+    expect(graph.edges.map((e) => [e.from, e.to])).toEqual([[B, C]]);
+    expect(lookups).toBe(1);
+  });
+
+  it("refuses bad options and adapters before reading anything", async () => {
+    const source = indexer(HISTORY);
+    const client = testClient({ adapter: source });
+    for (const [options, message] of [
+      [{ hops: 0 }, "hops"],
+      [{ hops: 7 }, "hops"],
+      [{ direction: "up" }, "direction"],
+      [{ minAmount: 1 }, "minAmount"],
+      [{ maxNodes: 1.5 }, "maxNodes"],
+      [{ maxRequests: 0 }, "maxRequests"],
+      [{ stop: ["nope"] }, "Not a valid"],
+      [{ stop: "0x1" }, "stop"],
+      [{ target: 3 }, "Not a valid"],
+      [{ asset: "nope::x" }, "coin type"],
+      [{ toVersion: -1n }, "toVersion"],
+      [{ fromVersion: 1 }, "fromVersion"],
+    ] as const) {
+      await expect(client.trace(A, options as never)).rejects.toThrow(message);
+    }
+    await expect(client.trace(undefined as never)).rejects.toThrow("trace needs an address");
+    await expect(client.trace("not an address!")).rejects.toThrow("Not a valid Aptos address or name");
+    expect(source.reads).toEqual([]);
+    const headless = testClient({ adapter: { ...indexer(HISTORY), getHeadVersion: undefined } });
+    await expect(headless.trace(A)).rejects.toThrow("getHeadVersion");
+    expect((await headless.trace(A, { toVersion: 5n })).edges).toHaveLength(1);
   });
 });

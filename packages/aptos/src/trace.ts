@@ -1,7 +1,8 @@
-import { StreamdError, requireAddress } from "@streamd/core";
-import type { EventAdapter, Transfer } from "@streamd/core";
-import { assetKey } from "./transfers.js";
-import type { FundFlowGraph, TraceEdge, TraceNode } from "./types.js";
+import { EventQuery, StreamdError, requireAddress } from "@streamd/core";
+import type { EventAdapter, RequestLimiter, Transfer } from "@streamd/core";
+import { activityDescriptor, activitySource } from "./activity.js";
+import { assetKey, requireAsset } from "./transfers.js";
+import type { Activity, FundFlowGraph, TraceEdge, TraceNode, TraceOptions } from "./types.js";
 
 /** One transaction's transfers touching the node read. */
 export interface TracedTransaction {
@@ -151,4 +152,76 @@ export function tracePath(graph: FundFlowGraph, from: string, to: string): Trace
   const path: TraceEdge[] = [];
   for (let edge = via.get(end); edge; edge = via.get(edge.from)) path.unshift(edge);
   return path;
+}
+
+const DIRECTIONS = new Set(["out", "in", "both"]);
+
+function count(value: unknown, name: string, fallback: number, max = Number.MAX_SAFE_INTEGER): number {
+  if (value === undefined) return fallback;
+  if (!Number.isSafeInteger(value) || (value as number) < 1 || (value as number) > max) {
+    throw new StreamdError(`trace ${name} must be an integer from 1 to ${max}`);
+  }
+  return value as number;
+}
+
+/** `options` checked at the call, addresses in long form. */
+export function walkOptions(options: TraceOptions): WalkOptions & { maxRequests: number } {
+  if (typeof options !== "object" || options === null) throw new StreamdError("trace options must be an object");
+  const { direction = "both", minAmount = 0n, stop = [], target, fromVersion, toVersion } = options;
+  if (!DIRECTIONS.has(direction)) throw new StreamdError(`trace direction must be "out", "in" or "both"`);
+  if (typeof minAmount !== "bigint" || minAmount < 0n) throw new StreamdError("trace minAmount must be a non-negative bigint");
+  if (fromVersion !== undefined && typeof fromVersion !== "bigint") throw new StreamdError("trace fromVersion must be a bigint");
+  if (toVersion !== undefined && toVersion !== "head" && (typeof toVersion !== "bigint" || toVersion < 0n)) {
+    throw new StreamdError(`trace toVersion must be a non-negative bigint or "head"`);
+  }
+  if (!Array.isArray(stop)) throw new StreamdError("trace stop must be a list of addresses");
+  return {
+    hops: count(options.hops, "hops", 1, 6),
+    direction,
+    minAmount,
+    ...(options.asset !== undefined && { asset: requireAsset(options.asset) }),
+    maxNodes: count(options.maxNodes, "maxNodes", 100),
+    maxRequests: count(options.maxRequests, "maxRequests", 1000),
+    stop: new Set(stop.map((a) => requireAddress(a))),
+    ...(target !== undefined && { target: requireAddress(target) }),
+  };
+}
+
+/**
+ * The trace behind `AptosClient.trace`: every node read as `getActivity` reads
+ * it, one at a time, over one range fixed at the start, through `limiter`.
+ */
+export async function trace(
+  adapter: EventAdapter,
+  limiter: RequestLimiter,
+  root: () => Promise<string>,
+  options: TraceOptions,
+  requestTimeout: number | undefined,
+): Promise<FundFlowGraph> {
+  const walk = walkOptions(options);
+  const counted = countedAdapter(adapter, walk.maxRequests);
+  const { retries, signal } = options;
+  const address = await root();
+  let { fromVersion, toVersion = "head" } = options;
+  if (toVersion === "head" || (fromVersion !== undefined && fromVersion < 0n)) {
+    if (counted.adapter.getHeadVersion === undefined) {
+      throw new StreamdError(`trace needs an adapter with getHeadVersion, for a toVersion of "head" or a negative fromVersion`);
+    }
+    // Read once, so every node is read over the same range.
+    const head = await counted.adapter.getHeadVersion(activityDescriptor(address));
+    if (toVersion === "head") toVersion = head;
+    if (fromVersion !== undefined && fromVersion < 0n) fromVersion = head + fromVersion < 0n ? 0n : head + fromVersion;
+  }
+  const read: TraceReader = async (node) => {
+    const source = activitySource(counted.adapter, () => Promise.resolve(node), false, requestTimeout);
+    const records = await new EventQuery(source, limiter).getEvents<Activity>(activityDescriptor(node), {
+      ...(fromVersion !== undefined && { fromVersion }),
+      toVersion,
+      ...(retries !== undefined && { retries }),
+      ...(signal !== undefined && { signal }),
+    });
+    return records.map(({ version, data }) => ({ version, transfers: data.transfers }));
+  };
+  const graph = await walkTransfers(read, address, walk);
+  return { ...graph, requests: counted.requests() };
 }

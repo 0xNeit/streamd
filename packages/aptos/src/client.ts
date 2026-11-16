@@ -25,8 +25,9 @@ import { eventsOf, previewEvents } from "./transaction.js";
 import { saleDescriptor, saleSource } from "./sales.js";
 import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
+import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
-import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -131,6 +132,22 @@ export class AptosClient extends StreamdClient {
     const [descriptor, who, name] = this.activityOf(address, rest.withNames);
     const source = activitySource(this.adapter, who, withAssetInfo, this.requestTimeout, name);
     return new EventQuery(source, this.limiter, this.names).getEvents<Activity>(descriptor, rest);
+  }
+
+  /**
+   * Follow the funds around `address` (an address or Aptos name) for up to
+   * `hops` hops and resolve a counterparty graph: each node's transfers read
+   * as `getActivity` reads them, one node at a time over one range, so the
+   * client's adapter must serve `account` with `received: true`
+   * (`IndexerAccountAdapter` routed beside a fullnode). Edges sum transfers
+   * per `(from, to, asset)` as bigints, a transfer seen from both ends once.
+   * `maxNodes`, `maxRequests` and `target` end the walk early, named in
+   * `stoppedBy`; `stop` keeps addresses unexpanded. `tracePath` reads a path
+   * out of the result.
+   */
+  async trace(address: string, options: TraceOptions = {}): Promise<FundFlowGraph> {
+    if (typeof address !== "string") throw new StreamdError("trace needs an address or Aptos name");
+    return trace(this.adapter, this.limiter, this.accountOf(address)!, options, this.requestTimeout);
   }
 
   /** The descriptor, lazy address and name lookup an activity call reads with, refusing bad input at the call. */
