@@ -4188,7 +4188,7 @@ values nor the secret are printed.
 
 **Receive them with `@streamd/receiver`.** `createReceiver` returns a `Request` to `Response`
 handler that does the checks above, parses the events with `parseEvent` and drops any already
-handled, by `eventId`, so `onEvents` sees each event once however often `forward` resends it.
+handled, by `eventId`, so a resent batch does not reach `onEvents` again while its store remembers it.
 It depends only on `@streamd/core`, and runs anywhere with `fetch`'s `Request` and Web Crypto:
 Bun, Deno, edge workers and Node 19+ through any Fetch-style server.
 
@@ -4220,8 +4220,8 @@ Each request is checked in order, and nothing is parsed before the signature hol
 | `413` | body over `maxBodyBytes` (default 4 MiB), by `content-length` or as read | stops, exit 1 |
 | `401` | signature missing, malformed or wrong | stops, exit 1 |
 | `400` | not UTF-8, not a JSON array, or an event `parseEvent` refuses | stops, exit 1 |
-| `500` | the store or `onEvents` threw or rejected | retries |
-| `503` | another delivery of one of these events is still being handled | retries after 1s |
+| `500` | the store or `onEvents` threw or rejected, or `seen` answered the wrong number of results | retries |
+| `503` | another delivery of one of these events is still being handled | retries with its backoff |
 
 `onEvents` gets only the events not seen before, in body order, and is not called when there
 are none. They are recorded as handled only after it resolves, so a failure leaves them for the
@@ -4233,7 +4233,10 @@ or `500`; the response body never says.
 The default store, `MemoryDedupStore`, keeps the last `maxEntries` ids (default 100,000) in
 memory and forgets them on restart. Behind more than one instance, or across restarts, pass a
 `store`: any object with `seen(ids)`, answering a boolean per id in order, and `add(ids)`,
-either of which may be async. Over `bun:sqlite`:
+either of which may be async. Ids are `version:eventIndex`, which repeat across networks and
+chains, so when forwarders for more than one network share a receiver or store, give each its
+own receiver with a `namespace` (`"aptos:mainnet"`), which prefixes every id it stores. Over
+`bun:sqlite`:
 
 ```ts
 import { Database } from "bun:sqlite";
@@ -4253,7 +4256,10 @@ const store: DedupStore = {
 ```
 
 The `503` guard covers one process; two instances sharing a store can both handle a resent batch
-that arrives while the first is still running. A body over `maxBodyBytes` stops `forward`, so
+that arrives while the first is still running. A handler slower than `--timeout` spends
+`forward`'s `--retries` on `503`s, so keep `onEvents` quick or raise them. The signature has no
+timestamp, so a captured body replays once its ids are forgotten (after a restart with the memory
+store, or past `maxEntries`): use `https` and a durable store where that matters. A body over `maxBodyBytes` stops `forward`, so
 lower `--batch-size` rather than raising the limit far. Alert payloads from `streamd alert` are a
 different body; check those with `verifyWebhook` and deduplicate on their `id`.
 

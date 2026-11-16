@@ -21,6 +21,12 @@ export interface ReceiverOptions<TData = unknown> {
   onEvents(events: StreamdEvent<TData>[], request: Request): void | PromiseLike<void>;
   /** Where handled event ids are kept. Default a `MemoryDedupStore`. */
   store?: DedupStore;
+  /**
+   * Prefixes every id the store sees, as `<namespace>/<version>:<eventIndex>`.
+   * Versions repeat across networks and chains, so give each forwarder sharing
+   * a receiver or store its own, or one network's events pass as another's repeats.
+   */
+  namespace?: string;
   /** `data` fields, by path, to turn back into `bigint`, as `parseEvent` takes them. */
   decode?: readonly string[];
   /** The largest body read, in bytes; a larger one answers 413. Default 4 MiB. */
@@ -90,12 +96,23 @@ function parseBody<TData>(body: Uint8Array, decode: readonly string[] | undefine
 export function createReceiver<TData = unknown>(
   options: ReceiverOptions<TData>,
 ): (request: Request) => Promise<Response> {
-  const { secret, onEvents, decode, onError } = options;
+  const { secret, onEvents, decode, namespace } = options;
   if (typeof secret !== "string" || secret === "") {
     throw new StreamdError("createReceiver: secret must be a non-empty string");
   }
   if (typeof onEvents !== "function") throw new StreamdError("createReceiver: onEvents must be a function");
   fieldDecoder(decode);
+  if (namespace !== undefined && (typeof namespace !== "string" || namespace === "")) {
+    throw new StreamdError("createReceiver: namespace must be a non-empty string");
+  }
+  const keyOf = (event: StreamdEvent): string =>
+    namespace === undefined ? eventId(event) : `${namespace}/${eventId(event)}`;
+  // A throwing logger must not turn a 400 into a rejection the server answers as a retryable 500.
+  const report = (err: unknown, request: Request) => {
+    try {
+      options.onError?.(err, request);
+    } catch {}
+  };
   const maxBodyBytes = options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   if (!Number.isSafeInteger(maxBodyBytes) || maxBodyBytes <= 0) {
     throw new StreamdError(`Invalid maxBodyBytes: ${String(maxBodyBytes)} (expected a positive integer)`);
@@ -123,13 +140,16 @@ export function createReceiver<TData = unknown>(
     try {
       events = parseBody<TData>(body, decode);
     } catch (err) {
-      onError?.(err, request);
+      report(err, request);
       return reply(400, "malformed events");
     }
     const byId = new Map<string, StreamdEvent<TData>>();
-    for (const event of events) if (!byId.has(eventId(event))) byId.set(eventId(event), event);
+    for (const event of events) {
+      const key = keyOf(event);
+      if (!byId.has(key)) byId.set(key, event);
+    }
     const ids = [...byId.keys()];
-    if (ids.some((id) => inFlight.has(id))) return reply(503, "delivery in progress", { "retry-after": "1" });
+    if (ids.some((id) => inFlight.has(id))) return reply(503, "delivery in progress");
 
     for (const id of ids) inFlight.add(id);
     try {
@@ -144,7 +164,7 @@ export function createReceiver<TData = unknown>(
       }
       return reply(204);
     } catch (err) {
-      onError?.(err, request);
+      report(err, request);
       return reply(500, "delivery failed");
     } finally {
       for (const id of ids) inFlight.delete(id);

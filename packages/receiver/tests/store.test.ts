@@ -17,12 +17,13 @@ describe("MemoryDedupStore", () => {
     expect(store.seen(["1:0", "2:0", "3:0"])).toEqual([false, true, true]);
   });
 
-  it("counts a re-added id as new", () => {
+  it("keeps an id once however often it is added", () => {
     const store = new MemoryDedupStore({ maxEntries: 2 });
-    store.add(["1:0", "2:0"]);
+    store.add(["1:0", "1:0", "2:0"]);
     store.add(["1:0"]);
-    store.add(["3:0"]);
-    expect(store.seen(["1:0", "2:0", "3:0"])).toEqual([true, false, true]);
+    expect(store.seen(["1:0", "2:0"])).toEqual([true, true]);
+    store.add(["3:0", "4:0", "5:0"]);
+    expect(store.seen(["1:0", "2:0", "3:0", "4:0", "5:0"])).toEqual([false, false, false, true, true]);
   });
 
   it("refuses a maxEntries that is not a positive integer", () => {

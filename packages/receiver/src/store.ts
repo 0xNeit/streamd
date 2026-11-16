@@ -25,6 +25,9 @@ const DEFAULT_MAX_ENTRIES = 100_000;
  */
 export class MemoryDedupStore implements DedupStore {
   private readonly ids = new Set<string>();
+  // Insertion order as a ring, since walking a Set past its deleted entries slows every add once full.
+  private readonly order: string[] = [];
+  private next = 0;
   private readonly maxEntries: number;
 
   constructor(options: MemoryDedupStoreOptions = {}) {
@@ -39,15 +42,14 @@ export class MemoryDedupStore implements DedupStore {
     return ids.map((id) => this.ids.has(id));
   }
 
+  /** Adding an id already held changes nothing, so it is forgotten at its first add's turn. */
   add(ids: readonly string[]): void {
     for (const id of ids) {
-      this.ids.delete(id);
+      if (this.ids.has(id)) continue;
+      if (this.order.length === this.maxEntries) this.ids.delete(this.order[this.next]!);
+      this.order[this.next] = id;
+      this.next = (this.next + 1) % this.maxEntries;
       this.ids.add(id);
-    }
-    // A Set iterates in insertion order, so the first entries are the oldest.
-    for (const id of this.ids) {
-      if (this.ids.size <= this.maxEntries) break;
-      this.ids.delete(id);
     }
   }
 }
