@@ -3819,7 +3819,7 @@ function Feed() {
     unless your `signAndSubmit` honours the signal. `reset()` returns to `"idle"` and the
     abandoned run sets nothing more. A run cut short by an `<Activity>` hiding the component
     returns to `"idle"`, or to `"failed"` keeping its `hash` once the wallet has returned one,
-    even after the component is shown again, unless a newer run has started. The abandoned
+    even after the component is shown again, unless a newer run or `reset()` came since. The abandoned
     run's promise resolves the same way: `"idle"`, or `"failed"` with the hash.
   - It takes `descriptor`, `decode`, `where` and `timeout`, read when `submit` is called and
     applied to both the preview and the events. The Aptos preview runs without signer keys, so

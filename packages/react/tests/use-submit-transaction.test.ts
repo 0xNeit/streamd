@@ -417,7 +417,7 @@ describe("useSubmitTransaction", () => {
       await rerender(root, shown("visible"));
       await waitFor(() => expect(t.last().status).toBe("failed"));
       expect(t.last().hash).toBe(A);
-      expect(t.last().error!.message).toContain("hidden");
+      expect(t.last().error!.message).toContain("Stopped waiting");
       await unmount(root);
     });
 
@@ -459,6 +459,49 @@ describe("useSubmitTransaction", () => {
       await new Promise((r) => setTimeout(r, 20));
       expect(t.last()).toMatchObject({ status: "confirming", hash: A });
       await unmount(root);
+    });
+
+    it("a late wallet answer from a hidden run never overwrites a newer run that finished", async () => {
+      const t = setup();
+      let releaseFirst!: () => void;
+      t.answer(() => new Promise((r) => (releaseFirst = () => r(FAILED))));
+      const shown = (mode: "visible" | "hidden") => createElement(Activity, { mode, children: t.el({ preview: false }) });
+      const root = await render(shown("visible"));
+      const first = t.last().submit(TX);
+      await waitFor(() => expect(t.last().status).toBe("signing"));
+      await rerender(root, shown("hidden"));
+      await rerender(root, shown("visible"));
+      t.answer(async () => A);
+      expect(await t.last().submit(TX)).toMatchObject({ status: "confirmed", hash: A });
+      await waitFor(() => expect(t.last().status).toBe("confirmed"));
+      releaseFirst();
+      expect(await first).toMatchObject({ status: "failed", hash: FAILED });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(t.last()).toMatchObject({ status: "confirmed", hash: A });
+      await unmount(root);
+    });
+
+    it("after reset, a late wallet answer changes nothing, hidden or not", async () => {
+      for (const hide of [false, true]) {
+        const t = setup();
+        let release!: () => void;
+        t.answer(() => new Promise((r) => (release = () => r(A))));
+        const shown = (mode: "visible" | "hidden") => createElement(Activity, { mode, children: t.el({ preview: false }) });
+        const root = await render(shown("visible"));
+        const promise = t.last().submit(TX);
+        await waitFor(() => expect(t.last().status).toBe("signing"));
+        if (hide) {
+          await rerender(root, shown("hidden"));
+          await rerender(root, shown("visible"));
+        }
+        t.last().reset();
+        await waitFor(() => expect(t.last().status).toBe("idle"));
+        release();
+        expect(await promise).toMatchObject({ status: "failed", hash: A });
+        await new Promise((r) => setTimeout(r, 20));
+        expect(t.last()).toMatchObject({ status: "idle", hash: undefined });
+        await unmount(root);
+      }
     });
 
     it("a signAndSubmit that calls submit again still signs once", async () => {

@@ -103,14 +103,15 @@ export function useSubmitTransaction<TTransaction, TData = unknown>(
   latest.current = { options, client };
   const [state, setState] = useState(idle<TData>);
   const running = useRef<{ controller: AbortController; promise: Promise<SubmitTransactionState<TData>> }>(undefined);
+  // The run whose state is shown: the latest one submitted, until reset() lets go of it.
+  const shown = useRef<AbortController>(undefined);
 
   const submit = useCallback((transaction: TTransaction) => {
     if (running.current) return running.current.promise;
     const controller = new AbortController();
     const { options, client } = latest.current;
-    // A run cut short still shows a late hash, unless a newer run has started.
     const publish = (state: SubmitTransactionState<TData>) => {
-      if (running.current === undefined || running.current.controller === controller) setState(state);
+      if (shown.current === controller) setState(state);
     };
     // Started a tick later, so a signAndSubmit that calls submit synchronously already finds this run.
     const promise = Promise.resolve()
@@ -120,6 +121,7 @@ export function useSubmitTransaction<TTransaction, TData = unknown>(
         if (running.current?.controller === controller) running.current = undefined;
       });
     running.current = { controller, promise };
+    shown.current = controller;
     return promise;
   }, []);
 
@@ -132,6 +134,7 @@ export function useSubmitTransaction<TTransaction, TData = unknown>(
 
   const reset = useCallback(() => {
     abandon();
+    shown.current = undefined;
     setState(idle<TData>());
   }, [abandon]);
 
@@ -183,7 +186,7 @@ async function run<TTransaction, TData>(
     step({ status: "confirming", hash });
     if (signal.aborted) return state;
     const events = await client.eventsOf<TData>(hash, descriptor, { decode, where, timeout, signal });
-    return step({ status: "confirmed", events });
+    return signal.aborted ? state : step({ status: "confirmed", events });
   } catch (err) {
     return signal.aborted ? state : fail(err);
   }
@@ -196,7 +199,7 @@ const HIDDEN = Symbol("hidden");
 function cutShort<TData>(state: SubmitTransactionState<TData>): SubmitTransactionState<TData> {
   if (state.hash === undefined) return idle<TData>();
   if (state.status !== "signing" && state.status !== "confirming") return state;
-  return { ...state, status: "failed", error: new StreamdError("Stopped waiting for the transaction: the component was hidden") };
+  return { ...state, status: "failed", error: new StreamdError("Stopped waiting for the transaction") };
 }
 
 function vmStatusOf(err: unknown): string | undefined {
