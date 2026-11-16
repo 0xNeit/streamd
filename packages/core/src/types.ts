@@ -1307,7 +1307,7 @@ export interface EventColumn {
  */
 export interface EventTable {
   /** `address::module::Name`, without type arguments: a generic one matches every instantiation. */
-  eventType: string;
+  eventType: MoveEventType;
   table: string;
   generic: boolean;
   columns: readonly EventColumn[];

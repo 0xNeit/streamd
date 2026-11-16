@@ -144,7 +144,7 @@ describe("requireEventTables", () => {
       base({ table: "sqlite_master" }),
       base({ table: 'x"; DROP TABLE y; --' }),
       base({ eventType: "0x1::fungible_asset::Deposit<u8>" }),
-      base({ eventType: "fungible_asset::Deposit" }),
+      base({ eventType: "fungible_asset::Deposit" as never }),
       base({ generic: "no" as never }),
       base({ columns: [col("version", "u64")] }),
       base({ columns: [col("type_arguments", "text")] }),
