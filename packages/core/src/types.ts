@@ -1282,3 +1282,33 @@ export interface Balances {
   unsubscribe(): void;
   [Symbol.dispose](): void;
 }
+
+/** How an `EventColumn` stores its value: a Move integer width, or one of the plain kinds. */
+export type EventColumnType =
+  | "u8" | "u16" | "u32" | "u64" | "u128" | "u256"
+  | "i8" | "i16" | "i32" | "i64" | "i128" | "i256"
+  | "bool" | "address" | "text" | "json";
+
+/** One column of an `EventTable`: where in `event.data` its value is, and how it is stored. */
+export interface EventColumn {
+  name: string;
+  type: EventColumnType;
+  /** Keys and array indexes into `event.data`; empty for the whole payload. */
+  path: readonly (string | number)[];
+  /** A missing value is stored as `NULL` rather than refused. */
+  nullable: boolean;
+}
+
+/**
+ * A table holding one event type, one column per field, as
+ * `streamd codegen --sql` writes it and the stores' `storeTables` fill it.
+ * Every table also has the standard columns `version`, `event_index`,
+ * `transaction_hash`, `timestamp`, `sender` and, when `generic`, `type_arguments`.
+ */
+export interface EventTable {
+  /** `address::module::Name`, without type arguments: a generic one matches every instantiation. */
+  eventType: string;
+  table: string;
+  generic: boolean;
+  columns: readonly EventColumn[];
+}
