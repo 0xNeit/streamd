@@ -2,7 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { Account, Aptos, AptosConfig, Network, parseTypeTag } from "@aptos-labs/ts-sdk";
 import { FullnodeScanAdapter } from "../src/fullnode.js";
 import { StreamdClient } from "@streamd/core";
-import { FallbackAdapter } from "@streamd/core";
+import { ArchiveFallbackAdapter, FallbackAdapter } from "@streamd/core";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
 import { checkDescriptor } from "../src/index.js";
 import { listEventHandles } from "../src/index.js";
@@ -475,14 +475,37 @@ describe("FullnodeScanAdapter handle events", () => {
 
   it("starts at 0 when the handle's resource or account did not exist yet, or the version is pruned", async () => {
     // "earliest" and an old fromTime resolve to the node's oldest version, whose predecessor it has pruned.
-    for (const [status, code] of [[404, "resource_not_found"], [404, "account_not_found"], [410, "version_pruned"]] as const) {
+    const replies = [
+      { status: 404, data: { message: "no", error_code: "resource_not_found" } },
+      { status: 404, data: { message: "no", error_code: "account_not_found" } },
+      { status: 410, data: { message: "pruned", error_code: "version_pruned", oldest_ledger_version: "2" } },
+    ];
+    for (const reply of replies) {
       const { aptos, calls } = fakeNode((path, params) =>
-        path === HANDLE_RESOURCE_PATH ? { status, data: { message: "no", error_code: code } } : handle([handleEvent(0, 3)])(path, params),
+        path === HANDLE_RESOURCE_PATH ? reply : handle([handleEvent(0, 3)])(path, params),
       );
       const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, { fromVersion: 2n });
       expect(calls.at(-1)?.params.start).toBe("0");
       expect(page.events.map((e) => e.version)).toEqual([3n]);
     }
+  });
+
+  it("rethrows a 410 for a start below the oldest version, so an archive fallback can answer it", async () => {
+    const pruned = (data: Record<string, unknown>) =>
+      fakeNode((path, params) => (path === HANDLE_RESOURCE_PATH ? { status: 410, data } : handle([handleEvent(0, 3)])(path, params))).aptos;
+    for (const data of [
+      { message: "pruned", error_code: "version_pruned", oldest_ledger_version: "3" },
+      { message: "pruned", error_code: "version_pruned" },
+      { message: "gone", error_code: "other", oldest_ledger_version: "2" },
+    ]) {
+      const err = await new FullnodeScanAdapter(pruned(data)).fetchEvents(handleDesc, { fromVersion: 2n }).catch((e) => e);
+      expect(err).toBeInstanceOf(StreamdNetworkError);
+      expect(err.statusCode).toBe(410);
+    }
+    const archive = fakeNode(handle([handleEvent(0, 3)])).aptos;
+    const primary = pruned({ message: "pruned", error_code: "version_pruned", oldest_ledger_version: "9" });
+    const page = await new ArchiveFallbackAdapter(new FullnodeScanAdapter(primary), new FullnodeScanAdapter(archive)).fetchEvents(handleDesc, { fromVersion: 2n });
+    expect(page.events.map((e) => e.version)).toEqual([3n]);
   });
 
   it("rejects with the resource read's status, and on a resource without the field", async () => {

@@ -2523,8 +2523,10 @@ By default streamd reads from a fullnode with `FullnodeScanAdapter`:
   by sequence number and cannot seek by version, so a walk given `fromVersion` and no cursor
   first reads the handle's resource at the version before it and starts at its `counter`, the
   first event at or after `fromVersion`. A creation-number handle has no resource to read and
-  starts at sequence 0, as does a walk with no start at all, and one whose version before
-  `fromVersion` the node has pruned (as `"earliest"` or an old `fromTime` resolve to).
+  starts at sequence 0, as does a walk with no start at all, and one starting at the node's
+  oldest version (where `"earliest"` and an old `fromTime` resolve), whose predecessor it has
+  pruned. A `fromVersion` below the oldest version rejects with the node's 410, which an
+  `ArchiveFallbackAdapter` answers from the archive.
 - **Account events** walk that account's own transaction history. Cheap even
   far back, but only transactions the account sent; `IndexerAccountAdapter`
   (below) adds the ones it received.
