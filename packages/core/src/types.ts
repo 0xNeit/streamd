@@ -1160,6 +1160,18 @@ export interface TransactionEvents {
   gasUnitPrice?: bigint;
   /** The account that paid the gas of a sponsored transaction, in long form, when the source reports one. */
   feePayer?: string;
+  /** Every resource the transaction wrote or deleted, in write-set order, when the source reports them. */
+  changes?: ResourceChange[];
+}
+
+/** One resource a transaction wrote or deleted, as `TransactionEvents.changes` reports it. */
+export interface ResourceChange {
+  /** The account or object holding the resource, in long form. */
+  address: string;
+  /** The resource's type, as the source writes it. */
+  type: string;
+  /** The resource's value after the transaction, or `null` when it deleted it. */
+  data: unknown;
 }
 
 /** Options for a chain client's `eventsOf`. */

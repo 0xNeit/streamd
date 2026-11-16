@@ -476,6 +476,30 @@ describe("recording lookups by version", () => {
     await expect(replay.getTransactionEventsByVersion!(4n)).rejects.toBeInstanceOf(StreamdError);
   });
 
+  it("replays a lookup's write-set changes, and refuses a malformed one", async () => {
+    const changes = [
+      { address: `0x${"a".padStart(64, "0")}`, type: "0x1::object::ObjectCore", data: { owner: "0xb" } },
+      { address: `0x${"a".padStart(64, "0")}`, type: "0x4::property_map::PropertyMap", data: null },
+    ];
+    const recorder = recordingAdapter({
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      getTransactionEventsByVersion: async () => ({ ...found, changes }),
+    });
+    await recorder.getTransactionEventsByVersion!(found.version);
+    expect(await replayAdapter(JSON.stringify(recorder)).getTransactionEventsByVersion!(found.version)).toEqual({
+      ...found,
+      changes,
+    });
+    for (const bad of [{}, [{ address: "0xzz", type: "T", data: 1 }], [{ address: "0x1", data: 1 }], [{ address: "0x1", type: "T" }]]) {
+      const recording: Recording = {
+        format: "streamd-recording",
+        version: 1,
+        calls: [{ method: "getTransactionEventsByVersion", key: "1", result: { version: "1", success: true, vmStatus: "", events: [], changes: bad } }],
+      };
+      expect(() => replayAdapter(recording)).toThrow("Invalid recording");
+    }
+  });
+
   it("has no getTransactionEventsByVersion when the source or the recording lacks it", () => {
     expect(recordingAdapter({ fetchEvents: async () => ({ events: [], hasMore: false }) }).getTransactionEventsByVersion)
       .toBeUndefined();
