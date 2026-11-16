@@ -164,6 +164,38 @@ export type SwapListenerOptions = SubscriptionOptions & SwapOptions;
 /** Filter for `AptosClient.getSwaps`. */
 export type SwapFilter = EventFilter & SwapOptions;
 
+/**
+ * One oracle price, the `data` of the records `prices` delivers and what
+ * `priceAt` resolves. Integers only: the price is `price × 10^exponent`, and
+ * `confidence` is at the same exponent. Times are microseconds since the Unix
+ * epoch, as `StreamdEvent.timestamp` is, so `staleness` compares directly with
+ * chain time.
+ */
+export interface Price {
+  /** The oracle that published it. */
+  oracle: "pyth";
+  /** The feed's id: Pyth's 32-byte price id, `0x` and 64 lowercase hex digits. */
+  feedId: string;
+  /** Signed mantissa. */
+  price: bigint;
+  /** Unsigned mantissa, at `exponent`. */
+  confidence: bigint;
+  /** Signed power of ten, such as -8. */
+  exponent: number;
+  /** When the oracle published the price (Pyth's seconds, scaled to microseconds). */
+  publishTime: bigint;
+  /**
+   * The chain time the price was seen at: the update's block for `prices`,
+   * the block holding the version read for `priceAt`.
+   */
+  observedAt: bigint;
+  /** `observedAt - publishTime`, microseconds; negative when the publisher's clock ran ahead of the chain's. */
+  staleness: bigint;
+}
+
+/** Options for `AptosClient.prices`. */
+export type PriceListenerOptions = SubscriptionOptions;
+
 /** An NFT marketplace whose fill events `sales` and `getSales` read. */
 export type SaleMarketplace = "wapal" | "tradeport";
 
