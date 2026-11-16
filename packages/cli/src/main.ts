@@ -385,7 +385,11 @@ async function suiSource(options: CodegenOptions): Promise<string> {
   const preset = suiNetworks[options.network as SuiNetworkPreset["network"]];
   const grpc = new SuiGrpcClient({ ...preset, ...(options.nodeUrl !== undefined && { baseUrl: options.nodeUrl }) });
   const { targets, load } = suiCodegen(grpc.movePackageService);
-  return generateEventTypes(await targets(options.modules), load, { dialect: SUI_DIALECT, validators: options.validators === true });
+  return generateEventTypes(await targets(options.modules), load, {
+    dialect: SUI_DIALECT,
+    validators: options.validators === true,
+    arbitraries: options.arbitraries === true,
+  });
 }
 
 async function write(options: CodegenOptions, source: string): Promise<number> {
@@ -442,7 +446,11 @@ async function codegen(options: CodegenOptions): Promise<number> {
     } while (start !== undefined);
     return abis;
   };
-  return write(options, await generateEventTypes(options.modules, load, { list, validators: options.validators === true }));
+  return write(options, await generateEventTypes(options.modules, load, {
+    list,
+    validators: options.validators === true,
+    arbitraries: options.arbitraries === true,
+  }));
 }
 
 async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise<number> {
