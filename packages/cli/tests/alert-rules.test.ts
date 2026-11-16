@@ -90,11 +90,12 @@ describe("parseRules", () => {
 
   it("refuses a threshold that is not exactly a count or a sum", () => {
     const at = 'rules.json: rule "fees" (#1): threshold: ';
-    const shape = `${at}must be { "count": n } or { "sum": "<path>", "gte": "<integer>" }`;
+    const shape = `${at}must be { "count": n }, { "sum": "<path>", "gte": "<integer>" } or { "anomaly": { ... } }`;
     expect(failure({ threshold: 3 })).toThrow(`${at}must be an object`);
     expect(failure({ threshold: {} })).toThrow(shape);
     expect(failure({ threshold: { count: 1, sum: "a", gte: "1" } })).toThrow(shape);
     expect(failure({ threshold: { sum: "a" } })).toThrow(shape);
+    expect(failure({ threshold: { anomaly: { metric: "count" }, count: 1 } })).toThrow(shape);
     for (const count of [0, -1, 1.5, "3", 2 ** 53]) {
       expect(failure({ threshold: { count } })).toThrow(`${at}count must be a positive integer`);
     }
@@ -102,6 +103,47 @@ describe("parseRules", () => {
     expect(failure({ threshold: { sum: "a..b", gte: "1" } })).toThrow(`${at}sum: Invalid field path: "a..b"`);
     for (const gte of ["1.5", "", "1e3", 1.5, null]) {
       expect(failure({ threshold: { sum: "a", gte } })).toThrow(`${at}gte must be an integer, as a decimal string or a safe integer`);
+    }
+  });
+
+  it("reads an anomaly threshold, resolving its defaults", () => {
+    const [count, sum, written] = parse([
+      { ...base, threshold: { anomaly: { metric: "count" } } },
+      { ...base, name: "s", threshold: { anomaly: { metric: "sum", sum: "a.b", k: "2.50", baseline: 5, minBaseline: 5, direction: "above" } } },
+      { ...base, name: "w", threshold: { anomaly: { metric: "count", k: "3.0", baseline: 30, minBaseline: 10, direction: "both" } } },
+    ]);
+    expect(count!.threshold).toEqual({ anomaly: { metric: "count", k: "3", baseline: 30, minBaseline: 10, direction: "both" } });
+    expect(sum!.threshold).toEqual({ anomaly: { metric: "sum", sum: "a.b", k: "2.5", baseline: 5, minBaseline: 5, direction: "above" } });
+    // Writing the defaults out, or k as "3.0", is the same rule.
+    expect(written!.fingerprint).toBe(count!.fingerprint);
+    const [small, decimal] = parse([
+      { ...base, threshold: { anomaly: { metric: "count", baseline: 4, k: 0.25 } } },
+      { ...base, name: "d", threshold: { anomaly: { metric: "count", k: "10.0001" } } },
+    ]);
+    expect(small!.threshold).toEqual({ anomaly: { metric: "count", k: "0.25", baseline: 4, minBaseline: 4, direction: "both" } });
+    expect(decimal!.threshold).toMatchObject({ anomaly: { k: "10.0001" } });
+  });
+
+  it("refuses an anomaly threshold field by field", () => {
+    const at = 'rules.json: rule "fees" (#1): threshold: anomaly: ';
+    const anomaly = (fields: unknown) => failure({ threshold: { anomaly: fields } });
+    expect(anomaly(3)).toThrow(`${at}must be an object`);
+    expect(anomaly({ metric: "count", band: 2 })).toThrow(`${at}unknown field "band"`);
+    for (const metric of [undefined, "rate", 1]) expect(anomaly({ metric })).toThrow(`${at}metric must be "count" or "sum"`);
+    expect(anomaly({ metric: "count", sum: "a" })).toThrow(`${at}sum is only for metric "sum"`);
+    expect(anomaly({ metric: "sum" })).toThrow(`${at}sum must be a field path`);
+    expect(anomaly({ metric: "sum", sum: "a..b" })).toThrow(`${at}sum: Invalid field path: "a..b"`);
+    for (const k of [0, "0.0000", -1, "-1", "1.00001", 1e-7, "x", null, "", Number.NaN]) {
+      expect(anomaly({ metric: "count", k })).toThrow(`${at}k must be a positive decimal with at most 4 fractional digits`);
+    }
+    for (const baseline of [2, 1001, 3.5, "30", null]) {
+      expect(anomaly({ metric: "count", baseline })).toThrow(`${at}baseline must be an integer from 3 to 1000`);
+    }
+    for (const minBaseline of [0, 11, 2.5, "5"]) {
+      expect(anomaly({ metric: "count", baseline: 10, minBaseline })).toThrow(`${at}minBaseline must be an integer from 1 to baseline (10)`);
+    }
+    for (const direction of ["up", "", 1, null]) {
+      expect(anomaly({ metric: "count", direction })).toThrow(`${at}direction must be "above", "below" or "both"`);
     }
   });
 

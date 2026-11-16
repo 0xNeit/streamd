@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryAdapter, StreamdClient, verifyWebhook } from "@streamd/core";
 import type { StreamdEvent } from "@streamd/core";
-import { runAlert } from "../src/alert.js";
+import { advance, runAlert } from "../src/alert.js";
 import type { AlertIO } from "../src/alert.js";
 import { parseRules } from "../src/alert-rules.js";
 import type { AlertOptions } from "../src/args.js";
@@ -30,8 +30,9 @@ interface Alert {
   rule: string;
   windowStart: string;
   windowEnd: string;
-  threshold: Record<string, string>;
+  threshold: Record<string, unknown>;
   value: string;
+  anomaly?: Record<string, string>;
   event: { version: string };
 }
 
@@ -330,5 +331,116 @@ describe("runAlert window and cursor pairing", () => {
   it("saves a rule named __proto__ like any other", async () => {
     await runTo(new MemoryAdapter([ev(1, T0)]), rules(rule("__proto__", { count: 5 })), () => existsSync(cursorFile()));
     expect(Object.hasOwn(state(), "__proto__")).toBe(true);
+  });
+});
+
+describe("runAlert anomaly thresholds", () => {
+  const at = (minute: number, n: number, first: number) =>
+    Array.from({ length: n }, (_, i) => ev(first + i, T0 + BigInt(minute) * MINUTE + BigInt(i)));
+  // Minute 0 is the partial first window; minutes 1 to 3 hold 1, 2 and 3 events, minute 4 holds 4.
+  const history = () => [...at(0, 1, 1), ...at(1, 1, 2), ...at(2, 2, 3), ...at(3, 3, 5)];
+  const anomaly = (name: string, fields: Record<string, unknown>) =>
+    rule(name, { anomaly: { metric: "count", k: 1, baseline: 3, minBaseline: 3, ...fields } });
+
+  it("fires above at the crossing event, after a full baseline, excluding the partial first window", async () => {
+    const adapter = new MemoryAdapter([...history(), ...at(4, 4, 8), ...at(5, 1, 12)]);
+    const list = rules(
+      anomaly("spike", {}),
+      anomaly("low", { direction: "below" }),
+      // With the partial first window this baseline would be full, and minute 4 would fire.
+      anomaly("late", { baseline: 4, minBaseline: 4 }),
+    );
+    await runTo(adapter, list, () => existsSync(cursorFile()) && ["spike", "low", "late"].every((n) => state()[n]?.window?.start === `${T0 + 5n * MINUTE}`));
+    expect(received).toHaveLength(1);
+    expect(received[0]!.body).toEqual({
+      id: `spike:${T0 + 4n * MINUTE}`,
+      rule: "spike",
+      windowStart: `${T0 + 4n * MINUTE}`,
+      windowEnd: `${T0 + 5n * MINUTE}`,
+      threshold: { anomaly: { metric: "count", k: "1", baseline: "3", minBaseline: "3", direction: "both" } },
+      value: "4",
+      anomaly: { side: "above", median: "2", mad: "1", low: "0.5174", high: "3.4826", baselineWindows: "3" },
+      event: { type: TYPE, data: { amount: "1" }, version: "11", sequenceNumber: "0", eventIndex: 0, timestamp: `${T0 + 4n * MINUTE + 3n}` } as never,
+    });
+    expect(state().spike!.window).toEqual({ start: `${T0 + 5n * MINUTE}`, value: "1", fired: false, history: ["2", "3", "4"] });
+    expect(state().late!.window!.history).toEqual(["1", "2", "3", "4"]);
+  });
+
+  it("fires below when a window closes, and counts an empty window as a zero", async () => {
+    // Baseline 2, 2, 3 (MAD 0); minute 4 holds 1 event, minute 5 two, minute 6 none.
+    const adapter = new MemoryAdapter([
+      ...at(0, 1, 1),
+      ...at(1, 2, 2),
+      ...at(2, 2, 4),
+      ...at(3, 3, 6),
+      ...at(4, 1, 9),
+      ...at(5, 2, 10),
+      ...at(7, 1, 12),
+    ]);
+    await runTo(adapter, rules(anomaly("quiet", { direction: "below" })), () => existsSync(cursorFile()) && state().quiet?.window?.start === `${T0 + 7n * MINUTE}`);
+    expect(received.map((r) => [r.body.windowStart, r.body.value, r.body.event.version, r.body.anomaly])).toEqual([
+      [`${T0 + 4n * MINUTE}`, "1", "10", { side: "below", median: "2", mad: "0", low: "2", high: "2", baselineWindows: "3" }],
+      [`${T0 + 6n * MINUTE}`, "0", "12", { side: "below", median: "2", mad: "1", low: "0.5174", high: "3.4826", baselineWindows: "3" }],
+    ]);
+    expect(state().quiet!.window!.history).toEqual(["1", "2", "0"]);
+  });
+
+  it("sums at full precision", async () => {
+    const big = "18446744073709551616";
+    const adapter = new MemoryAdapter([ev(1, T0), ev(2, T0 + MINUTE, "1"), ev(3, T0 + 2n * MINUTE, "2"), ev(4, T0 + 3n * MINUTE, "3"), ev(5, T0 + 4n * MINUTE, big)]);
+    const list = rules(rule("whale", { anomaly: { metric: "sum", sum: "amount", k: "1", baseline: 3, minBaseline: 3 } }));
+    await runTo(adapter, list, () => received.length === 1);
+    expect(received[0]!.body).toMatchObject({ value: big, threshold: { anomaly: { metric: "sum", sum: "amount" } }, anomaly: { side: "above", median: "2" } });
+  });
+
+  it("resumes the saved baseline across a restart, alerting once, and refuses a changed anomaly", async () => {
+    const adapter = new MemoryAdapter(at(0, 1, 1));
+    const list = rules(anomaly("spike", {}));
+    await runTo(adapter, list, () => existsSync(cursorFile()) && state().spike?.window !== undefined);
+    expect(state().spike!.window).toEqual({ start: `${T0}`, value: "1", fired: false, history: [], partial: true });
+
+    adapter.push(...history().slice(1));
+    await runTo(adapter, list, () => state().spike?.window?.start === `${T0 + 3n * MINUTE}` && state().spike?.window?.value === "3");
+    expect(state().spike!.window).toEqual({ start: `${T0 + 3n * MINUTE}`, value: "3", fired: false, history: ["1", "2"] });
+    expect(received).toHaveLength(0);
+
+    adapter.push(...at(4, 4, 8));
+    await runTo(adapter, list, () => state().spike?.window?.value === "4");
+    adapter.push(...at(5, 1, 12));
+    await runTo(adapter, list, () => state().spike?.window?.start === `${T0 + 5n * MINUTE}`);
+    expect(versions()).toEqual(["11"]);
+
+    const changed = start(adapter, rules(anomaly("spike", { k: 2 })));
+    expect(await changed.run).toBe(1);
+    expect(changed.errors[0]).toContain('rule "spike" changed since its position was saved');
+  });
+});
+
+describe("anomaly cursor entries", () => {
+  it("refuses a saved window with a malformed history or partial flag", async () => {
+    const [spike] = rules(rule("spike", { anomaly: { metric: "count" } }));
+    const window = { start: `${T0}`, value: "1", fired: false };
+    for (const extra of [{ history: ["1", 2] }, { history: "1" }, { history: ["1.5"] }, { partial: false }]) {
+      writeFileSync(cursorFile(), JSON.stringify({ spike: { rule: spike!.fingerprint, cursor: "c", window: { ...window, ...extra } } }));
+      const h = start(new MemoryAdapter([]), [spike!]);
+      expect(await h.run).toBe(1);
+      expect(h.errors[0]).toBe(`streamd: cannot read cursor file: malformed entry for rule "spike": ${cursorFile()}`);
+    }
+  });
+});
+
+describe("advance over a long gap", () => {
+  it("judges at most a baseline of empty windows, however many were skipped", () => {
+    const [quiet] = rules(rule("quiet", { anomaly: { metric: "count", k: 1, baseline: 3, minBaseline: 1, direction: "below" } }));
+    const entry = { rule: quiet!, fold: ((n: bigint) => n + 1n) as never, limit: undefined };
+    const open = { start: T0, value: 5n, fired: false, history: [5n, 5n, 5n] };
+    const far = T0 + 1_000_000_000n * MINUTE;
+    const { window, fires } = advance(entry, open, ev(1, far));
+    // The baseline 5, 5, 5 leaves 0 below its band twice; then 5, 0, 0 has median 0.
+    expect(fires.map((f) => [f.window.start, f.window.value, f.anomaly?.side])).toEqual([
+      [T0 + MINUTE, 0n, "below"],
+      [T0 + 2n * MINUTE, 0n, "below"],
+    ]);
+    expect(window).toEqual({ start: far, value: 1n, fired: false, history: [0n, 0n, 0n] });
   });
 });
