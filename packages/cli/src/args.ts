@@ -499,9 +499,9 @@ adds it to a Redis stream, publishes it to a NATS JetStream subject or produces
 it to a Kafka topic, saving
 its position to a cursor file once the destination acknowledges it.
 alert follows the rules in a JSON file, each a descriptor, filter, window and
-count or sum threshold, and POSTs a signed alert to a webhook the first time a
-window of chain time crosses its threshold, saving each rule's position and
-open window to a cursor file.
+count, sum or anomaly threshold, and POSTs a signed alert to a webhook the first
+time a window of chain time crosses its threshold or leaves its baseline's
+band, saving each rule's position and open window to a cursor file.
 store follows matching events into a SQLite file, or a Postgres database
 with --postgres, resuming from the cursor saved there when run again.
 query reads a closed range of history as JSON lines, then exits.
