@@ -57,6 +57,9 @@ TypeScript types:
 - `@streamd/testing` (`packages/testing`) - start or attach to an Aptos localnet, publish Move
   packages to it and assert their events. Needs the `aptos` CLI. See
   [Test against a localnet](#test-against-a-localnet).
+- `@streamd/receiver` (`packages/receiver`) - receive `streamd forward` webhooks: the signature
+  checked, the events parsed and repeats dropped. See
+  [Forward events to a webhook](#forward-events-to-a-webhook).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents`, `useSubmitTransaction` and
   `useTransfers` take an `AptosClient`. See [React hooks](#react-hooks).
@@ -4182,6 +4185,83 @@ Network errors, timeouts, `408`, `429` and `5xx` are retried with exponential ba
 Any other status, redirects included, fails at once. The webhook receives only the body,
 the content type, your `--header` values and any signature, and neither the URL, header
 values nor the secret are printed.
+
+**Receive them with `@streamd/receiver`.** `createReceiver` returns a `Request` to `Response`
+handler that does the checks above, parses the events with `parseEvent` and drops any already
+handled, by `eventId`, so a resent batch does not reach `onEvents` again while its store remembers it.
+It depends only on `@streamd/core`, and runs anywhere with `fetch`'s `Request` and Web Crypto:
+Bun, Deno, edge workers and Node 19+ through any Fetch-style server.
+
+```ts
+import { createReceiver } from "@streamd/receiver";
+
+const receive = createReceiver({
+  secret: process.env.STREAMD_WEBHOOK_SECRET!,
+  decode: ["amount"],
+  async onEvents(events) {
+    for (const event of events) await save(event);
+  },
+});
+
+Bun.serve({ port: 8787, fetch: receive });
+```
+
+```sh
+streamd forward --to http://127.0.0.1:8787 --secret "$STREAMD_WEBHOOK_SECRET" 0x1::coin::DepositEvent
+```
+
+Each request is checked in order, and nothing is parsed before the signature holds:
+
+| Answer | When | What `forward` does |
+| --- | --- | --- |
+| `204` | handled, or every event was a repeat | moves on |
+| `405` | not `POST` | stops, exit 1 |
+| `415` | not `application/json` | stops, exit 1 |
+| `413` | body over `maxBodyBytes` (default 4 MiB), by `content-length` or as read | stops, exit 1 |
+| `401` | signature missing, malformed or wrong | stops, exit 1 |
+| `400` | not UTF-8, not a JSON array, or an event `parseEvent` refuses | stops, exit 1 |
+| `500` | the store or `onEvents` threw or rejected, or `seen` answered the wrong number of results | retries |
+| `503` | another delivery of one of these events is still being handled | retries with its backoff |
+
+`onEvents` gets only the events not seen before, in body order, and is not called when there
+are none. They are recorded as handled only after it resolves, so a failure leaves them for the
+retry. That makes handling at least once, not exactly once: when `onEvents` succeeds and
+recording then fails, or the process stops between the two, the retry runs it again. Make
+`onEvents` idempotent where that matters. `onError(error, request)` is told what caused a `400`
+or `500`; the response body never says.
+
+The default store, `MemoryDedupStore`, keeps the last `maxEntries` ids (default 100,000) in
+memory and forgets them on restart. Behind more than one instance, or across restarts, pass a
+`store`: any object with `seen(ids)`, answering a boolean per id in order, and `add(ids)`,
+either of which may be async. Ids are `version:eventIndex`, which repeat across networks and
+chains, so when forwarders for more than one network share a receiver or store, give each its
+own receiver with a `namespace` (`"aptos:mainnet"`), which prefixes every id it stores. Over
+`bun:sqlite`:
+
+```ts
+import { Database } from "bun:sqlite";
+import type { DedupStore } from "@streamd/receiver";
+
+const db = new Database("seen.db");
+db.run("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY)");
+const has = db.query("SELECT 1 FROM seen WHERE id = ?");
+const insert = db.query("INSERT OR IGNORE INTO seen (id) VALUES (?)");
+
+const store: DedupStore = {
+  seen: (ids) => ids.map((id) => has.get(id) !== null),
+  add: db.transaction((ids: readonly string[]) => {
+    for (const id of ids) insert.run(id);
+  }),
+};
+```
+
+The `503` guard covers one process; two instances sharing a store can both handle a resent batch
+that arrives while the first is still running. A handler slower than `--timeout` spends
+`forward`'s `--retries` on `503`s, so keep `onEvents` quick or raise them. The signature has no
+timestamp, so a captured body replays once its ids are forgotten (after a restart with the memory
+store, or past `maxEntries`): use `https` and a durable store where that matters. A body over `maxBodyBytes` stops `forward`, so
+lower `--batch-size` rather than raising the limit far. Alert payloads from `streamd alert` are a
+different body; check those with `verifyWebhook` and deduplicate on their `id`.
 
 **To a Redis stream.** Give `--to` a Redis URL, `redis://[user:password@]host[:port][/db]` or
 `rediss://` for TLS, and `--stream` the stream key. Each batch becomes one entry, added with
