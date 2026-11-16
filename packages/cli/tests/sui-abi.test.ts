@@ -132,9 +132,9 @@ function service(packages = [STD_PKG, SUI_PKG, V1_PKG, V2_PKG, OTHER_PKG]) {
   return { svc, reads, listed };
 }
 
-async function generate(refs: ModuleRef[], svc = service().svc, validators = false) {
+async function generate(refs: ModuleRef[], svc = service().svc, validators = false, arbitraries = false) {
   const { targets, load } = suiCodegen(svc);
-  return generateEventTypes(await targets(refs), load, { dialect: SUI_DIALECT, validators });
+  return generateEventTypes(await targets(refs), load, { dialect: SUI_DIALECT, validators, arbitraries });
 }
 
 describe("suiCodegen", () => {
@@ -233,6 +233,45 @@ describe("suiCodegen", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("generates Sui JSON every validator accepts with --arbitraries, typechecking strictly", async () => {
+    const source = await generate([{ address: V1, module: "pool" }], service().svc, true, true);
+    const dir = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".arbitraries-"));
+    try {
+      const file = join(dir, "pool.ts");
+      writeFileSync(file, source);
+      const mod = (await import(file)) as Record<string, (...args: any[]) => any>;
+      const rng = mod.streamdRng!(9);
+      const swaps = Array.from({ length: 10_000 }, () => mod.arbitrarySwapEvent!(rng));
+      expect(swaps.every((e) => mod.isSwapEvent!(e))).toBe(true);
+      for (let i = 0; i < 10_000; i++) {
+        expect(mod.isSide!(mod.arbitrarySide!(rng))).toBe(true);
+        expect(mod.isOrder!(mod.arbitraryOrder!(rng, (r: () => number) => r() % 3))).toBe(true);
+      }
+      const ids = /^0x[0-9a-f]{64}$/;
+      expect(swaps.every((e) => ids.test(e.pool) && ids.test(e.who) && e.ids.every((id: string | null) => id === null || ids.test(id)))).toBe(true);
+      expect(swaps.every((e) => Buffer.from(e.bytes, "base64").toString("base64") === e.bytes && Buffer.from(e.bytes, "base64").length <= 32)).toBe(true);
+      expect(swaps.some((e) => e.bytes.endsWith("=")) && swaps.some((e) => e.bytes === "")).toBe(true);
+      expect(swaps.every((e) => /^[0-9a-f]{64}::\w+::\w+$/.test(e.coin) && /^[\x20-\x7e]*$/.test(e.symbol + e.link))).toBe(true);
+      expect(new Set(swaps.map((e) => e.maybe === null))).toEqual(new Set([true, false]));
+      expect(source).toContain('"@variant": "Ask"');
+      writeFileSync(
+        join(dir, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            target: "ES2022", module: "ESNext", moduleResolution: "bundler", strict: true, noUnusedLocals: true, noUnusedParameters: true,
+            noPropertyAccessFromIndexSignature: true, noUncheckedIndexedAccess: true, noEmit: true, skipLibCheck: true, types: [], lib: ["ES2022"],
+            paths: { "@streamd/core": [fileURLToPath(new URL("../../core/dist/index.d.ts", import.meta.url))] },
+          },
+          files: ["pool.ts"],
+        }),
+      );
+      const result = Bun.spawnSync([fileURLToPath(new URL("../../../node_modules/.bin/tsc", import.meta.url)), "-p", dir]);
+      expect(result.stdout.toString() + result.stderr.toString()).toBe("");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it("refuses missing packages and modules, and targets with nothing to emit", async () => {
     const notPackage: SuiPackageService = {
