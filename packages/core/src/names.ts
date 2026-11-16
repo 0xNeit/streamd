@@ -76,7 +76,9 @@ export class SenderNames {
   }
 
   private fetch(address: string, limited: boolean): Promise<string | null> {
-    let pending = this.pending.get(address);
+    // Shared per mode: a lookup inside a slot must never wait on one queued for that slot.
+    const key = `${limited ? "queued" : "in-slot"}:${address}`;
+    let pending = this.pending.get(key);
     if (pending === undefined) {
       const lookup = () => this.lookup!(address);
       pending = (limited ? this.limiter.run(lookup) : Promise.resolve().then(lookup))
@@ -87,8 +89,8 @@ export class SenderNames {
           this.cache.set(address, { name: found, at: this.now() });
           return found;
         })
-        .finally(() => this.pending.delete(address));
-      this.pending.set(address, pending);
+        .finally(() => this.pending.delete(key));
+      this.pending.set(key, pending);
     }
     return pending;
   }

@@ -2389,7 +2389,8 @@ for (const { version, data } of await streamd.getProvenance(token, { withNames: 
   history wants an API key on both. A version the node does not have yet fails the page as a
   network error, which retries; a listing out of order or out of range fails it as invalid.
 - **Names.** Under `withNames`, `names` holds the primary name (`null` for none) of the sender
-  and every address in `actions`, through the client's name cache.
+  and every address in `actions`, through the client's name cache. Lookups the cache misses run
+  inside the page's slot, so `maxRequestsPerSecond` does not space them.
 - **Identity.** A record keeps the transaction's first event's `(version, eventIndex)`,
   `transactionHash`, `sender`, `timestamp` and `entryFunction`, with `type`
   `0x1::object::ObjectCore` whatever that event was. Like `activity()`, it is not a listener for

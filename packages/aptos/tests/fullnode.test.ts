@@ -1044,6 +1044,7 @@ describe("FullnodeScanAdapter transaction lookup by version", () => {
       { type: "write_resource", data: { type: "0x1::object::ObjectCore", data: {} } },
       { type: "write_resource", address: "not an address", data: { type: "0x1::object::ObjectCore", data: {} } },
       { type: "write_resource", address: "0xa", data: { data: {} } },
+      { type: "write_resource", address: "0xa", data: { type: "0x1::object::ObjectCore" } },
     ];
     const byVersion = fakeNode(() => ({ data: { ...committed, changes } }));
     const found = await new FullnodeScanAdapter(byVersion.aptos).getTransactionEventsByVersion(77n);

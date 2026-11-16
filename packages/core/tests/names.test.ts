@@ -73,6 +73,20 @@ describe("SenderNames", () => {
     expect(lookups).toEqual([ALICE]);
   });
 
+  it("never joins an in-slot lookup to one queued for the slot it holds", async () => {
+    const limiter = new RequestLimiter(1);
+    const cache = new SenderNames(limiter);
+    cache.serve(async () => "alice.apt");
+    let queued: Promise<string | null> | undefined;
+    const page = limiter.run(async () => {
+      queued = cache.name(ALICE, DEFAULT_NAME_TTL);
+      return cache.nameWithinSlot(ALICE, DEFAULT_NAME_TTL);
+    });
+    const timeout = new Promise((r) => setTimeout(() => r("deadlock"), 300));
+    expect(await Promise.race([page, timeout])).toBe("alice.apt");
+    expect(await queued).toBe("alice.apt");
+  });
+
   it("caches a miss as null", async () => {
     const { cache, lookups } = setup();
     expect((await cache.attach(ev(BOB), 1000)).senderName).toBeNull();
