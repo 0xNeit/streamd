@@ -38,6 +38,8 @@ describe("diffValues", () => {
       { path: "items.1", after: { amount: "3" } },
     ]);
     expect(diffValues({ items: ["a", "b"] }, { items: ["a"] })).toEqual([{ path: "items.1", before: "b" }]);
+    const eleven = Array.from({ length: 11 }, (_, i) => i);
+    expect(diffValues(eleven, eleven.map((n) => n + 1)).map((c) => c.path)).toEqual(eleven.map(String));
   });
 
   it("reports a change of shape whole at its path", () => {
@@ -200,6 +202,8 @@ describe("runInspect", () => {
     const watched: EventAdapter = { ...adapter, fetchEvents: (d, o) => ((fetched = true), adapter.fetchEvents(d, o)) };
     const { code, out, errors } = await run(options(), async () => Promise.reject(new StreamdError("Fullnode request failed")), watched);
     expect([code, out, errors, fetched]).toEqual([1, [], ["streamd: Fullnode request failed"], false]);
+    const down = await run(options(), async () => Promise.reject(new StreamdNetworkError("down", 500)));
+    expect([down.code, down.out, down.errors]).toEqual([1, [], ["streamd: down"]]);
   });
 
   it("prints pretty records", async () => {
@@ -214,6 +218,45 @@ describe("runInspect", () => {
     expect(absent.out).toEqual(['{"version":"3","value":null}\n']);
     const failed = await run(options({ at: 3n }), async () => Promise.reject(new StreamdNetworkError("pruned", 410)));
     expect([failed.code, failed.errors]).toEqual([1, ["streamd: pruned"]]);
+  });
+
+  it("waits for each write, and exits 1 when one rejects", async () => {
+    let release!: () => void;
+    const out: string[] = [];
+    const client = new StreamdClient({ adapter: new MemoryAdapter(history) });
+    const running = runInspect(options(), {
+      client,
+      read: async () => ({ h: "0" }),
+      write: (text) => (out.push(text), out.length === 1 ? new Promise<void>((resolve) => (release = resolve)) : undefined),
+      error: () => {},
+      signal: new AbortController().signal,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(out).toHaveLength(1);
+    release();
+    expect(await running).toBe(0);
+    expect(out).toHaveLength(3);
+    const rejected = await run(options(), async () => ({ h: "0" }), undefined, () => Promise.reject(new Error("EPIPE")) as never);
+    expect([rejected.code, rejected.errors]).toEqual([1, ["streamd: EPIPE"]]);
+    client.destroy();
+  });
+
+  it("exits 0 with no message when the signal aborts mid-range", async () => {
+    const controller = new AbortController();
+    const errors: string[] = [];
+    const client = new StreamdClient({ adapter: new MemoryAdapter(history) });
+    const code = await runInspect(options(), {
+      client,
+      read: async () => ({ h: "0" }),
+      write: () => {
+        controller.abort();
+        throw new Error("EPIPE");
+      },
+      error: (m) => errors.push(m),
+      signal: controller.signal,
+    });
+    client.destroy();
+    expect([code, errors]).toEqual([0, []]);
   });
 
   it("exits 1 when a write fails", async () => {

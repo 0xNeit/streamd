@@ -4648,7 +4648,7 @@ streamd inspect 0x1 --resource 0x1::stake::ValidatorPerformance --from-version 8
   If the node has pruned that version and there is no `--archive`, the first change is printed as
   `written`, with its whole `value`, and a note on stderr says so.
 - **Range.** `--from-version` is required and `--to-version` is a version or `head` (the default,
-  read once at the start). `--limit <n>` stops after `n` lines. Changes come from transaction write
+  read once at the start). `--limit <n>` stops after `n` changes. Changes come from transaction write
   sets through a scan of every transaction in the range, so keep ranges short: a thousand mainnet
   versions took about 25 seconds, in 5 requests, against the public fullnode. A range the node has pruned goes
   to `--archive`, as `query`'s does.

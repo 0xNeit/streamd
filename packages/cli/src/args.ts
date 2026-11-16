@@ -443,7 +443,6 @@ const WATCH_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
-/** `handles` and `name`: one positional and the endpoint. */
 const INSPECT_OPTIONS = {
   ...READ_OPTIONS,
   resource: { type: "string" },
@@ -455,6 +454,7 @@ const INSPECT_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+/** `handles` and `name`: one positional and the endpoint. */
 const HANDLES_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   help: { type: "boolean", short: "h" },
