@@ -3960,7 +3960,7 @@ has for long-lived handles, it fails at the start, with `--handle` as well.
 `--node-url` overrides its fullnode.
 
 Commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`, `transfers`,
-`balances` and `watch`) take `--node-url` more than once, spreading reads across the nodes through
+`balances`, `watch` and `inspect`) take `--node-url` more than once, spreading reads across the nodes through
 [`PoolAdapter`](#spreading-load-across-fullnodes): each walk stays on one node, and a node that
 answers `429` is set aside for 30 seconds while the others carry on. `--api-key` goes to the first
 node only. They also take `--archive <url>`, which sends only what the fullnodes refuse as pruned
@@ -4005,7 +4005,7 @@ cursor file could not be written; `2` for invalid arguments; `130` on a second C
 ### Request stats
 
 `--stats` on the commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`,
-`transfers`, `balances` and `watch`) prints what the command has asked of each node, through
+`transfers`, `balances`, `watch` and `inspect`) prints what the command has asked of each node, through
 `adapterMetrics`, as one JSON line on stderr: once when the command ends, by
 `--limit`, the end of its range, Ctrl-C, `SIGTERM`, stdout closing or a failure, and again each
 time the process gets `SIGUSR1` (not on Windows, which has no such signal). stdout keeps only
@@ -4025,12 +4025,12 @@ never by URL, since a URL may carry a key. Each node is counted inside the pool,
 fallback and `--cache`, so a page the cache answered is not a request, a `429` the pool moved to
 another node counts on both, and a pruned read counts as an error on the fullnode and a request
 on the archive. Reads made outside the adapter are not counted: name lookups (an `--account` or
-address given as a name), and with `--chain sui`, `transfers` and `balances`, which read the
+address given as a name), `inspect`'s resource reads, and with `--chain sui`, `transfers` and `balances`, which read the
 first node directly. A second Ctrl-C exits at once, without the line.
 
 ### Sui from the command line
 
-Every command but `handles` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
+Every command but `handles` and `inspect` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
 with the same output and exit codes:
 
 ```sh
@@ -4627,6 +4627,51 @@ streamd query --cache pages.db --from-version 7984000000 --to-version 7984001000
   a read or write that fails later, counts as a miss: the page comes from the node, and the first
   such failure is reported on stderr.
 - **Sui.** `SuiAdapter` never marks a page settled, so `--cache` with `--chain sui` is refused.
+
+### Inspect a resource over time
+
+`streamd inspect` prints what each transaction in a range did to one resource, one JSON line per
+write or delete, listing every field it changed:
+
+```sh
+streamd inspect 0x1 --resource 0x1::stake::ValidatorPerformance --from-version 8071200052 --to-version 8071200082
+# {"version":"8071200082","transactionHash":"0xd768...","timestamp":"1794796910359480","change":"updated","changes":[{"path":"validators.6.successful_proposals","before":"302","after":"303"}]}
+```
+
+- **Changes.** `change` is `updated`, with `changes` listing each leaf that differs as
+  `{ path, before, after }` (possibly none, for a write that left the value as it was); `created`,
+  with the whole new `value`; or `deleted`. A path is dotted, array elements by index, the form
+  `--where` reads; a field that appears or disappears has no `before` or no `after`, and a field
+  that changes shape, such as an object becoming a string, is one change with both values whole.
+  Bigints in the line are decimal strings.
+- **The first change** is diffed against the value at `--from-version - 1`, read once at the start.
+  If the node has pruned that version and there is no `--archive`, the first change is printed as
+  `written`, with its whole `value`, and a note on stderr says so.
+- **Range.** `--from-version` is required and `--to-version` is a version or `head` (the default,
+  read once at the start). `--limit <n>` stops after `n` lines. Changes come from transaction write
+  sets through a scan of every transaction in the range, so keep ranges short: a thousand mainnet
+  versions took about 25 seconds, in 5 requests, against the public fullnode. A range the node has pruned goes
+  to `--archive`, as `query`'s does.
+- **`--at <n>`** prints the resource's value at one version, `{"version":"<n>","value":...}`, with
+  `value` `null` when the account did not hold it then:
+
+  ```sh
+  streamd inspect 0x1 --resource "0x1::coin::CoinInfo<0x1::aptos_coin::AptosCoin>" --at 8071200057
+  streamd inspect 0x1 --resource 0x1::block::BlockResource --at 100 --archive default
+  ```
+
+- **`--format pretty`** prints a line of version, UTC time and change, then one indented
+  `path: before -> after` line per field, `(absent)` for a missing side; `--at` prints the value
+  as indented JSON. Control characters in on-chain text print as `?`.
+- **Reads.** The value before the range and `--at` are one
+  `/accounts/<address>/resource/<type>?ledger_version=` read on the first `--node-url`, sent to
+  `--archive` only when that node answers `410`; any other failure, such as a version above the
+  head, exits 1. These reads are not counted by `--stats`.
+- **Aptos only.** `--chain sui` is refused: Sui reads object state only at the head, so there is
+  no value before a range or at a past version to read.
+
+Exit codes are `query`'s: 0 when finished, interrupted or piped into something that stops reading,
+1 on a failed read or write, 2 for bad usage.
 
 ### Follow or query transfers
 
