@@ -5375,6 +5375,41 @@ Each type describes the JSON a Sui node returns, as `SuiAdapter` delivers it:
 A generic event's descriptor passes its type arguments through as given; the node matches either
 form, but `event.type` carries long-form addresses, so pass long form to compare against it.
 
+### Event coverage for Move tests
+
+`streamd coverage` tells you which `#[event]` structs your tests never emit. It starts an Aptos
+localnet with the installed `aptos` CLI (through [`@streamd/testing`](#test-against-a-localnet)),
+publishes the Move package from a funded account, runs your test command against that localnet,
+then prints one JSON line per event struct the package declares:
+
+```sh
+streamd coverage ./move/counter -- bun test tests/move
+# {"event":"0x396c...::counter::Bumped","emitted":true,"count":3,"first":{"version":"33","eventIndex":0,"transactionHash":"0x77e2...","function":"0x396c...::counter::bump","sender":"0x396c..."}}
+# {"event":"0x396c...::counter::Reset","emitted":false,"count":0}
+```
+
+- **The test command** is everything after `--`, run without a shell, with its stdout sent to
+  stderr so it cannot mix with the report. It finds the localnet in its environment:
+  `STREAMD_NODE_URL`, `STREAMD_FAUCET_URL`, `STREAMD_PACKAGE_ADDRESS` (long form) and
+  `STREAMD_PUBLISHER_KEY`, the publisher's private key, so it can call entry functions only the
+  publisher may. A TypeScript test can pass the first two to `attachLocalnet`. Move unit tests
+  (`aptos move test`) run with no node, so their events cannot be counted; drive the package
+  through transactions instead.
+- **Publishing.** Every named address the package's `Move.toml` leaves as `"_"` in `[addresses]`
+  is set to the publisher's address. Events `init_module` emits count, with
+  `0x1::code::publish_package_txn` as their call.
+- **What counts.** The `#[event]` structs of every module at the package address, read from the
+  node's ABIs after the command exits; events of a generic struct count under the struct, whatever
+  their type arguments. Events are read with one `getEvents` from the publish to the head.
+- **Each line** has `event`, `emitted`, `count` and, when emitted, `first`: the version, event
+  index, transaction hash, entry function (`null` for a script) and sender of the earliest event.
+  Lines are sorted by type. A summary such as `streamd: 3 of 4 event structs emitted` goes to
+  stderr. `--format pretty` prints one aligned line per struct instead.
+- **Exit codes.** 0 when the command passed, 1 when it failed (the report still prints) or when the
+  localnet, compile or publish failed, 2 for bad usage. The localnet is stopped either way.
+- **Aptos only**, and one package per run. `bun run test:localnet` in `packages/cli` runs it for real
+  on a fixture package; the normal test run skips it.
+
 ## Development
 
 ```sh

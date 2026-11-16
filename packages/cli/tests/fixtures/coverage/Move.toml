@@ -1,0 +1,11 @@
+[package]
+name = "coverage"
+version = "0.0.1"
+
+[addresses]
+coverage = "_"
+
+[dependencies.AptosFramework]
+git = "https://github.com/aptos-labs/aptos-core.git"
+rev = "aptos-cli-v9.4.0"
+subdir = "aptos-move/framework/aptos-framework"
