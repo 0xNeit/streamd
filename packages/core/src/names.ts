@@ -61,14 +61,27 @@ export class SenderNames {
   async name(address: string, ttl: number, signal?: AbortSignal): Promise<string | null> {
     const hit = this.cache.get(address);
     if (hit !== undefined && this.now() - hit.at < ttl) return hit.name;
-    return raceAbort(this.fetch(address), signal);
+    return raceAbort(this.fetch(address, true), signal);
   }
 
-  private fetch(address: string): Promise<string | null> {
-    let pending = this.pending.get(address);
+  /**
+   * `name`, for a caller already inside one of the limiter's slots, such as
+   * a page fetch: going through the limiter again would wait on that slot,
+   * forever under `maxConcurrentRequests: 1`.
+   */
+  async nameWithinSlot(address: string, ttl: number): Promise<string | null> {
+    const hit = this.cache.get(address);
+    if (hit !== undefined && this.now() - hit.at < ttl) return hit.name;
+    return this.fetch(address, false);
+  }
+
+  private fetch(address: string, limited: boolean): Promise<string | null> {
+    // Shared per mode: a lookup inside a slot must never wait on one queued for that slot.
+    const key = `${limited ? "queued" : "in-slot"}:${address}`;
+    let pending = this.pending.get(key);
     if (pending === undefined) {
-      pending = this.limiter
-        .run(() => this.lookup!(address))
+      const lookup = () => this.lookup!(address);
+      pending = (limited ? this.limiter.run(lookup) : Promise.resolve().then(lookup))
         .then((name) => {
           const found = name ?? null;
           this.cache.delete(address);
@@ -76,8 +89,8 @@ export class SenderNames {
           this.cache.set(address, { name: found, at: this.now() });
           return found;
         })
-        .finally(() => this.pending.delete(address));
-      this.pending.set(address, pending);
+        .finally(() => this.pending.delete(key));
+      this.pending.set(key, pending);
     }
     return pending;
   }

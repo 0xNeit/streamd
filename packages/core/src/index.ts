@@ -188,6 +188,7 @@ export type {
   SubscriptionError,
   SubscriptionInfo,
   SubscriptionStatus,
+  ResourceChange,
   TransactionEvents,
   TransactionSimulation,
   ViewRequest,

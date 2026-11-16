@@ -1035,6 +1035,30 @@ describe("FullnodeScanAdapter transaction lookup by version", () => {
     });
   });
 
+  it("reports each resource the write set wrote or deleted, in order, and leaves other changes out", async () => {
+    const changes = [
+      { type: "write_resource", address: "0xa", data: { type: "0x1::object::ObjectCore", data: { owner: "0xb" } } },
+      { type: "write_module", address: "0xa", data: { bytecode: "0x00" } },
+      { type: "write_table_item", handle: "0x1", key: "0x2", value: "0x3" },
+      { type: "delete_resource", address: "0xa", resource: "0x4::property_map::PropertyMap" },
+      { type: "write_resource", data: { type: "0x1::object::ObjectCore", data: {} } },
+      { type: "write_resource", address: "not an address", data: { type: "0x1::object::ObjectCore", data: {} } },
+      { type: "write_resource", address: "0xa", data: { data: {} } },
+      { type: "write_resource", address: "0xa", data: { type: "0x1::object::ObjectCore" } },
+    ];
+    const byVersion = fakeNode(() => ({ data: { ...committed, changes } }));
+    const found = await new FullnodeScanAdapter(byVersion.aptos).getTransactionEventsByVersion(77n);
+    const long = `0x${"a".padStart(64, "0")}`;
+    expect(found!.changes).toEqual([
+      { address: long, type: "0x1::object::ObjectCore", data: { owner: "0xb" } },
+      { address: long, type: "0x4::property_map::PropertyMap", data: null },
+    ]);
+    const byHash = fakeNode(() => ({ data: { ...committed, changes } }));
+    expect((await new FullnodeScanAdapter(byHash.aptos).getTransactionEvents(HASH))!.changes).toEqual(found!.changes);
+    const empty = fakeNode(() => ({ data: { ...committed, changes: [] } }));
+    expect((await new FullnodeScanAdapter(empty.aptos).getTransactionEventsByVersion(77n))!.changes).toEqual([]);
+  });
+
   it("reports a failed transaction with its vm status, and a system transaction as it is", async () => {
     const failed = fakeNode(() => ({ data: { ...committed, success: false, vm_status: "Move abort: 0x1", events: [] } }));
     expect(await new FullnodeScanAdapter(failed.aptos).getTransactionEventsByVersion(77n)).toEqual({

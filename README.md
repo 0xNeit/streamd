@@ -2323,6 +2323,81 @@ const past = await streamd.getUpgrades("0x1", { fromVersion: 7454757100n, toVers
   `(version, eventIndex)`, `transactionHash`, `sender` and `entryFunction`; `where` and `limit`
   apply to records. Like `swaps()`, it is not a listener for `off()` or `listenerCount()`.
 
+## Object provenance
+
+`getProvenance(object, filter?)` returns the history of one Aptos object, a `0x4` token or any
+`0x1::object` object, as one record per transaction that touched it, and
+`provenance(object, callback, options?)` follows new ones. Each record's `data` is a
+`Provenance { object, success, actions, changes, properties?, names? }`:
+
+```ts
+import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { ArchiveFallbackAdapter } from "@streamd/core";
+import { AptosClient, FullnodeScanAdapter, networks } from "@streamd/aptos";
+
+const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET }));
+const archive = new Aptos(new AptosConfig(networks.aptosMainnetArchive));
+const streamd = new AptosClient({
+  aptos,
+  // Tokens minted long ago need the archive: the fullnode keeps only recent transactions.
+  adapter: new ArchiveFallbackAdapter(new FullnodeScanAdapter(aptos), new FullnodeScanAdapter(archive)),
+});
+
+for (const { version, data } of await streamd.getProvenance(token, { withNames: true })) {
+  for (const action of data.actions) {
+    if (action.kind === "transfer") console.log(version, data.names?.[action.from], "->", data.names?.[action.to]);
+    else console.log(version, action);
+  }
+}
+```
+
+- **Source.** The transactions come from the Aptos Indexer's `account_transactions` queried
+  with the object's address, the only public source that lists every transaction touching an
+  object, write-set-only changes included (the fullnode has no route by object). `indexer` takes
+  any `{ getHeadVersion, listTransactionVersions }`; by default it is an anonymous
+  `IndexerAccountAdapter` over the client's `aptos`. Each listed transaction is then read by
+  version through the adapter's `getTransactionEventsByVersion`, so `ArchiveFallbackAdapter`
+  answers the ones the fullnode pruned; without one, a pruned transaction rejects with its 410.
+- **Actions.** In event order: `mint` (`0x4::collection::Mint`, `MintEvent`,
+  `ConcurrentMintEvent`), `transfer` (`0x1::object::Transfer` and the legacy `TransferEvent`,
+  with `from` and `to`), `mutation` (`0x4::token::Mutation`, `0x4::collection::Mutation` and
+  their legacy handle events, with the field and its old and new values when the event has
+  them) and `burn` (`0x4::collection::Burn`, `BurnEvent`, `ConcurrentBurnEvent`), each kept only
+  when it names this object, then a bare `burn` when the transaction deleted the object (an
+  `ObjectCore` delete, or the `0x1::object::ObjectGroup` delete the fullnode reports when the
+  whole group goes) with no burn event.
+- **Changes and properties.** `changes` holds every resource the transaction wrote or deleted at
+  the object (`data` `null` on delete), so a record with no actions still says what it touched,
+  such as a fungible store's balance. An object's resources are one resource group, written
+  whole, so any write to the object lists all of them, unchanged ones included. `properties` is
+  the object's `PropertyMap` as the transaction left it, each value decoded from its BCS bytes
+  (integers as `bigint`); `0x4::property_map` emits no event, so a property changed where a
+  record's `properties` differs from the previous record's.
+- **Range.** `getProvenance` starts at version 0 unless `fromVersion`, `fromTime` or
+  `fromBlock` says otherwise, and ends at the Indexer's processed version, which trails the
+  fullnode by a few hundred versions; `provenance()` starts there and follows it. `limit`,
+  `where`, `toVersion` and the cursor work as for `getEvents`. `fromVersion: "earliest"` is
+  refused, since an archive behind the adapter serves every version. `orderBy: "desc"` walks the
+  whole range forward and keeps the tail, as for any adapter, so it reads every transaction in
+  the range however small `limit` is.
+- **Reads.** Each page is one Indexer listing of as many versions as the page size (the
+  query's or the subscription's `batchSize`, at most 100), then one fullnode read per version,
+  one at a time and outside `maxConcurrentRequests`. `requestTimeout` bounds the whole page, so
+  set it well above a page's worth of reads, archive reads included, or a page that cannot
+  finish in time is retried forever. A page given up on stops reading once the next page
+  starts. The anonymous Indexer and archive budgets are small, so an object with a long
+  history wants an API key on both. A version the node does not have yet fails the page as a
+  network error, which retries; a listing out of order or out of range fails it as invalid.
+- **Names.** Under `withNames`, `names` holds the primary name (`null` for none) of the sender
+  and every address in `actions`, through the client's name cache. Lookups the cache misses run
+  inside the page's slot, so `maxRequestsPerSecond` does not space them.
+- **Identity.** A record keeps the transaction's first event's `(version, eventIndex)`,
+  `transactionHash`, `sender`, `timestamp` and `entryFunction`, with `type`
+  `0x1::object::ObjectCore` whatever that event was. Like `activity()`, it is not a listener for
+  `off()` or `listenerCount()`.
+- **Not covered.** Legacy `0x3::token` tokens, which have no object address; transactions that
+  touch only an object this object owns, unless the Indexer lists them.
+
 ## Live balances
 
 `balances(address, options?)` keeps one wallet's balances current. `address` may be

@@ -4,6 +4,7 @@ import type {
   EventAdapter,
   EventPage,
   ObjectRequest,
+  ResourceChange,
   StreamdEvent,
   TransactionEvents,
   ViewRequest,
@@ -249,7 +250,19 @@ function parseTransaction(value: unknown): TransactionEvents | undefined {
     if (feePayer === undefined) throw new StreamdError('"feePayer" must be an address');
     found.feePayer = feePayer;
   }
+  if (value.changes !== undefined) found.changes = parseChanges(value.changes);
   return found;
+}
+
+function parseChanges(value: unknown): ResourceChange[] {
+  if (!Array.isArray(value)) throw new StreamdError('"changes" must be an array');
+  return value.map((change) => {
+    const address = isObject(change) && typeof change.address === "string" ? normalizeAddress(change.address) : undefined;
+    if (address === undefined || typeof change.type !== "string" || !("data" in change)) {
+      throw new StreamdError('"changes" entries need an address, a type and data');
+    }
+    return { address, type: change.type, data: change.data };
+  });
 }
 
 function array(result: unknown): unknown[] {

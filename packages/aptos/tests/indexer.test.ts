@@ -408,3 +408,34 @@ describe("IndexerAccountAdapter fetchEvents", () => {
     expect(report.results.find((r) => r.name === "cursor-precedence")?.status).toBe("pass");
   });
 });
+
+describe("IndexerAccountAdapter.listTransactionVersions", () => {
+  const OBJECT = `0x${"0b".repeat(32)}`;
+
+  it("lists an address's versions in the range, ascending, with the address in long form", async () => {
+    const { adapter, calls } = adapterWith(() => ({
+      data: { account_transactions: [{ transaction_version: 5 }, { transaction_version: "9" }] },
+    }));
+    expect(await adapter.listTransactionVersions("0xb", 3n, 20n, 2)).toEqual([5n, 9n]);
+    expect(calls[0]!.variables).toEqual({ address: `0x${"b".padStart(64, "0")}`, from: "3", to: "20", limit: 2 });
+    expect(await adapterWith(() => ({ data: { account_transactions: [] } })).adapter.listTransactionVersions(OBJECT, 0n, 0n, 100)).toEqual([]);
+  });
+
+  it("refuses a bad address, range or limit before any request, and a listing out of range", async () => {
+    const { adapter, calls } = adapterWith(() => ({ data: { account_transactions: [] } }));
+    for (const args of [
+      ["nope", 0n, 1n, 1],
+      [OBJECT, -1n, 1n, 1],
+      [OBJECT, 2n, 1n, 1],
+      [OBJECT, 0, 1n, 1],
+      [OBJECT, 0n, 1n, 0],
+      [OBJECT, 0n, 1n, 101],
+      [OBJECT, 0n, 1n, 1.5],
+    ] as const) {
+      await expect(adapter.listTransactionVersions(...(args as unknown as [string, bigint, bigint, number]))).rejects.toBeInstanceOf(StreamdError);
+    }
+    expect(calls).toEqual([]);
+    const outside = adapterWith(() => ({ data: { account_transactions: [{ transaction_version: 30 }] } })).adapter;
+    await expect(outside.listTransactionVersions(OBJECT, 0n, 20n, 5)).rejects.toThrow("malformed account_transactions");
+  });
+});

@@ -197,6 +197,29 @@ export class IndexerAccountAdapter implements EventAdapter {
     return { events, next };
   }
 
+  /**
+   * Up to `limit` (1 to 100) versions of transactions that touched `address`
+   * in `[fromVersion, toVersion]`, ascending, as the Indexer lists them:
+   * signed, received, or writing its state alone. An object's address lists
+   * every transaction that changed the object. A range above
+   * `getHeadVersion()` lists only what the Indexer has processed.
+   */
+  async listTransactionVersions(
+    address: string,
+    fromVersion: bigint,
+    toVersion: bigint,
+    limit: number,
+  ): Promise<bigint[]> {
+    const account = requireAddress(address);
+    if (typeof fromVersion !== "bigint" || typeof toVersion !== "bigint" || fromVersion < 0n || toVersion < fromVersion) {
+      throw new StreamdError("listTransactionVersions needs 0 <= fromVersion <= toVersion, as bigints");
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > INDEXER_PAGE) {
+      throw new StreamdError(`limit must be an integer from 1 to ${INDEXER_PAGE}`);
+    }
+    return this.listVersions(account, fromVersion, toVersion, limit);
+  }
+
   /** Versions touching `address` in `[from, to]`, ascending, checked to be just that. */
   private async listVersions(address: string, from: bigint, to: bigint, limit: number): Promise<bigint[]> {
     const data = await this.query(TRANSACTIONS_QUERY, {

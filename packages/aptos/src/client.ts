@@ -1,5 +1,5 @@
 import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, requireAddress, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -16,6 +16,8 @@ import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
 import { explain } from "./explain.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
+import { IndexerAccountAdapter } from "./indexer.js";
+import { provenanceDescriptor, provenanceSource } from "./provenance.js";
 import { governanceSource, startProposals } from "./governance.js";
 import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
@@ -24,7 +26,7 @@ import { saleDescriptor, saleSource } from "./sales.js";
 import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
-import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -135,7 +137,7 @@ export class AptosClient extends StreamdClient {
   private activityOf(address: string, withNames: unknown) {
     if (typeof address !== "string") throw new StreamdError("activity needs an address or Aptos name");
     const ttl = this.names.ttl(withNames);
-    const name = ttl === undefined ? undefined : (a: string) => this.names.name(a, ttl);
+    const name = ttl === undefined ? undefined : (a: string) => this.names.nameWithinSlot(a, ttl);
     return [activityDescriptor(addressOrName(address) ?? address), this.accountOf(address)!, name] as const;
   }
 
@@ -276,6 +278,53 @@ export class AptosClient extends StreamdClient {
     const who = this.accountOf(address)!;
     const read = moduleReader(this.aptos);
     return (source) => upgradeSource(source, who, read);
+  }
+
+  /**
+   * Follow the transactions that touch one Aptos object (a `0x4` token or any
+   * `0x1::object` object) as the Indexer processes them, one record per
+   * transaction whose `data` is a `Provenance`: its mint, transfers, field
+   * mutations, `PropertyMap` and burn, and every write-set change at the
+   * object. Transactions are listed by `indexer`'s `account_transactions`,
+   * which trails the fullnode by hundreds of versions, so the live head is
+   * its processed version; each is read through the adapter's
+   * `getTransactionEventsByVersion`, one at a time and outside
+   * `maxConcurrentRequests`, within the page's `requestTimeout`. Under
+   * `withNames`, `names` holds the sender's and every action address's
+   * primary name. Like `activity()`, it is not a listener for `off()` or
+   * `listenerCount()`.
+   */
+  provenance(object: string, callback: EventCallback<Provenance>, options: ProvenanceListenerOptions = {}): Subscription {
+    const { indexer, ...rest } = options;
+    const [descriptor, source] = this.provenanceOf(object, indexer, rest.withNames);
+    return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, () => source);
+  }
+
+  /**
+   * The history of one object, built as `provenance()` builds it, from
+   * version 0 unless the filter names a start, over the range and options
+   * `getEvents` takes; `where` and `limit` apply to the records. A
+   * transaction the fullnode pruned rejects with its 410 unless the adapter
+   * is an `ArchiveFallbackAdapter`.
+   */
+  async getProvenance(object: string, filter: ProvenanceFilter = {}): Promise<StreamdEvent<Provenance>[]> {
+    const { indexer, ...rest } = filter;
+    const [descriptor, source] = this.provenanceOf(object, indexer, rest.withNames);
+    const start = rest.fromVersion ?? rest.fromTime ?? rest.fromBlock;
+    const range = start === undefined ? { ...rest, fromVersion: 0n } : rest;
+    return new EventQuery(source, this.limiter, this.names).getEvents<Provenance>(descriptor, range);
+  }
+
+  private provenanceOf(object: string, indexer: TransactionLister | undefined, withNames: unknown) {
+    if (typeof object !== "string") throw new StreamdError("provenance needs an object address");
+    const address = requireAddress(object);
+    if (indexer !== undefined && (typeof indexer.getHeadVersion !== "function" || typeof indexer.listTransactionVersions !== "function")) {
+      throw new StreamdError("indexer must implement getHeadVersion and listTransactionVersions");
+    }
+    const ttl = this.names.ttl(withNames);
+    const name = ttl === undefined ? undefined : (a: string) => this.names.nameWithinSlot(a, ttl);
+    const source = provenanceSource(indexer ?? new IndexerAccountAdapter(this.aptos), this.adapter, address, name);
+    return [provenanceDescriptor(address), source] as const;
   }
 
   /**

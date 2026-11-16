@@ -1,10 +1,12 @@
 import type { MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
+import type { IndexerAccountAdapter } from "./indexer.js";
 import type {
   EntryFunctionCall,
   EventFilter,
   EventPredicate,
   NameOptions,
   ReduceOptions,
+  ResourceChange,
   StreamdEvent,
   SubscriptionOptions,
   Transfer,
@@ -533,3 +535,69 @@ export interface PackageUpgrade {
   entryFunctions: AbiChanges<FunctionSignature>;
   views: AbiChanges<FunctionSignature>;
 }
+
+/** One property of a `0x4::property_map::PropertyMap`, decoded from its BCS bytes. */
+export interface TokenProperty {
+  key: string;
+  /** The Move type: `bool`, `u8` to `u256`, `address`, `vector<u8>` or `0x1::string::String`. */
+  type: string;
+  /** Integers as `bigint`, an address in long form, bytes as `0x` hex. */
+  value: boolean | bigint | string;
+}
+
+/** What one transaction did to the object, as `Provenance.actions` lists it. Addresses are long form. */
+export type ProvenanceAction =
+  /** A `0x4::collection` mint event named the object. */
+  | { kind: "mint"; collection?: string }
+  | { kind: "transfer"; from: string; to: string }
+  /** A `0x4::token` or `0x4::collection` mutation event; the legacy collection one carries no values. */
+  | { kind: "mutation"; field: string; oldValue?: string; newValue?: string }
+  /** A `0x4::collection` burn event named the object, or the object was deleted without one. */
+  | { kind: "burn"; collection?: string; previousOwner?: string };
+
+/**
+ * One transaction that touched an object, the `data` of the records
+ * `provenance` and `getProvenance` deliver; the record's envelope carries
+ * the transaction's hash, sender, timestamp and entry function.
+ */
+export interface Provenance {
+  /** The object, in long form. */
+  object: string;
+  /** False when the transaction aborted, which leaves the object as it was. */
+  success: boolean;
+  /** In event order, then a `burn` when the object was deleted with no burn event. Empty when nothing named the object. */
+  actions: ProvenanceAction[];
+  /**
+   * The object's `PropertyMap` as the transaction left it, every property in
+   * stored order, when the write set holds it. An object's resources form one
+   * group that is written whole, so this appears on any transaction that
+   * wrote the object; a property changed where it differs from the previous
+   * record's.
+   */
+  properties?: TokenProperty[];
+  /** Every resource the transaction wrote or deleted at the object, in write-set order. */
+  changes: ResourceChange[];
+  /**
+   * Under `withNames`, the primary name (`null` for none) of the sender and
+   * of every address in `actions`, keyed by long-form address.
+   */
+  names?: Record<string, string | null>;
+}
+
+/** What lists an object's transactions for `provenance`; `IndexerAccountAdapter` is one. */
+export type TransactionLister = Pick<IndexerAccountAdapter, "getHeadVersion" | "listTransactionVersions">;
+
+export interface ProvenanceOptions {
+  /**
+   * Lists the transactions that touched the object (default: an
+   * `IndexerAccountAdapter` over the client's `aptos`, anonymous). Pass one
+   * built with an `apiKey` for more than the anonymous rate.
+   */
+  indexer?: TransactionLister;
+}
+
+/** Options for `AptosClient.provenance`. */
+export type ProvenanceListenerOptions = SubscriptionOptions & ProvenanceOptions;
+
+/** Filter for `AptosClient.getProvenance`. */
+export type ProvenanceFilter = EventFilter & ProvenanceOptions;

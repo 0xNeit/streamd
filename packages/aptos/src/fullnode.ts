@@ -12,6 +12,7 @@ import type {
   FetchOptions,
   HandleEventDescriptor,
   ModuleEventDescriptor,
+  ResourceChange,
   ResourceDescriptor,
   StreamdEvent,
   TransactionEvents,
@@ -82,6 +83,22 @@ function payment(txn: TransactionWithEvents): Pick<TransactionEvents, "gasUnitPr
   const feePayer = typeof payer === "string" ? normalizeAddress(payer) : undefined;
   if (feePayer !== undefined) out.feePayer = feePayer;
   return out;
+}
+
+/** Every resource write and delete in the write set; other kinds, and entries without an address or type, are left out. */
+function writeSet(txn: TransactionWithEvents): Pick<TransactionEvents, "changes"> {
+  if (!Array.isArray(txn.changes)) return {};
+  const changes: ResourceChange[] = [];
+  for (const change of txn.changes) {
+    const address = typeof change?.address === "string" ? normalizeAddress(change.address) : undefined;
+    if (address === undefined) continue;
+    if (change.type === "write_resource" && typeof change.data?.type === "string" && change.data.data !== undefined) {
+      changes.push({ address, type: change.data.type, data: change.data.data });
+    } else if (change.type === "delete_resource" && typeof change.resource === "string") {
+      changes.push({ address, type: change.resource, data: null });
+    }
+  }
+  return { changes };
 }
 
 /** Transactions requested per underlying REST call while scanning. */
@@ -347,6 +364,7 @@ export class FullnodeScanAdapter implements EventAdapter {
         vmStatus: String(txn.vm_status ?? ""),
         events: toStreamdEvents(txn, version, () => true),
         ...payment(txn),
+        ...writeSet(txn),
       };
     } catch (err) {
       throw toStreamdError(err, "transaction by hash");
@@ -377,6 +395,7 @@ export class FullnodeScanAdapter implements EventAdapter {
         vmStatus: String(txn.vm_status ?? ""),
         events: toStreamdEvents(txn, ledgerVersion, () => true),
         ...payment(txn),
+        ...writeSet(txn),
       };
     } catch (err) {
       throw toStreamdError(err, `transaction at version ${ledgerVersion}`);
