@@ -5,11 +5,12 @@ import {
   StreamdClient,
   StreamdError,
   StreamdNetworkError,
+  StreamdPollingError,
   checkAdapter,
   eventId,
 } from "@streamd/core";
 import type { EventDescriptor, StreamdEvent } from "@streamd/core";
-import { SqliteEventStore, StoreAdapter } from "../src/index.js";
+import { SqliteEventStore, StoreAdapter, storeEvents } from "../src/index.js";
 
 const A = "0x" + "0".repeat(63) + "a";
 const B = "0x" + "b".repeat(64);
@@ -182,6 +183,38 @@ describe("StoreAdapter", () => {
     });
     expect(ids(same)).toEqual(ids(recent));
   });
+
+  it("matches account reads by sender only when storeEvents stores received transactions", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    const sent = ev(1n, 0, SWAP, { sender: A });
+    const received = ev(2n, 0, SWAP, { sender: B });
+    const source = new StreamdClient({ adapter: new MemoryAdapter([sent, received]) });
+    await new Promise<void>((resolve, reject) => {
+      const sub = storeEvents(source, store, { kind: "account", accountAddress: "0xa", received: true }, {
+        name: "acct",
+        fromVersion: 0n,
+        pollInterval: 1,
+        onError: reject,
+        onCaughtUp: () => {
+          sub.unsubscribe();
+          resolve();
+        },
+      });
+    });
+    source.destroy();
+
+    const adapter = new StoreAdapter(db);
+    expect(ids((await adapter.fetchEvents(fromA, { limit: 10 })).events)).toEqual(["1:0"]);
+    expect(ids((await adapter.fetchEvents(swaps, { limit: 10 })).events)).toEqual(["1:0", "2:0"]);
+    expect(ids((await adapter.getTransactionEventsByVersion(2n))?.events ?? [])).toEqual(["2:0"]);
+
+    const rejected = await adapter
+      .fetchEvents({ kind: "account", accountAddress: "0xa", received: true }, {})
+      .catch((err: unknown) => err);
+    expect(rejected).toBeInstanceOf(StreamdError);
+    expect(rejected).not.toBeInstanceOf(StreamdNetworkError);
+  });
 });
 
 describe("StoreAdapter after prune", () => {
@@ -306,5 +339,52 @@ describe("StoreAdapter after prune", () => {
     const client = new StreamdClient({ adapter: pruned(11n).adapter });
     const events = await client.getEvents(swaps, { fromVersion: "earliest" });
     expect(events.map((e) => e.version)).toEqual([11n, 12n]);
+  });
+
+  it("fails a quiet follower once prune passes its last match, then recovers from earliest", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    const rare: EventDescriptor = { kind: "module", eventType: "0x1::rare::Event" };
+    // Match at version 2, then only unrelated swap events at versions 3..10.
+    store.write([
+      ev(2n, 0, "0x1::rare::Event"),
+      ...Array.from({ length: 8 }, (_, i) => ev(BigInt(i + 3), 0, SWAP)),
+    ]);
+    const client = new StreamdClient({ adapter: new StoreAdapter(db) });
+    const errors: unknown[] = [];
+    let delivered = false;
+    await new Promise<void>((resolve) => {
+      const sub = client.on(
+        rare,
+        () => {
+          delivered = true;
+        },
+        {
+          fromVersion: 1n,
+          pollInterval: 1,
+          maxBackoff: 1,
+          maxErrors: 1,
+          onCaughtUp: () => {
+            expect(delivered).toBe(true);
+            // Cursor stayed at 2:0 across versions 3..10 because no rare event appeared there.
+            expect(sub.cursor).toBe("2:0");
+            // Prune versions 1..4 (deleting zero rare events), passing cursor 2:0.
+            store.prune({ beforeVersion: 5n });
+          },
+          onError: (err) => {
+            errors.push(err);
+            if (!sub.active) resolve();
+          },
+        },
+      );
+    });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toBeInstanceOf(StreamdPollingError);
+    expectPruned((errors[0] as StreamdPollingError).cause);
+
+    store.write([ev(11n, 0, "0x1::rare::Event")]);
+    const resumed = await client.getEvents(rare, { fromVersion: "earliest" });
+    expect(resumed.map((e) => e.version)).toEqual([11n]);
+    client.destroy();
   });
 });

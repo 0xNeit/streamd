@@ -3138,6 +3138,10 @@ const streamd = new StreamdClient({
   fails with status 410 rather than skipping history.
 - **Rate limits.** Anonymous Indexer access is rate limited per IP; a limit hit rejects as a
   `StreamdNetworkError` with status 429. Pass `apiKey` (sent as a bearer token) for more.
+- **Storing.** `StoreAdapter` and `PostgresStoreAdapter` index `account` descriptors by
+  stored `sender` only and refuse `received: true`. Received transactions stored from
+  `IndexerAccountAdapter` through `storeEvents` are kept in the store, so read them back
+  with `module`, `handle`, `eventsOf`, or `eventsAt` rather than an `account` descriptor.
 - **Options.** `indexerUrl` (default: the `Aptos` network's Indexer), `apiKey`, `fetch`, and
   `maxScan`, the most transactions read per call (default 100). `offset` is refused, and
   pages are never `final`, so `CachingAdapter` passes them through.
@@ -3584,8 +3588,10 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   so a `bigint` inside `data` comes back as a decimal string: query with `decode` to restore it.
   `entryFunction` is kept in that stored JSON, with no column of its own, so it comes back on
   reads but filtering on it happens in `where`, not in SQL.
-- **What `StoreAdapter` matches.** `module` by event type; `account` by the stored `sender`,
-  so events stored without one (from `handle` descriptors) never match; `handle` by
+- **What `StoreAdapter` matches.** `module` by event type; `account` by the stored `sender`
+  only (refusing `received: true` with a `StreamdError`, so received transactions stored from
+  `IndexerAccountAdapter` only match `module`, `handle`, or transaction lookups), so events
+  stored without a `sender` (from `handle` descriptors) never match `account`; `handle` by
   `creationNumber` against the stored `guid` (`listEventHandles` returns it), and a struct
   and field handle is refused with a `StreamdError`; `resource` by the stored address and the
   resource type, exactly as the fullnode writes it (see Resource changes below). It sees only

@@ -110,6 +110,12 @@ function graphqlFailure(errors: unknown[], retryAfter: number | undefined): Stre
  * the next ledger version to read. Without one, `fromVersion` is raised to the
  * fullnode's oldest version, since older events cannot be read, and with
  * neither the walk starts at the processed version. Pages are never `final`.
+ *
+ * `StoreAdapter` and `PostgresStoreAdapter` match `account` descriptors by
+ * stored `sender` only and refuse `received: true`, so received transactions
+ * written from `IndexerAccountAdapter` via `storeEvents` only match `module`,
+ * `handle`, or transaction lookups (`getTransactionEvents`,
+ * `getTransactionEventsByVersion`) when queried back from a store.
  */
 export class IndexerAccountAdapter implements EventAdapter {
   private readonly url: string;
