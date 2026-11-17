@@ -251,11 +251,13 @@ export interface FullnodeScanAdapterOptions {
  * unlike the chain-wide module scan.
  *
  * The limit to understand before relying on it: that endpoint returns
- * transactions the account *sent*. An event where the account is only a
+ * transactions the account *sent*, excluding orderless (replay-protection
+ * nonce) transactions. An event where the account is only a
  * recipient — someone else's transfer depositing into it — belongs to the
- * sender's transaction and will never appear. Send-side activity is exact;
- * "everything touching this account" is not expressible against a fullnode
- * and needs a real index.
+ * sender's transaction and will never appear. Send-side sequence-numbered
+ * activity is exact; orderless transactions and "everything touching this
+ * account" are not expressible against a fullnode and need a real index
+ * (such as `IndexerAccountAdapter`).
  *
  * Resource descriptors use the same transaction scan as module events,
  * reading each transaction's write set instead of its events, so they share
@@ -620,6 +622,11 @@ export class FullnodeScanAdapter implements EventAdapter {
   /**
    * Walks one account's transactions, collecting their events.
    *
+   * Reads `/accounts/{addr}/transactions`, which lists sequence-numbered
+   * transactions the account signed and omits orderless (replay-protection
+   * nonce) transactions; use `IndexerAccountAdapter` when orderless
+   * transactions are needed.
+   *
    * The cursor is the account's transaction sequence number, not a ledger
    * version — `fromVersion`/`toVersion` therefore act as client-side filters
    * here rather than as seek positions. Passing `fromVersion` without a cursor
@@ -721,6 +728,11 @@ export class FullnodeScanAdapter implements EventAdapter {
    * Handle events paginate by sequence number, so the cursor is a sequence
    * number rather than a ledger version. Both descriptor forms read the same
    * stream, by struct and field or by creation number.
+   *
+   * When `cursor`, `offset`, `fromVersion`, and `fromTime` are all omitted, a
+   * handle query begins at sequence 0; on a pruning fullnode, pass a start
+   * option (such as `"earliest"`, a relative `fromVersion`, `fromTime`, or
+   * `offset`) or route `handle` to an archive.
    */
   private async fetchHandleEvents(
     descriptor: HandleEventDescriptor | CreationNumberEventDescriptor,
@@ -780,12 +792,16 @@ export class FullnodeScanAdapter implements EventAdapter {
     // The start comes from the request, and a full page of a handle's events
     // by sequence number never changes.
     const full = raw.length >= limit;
+    const last = raw.at(-1);
+    const pastToVersion =
+      options.toVersion !== undefined &&
+      last !== undefined &&
+      BigInt(last.version) > options.toVersion;
     const page: EventPage = full
-      ? { events, nextCursor, hasMore: true, final: true }
+      ? { events, nextCursor, hasMore: !pastToVersion, final: true }
       : { events, nextCursor, hasMore: false };
     // A full page may stop partway through one transaction's events, so only
     // the versions below its last event are settled.
-    const last = raw.at(-1);
     const through = last === undefined ? -1n : BigInt(last.version) - (full ? 1n : 0n);
     if (through >= 0n) page.throughVersion = through;
     return page;
@@ -796,13 +812,18 @@ export class FullnodeScanAdapter implements EventAdapter {
    * its first event after it. The endpoint cannot seek by version, and walking
    * from 0 on a busy handle reads its whole history (or, on a node that pruned
    * it, `200 []` forever). A resource or account not yet created there has
-   * emitted none. A start at the node's oldest version, as `"earliest"` and an
-   * old `fromTime` resolve to, has its predecessor pruned: it walks from 0 as
-   * before the seek. A start below that is pruned itself, and its 410 is
-   * thrown, so `ArchiveFallbackAdapter` answers the first page; later pages
-   * carry a cursor, and the node answers pruned sequence numbers `200 []`.
+   * emitted none. When `version` sits just below `oldest_ledger_version` (as
+   * `"earliest"` and an old `fromTime` resolve to), the 410 falls back to a
+   * single resource read at `oldest_ledger_version` itself (starting after any
+   * events in that transaction, or at 0 if absent or also pruned); a start
+   * below that rethrows 410, so `ArchiveFallbackAdapter` answers the first
+   * page while historical handle walks should route `handle` to the archive.
    */
-  private async handleCounterAt(descriptor: HandleEventDescriptor, version: bigint): Promise<bigint> {
+  private async handleCounterAt(
+    descriptor: HandleEventDescriptor,
+    version: bigint,
+    atOldest = false,
+  ): Promise<bigint> {
     const address = requireAddress(descriptor.accountAddress);
     let data: unknown;
     try {
@@ -816,8 +837,16 @@ export class FullnodeScanAdapter implements EventAdapter {
       const e = err as { status?: unknown; data?: { error_code?: unknown; oldest_ledger_version?: unknown } } | null;
       if (e?.status === 404 && (e.data?.error_code === "resource_not_found" || e.data?.error_code === "account_not_found")) return 0n;
       const oldest = e?.data?.oldest_ledger_version;
-      if (e?.status === 410 && e.data?.error_code === "version_pruned" && typeof oldest === "string" && /^\d+$/.test(oldest) && version + 1n >= BigInt(oldest)) {
-        return 0n;
+      if (
+        e?.status === 410 &&
+        e.data?.error_code === "version_pruned" &&
+        typeof oldest === "string" &&
+        /^\d+$/.test(oldest) &&
+        version + 1n >= BigInt(oldest)
+      ) {
+        const oldestVersion = BigInt(oldest);
+        if (atOldest || oldestVersion <= version) return 0n;
+        return this.handleCounterAt(descriptor, oldestVersion, true);
       }
       throw err;
     }

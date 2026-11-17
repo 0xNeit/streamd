@@ -359,7 +359,8 @@ export class StreamdClient {
    * Follow many addresses at once: one `account` walk per address, each event
    * delivered as `callback(event, address)`. What a walk sees is what the
    * adapter yields for an `account` descriptor: on `FullnodeScanAdapter`,
-   * transactions the address sent; on `IndexerAccountAdapter`, every one
+   * sequence-numbered transactions the address sent (omitting orderless
+   * transactions and received transfers); on `IndexerAccountAdapter`, every one
    * touching it. `add()` and `remove()` change the list at runtime; a walk that
    * gives up drops its address and the rest carry on. Like `onTransaction()`,
    * it is not a listener for `off()` or `listenerCount()`; `unsubscribe()` or

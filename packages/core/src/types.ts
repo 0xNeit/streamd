@@ -59,7 +59,12 @@ type TaggedMember<TData> =
     ? Omit<StreamdEvent<TPayload>, "type"> & { type: TType }
     : never;
 
-/** Legacy EventHandle event, identified by account + handle + field */
+/**
+ * Legacy EventHandle event, identified by account + handle + field.
+ *
+ * Queries with `cursor`, `offset`, `fromVersion`, and `fromTime` all omitted
+ * start at sequence 0; pass a start option on a pruning fullnode.
+ */
 export interface HandleEventDescriptor<TData = unknown> {
   kind: "handle";
   /** Type-only payload carrier, as on `ModuleEventDescriptor`; codegen's handle builders set it. */
@@ -87,10 +92,10 @@ export interface CreationNumberEventDescriptor {
  * Every event emitted by transactions the account *sent*.
  *
  * Scoped to one account's history rather than the whole chain, so it stays
- * cheap over deep history. Note the asymmetry: this sees only transactions
- * this account signed. Events where the account is merely a recipient live in
- * the *sender's* transaction and will not appear here — see the class docs on
- * `FullnodeScanAdapter`.
+ * cheap over deep history. Note the limits on `FullnodeScanAdapter`: this sees
+ * only sequence-numbered transactions the account signed (excluding orderless
+ * transactions and transactions where the account is only a recipient); use
+ * `IndexerAccountAdapter` when orderless or received transactions matter.
  */
 export interface AccountEventDescriptor {
   kind: "account";
