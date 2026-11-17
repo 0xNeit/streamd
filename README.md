@@ -2607,17 +2607,21 @@ By default streamd reads from a fullnode with `FullnodeScanAdapter`:
 - **Handle events** use the dedicated fullnode endpoint. Exact and cheap. The endpoint pages
   by sequence number and cannot seek by version, so a walk given `fromVersion` and no cursor
   first reads the handle's resource at the version before it and starts at its `counter`, the
-  first event at or after `fromVersion`. A creation-number handle has no resource to read and
-  starts at sequence 0, as does a walk with no start at all, and one starting at the node's
-  oldest version (where `"earliest"` and an old `fromTime` resolve), whose predecessor it has
-  pruned. A `fromVersion` below the oldest version rejects with the node's 410. An
+  first event at or after `fromVersion`. A walk with no `fromVersion`, `fromTime`, `cursor`, or
+  `offset` reads from sequence `0` (so pass one on a pruning fullnode), as does a creation-number
+  handle (which has no resource to read). When `fromVersion` is the node's oldest version (as
+  with `"earliest"` or an old `fromTime`), whose predecessor is pruned, the seek falls back from
+  that `410` to read the handle's counter at `oldest_ledger_version` itself (starting after any
+  events in that version, or at sequence `0` if absent or also pruned). A `fromVersion` below the
+  oldest version rejects with the node's 410. An
   `ArchiveFallbackAdapter` answers that first page from the archive, but not the pages after
   it, which the fullnode answers empty: route `handle` to the archive with `RoutingAdapter` to
   walk pruned handle history, and pass `cursor` (a sequence number) rather than `fromVersion`
   to start a busy handle's walk at a known point.
 - **Account events** walk that account's own transaction history. Cheap even
-  far back, but only transactions the account sent; `IndexerAccountAdapter`
-  (below) adds the ones it received.
+  far back, but only sequence-numbered transactions the account sent (omitting
+  orderless replay-protection nonce transactions); `IndexerAccountAdapter`
+  (below) sees orderless transactions and the ones it received.
 - **Module events** have no by-type endpoint on Aptos, so the adapter scans
   transactions and keeps the matches. That's fine for following the chain
   head, but not for deep history: fullnodes prune old data, and a rare event
@@ -3105,7 +3109,10 @@ await streamd.getEvents(NewBlockEvent, { fromVersion: 1000n, limit: 10 }); // se
   version) and `withState` views
   go to the archive when the fullnode answers `410`; a rate limit or an outage is rethrown, so
   backoff and `maxErrors` work as usual. Each call starts at the fullnode, so a walk returns to
-  it once it passes the pruned edge.
+  it once it passes the pruned edge. Because Aptos fullnodes answer pruned `handle` sequence
+  numbers with empty `200 []` rather than `410`, only the initial pruned resource or page
+  reaches the archive; route `handle` directly to the archive via `RoutingAdapter` for
+  multi-page historical handle walks.
 - **Bounds:** the head and simulations come from the fullnode, which the archive trails by a
   few dozen versions; `fromVersion: "earliest"` and `fromTime` see the archive's full range.
 - **Rate.** Anonymously the archive allowed about 43 requests per five minutes in a 2026-11

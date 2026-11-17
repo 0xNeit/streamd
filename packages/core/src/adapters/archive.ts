@@ -21,7 +21,11 @@ async function orArchive<T>(primary: () => Promise<T>, archive: (() => Promise<T
  * switch: they are rethrown, so backoff applies and the archive's tighter
  * budget goes only on history the fullnode no longer has. Each call starts at
  * the fullnode, so a walk returns to it once it passes the pruned edge;
- * `FullnodeScanAdapter` cursors mean the same on both. The head and
+ * `FullnodeScanAdapter` cursors mean the same on both. Aptos fullnodes answer
+ * pruned `handle` sequence numbers with `200 []` rather than `410`, so
+ * subsequent cursor pages of a historical `handle` walk stay on the fullnode;
+ * route `handle` descriptors directly to the archive via `RoutingAdapter` for
+ * multi-page pruned handle history. The head and
  * simulations come from the fullnode, which the archive trails; the earliest
  * version and oldest block come from the archive.
  */

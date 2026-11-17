@@ -413,6 +413,23 @@ describe("FullnodeScanAdapter handle events", () => {
     expect(page.hasMore).toBe(true);
   });
 
+  it("stops paginating handle events once a full page passes toVersion", async () => {
+    const events = [handleEvent(0, 3), handleEvent(1, 5), handleEvent(2, 9), handleEvent(3, 12)];
+    const { aptos } = fakeNode(handle(events));
+    const adapter = new FullnodeScanAdapter(aptos);
+
+    const past = await adapter.fetchEvents(handleDesc, { offset: 0, limit: 3, toVersion: 8n });
+    expect(past.events.map((e) => e.version)).toEqual([3n, 5n]);
+    expect(past.nextCursor).toBe("3");
+    expect(past.hasMore).toBe(false);
+    expect(past.final).toBe(true);
+
+    // Equal to toVersion keeps hasMore true in case another event shares that version.
+    const exact = await adapter.fetchEvents(handleDesc, { offset: 0, limit: 2, toVersion: 5n });
+    expect(exact.events.map((e) => e.version)).toEqual([3n, 5n]);
+    expect(exact.hasMore).toBe(true);
+  });
+
   it("gives an event the same index whichever page it arrives on", async () => {
     const events = [handleEvent(0, 3), handleEvent(1, 3), handleEvent(2, 4)];
     const { aptos } = fakeNode(handle(events));
@@ -488,6 +505,34 @@ describe("FullnodeScanAdapter handle events", () => {
       expect(calls.at(-1)?.params.start).toBe("0");
       expect(page.events.map((e) => e.version)).toEqual([3n]);
     }
+  });
+
+  it("seeks via oldest_ledger_version when only version - 1 is pruned", async () => {
+    const events = [handleEvent(0, 1), handleEvent(1, 2), handleEvent(2, 3), handleEvent(3, 5)];
+    const { aptos, calls } = fakeNode((path, params) => {
+      if (path === HANDLE_RESOURCE_PATH && params.ledger_version === "1") {
+        return { status: 410, data: { message: "pruned", error_code: "version_pruned", oldest_ledger_version: "2" } };
+      }
+      return handle(events)(path, params);
+    });
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, { fromVersion: 2n, limit: 10 });
+    expect(calls.map((c) => [c.path, c.params.ledger_version ?? c.params.start])).toEqual([
+      [HANDLE_RESOURCE_PATH, "1"],
+      [HANDLE_RESOURCE_PATH, "2"],
+      [HANDLE_PATH, "2"],
+    ]);
+    expect(page.events.map((e) => e.version)).toEqual([3n, 5n]);
+    expect(page.nextCursor).toBe("4");
+
+    // When oldest_ledger_version equals the requested version, no redundant second read is sent.
+    const sameOldest = fakeNode((path, params) =>
+      path === HANDLE_RESOURCE_PATH
+        ? { status: 410, data: { message: "pruned", error_code: "version_pruned", oldest_ledger_version: "1" } }
+        : handle(events)(path, params),
+    );
+    await new FullnodeScanAdapter(sameOldest.aptos).fetchEvents(handleDesc, { fromVersion: 2n });
+    expect(sameOldest.calls.filter((c) => c.path === HANDLE_RESOURCE_PATH)).toHaveLength(1);
+    expect(sameOldest.calls.at(-1)?.params.start).toBe("0");
   });
 
   it("rethrows a 410 for a start below the oldest version, so an archive fallback can answer it", async () => {
