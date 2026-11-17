@@ -25,6 +25,9 @@ export interface TransferClient<O extends SubscriptionOptions = SubscriptionOpti
 export type StoreTransfersOptions<O extends SubscriptionOptions = SubscriptionOptions> = O & { name: string };
 
 const SAVE_RETRY_MS = 10;
+const CURSOR_SAVE_INTERVAL_MS = 5_000;
+const DISPOSE: typeof Symbol.dispose = (Symbol.dispose ?? Symbol.for("Symbol.dispose")) as typeof Symbol.dispose;
+const ASYNC_DISPOSE: typeof Symbol.asyncDispose = (Symbol.asyncDispose ?? Symbol.for("Symbol.asyncDispose")) as typeof Symbol.asyncDispose;
 
 // Transfer cursors are saved apart from event cursors of the same name.
 const TRANSFER_CURSOR_PREFIX = "transfers:";
@@ -121,13 +124,28 @@ function sink(
   subscribe: Subscribe,
 ): Subscription {
   const cursor = listener.cursor ?? store.readCursor(name);
+  let lastSaved = cursor;
   let saving = false;
+  let failed = false;
+  let stopped = false;
+  const saveCursor = (target: string | undefined) => {
+    if (failed || stopped || target === undefined || target === lastSaved) return;
+    try {
+      store.write([], { name, cursor: target });
+      lastSaved = target;
+    } catch {
+      // The cursor saved with the batch stands; resuming there only redelivers it.
+    }
+  };
   const subscription: Subscription = subscribe(
     (events) => {
       const before = subscription.cursor;
       try {
         write(events, { name, cursor: before });
+        if (before !== undefined) lastSaved = before;
       } catch (err) {
+        failed = true;
+        clearInterval(timer);
         // Pausing stops the cursor moving past this batch and still lets the
         // throw reach onError, which an ended subscription would drop. It then
         // ends, because a resumed one would skip the batch it has marked seen.
@@ -144,16 +162,16 @@ function sink(
       if (saving) return;
       saving = true;
       const save = () => {
+        if (stopped || failed) {
+          saving = false;
+          return;
+        }
         if (subscription.active && subscription.cursor === before) {
           setTimeout(save, SAVE_RETRY_MS);
           return;
         }
         saving = false;
-        try {
-          store.write([], { name, cursor: subscription.cursor });
-        } catch {
-          // The cursor saved with the batch stands; resuming there only redelivers it.
-        }
+        saveCursor(subscription.cursor);
       };
       queueMicrotask(save);
     },
@@ -164,12 +182,56 @@ function sink(
         // Every page so far is stored, so the live cursor is safe to save. A
         // failed save still reaches onError, and the caller still hears of it.
         try {
-          store.write([], { name, cursor: subscription.cursor });
+          const cur = subscription.cursor;
+          if (!failed && cur !== undefined) {
+            store.write([], { name, cursor: cur });
+            lastSaved = cur;
+          }
         } finally {
           listener.onCaughtUp?.();
         }
       },
     },
   );
-  return subscription;
+  const timer = setInterval(() => {
+    if (stopped || (!subscription.active && !subscription.paused)) {
+      clearInterval(timer);
+      return;
+    }
+    if (!failed && !saving && subscription.active) saveCursor(subscription.cursor);
+  }, CURSOR_SAVE_INTERVAL_MS);
+  timer.unref?.();
+
+  const stopAndSave = () => {
+    clearInterval(timer);
+    subscription.unsubscribe();
+    saveCursor(subscription.cursor);
+    stopped = true;
+  };
+  return {
+    id: subscription.id,
+    get active() {
+      return subscription.active;
+    },
+    get paused() {
+      return subscription.paused;
+    },
+    get cursor() {
+      return subscription.cursor;
+    },
+    get status() {
+      return subscription.status;
+    },
+    caughtUp: subscription.caughtUp,
+    pause: () => subscription.pause(),
+    resume: () => subscription.resume(),
+    unsubscribe: stopAndSave,
+    [DISPOSE]: stopAndSave,
+    [ASYNC_DISPOSE]: async () => {
+      clearInterval(timer);
+      await subscription[ASYNC_DISPOSE]();
+      saveCursor(subscription.cursor);
+      stopped = true;
+    },
+  };
 }

@@ -3585,9 +3585,10 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
 - **No gaps, no duplicates.** Rows are keyed on `(version, eventIndex)` and a repeated write
   replaces its row. Each batch is written with the cursor from before it, then the cursor
   after it is saved, so a restart in between reads the batch again and the upsert absorbs it.
-  The cursor is also saved when the subscription first catches up, which pins a relative or
-  head start; until then a restart re-resolves it, so pass an absolute `fromVersion` to leave
-  no window at all.
+  The cursor is also saved when the subscription first catches up (which pins a relative or
+  head start), every 5 seconds while scanning empty pages, and when unsubscribing cleanly or
+  stopping `streamd store` (even if no events matched yet); until then a restart re-resolves
+  a relative start, so pass an absolute `fromVersion` to leave no window at all.
   A failed write reaches `onError` and ends the subscription before its cursor moves on;
   start it again to retry. Give each descriptor its own `name`, and set `PRAGMA busy_timeout`
   when another connection writes the same file, since a busy database is a failed write.
