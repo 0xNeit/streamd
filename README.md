@@ -4187,10 +4187,12 @@ UTC time, type without its address, shortened sender, and the payload clipped to
 Control characters in on-chain text print as `?`. Handle events have no time or sender, so those
 columns show `-`.
 
-To pick up where a run stopped, pass `--cursor-file <path>`: `tail` saves its position there and
-resumes from it, and a saved position beats `--from-version` and `--from-time`. It is at least
-once, since stdout has no acknowledgement: a restart can reprint part of the last page. By hand,
-pass the last printed `version` plus one as `--from-version`.
+To pick up where a run stopped, pass `--cursor-file <path>`: `tail` checkpoints its position
+after each printed line and resumes past it on restart (a saved position beats
+`--from-version` and `--from-time`, so even `--limit` or a mid-page stop makes progress). It is
+at least once, since stdout has no acknowledgement: a crash between writing a line and saving
+the cursor file can repeat that line. By hand, pass the last printed `version` plus one as
+`--from-version`.
 
 Polling errors are reported on stderr and tailing continues until the subscription gives
 up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes
