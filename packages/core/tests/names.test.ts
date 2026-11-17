@@ -321,6 +321,56 @@ describe("withNames on queries", () => {
     expect(counts.get(senders[1]!)).toBe(2);
     client.destroy();
   });
+
+  it("prefetches distinct senders concurrently across getTransactions groups", async () => {
+    const senders = [1, 2, 3].map((i) => `0x${String(i).padStart(64, "0")}`);
+    const page = senders.map((s, idx) => at(BigInt(idx + 1), s));
+    const client = new StreamdClient({ adapter: new MemoryAdapter(page) });
+    let inFlight = 0;
+    let peak = 0;
+    const resolvers: Array<() => void> = [];
+    (client as unknown as { names: SenderNames }).names.serve(
+      (address) =>
+        new Promise<string>((resolve) => {
+          peak = Math.max(peak, ++inFlight);
+          resolvers.push(() => {
+            inFlight--;
+            resolve(`g${Number(BigInt(address))}.apt`);
+          });
+          if (resolvers.length === senders.length) {
+            for (const done of resolvers.splice(0)) done();
+          }
+        }),
+    );
+    const groups = await client.getTransactions(D, { withNames: true });
+    expect(peak).toBe(3);
+    expect(groups.map((g) => [g.version, g.senderName])).toEqual([
+      [1n, "g1.apt"],
+      [2n, "g2.apt"],
+      [3n, "g3.apt"],
+    ]);
+    client.destroy();
+  });
+
+  it("drops in-flight prefetches on abort without leaking unhandled rejections", async () => {
+    const senders = [1, 2].map((i) => `0x${String(i).padStart(64, "0")}`);
+    const client = new StreamdClient({ adapter: new MemoryAdapter(senders.map((s, idx) => at(BigInt(idx + 1), s))) });
+    const rejections: Array<(err: Error) => void> = [];
+    (client as unknown as { names: SenderNames }).names.serve(
+      () =>
+        new Promise<string>((_, reject) => {
+          rejections.push(reject);
+        }),
+    );
+    const abort = new AbortController();
+    const promise = client.getEvents(D, { withNames: true, signal: abort.signal });
+    await until(() => rejections.length === 2);
+    abort.abort(new Error("aborted query"));
+    await expect(promise).rejects.toThrow("aborted query");
+    for (const reject of rejections) reject(new StreamdNetworkError("late failure", 503));
+    await new Promise((r) => setTimeout(r, 10));
+    client.destroy();
+  });
 });
 
 async function until(done: () => boolean, ms = 2000): Promise<void> {
@@ -501,5 +551,139 @@ describe("withNames on listeners", () => {
         [3n, "n3.apt"],
       ],
     ]);
+  });
+
+  it("prefetches decodable senders on() with decode and withState while skipping malformed events", async () => {
+    const senders = [1, 2, 3].map((i) => `0x${String(i).padStart(64, "0")}`);
+    const badSender = `0x${"8".padStart(64, "0")}`;
+    const amt = (version: bigint, sender: string, amount: string): StreamdEvent => ({
+      ...ev(sender, version),
+      data: { amount },
+    });
+    const events = [amt(1n, senders[0]!, "10"), amt(2n, badSender, "bad"), amt(3n, senders[1]!, "20"), amt(4n, senders[2]!, "30")];
+    const base = new MemoryAdapter(events);
+    const adapter: EventAdapter = {
+      fetchEvents: (d, opts) => base.fetchEvents(d, opts),
+      view: async (req) => [{ tag: req.functionArguments?.[0] }],
+    };
+    const client = new StreamdClient({ adapter });
+    const started: string[] = [];
+    let inFlight = 0;
+    let peak = 0;
+    const resolvers: Array<() => void> = [];
+    (client as unknown as { names: SenderNames }).names.serve(
+      (address) =>
+        new Promise<string>((resolve) => {
+          started.push(address);
+          peak = Math.max(peak, ++inFlight);
+          resolvers.push(() => {
+            inFlight--;
+            resolve(`d${Number(BigInt(address))}.apt`);
+          });
+          if (resolvers.length === senders.length) {
+            for (const done of resolvers.splice(0)) done();
+          }
+        }),
+    );
+    const seen: [bigint, bigint, unknown, string | null | undefined][] = [];
+    const errors: Error[] = [];
+    client.on(
+      D,
+      (e) => void seen.push([e.version, (e.data as { amount: bigint }).amount, e.state, e.senderName]),
+      {
+        ...FAST,
+        decode: ["amount"],
+        withState: (e) => ({ function: "0x1::m::f", typeArguments: [], functionArguments: [e.version] }),
+        withNames: true,
+        onError: (err) => void errors.push(err),
+      },
+    );
+    await until(() => seen.length === 3 && errors.length === 1);
+    client.destroy();
+    expect(peak).toBe(3);
+    expect(started).not.toContain(badSender);
+    expect(seen).toEqual([
+      [1n, 10n, [{ tag: 1n }], "d1.apt"],
+      [3n, 20n, [{ tag: 3n }], "d2.apt"],
+      [4n, 30n, [{ tag: 4n }], "d3.apt"],
+    ]);
+  });
+
+  it("keeps onTransaction() atomic on prefetched lookup failures and retries concurrently", async () => {
+    const senders = [1, 2, 3].map((i) => `0x${String(i).padStart(64, "0")}`);
+    const page = senders.map((s, idx) => at(BigInt(idx + 1), s));
+    const client = new StreamdClient({ adapter: new MemoryAdapter(page) });
+    let inFlight = 0;
+    let peak = 0;
+    let poll1 = true;
+    const lookups: string[] = [];
+    const barrier: Array<() => void> = [];
+    (client as unknown as { names: SenderNames }).names.serve(
+      (address) => {
+        lookups.push(address);
+        const idx = senders.indexOf(address);
+        if (!poll1) return Promise.resolve(`t${idx + 1}.apt`);
+        return new Promise<string>((resolve, reject) => {
+          peak = Math.max(peak, ++inFlight);
+          barrier.push(() => {
+            inFlight--;
+            if (idx === 1) reject(new StreamdNetworkError("tx name down", 503));
+            else resolve(`t${idx + 1}.apt`);
+          });
+          if (barrier.length === senders.length) {
+            poll1 = false;
+            for (const done of barrier.splice(0)) done();
+          }
+        });
+      },
+    );
+    const groups: [bigint, string | null | undefined][] = [];
+    const errors: Error[] = [];
+    client.onTransaction(D, (g) => void groups.push([g.version, g.senderName]), {
+      ...FAST,
+      withNames: true,
+      onError: (err) => {
+        expect(groups).toEqual([]);
+        errors.push(err);
+      },
+    });
+    await until(() => groups.length === 3);
+    client.destroy();
+    expect(peak).toBe(3);
+    expect(errors).toHaveLength(1);
+    expect(lookups).toEqual([...senders, senders[1]!]);
+    expect(groups).toEqual([
+      [1n, "t1.apt"],
+      [2n, "t2.apt"],
+      [3n, "t3.apt"],
+    ]);
+  });
+
+  it("leaves cursor untouched and drops late rejections when unsubscribed mid-prefetch", async () => {
+    const senders = [1, 2].map((i) => `0x${String(i).padStart(64, "0")}`);
+    const client = new StreamdClient({ adapter: new MemoryAdapter(senders.map((s, idx) => at(BigInt(idx + 1), s))) });
+    const rejections: Array<(err: Error) => void> = [];
+    (client as unknown as { names: SenderNames }).names.serve(
+      () =>
+        new Promise<string>((_, reject) => {
+          rejections.push(reject);
+        }),
+    );
+    const delivered: StreamdEvent[] = [];
+    const errors: Error[] = [];
+    const sub = client.on(D, (e) => void delivered.push(e), {
+      ...FAST,
+      withNames: true,
+      onError: (err) => void errors.push(err),
+    });
+    await until(() => rejections.length === 2);
+    sub.unsubscribe();
+    expect(sub.status.cursor).toBeUndefined();
+    for (const reject of rejections) reject(new StreamdNetworkError("late listener failure", 503));
+    await new Promise((r) => setTimeout(r, 15));
+    expect(delivered).toEqual([]);
+    expect(errors).toEqual([]);
+    expect(sub.status.cursor).toBeUndefined();
+    client.destroy();
   });
 });

@@ -420,15 +420,7 @@ export class EventPoller {
     const batched: StreamdEvent[] = [];
     // Dedups the batch's events until they are marked seen on delivery.
     const pending = new CursorManager(undefined, this.dedupWindow);
-    const prefetched =
-      this.nameTtl === undefined
-        ? undefined
-        : this.where === undefined && this.decode === undefined
-          ? this.names!.prefetch(
-              page.events.filter((raw) => !this.position.hasSeen(raw)),
-              this.nameTtl,
-            )
-          : new Map<string, Promise<string | null>>();
+    const prefetched = this.prefetchPage(page.events);
     // A rejected predicate, view or name lookup is the source's: it fails this
     // poll with the event unmarked, so a retry delivers it rather than losing it.
     let failure: unknown;
@@ -451,12 +443,31 @@ export class EventPoller {
       pending.mark(raw);
     }
     if (!this.isCurrent(gen)) return;
-    if (prefetched !== undefined && this.callback === undefined && batch.length > 0) {
+    if (prefetched !== undefined && this.callback === undefined && batch.length > 0 && (this.onPage === undefined || failure === undefined)) {
       const attached = await this.attachBatchNames(batch, batched, gen, run, prefetched);
       if (!attached.current) return;
       if ("failure" in attached) failure = attached.failure;
     }
     await this.finishPage(page, batch, batched, gen, reached, failure);
+  }
+
+  private prefetchPage(events: readonly StreamdEvent[]): Map<string, Promise<string | null>> | undefined {
+    if (this.nameTtl === undefined) return undefined;
+    if (this.where !== undefined) return new Map();
+    return this.names!.prefetch(
+      events.filter((raw) => !this.position.hasSeen(raw) && this.canDecode(raw)),
+      this.nameTtl,
+    );
+  }
+
+  private canDecode(raw: StreamdEvent): boolean {
+    if (this.decode === undefined) return true;
+    try {
+      this.decode(raw);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async deliverRaw(
