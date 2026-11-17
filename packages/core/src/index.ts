@@ -33,6 +33,8 @@ export type { ReduceHost } from "./reduce.js";
 export { WEBHOOK_SIGNATURE_HEADER, verifyWebhook } from "./webhook.js";
 export { formatAmount, startBalances } from "./balances.js";
 export type { BalanceReader, BalancesHost } from "./balances.js";
+export { lazyResolve, ownedByPredicate } from "./ownership.js";
+export type { OwnedByHost } from "./ownership.js";
 export {
   committedEvents,
   committedTransaction,

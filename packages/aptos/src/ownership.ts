@@ -1,14 +1,9 @@
 import type { Aptos } from "@aptos-labs/ts-sdk";
-import { StreamdError, StreamdNetworkError } from "@streamd/core";
-import { normalizeAddress } from "@streamd/core";
-import { RequestLimiter } from "@streamd/core";
+import { StreamdError, StreamdNetworkError, lazyResolve, normalizeAddress, ownedByPredicate } from "@streamd/core";
 import { addressOrName, requireNameResolver, resolveName } from "./names.js";
-import type { EventPredicate, StreamdEvent } from "@streamd/core";
+import type { EventPredicate } from "@streamd/core";
 
 const DEFAULT_FIELDS = ["store", "object", "token", "token_address"];
-const DEFAULT_MAX_CONCURRENT = 4;
-// Entries are per (object, version), so overflowing only costs a repeat read.
-const CACHE_SIZE = 1000;
 const VM_ABORTED = 4016;
 
 export interface OwnedByOptions {
@@ -45,44 +40,15 @@ export function ownedBy(
   if (typeof (aptos as { viewJson?: unknown } | null)?.viewJson !== "function") {
     throw new StreamdError("ownedBy needs an Aptos instance");
   }
-  const fields = options.fields ?? DEFAULT_FIELDS;
-  if (!Array.isArray(fields) || fields.length === 0 || fields.some((f) => typeof f !== "string" || f === "")) {
-    throw new StreamdError("ownedBy fields must be a non-empty array of field names");
-  }
-  const max = options.maxConcurrentRequests ?? DEFAULT_MAX_CONCURRENT;
-  if (!Number.isInteger(max) || max < 1) {
-    throw new StreamdError(`Invalid maxConcurrentRequests: ${String(max)} (expected a positive integer)`);
-  }
-  let owner: Promise<string> | undefined;
-  const resolveOwner = (): Promise<string> => {
-    if (owner !== undefined) return owner;
-    const pending = address !== undefined ? Promise.resolve(address) : resolveName(aptos, wallet);
-    pending.catch(() => owner === pending && (owner = undefined));
-    return (owner = pending);
-  };
-  const limiter = new RequestLimiter(max);
-  const cache = new Map<string, Promise<boolean>>();
-
-  const owns = (object: string, version: bigint): Promise<boolean> => {
-    const key = `${object}:${version}`;
-    let answer = cache.get(key);
-    if (answer !== undefined) {
-      cache.delete(key);
-    } else {
-      answer = resolveOwner().then((wallet) => limiter.run(() => readOwns(aptos, object, wallet, version)));
-      answer.catch(() => cache.get(key) === answer && cache.delete(key));
-      if (cache.size >= CACHE_SIZE) cache.delete(cache.keys().next().value!);
-    }
-    cache.set(key, answer);
-    return answer;
-  };
-
-  return async (event: StreamdEvent) => {
-    for (const object of namedObjects(event.data, fields)) {
-      if (await owns(object, event.version)) return true;
-    }
-    return false;
-  };
+  return ownedByPredicate(
+    {
+      defaultFields: DEFAULT_FIELDS,
+      resolveOwner: lazyResolve(address, () => resolveName(aptos, wallet)),
+      namedObjects,
+      checkOwns: (limiter, object, owner, version) => limiter.run(() => readOwns(aptos, object, owner, version)),
+    },
+    options,
+  );
 }
 
 function namedObjects(data: unknown, fields: readonly string[]): string[] {

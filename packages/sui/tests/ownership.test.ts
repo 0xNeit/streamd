@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
-import { StreamdError, StreamdNetworkError, type StreamdEvent } from "@streamd/core";
+import { StreamdError, StreamdNetworkError, lazyResolve, ownedByPredicate, type StreamdEvent } from "@streamd/core";
 import { ownedBy } from "../src/ownership.js";
 import { LONG, fakeNames, grpcError } from "./helpers.js";
 
@@ -117,5 +117,60 @@ describe("ownedBy", () => {
     const err = await Promise.resolve(ownedBy(refused.sui, ALICE)(ev({ id: NFT }))).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
+  });
+});
+
+describe("lazyResolve and ownedByPredicate", () => {
+  it("returns pre-resolved values directly, shares concurrent calls, and retries after rejection", async () => {
+    let calls = 0;
+    const direct = lazyResolve("0x1", async () => {
+      calls++;
+      return "0x2";
+    });
+    expect(await Promise.all([direct(), direct()])).toEqual(["0x1", "0x1"]);
+    expect(calls).toBe(0);
+
+    let fail = true;
+    const resolved = lazyResolve<string>(undefined, async () => {
+      calls++;
+      await new Promise((r) => setTimeout(r, 5));
+      if (fail) throw new Error("lookup failed");
+      return "0x2";
+    });
+    const [r1, r2] = await Promise.all([resolved().catch((e: unknown) => e), resolved().catch((e: unknown) => e)]);
+    expect(r1).toBeInstanceOf(Error);
+    expect(r2).toBe(r1);
+    expect(calls).toBe(1);
+
+    fail = false;
+    expect(await Promise.all([resolved(), resolved()])).toEqual(["0x2", "0x2"]);
+    expect(await resolved()).toBe("0x2");
+    expect(calls).toBe(2);
+  });
+
+  it("promotes LRU cache hits and evicts oldest entry past 1000", async () => {
+    const checks: string[] = [];
+    const predicate = ownedByPredicate({
+      defaultFields: ["id"],
+      resolveOwner: async () => ALICE,
+      namedObjects: (data, fields) => {
+        const value = typeof data === "object" && data !== null ? (data as Record<string, unknown>)[fields[0]!] : undefined;
+        return typeof value === "string" ? [value] : [];
+      },
+      checkOwns: async (_limiter, object, _wallet, version) => {
+        checks.push(`${object}:${version}`);
+        return true;
+      },
+    });
+    for (let v = 0n; v < 1000n; v++) await predicate(ev({ id: NFT }, v));
+    expect(checks).toHaveLength(1000);
+    await predicate(ev({ id: NFT }, 0n));
+    expect(checks).toHaveLength(1000);
+    await predicate(ev({ id: NFT }, 1000n));
+    expect(checks).toHaveLength(1001);
+    await predicate(ev({ id: NFT }, 0n));
+    expect(checks).toHaveLength(1001);
+    await predicate(ev({ id: NFT }, 1n));
+    expect(checks).toHaveLength(1002);
   });
 });
