@@ -1,7 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import { StreamdError } from "@streamd/core";
-import { transfersOf, type BalanceChangeTransaction } from "../src/transfers.js";
-import { LONG } from "./helpers.js";
+import type { SuiGrpcClient } from "@mysten/sui/grpc";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import { SuiAdapter, SuiClient } from "../src/index.js";
+import { TRANSFER_DESCRIPTOR, transferSource, transfersOf, type BalanceChangeTransaction } from "../src/transfers.js";
+import { LONG, fakeLedger, withTransfers, type FakeListed } from "./helpers.js";
 
 const SUI = `${LONG("2")}::sui::SUI`;
 const USDC = `${LONG("dba")}::usdc::USDC`;
@@ -79,5 +81,103 @@ describe("transfersOf", () => {
     const bad = txn([]);
     bad.balanceChanges = [{ address: ALICE, coinType: SUI, amount }];
     expect(() => transfersOf(bad, 1n)).toThrow(StreamdError);
+  });
+});
+
+describe("SuiClient transfers sharing and coinInfo timeout", () => {
+  const SIZES = [1, 3, 2];
+
+  it("shares listTransactions across identical transfer subscriptions and isolates distinct filters", async () => {
+    const base = fakeLedger(SIZES, []).client;
+    const wired = withTransfers(base, SIZES, [
+      { cp: 1n, ti: 0n, changes: [[ALICE, SUI, -10n], [BOB, SUI, 10n]] },
+      { cp: 1n, ti: 1n, changes: [[ALICE, USDC, -4n], [BOB, USDC, 4n]] },
+    ], undefined, new Map([[SUI, { symbol: "SUI", decimals: 9 }], [USDC, { symbol: "USDC", decimals: 6 }]]));
+
+    const sui = new SuiClient({ sui: wired.client as unknown as SuiGrpcClient });
+    const seenA: unknown[] = [];
+    const seenB: unknown[] = [];
+    const subA = sui.transfers((e) => void seenA.push([e.data.asset, e.data.amount, e.data.symbol]), {
+      fromVersion: 0n,
+      pollInterval: 500,
+    });
+    const subB = sui.transfers((e) => void seenB.push([e.data.asset, e.data.amount, e.data.symbol]), {
+      fromVersion: 0n,
+      pollInterval: 500,
+      withAssetInfo: true,
+    });
+    await Promise.all([subA.caughtUp, subB.caughtUp]);
+    expect(wired.calls.list).toHaveLength(1);
+    expect(seenA).toEqual([[SUI, 10n, undefined], [USDC, 4n, undefined]]);
+    expect(seenB).toEqual([[SUI, 10n, "SUI"], [USDC, 4n, "USDC"]]);
+    subA.unsubscribe();
+    subB.unsubscribe();
+
+    const seenAccount: bigint[] = [];
+    const seenAsset: bigint[] = [];
+    const subAccount = sui.transfers((e) => void seenAccount.push(e.data.amount), {
+      fromVersion: 0n,
+      pollInterval: 500,
+      account: ALICE,
+    });
+    const subAsset = sui.transfers((e) => void seenAsset.push(e.data.amount), {
+      fromVersion: 0n,
+      pollInterval: 500,
+      asset: USDC,
+    });
+    await Promise.all([subAccount.caughtUp, subAsset.caughtUp]);
+    expect(wired.calls.list).toHaveLength(3);
+    expect(seenAccount).toEqual([10n, 4n]);
+    expect(seenAsset).toEqual([4n]);
+    sui.destroy();
+  });
+
+  it("times out hung coinInfo reads and drops abandoned pending entries on the next page", async () => {
+    const listed: FakeListed[] = [{ cp: 1n, ti: 0n, changes: [[ALICE, SUI, -10n], [BOB, SUI, 10n]] }];
+    const makeHung = () => {
+      const base = fakeLedger(SIZES, []).client;
+      const wired = withTransfers(base, SIZES, listed, undefined, new Map([[SUI, { symbol: "SUI", decimals: 9 }]]));
+      let coinCalls = 0;
+      const origCoinInfo = wired.client.stateService!.getCoinInfo;
+      wired.client.stateService!.getCoinInfo = async (input) => {
+        coinCalls++;
+        if (coinCalls === 1) return new Promise<never>(() => {});
+        return origCoinInfo(input);
+      };
+      return { wired, getCoinCalls: () => coinCalls };
+    };
+
+    const q = makeHung();
+    const client = new SuiClient({ sui: q.wired.client as unknown as SuiGrpcClient, requestTimeout: 30 });
+    const records = await client.getTransfers({ fromVersion: 0n, withAssetInfo: true, retries: 1 });
+    expect(records.map((r) => [r.data.amount, r.data.symbol])).toEqual([[10n, "SUI"]]);
+    expect(q.getCoinCalls()).toBe(2);
+
+    const subHung = makeHung();
+    const subClient = new SuiClient({ sui: subHung.wired.client as unknown as SuiGrpcClient, requestTimeout: 30 });
+    const delivered: (string | undefined)[] = [];
+    const sub = subClient.transfers((e) => void delivered.push(e.data.symbol), {
+      fromVersion: 0n,
+      withAssetInfo: true,
+      pollInterval: 5,
+      maxBackoff: 5,
+      maxPollInterval: 5,
+      maxErrors: 3,
+    });
+    await sub.caughtUp;
+    expect(delivered).toEqual(["SUI"]);
+    expect(subHung.getCoinCalls()).toBe(2);
+    subClient.destroy();
+    client.destroy();
+
+    const abandoned = makeHung();
+    const source = transferSource(new SuiAdapter(abandoned.wired.client), {}, true, 5_000);
+    const first = source.fetchEvents(TRANSFER_DESCRIPTOR, { fromVersion: 0n }).catch((e: unknown) => e);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(abandoned.getCoinCalls()).toBe(1);
+    const second = await source.fetchEvents(TRANSFER_DESCRIPTOR, { fromVersion: 0n });
+    expect(second.events.map((e) => e.data)).toEqual([{ asset: SUI, amount: 10n, from: ALICE, to: BOB, symbol: "SUI", decimals: 9 }]);
+    expect(abandoned.getCoinCalls()).toBe(2);
+    expect(await first).toBeInstanceOf(StreamdNetworkError);
   });
 });
