@@ -105,6 +105,19 @@ describe("useReduction", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(t.adapter.fetches).toBe(fetches);
   });
+
+  it("reports synchronous setup errors in state instead of crashing", async () => {
+    const t = setup();
+    const errors: Error[] = [];
+    const root = await render(
+      t.el(TYPE, add, 9n, { ...FAST, cursor: "", onError: (err) => errors.push(err) }),
+    );
+    await waitFor(() => expect(t.last().status).toBe("stopped"));
+    expect(t.last().value).toBe(9n);
+    expect(t.last().error).toBeInstanceOf(Error);
+    expect(errors).toHaveLength(1);
+    await unmount(root);
+  });
 });
 
 describe("useReduction with a ready-made reducer", () => {

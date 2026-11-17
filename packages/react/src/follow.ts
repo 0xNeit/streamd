@@ -5,7 +5,7 @@ import {
   type Subscription,
   type SubscriptionOptions,
 } from "@streamd/core";
-import { withLatestFunctions } from "./key.js";
+import { toError, withLatestFunctions } from "./key.js";
 
 export const DEFAULT_MAX_EVENTS = 100;
 
@@ -113,28 +113,35 @@ export function useFollowing<TItem, TOptions extends Omit<SubscriptionOptions, "
     let sub: Following | undefined;
     const opts = withLatestFunctions(listener, () => latest.current.listener);
     setState({ events: [], error: undefined, status: initial });
-    sub = start(
-      (batch) => {
-        if (!current) return;
-        setState((s) => ({
-          events: [...s.events, ...batch].slice(-latest.current.maxEvents),
-          error: undefined,
-          status: "live",
-        }));
-      },
-      {
-        ...opts,
-        onError: (err: Error) => {
-          opts.onError?.(err);
+    try {
+      sub = start(
+        (batch) => {
           if (!current) return;
-          const stopped = sub !== undefined && !sub.active && !sub.paused;
-          setState((s) => ({ ...s, error: err, status: stopped ? "stopped" : "live" }));
+          setState((s) => ({
+            events: [...s.events, ...batch].slice(-latest.current.maxEvents),
+            error: undefined,
+            status: "live",
+          }));
         },
-      },
-    );
+        {
+          ...opts,
+          onError: (err: Error) => {
+            opts.onError?.(err);
+            if (!current) return;
+            const stopped = sub !== undefined && !sub.active && !sub.paused;
+            setState((s) => ({ ...s, error: err, status: stopped ? "stopped" : "live" }));
+          },
+        },
+      );
+    } catch (err) {
+      const error = toError(err);
+      opts.onError?.(error);
+      if (current) setState({ events: [], error, status: "stopped" });
+      return;
+    }
     return () => {
       current = false;
-      sub.unsubscribe();
+      sub?.unsubscribe();
     };
     // `key` stands for the inputs by value.
   }, [deps, key, enabled, initial]);

@@ -270,4 +270,18 @@ describe("useTransactions history", () => {
     await pause(30);
     expect(t.subscribes()).toBe(0);
   });
+
+  it("anchors an empty history window when fromVersion is negative and head moves during the read", async () => {
+    const t = setup([ev(3n, 0, OTHER), ev(4n, 0, OTHER)]);
+    const read = t.client.getTransactions.bind(t.client);
+    t.client.getTransactions = (async (...args: Parameters<typeof read>) => {
+      const groups = await read(...args);
+      t.chain.memory.push(ev(5n, 0, TYPE), ev(6n, 0, OTHER), ev(7n, 0, OTHER), ev(8n, 0, OTHER));
+      return groups;
+    }) as typeof t.client.getTransactions;
+    const root = await render(t.el(TYPE, { ...FAST, fromVersion: -2n, history: 2 }));
+    await waitFor(() => expect(t.groups()).toEqual(["5:0"]));
+    expect(t.last().status).toBe("live");
+    await unmount(root);
+  });
 });

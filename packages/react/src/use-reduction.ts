@@ -51,24 +51,31 @@ export function useReduction<S, TData = unknown>(
     let reduction: Reduction<S> | undefined;
     const opts = withLatestFunctions(reduce, () => latest.current.reduce);
     setState({ value: initial, error: undefined, status: "loading" });
-    reduction = client.reduce<S, TData>(
-      descriptor,
-      (s, event) => latest.current.reducer(s, event),
-      initial,
-      {
-        ...opts,
-        onChange: (value, event) => {
-          opts.onChange?.(value, event);
-          if (current) setState({ value, error: undefined, status: "live" });
+    try {
+      reduction = client.reduce<S, TData>(
+        descriptor,
+        (s, event) => latest.current.reducer(s, event),
+        initial,
+        {
+          ...opts,
+          onChange: (value, event) => {
+            opts.onChange?.(value, event);
+            if (current) setState({ value, error: undefined, status: "live" });
+          },
+          onError: (err) => {
+            opts.onError?.(err);
+            if (!current) return;
+            const stopped = reduction !== undefined && !reduction.active;
+            setState((s) => ({ ...s, error: toError(err), status: stopped ? "stopped" : s.status }));
+          },
         },
-        onError: (err) => {
-          opts.onError?.(err);
-          if (!current) return;
-          const stopped = reduction !== undefined && !reduction.active;
-          setState((s) => ({ ...s, error: toError(err), status: stopped ? "stopped" : s.status }));
-        },
-      },
-    );
+      );
+    } catch (err) {
+      const error = toError(err);
+      opts.onError?.(error);
+      if (current) setState({ value: initial, error, status: "stopped" });
+      return;
+    }
     reduction.ready.then(
       (value) => {
         if (current) setState((s) => ({ ...s, value, status: "live" }));
@@ -77,7 +84,7 @@ export function useReduction<S, TData = unknown>(
     );
     return () => {
       current = false;
-      reduction.unsubscribe();
+      reduction?.unsubscribe();
     };
     // `key` stands for `descriptor`, `reduce` and `initial` by value.
   }, [client, key]);
