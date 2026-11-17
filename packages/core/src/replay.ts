@@ -16,7 +16,7 @@ import { onAbort } from "./utils.js";
 const MAX_WAIT = 2_147_483_647;
 
 /** What a replay needs from its client. */
-export type ReplayHost = Pick<ReduceHost, "query" | "defaults" | "onError" | "track">;
+export type ReplayHost = Pick<ReduceHost, "query" | "defaults" | "onError" | "track" | "trackHandler">;
 
 const QUERY_KEYS = [
   "fromVersion",
@@ -120,7 +120,14 @@ export function startReplay<TData>(
   const deliver = async (event: StreamdEvent) => {
     try {
       const result: unknown = callback(event as unknown as EventOf<TData>);
-      if (isThenable(result)) await result;
+      if (isThenable(result)) {
+        const pending = Promise.resolve(result).then(
+          () => {},
+          () => {},
+        );
+        host.trackHandler?.(pending);
+        await result;
+      }
     } catch (err) {
       if (!stopped) report(new StreamdError(`Event callback threw for ${eventId(event)}`, err));
     }

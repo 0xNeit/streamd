@@ -237,10 +237,21 @@ export class StreamdClient {
   private readonly ended: SubscriptionInfo[] = [];
   /** Open streams, so destroy() can end their loops rather than strand them. */
   private readonly streams = new Set<() => void>();
+  /** In-flight handler promises that outlived their subscription's removal or belong to replay(). */
+  private readonly inflight = new Set<Promise<void>>();
   /** What `reduce()` needs, built once. */
   protected readonly reduceHost: ReduceHost;
   /** What `onTransaction()` needs, built once. */
   private readonly transactionHost: TransactionHost;
+
+  private trackHandler(work: Promise<unknown>): void {
+    const settled = Promise.resolve(work).then(
+      () => {},
+      () => {},
+    );
+    this.inflight.add(settled);
+    void settled.finally(() => this.inflight.delete(settled));
+  }
 
   constructor(config: StreamdConfig) {
     this.defaults = resolveDefaults(config);
@@ -264,6 +275,7 @@ export class StreamdClient {
         return adapter.getHeadVersion(d);
       },
       track: (stop) => (this.streams.add(stop), () => void this.streams.delete(stop)),
+      trackHandler: (work) => this.trackHandler(work),
     };
     this.transactionHost = {
       defaults: this.defaults,
@@ -441,6 +453,7 @@ export class StreamdClient {
     const reached = latch();
     const forget = () => {
       reached.reject(new StreamdError("Subscription ended before catching up"));
+      this.trackHandler(poller.handling);
       // A later subscription may hold this id by now; leave its entries alone.
       const running = this.subscriptions.get(id);
       if (running?.poller === poller) {
@@ -828,16 +841,29 @@ export class StreamdClient {
   }
 
   /**
-   * `destroy()`, then waits for the handlers those subscriptions have running.
-   * Resolves `true` once they have finished, or `false` at `timeout`.
+   * `destroy()`, then waits for running handlers (including ended
+   * subscriptions and `replay()`), stopping any subscriptions started while
+   * draining. Resolves `true` once settled, or `false` at `timeout`.
    */
   async close(options: CloseOptions = {}): Promise<boolean> {
     const timeout = options.timeout ?? DEFAULT_CLOSE_TIMEOUT;
     const invalid = checkTimeout(timeout);
     if (invalid !== undefined) throw invalid;
-    const running = [...this.subscriptions.values()].map(({ poller }) => poller.handling);
-    this.destroy();
-    return settlesWithin(Promise.all(running), timeout);
+    const deadline = performance.now() + timeout;
+    for (;;) {
+      this.destroy();
+      const pending = [...this.inflight];
+      if (pending.length === 0) return true;
+      const remaining = Math.max(0, deadline - performance.now());
+      if (!(await settlesWithin(Promise.all(pending), remaining))) {
+        this.destroy();
+        return false;
+      }
+      for (const p of pending) this.inflight.delete(p);
+      if (this.subscriptions.size === 0 && this.streams.size === 0 && this.inflight.size === 0) {
+        return true;
+      }
+    }
   }
 
   /** `close()`, so `await using client = new StreamdClient(...)` drains at scope exit. */
