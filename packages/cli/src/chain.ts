@@ -152,14 +152,15 @@ export function resourceReader(
 }
 
 function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: RequestStats): Chain {
-  const config = aptosConfig(endpoint);
-  const node = (nodeUrl: string, client?: Client) =>
+  const one = sendOnce();
+  const config = aptosConfig(endpoint, one);
+  const node = (nodeUrl: string, client: Client = one) =>
     new FullnodeScanAdapter(new Aptos(aptosConfig({ network: endpoint.network, nodeUrl }, client)));
   const archive = () => {
     const at = archiveEndpoint(endpoint);
-    return at === undefined ? undefined : new FullnodeScanAdapter(new Aptos(aptosConfig(at)));
+    return at === undefined ? undefined : new FullnodeScanAdapter(new Aptos(aptosConfig(at, one)));
   };
-  const nodes = (client?: Client) => [
+  const nodes = (client: Client = one) => [
     new FullnodeScanAdapter(new Aptos(aptosConfig(endpoint, client))),
     ...(endpoint.extraNodeUrls?.map((url) => node(url, client)) ?? []),
   ];

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "bun:test";
 import { AptosClient, FullnodeScanAdapter } from "@streamd/aptos";
 import { SuiAdapter, SuiClient } from "@streamd/sui";
-import { ArchiveFallbackAdapter, PoolAdapter, StreamdNetworkError } from "@streamd/core";
+import { ArchiveFallbackAdapter, PoolAdapter, StreamdNetworkError, StreamdTimeoutError } from "@streamd/core";
 import type { EventPage } from "@streamd/core";
 import { chainFor, readThrough, sendOnce } from "../src/chain.js";
 import { isMissingModule } from "../src/sui.js";
@@ -196,6 +196,56 @@ describe("chainFor nodes", () => {
     status = 200;
     expect(await a!.getHeadVersion()).toBe(42n);
     expect(await a!.getBlockHeights!(TYPE)).toEqual({ oldest: 0n, newest: 7n });
+  });
+
+  it("lets client().eventsOf honour timeout on 429 Retry-After: 120 without stalling in SDK retries", async () => {
+    const HASH = `0x${"ab".repeat(32)}`;
+    const client = (await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1" })).client();
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ message: "rate limited" }), {
+        status: 429,
+        headers: { "retry-after": "120" },
+      });
+    }) as unknown as typeof fetch;
+
+    const started = performance.now();
+    const err = await client.eventsOf(HASH, undefined, { timeout: 60 }).catch((e: unknown) => e);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(calls).toBe(1);
+    expect(err).toBeInstanceOf(StreamdTimeoutError);
+    expect((err as StreamdTimeoutError).message).toContain("last error:");
+    expect((err as StreamdTimeoutError).cause).toMatchObject({ statusCode: 429, retryAfter: 120_000 });
+
+    let attempt = 0;
+    globalThis.fetch = (async () => {
+      attempt++;
+      if (attempt === 1) {
+        return new Response("slow down", { status: 429, headers: { "retry-after": "0" } });
+      }
+      return Response.json({
+        type: "user_transaction",
+        version: "9",
+        hash: HASH,
+        sender: "0x1",
+        timestamp: "1700000000000000",
+        success: true,
+        vm_status: "Executed successfully",
+        events: [
+          {
+            type: "0x1::coin::DepositEvent",
+            data: { amount: "1" },
+            sequence_number: "0",
+            guid: { creation_number: "0", account_address: "0x0" },
+          },
+        ],
+      });
+    }) as unknown as typeof fetch;
+
+    const events = await client.eventsOf(HASH, undefined, { timeout: 2000 });
+    expect(attempt).toBe(2);
+    expect(events).toHaveLength(1);
   });
 
   it("encodes params, drops unset headers, falls back to text, and abandons a request after the timeout", async () => {

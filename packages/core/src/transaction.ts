@@ -12,7 +12,14 @@ import type {
   TransactionSimulation,
 } from "./types.js";
 import type { RequestLimiter } from "./limiter.js";
-import { StreamdAssertionError, StreamdError, StreamdTimeoutError, StreamdTransactionError } from "./errors.js";
+import {
+  StreamdAssertionError,
+  StreamdError,
+  StreamdNetworkError,
+  StreamdTimeoutError,
+  StreamdTransactionError,
+  retryAfterHint,
+} from "./errors.js";
 import { filterEvents, normalizeAddress } from "./filter.js";
 import { fieldDecoder } from "./decode.js";
 import { descriptorKey, onAbort, raceAbort, sleep } from "./utils.js";
@@ -177,11 +184,45 @@ export async function committedEvents(
   return found.events;
 }
 
+function isTransientLookupError(err: unknown): err is StreamdNetworkError {
+  if (!(err instanceof StreamdNetworkError)) return false;
+  const status = err.statusCode;
+  return status === 429 || (status !== undefined && status >= 500 && status <= 599);
+}
+
+async function pollTransaction(
+  adapter: EventAdapter,
+  limiter: RequestLimiter,
+  interval: number,
+  hash: string,
+  descriptor: EventDescriptor | undefined,
+  signal: AbortSignal,
+  onTransient: (err: StreamdNetworkError) => void,
+): Promise<TransactionEvents> {
+  for (;;) {
+    let delay = interval;
+    try {
+      const found = await raceAbort(
+        limiter.run(() => adapter.getTransactionEvents!(hash, descriptor), signal),
+        signal,
+      );
+      if (found !== undefined) return found;
+    } catch (err) {
+      if (!isTransientLookupError(err) || signal.aborted) throw err;
+      onTransient(err);
+      const hint = retryAfterHint(err);
+      if (hint !== undefined) delay = Math.min(Math.max(interval, hint), MAX_LOOKUP_INTERVAL);
+    }
+    await sleep(delay, signal);
+  }
+}
+
 /**
  * Polls `adapter` every `pollInterval` ms until the transaction is committed,
- * then returns the lookup as the adapter answered it, a failed transaction
- * included. `timeout` bounds the caller's wait, an in-flight lookup included,
- * but the adapter gets no signal: a hung lookup keeps its
+ * retrying transient `429` and `5xx` network errors up to `timeout` (honouring
+ * `Retry-After` hints), then returns the lookup as the adapter answered it, a
+ * failed transaction included. `timeout` bounds the caller's wait, an in-flight
+ * lookup included, but the adapter gets no signal: a hung lookup keeps its
  * `maxConcurrentRequests` slot until it settles or the client's
  * `requestTimeout` passes. `hash` is passed to the adapter as is.
  */
@@ -204,26 +245,22 @@ export async function committedTransaction(
     ? Math.min(Math.max(pollInterval, MIN_LOOKUP_INTERVAL), MAX_LOOKUP_INTERVAL)
     : DEFAULT_LOOKUP_INTERVAL;
   const wait = new AbortController();
-  const timer = setTimeout(
-    () => wait.abort(new StreamdTimeoutError(`Transaction ${hash} not found after ${timeout}ms`, timeout)),
-    timeout,
-  );
+  let lastError: StreamdNetworkError | undefined;
+  const timer = setTimeout(() => {
+    const detail = lastError === undefined ? "" : ` (last error: ${lastError.message})`;
+    wait.abort(
+      new StreamdTimeoutError(`Transaction ${hash} not found after ${timeout}ms${detail}`, timeout, lastError),
+    );
+  }, timeout);
   const detach = onAbort(outer, () => wait.abort(outer!.reason));
-  let found: TransactionEvents | undefined;
   try {
-    for (;;) {
-      found = await raceAbort(
-        limiter.run(() => adapter.getTransactionEvents!(hash, descriptor), wait.signal),
-        wait.signal,
-      );
-      if (found !== undefined) break;
-      await sleep(interval, wait.signal);
-    }
+    return await pollTransaction(adapter, limiter, interval, hash, descriptor, wait.signal, (err) => {
+      lastError = err;
+    });
   } finally {
     clearTimeout(timer);
     detach();
   }
-  return found;
 }
 
 function bigintToString(_key: string, value: unknown): unknown {

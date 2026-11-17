@@ -14,6 +14,7 @@ const OTHER = "0x1::test::Pong";
 
 interface Reply {
   status?: number;
+  headers?: Record<string, string>;
   data: unknown;
 }
 
@@ -48,7 +49,12 @@ function fakeNode(
       calls.push({ method: req.method, body: req.body, path, params, headers: { ...(req.headers ?? {}) } });
       const reply = route(path, params);
       const status = reply.status ?? 200;
-      return { status, statusText: status === 200 ? "OK" : "Error", data: reply.data, headers: {} };
+      return {
+        status,
+        statusText: status === 200 ? "OK" : "Error",
+        data: reply.data,
+        headers: reply.headers ?? {},
+      };
     },
   };
   const aptos = new Aptos(
@@ -1114,6 +1120,16 @@ describe("FullnodeScanAdapter transaction lookup", () => {
     const err = await new FullnodeScanAdapter(down.aptos).getTransactionEvents(HASH).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect((err as StreamdNetworkError).statusCode).toBe(500);
+
+    const limited = fakeNode(() => ({
+      status: 429,
+      headers: { "retry-after": "7" },
+      data: { message: "too many requests" },
+    }));
+    const rateErr = await new FullnodeScanAdapter(limited.aptos).getTransactionEvents(HASH).catch((e: unknown) => e);
+    expect(rateErr).toBeInstanceOf(StreamdNetworkError);
+    expect((rateErr as StreamdNetworkError).statusCode).toBe(429);
+    expect((rateErr as StreamdNetworkError).retryAfter).toBe(7000);
 
     for (const reply of [
       { ...committed, success: "yes" },

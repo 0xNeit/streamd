@@ -263,6 +263,48 @@ export interface FullnodeScanAdapterOptions {
  * reading each transaction's write set instead of its events, so they share
  * its cost: fine for following the head, not for deep history.
  */
+async function fetchTransactionByHash(aptos: Aptos, transactionHash: string): Promise<TransactionWithEvents> {
+  const cfg = aptos.config;
+  const client = (
+    cfg as unknown as {
+      client?: { provider?: (req: unknown) => Promise<{ headers?: unknown }> };
+    }
+  ).client;
+  if (typeof client?.provider !== "function") {
+    return (await aptos.getTransactionByHash({ transactionHash })) as unknown as TransactionWithEvents;
+  }
+  const prev = client.provider;
+  let headers: unknown;
+  const scopedConfig = Object.assign(Object.create(Object.getPrototypeOf(cfg)), cfg, {
+    client: {
+      ...client,
+      provider: async (req: unknown) => {
+        const res = await prev.call(client, req);
+        headers = res?.headers;
+        return res;
+      },
+    },
+  });
+  try {
+    const { data } = await getAptosFullNode<{}, TransactionWithEvents>({
+      aptosConfig: scopedConfig,
+      path: `transactions/by_hash/${transactionHash}`,
+      originMethod: "getTransactionByHash",
+    });
+    return data;
+  } catch (err) {
+    if (
+      typeof err === "object" &&
+      err !== null &&
+      headers !== undefined &&
+      (err as { headers?: unknown }).headers === undefined
+    ) {
+      (err as { headers?: unknown }).headers = headers;
+    }
+    throw err;
+  }
+}
+
 export class FullnodeScanAdapter implements EventAdapter {
   private readonly scanBatch: number;
   private readonly maxScan: number;
@@ -345,9 +387,7 @@ export class FullnodeScanAdapter implements EventAdapter {
       const hash = requireTransactionHash(transactionHash);
       let txn: TransactionWithEvents;
       try {
-        txn = (await this.aptos.getTransactionByHash({
-          transactionHash: hash,
-        })) as unknown as TransactionWithEvents;
+        txn = await fetchTransactionByHash(this.aptos, hash);
       } catch (err) {
         if ((err as { status?: unknown } | null)?.status === 404) return undefined;
         throw err;

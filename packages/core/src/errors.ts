@@ -106,19 +106,44 @@ export class StreamdAssertionError extends StreamdError {
   }
 }
 
+function headerRetryAfter(headers: unknown): string | undefined {
+  if (typeof headers !== "object" || headers === null) return undefined;
+  try {
+    const getter = (headers as { get?: unknown }).get;
+    if (typeof getter === "function") {
+      const value: unknown = (headers as { get: (k: string) => unknown }).get("retry-after");
+      return typeof value === "string" ? value : undefined;
+    }
+    for (const [k, v] of Object.entries(headers as Record<string, unknown>)) {
+      if (k.toLowerCase() !== "retry-after") continue;
+      const first = Array.isArray(v) ? v[0] : v;
+      return typeof first === "string" ? first : undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
 /**
  * A failed request to a node as a streamd error: kept as is when it already is
- * one, else a network error carrying its HTTP status. Keeps the SDK error's
- * message and status but not the error itself, whose `request` carries the
- * client config: header API key included.
+ * one, else a network error carrying its HTTP status and `Retry-After` hint.
+ * Keeps the SDK error's message and status but not the error itself, whose
+ * `request` carries the client config: header API key included.
  */
 export function toStreamdError(err: unknown, what: string): StreamdError {
   if (err instanceof StreamdError) return err;
-  const status = (err as { status?: unknown } | null)?.status;
+  const raw = err as { status?: unknown; headers?: unknown; aptosResponse?: { headers?: unknown } } | null;
+  const status = raw?.status;
+  const retryAfter = parseRetryAfter(
+    headerRetryAfter(raw?.headers) ?? headerRetryAfter(raw?.aptosResponse?.headers),
+  );
   return new StreamdNetworkError(
     `Fullnode request for ${what} failed: ${
       err instanceof Error ? err.message : String(err)
     }`,
     typeof status === "number" ? status : undefined,
+    undefined,
+    retryAfter,
   );
 }
