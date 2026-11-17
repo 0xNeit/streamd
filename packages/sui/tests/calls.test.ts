@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
+import { StreamdError } from "@streamd/core";
+import { SuiAdapter } from "../src/adapter.js";
 import { callsOf } from "../src/calls.js";
-import { LONG, ptb, type Command } from "./helpers.js";
+import { LONG, digest, fakeLedger, ptb, withCalls, type Command } from "./helpers.js";
 
 const POOL = LONG("ab");
 const swap: Command = { package: POOL, module: "pool", function: "swap", typeArguments: [`${LONG("2")}::sui::SUI`], arguments: [] };
@@ -71,5 +73,54 @@ describe("callsOf", () => {
     expect(calls(POOL, "pool")?.function).toBe(`${POOL}::pool::swap`);
     expect(calls("0xzz", "a")).toBeUndefined();
     for (const module of ["b", "c", "d", "e", "f"]) expect(calls(POOL, module)).toBeUndefined();
+  });
+});
+
+describe("SuiAdapter entryFunctions and browser-safe cursors", () => {
+  const SWAP = `${POOL}::pool::Swap` as const;
+  const desc = { kind: "module" as const, eventType: SWAP };
+  const events = [
+    { cp: 1n, ti: 0n, ei: 0, type: SWAP, pkg: POOL, module: "pool" },
+    { cp: 1n, ti: 1n, ei: 0, type: SWAP, pkg: POOL, module: "pool" },
+  ];
+
+  it("skips batchGetTransactions when entryFunctions is false and validates the flag", async () => {
+    const { client: base } = fakeLedger([1, 2], events);
+    const { client, batches } = withCalls(base, { D1t0: ptb([swap]), D1t1: ptb([swap]) });
+
+    const skipped = await new SuiAdapter(client, { entryFunctions: false }).fetchEvents(desc, { fromVersion: 0n });
+    expect(batches).toEqual([]);
+    expect(skipped.events.map((e) => e.entryFunction)).toEqual([undefined, undefined]);
+
+    const attached = await new SuiAdapter(client).fetchEvents(desc, { fromVersion: 0n });
+    expect(batches).toEqual([["D1t0", "D1t1"]]);
+    expect(attached.events.map((e) => e.entryFunction?.function)).toEqual([`${POOL}::pool::swap`, `${POOL}::pool::swap`]);
+    expect(() => new SuiAdapter(client, { entryFunctions: "no" as never })).toThrow(StreamdError);
+  });
+
+  it("encodes and decodes cursors without Buffer and rejects malformed tokens", async () => {
+    const { client } = fakeLedger([1, 2], events);
+    const saved = globalThis.Buffer;
+    (globalThis as Record<string, unknown>).Buffer = undefined;
+    try {
+      const sui = new SuiAdapter(client);
+      const p1 = await sui.fetchEvents(desc, { fromVersion: 0n, limit: 1 });
+      expect(p1.events).toHaveLength(1);
+      expect(p1.nextCursor).toBeDefined();
+      const p2 = await sui.fetchEvents(desc, { cursor: p1.nextCursor, limit: 5 });
+      expect(p2.events).toHaveLength(1);
+      expect(p2.events[0]!.version).toBeGreaterThan(p1.events[0]!.version);
+
+      const carried = await sui.fetchEvents(desc, { fromVersion: 2n, limit: 1 });
+      expect(carried.nextCursor).toContain(".2");
+      const resumed = await sui.fetchEvents(desc, { cursor: carried.nextCursor, limit: 5 });
+      expect(resumed.events.map((e) => e.version)).toEqual([2n]);
+
+      for (const bad of ["", "a", "ab=", "$$"]) {
+        await expect(sui.fetchEvents(desc, { cursor: bad })).rejects.toThrow(StreamdError);
+      }
+    } finally {
+      (globalThis as Record<string, unknown>).Buffer = saved;
+    }
   });
 });

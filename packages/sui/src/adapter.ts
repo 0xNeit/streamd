@@ -1,5 +1,5 @@
 import { bcs } from "@mysten/sui/bcs";
-import { isValidSuiAddress, isValidTransactionDigest, normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
+import { fromBase64 as decodeBase64, isValidSuiAddress, isValidTransactionDigest, normalizeStructTag, normalizeSuiAddress, toBase64 } from "@mysten/sui/utils";
 import { StreamdError, StreamdNetworkError, requireObjectRequest } from "@streamd/core";
 import type {
   AccountEventDescriptor,
@@ -17,7 +17,7 @@ import type {
 } from "@streamd/core";
 import { attachCalls, callsOf, CALL_FIELDS, withCall, type BatchGetTransactions, type CallTransaction } from "./calls.js";
 import { toJson, type ProtoValue } from "./json.js";
-import { graphqlEffects, graphqlStatesOf, objectChangesOf, objectStatesOf, type ObjectChangeTransaction, type StateTransaction } from "./objects.js";
+import { graphqlEffects, graphqlStatesOf, objectChangesOf, objectStatesOf, StateMemo, type ObjectChangeTransaction, type StateLookup, type StateTransaction } from "./objects.js";
 import { networks } from "./networks.js";
 import { coinType, micros, transfersOf, type BalanceChangeTransaction } from "./transfers.js";
 import type { Transfer } from "@streamd/core";
@@ -149,6 +149,12 @@ export interface SuiAdapterOptions {
    * this to keep pruned reads elsewhere.
    */
   graphqlUrl?: string;
+  /**
+   * Whether `fetchEvents` reads each page's transactions through
+   * `batchGetTransactions` to attach `entryFunction` (default `true`). Pass
+   * `false` to skip the extra round trip when `entryFunction` is not needed.
+   */
+  entryFunctions?: boolean;
 }
 
 /** A transaction to simulate on Sui: the BCS `TransactionData` bytes `await tx.build({ client })` returns. */
@@ -162,48 +168,16 @@ const SCAN_LIMIT = 2;
 const DEFAULT_LIMIT = 25;
 const KEPT_SUMMARIES = 4096;
 const EVENT_FIELDS = ["event_type", "package_id", "module", "sender", "json", "checkpoint", "transaction_digest", "transaction_index", "event_index"];
-const TRANSACTION_FIELDS = [
-  "digest",
-  "checkpoint",
-  "effects.status",
-  ...["event_type", "package_id", "module", "sender", "json"].map((f) => `events.events.${f}`),
-  ...CALL_FIELDS.map((f) => `transaction.${f}`),
-];
+const TRANSACTION_FIELDS = ["digest", "checkpoint", "effects.status", ...["event_type", "package_id", "module", "sender", "json"].map((f) => `events.events.${f}`), ...CALL_FIELDS.map((f) => `transaction.${f}`)];
 const SIMULATION_FIELDS = TRANSACTION_FIELDS.filter((f) => f !== "digest" && f !== "checkpoint").map((f) => `transaction.${f}`);
-const TRANSFER_FIELDS = [
-  "digest",
-  "checkpoint",
-  "transaction_index",
-  "timestamp",
-  "transaction.sender",
-  "transaction.gas_payment.owner",
-  "effects.gas_used",
-  "balance_changes",
-  "events.events.event_type",
-];
+const TRANSFER_FIELDS = ["digest", "checkpoint", "transaction_index", "timestamp", "transaction.sender", "transaction.gas_payment.owner", "effects.gas_used", "balance_changes", "events.events.event_type"];
 const OBJECT_FIELDS = [
-  "digest",
-  "checkpoint",
-  "transaction_index",
-  "timestamp",
-  "transaction.sender",
-  "events.events.event_type",
-  "effects.changed_objects",
+  "digest", "checkpoint", "transaction_index", "timestamp", "transaction.sender", "events.events.event_type",
+  "effects.changed_objects", "effects.unchanged_consensus_objects",
   ...["object_id", "version", "object_type", "json"].map((f) => `objects.objects.${f}`),
 ];
-const RECEIVED_FIELDS = [
-  "digest",
-  "checkpoint",
-  "transaction_index",
-  "timestamp",
-  ...["event_type", "package_id", "module", "sender", "json"].map((f) => `events.events.${f}`),
-  ...CALL_FIELDS.map((f) => `transaction.${f}`),
-];
-const STATE_FIELDS = [
-  "effects.changed_objects",
-  "effects.unchanged_consensus_objects",
-  ...["object_id", "version", "json"].map((f) => `objects.objects.${f}`),
-];
+const RECEIVED_FIELDS = ["digest", "checkpoint", "transaction_index", "timestamp", ...["event_type", "package_id", "module", "sender", "json"].map((f) => `events.events.${f}`), ...CALL_FIELDS.map((f) => `transaction.${f}`)];
+const STATE_FIELDS = ["effects.changed_objects", "effects.unchanged_consensus_objects", ...["object_id", "version", "json"].map((f) => `objects.objects.${f}`)];
 const CHECKS_ENABLED = 0;
 const SUMMARY_FIELDS = ["sequence_number", "summary.total_network_transactions", "summary.timestamp"];
 
@@ -341,10 +315,13 @@ function httpUrl(value: unknown): string | undefined {
 
 const pruned = (err: unknown) => err instanceof StreamdNetworkError && err.statusCode === 410;
 
-const toBase64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
 const fromBase64 = (text: string) => {
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text)) throw new StreamdError(`Not a cursor this adapter issued: ${text}`);
-  return new Uint8Array(Buffer.from(text, "base64"));
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text) || text.length % 4 === 1) throw new StreamdError(`Not a cursor this adapter issued: ${text}`);
+  try {
+    return decodeBase64(text);
+  } catch {
+    throw new StreamdError(`Not a cursor this adapter issued: ${text}`);
+  }
 };
 
 /**
@@ -378,14 +355,20 @@ export class SuiAdapter implements EventAdapter {
   private readonly summaries = new Map<bigint, Promise<Summary>>();
   /** The checkpoint holding each version placed so far. */
   private readonly places = new Map<bigint, bigint>();
+  private readonly states = new StateMemo();
   private readonly graphqlUrl: string | undefined;
+  private readonly entryFunctions: boolean;
 
   constructor(client: SuiLedgerClient, options: SuiAdapterOptions = {}) {
     if (typeof client?.ledgerService?.listEvents !== "function") {
       throw new StreamdError("SuiAdapter needs a SuiGrpcClient from @mysten/sui/grpc");
     }
+    if (options?.entryFunctions !== undefined && typeof options.entryFunctions !== "boolean") {
+      throw new StreamdError(`Not a valid entryFunctions flag (true or false): ${String(options.entryFunctions)}`);
+    }
     const preset = client.network === "mainnet" || client.network === "testnet" || client.network === "devnet" ? networks[client.network] : undefined;
     this.graphqlUrl = httpUrl(options?.graphqlUrl ?? preset?.graphqlUrl);
+    this.entryFunctions = options?.entryFunctions ?? true;
     this.ledger = client.ledgerService;
     this.executor = client.transactionExecutionService;
     this.stateService = client.stateService;
@@ -474,7 +457,7 @@ export class SuiAdapter implements EventAdapter {
         return [event];
       },
     );
-    const batch = this.ledger.batchGetTransactions;
+    const batch = this.entryFunctions ? this.ledger.batchGetTransactions : undefined;
     if (batch !== undefined && page.events.length > 0) {
       try {
         await attachCalls(batch.bind(this.ledger), page.events.map((e) => [e, origins.get(e)!]));
@@ -528,7 +511,11 @@ export class SuiAdapter implements EventAdapter {
     return this.walk<ListTransactionsFrame>(
       options,
       (bounds) => list({ readMask: { paths: OBJECT_FIELDS }, filter: { terms: [{ literals: [affected] }] }, ...bounds }),
-      async ({ transaction }) => (transaction === undefined ? [] : objectChangesOf(transaction, await this.versionOf(transaction), objectId)),
+      async ({ transaction }) => {
+        if (transaction === undefined) return [];
+        if (transaction.digest !== undefined) this.states.remember(transaction.digest, transaction);
+        return objectChangesOf(transaction, await this.versionOf(transaction), objectId);
+      },
     );
   }
 
@@ -587,6 +574,10 @@ export class SuiAdapter implements EventAdapter {
     const ids = requireObjectRequest(request).objects.map(suiAddress);
     if (at?.transactionHash === undefined) throw new StreamdError("readObjects needs the event's transactionHash, its transaction's digest");
     const digest = requireDigest(at.transactionHash);
+    return this.states.read(digest, () => this.loadState(digest), ids);
+  }
+
+  private async loadState(digest: string): Promise<StateLookup> {
     let found: ExecutedTransaction | undefined;
     try {
       ({ response: { transaction: found } } = await this.ledger.getTransaction({ digest, readMask: { paths: STATE_FIELDS } }));
@@ -596,10 +587,11 @@ export class SuiAdapter implements EventAdapter {
       if (this.graphqlUrl === undefined) {
         throw new StreamdNetworkError(`This Sui node no longer has transaction ${digest}; pass graphqlUrl to SuiAdapter to read it through Sui GraphQL`, 410);
       }
-      return graphqlStatesOf(await graphqlEffects(this.graphqlUrl, digest), ids, digest);
+      const effects = await graphqlEffects(this.graphqlUrl, digest);
+      return (ids) => structuredClone(graphqlStatesOf(effects, ids, digest));
     }
     if (found === undefined) throw new StreamdError(`Sui node returned no transaction ${digest}`);
-    return objectStatesOf(found, ids, digest);
+    return (ids) => objectStatesOf(found, ids, digest);
   }
 
   /** `owner`'s total balance of `type`, a coin type, at the node's latest state: Sui reads no balance at a version. */

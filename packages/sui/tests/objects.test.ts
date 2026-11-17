@@ -1,7 +1,8 @@
 import { describe, expect, it } from "bun:test";
-import { StreamdError } from "@streamd/core";
+import { StreamdClient, StreamdError } from "@streamd/core";
+import { SuiAdapter } from "../src/adapter.js";
 import { graphqlStatesOf, objectChangesOf, objectStatesOf, type ChangedObject, type GraphqlEffects, type ObjectChangeTransaction } from "../src/objects.js";
-import { LONG, str } from "./helpers.js";
+import { LONG, digest, fakeLedger, grpcError, str, withTransfers } from "./helpers.js";
 
 const POOL = LONG("9001");
 const OTHER = LONG("9002");
@@ -168,5 +169,111 @@ describe("graphqlStatesOf", () => {
     expect(() => graphqlStatesOf(paged, [OTHER], "D1")).toThrow("more objects than one GraphQL page holds");
     expect(graphqlStatesOf(paged, [POOL], "D1")).toEqual([{ value: "new" }]);
     expect(() => graphqlStatesOf({ objectChanges: {} } as never, [POOL], "D1")).toThrow(StreamdError);
+  });
+});
+
+describe("SuiAdapter readObjects memoization", () => {
+  const TX = digest(7);
+  const at = { version: 1n, transactionHash: TX };
+
+  function txnStateLedger(responses: (() => unknown)[]) {
+    const { client } = fakeLedger([1], []);
+    const digests: string[] = [];
+    client.ledgerService.getTransaction = async ({ digest }) => {
+      digests.push(digest);
+      const result = responses.shift()!();
+      if (result instanceof Error) throw result;
+      return { response: { transaction: result as never } };
+    };
+    return { client, digests };
+  }
+
+  it("memoizes concurrent and sequential gRPC state reads, keeps untouched errors from evicting, and returns fresh objects", async () => {
+    const raw = {
+      effects: { changedObjects: [{ objectId: POOL, inputVersion: 7n, outputState: 2, outputVersion: 8n }], unchangedConsensusObjects: [] },
+      objects: { objects: [{ objectId: POOL, version: 8n, json: json("new") }] },
+    };
+    const { client, digests } = txnStateLedger([() => raw]);
+    const adapter = new SuiAdapter(client);
+    const [a, b] = await Promise.all([adapter.readObjects({ objects: [POOL] }, at), adapter.readObjects({ objects: [POOL] }, at)]);
+    expect(digests).toEqual([TX]);
+    (a[0] as Record<string, string>).value = "mutated";
+    expect(b).toEqual([{ value: "new" }]);
+    await expect(adapter.readObjects({ objects: [OTHER] }, at)).rejects.toThrow("did not write or read");
+    expect(await adapter.readObjects({ objects: [POOL] }, at)).toEqual([{ value: "new" }]);
+    expect(digests).toEqual([TX]);
+  });
+
+  it("evicts failed gRPC and GraphQL reads so retries succeed, and memoizes successful GraphQL lookups", async () => {
+    const raw = {
+      effects: { changedObjects: [{ objectId: POOL, outputState: 2, outputVersion: 8n }], unchangedConsensusObjects: [] },
+      objects: { objects: [{ objectId: POOL, version: 8n, json: json("ok") }] },
+    };
+    const grpcRetry = txnStateLedger([() => grpcError("UNAVAILABLE", "down"), () => raw]);
+    const grpcAdapter = new SuiAdapter(grpcRetry.client);
+    await expect(grpcAdapter.readObjects({ objects: [POOL] }, at)).rejects.toThrow("down");
+    expect(await grpcAdapter.readObjects({ objects: [POOL] }, at)).toEqual([{ value: "ok" }]);
+    expect(grpcRetry.digests).toEqual([TX, TX]);
+
+    const gql = txnStateLedger([() => grpcError("NOT_FOUND"), () => grpcError("NOT_FOUND"), () => grpcError("NOT_FOUND")]);
+    const gqlAdapter = new SuiAdapter(gql.client, { graphqlUrl: "https://gql.example/graphql" });
+    let posts = 0;
+    const savedFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      posts++;
+      if (posts === 1) return new Response("boom", { status: 500 });
+      return Response.json({
+        data: {
+          transaction: {
+            effects: {
+              objectChanges: { pageInfo: { hasNextPage: false }, nodes: [{ address: POOL, outputState: { address: POOL, version: 8, asMoveObject: { contents: { json: { value: "gql" } } } } }] },
+              unchangedConsensusObjects: { pageInfo: { hasNextPage: false }, nodes: [] },
+            },
+          },
+        },
+      });
+    }) as unknown as typeof fetch;
+    try {
+      await expect(gqlAdapter.readObjects({ objects: [POOL] }, at)).rejects.toThrow("HTTP 500");
+      const first = await gqlAdapter.readObjects({ objects: [POOL] }, at);
+      (first[0] as Record<string, string>).value = "mutated";
+      expect(await gqlAdapter.readObjects({ objects: [POOL] }, at)).toEqual([{ value: "gql" }]);
+      expect(posts).toBe(2);
+    } finally {
+      globalThis.fetch = savedFetch;
+    }
+  });
+
+  it("reuses transactions from an object walk in readObjects without another getTransaction call", async () => {
+    const { client: base, calls: baseCalls } = fakeLedger([1], []);
+    const { client: withTx, calls } = withTransfers(base, [1], [
+      { cp: 0n, ti: 0n, changes: [], objects: [{ id: POOL, version: 8n, value: "fresh" }] },
+    ]);
+    const listTransactions = withTx.ledgerService.listTransactions!;
+    const wrappedClient = {
+      ...withTx,
+      ledgerService: {
+        ...withTx.ledgerService,
+        listTransactions(input: Parameters<typeof listTransactions>[0]) {
+          const { responses } = listTransactions(input);
+          return {
+            responses: (async function* () {
+              for await (const frame of responses) {
+                if (frame.transaction !== undefined) frame.transaction.digest = TX;
+                yield frame;
+              }
+            })(),
+          };
+        },
+      },
+    };
+    const sui = new SuiAdapter(wrappedClient);
+    const client = new StreamdClient({ adapter: sui });
+    const events = await client.getEvents({ kind: "object", objectId: POOL }, { fromVersion: 0n, withState: () => ({ objects: [POOL] }) });
+    expect(events).toHaveLength(1);
+    expect(events[0]!.state).toEqual([{ value: "fresh" }]);
+    expect(baseCalls.transactions).toEqual([]);
+    expect((calls.list[0]!.readMask as { paths: string[] }).paths).toContain("effects.unchanged_consensus_objects");
+    client.destroy();
   });
 });
