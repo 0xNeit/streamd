@@ -11,11 +11,13 @@ const EXPIRED = /^name(?: |%20)has(?: |%20)expired$/;
 /**
  * The long-form address of `value` when it is one, `undefined` when it is a
  * well-formed SuiNS name (`alice.sui`, `@alice`, `sub.alice.sui`, `sub@alice`);
- * anything else throws. `0x` always means an address, so a mistyped one is
- * refused rather than looked up as a name.
+ * anything else throws. `0x` means an address unless it ends in `.sui`, so a
+ * mistyped address is refused rather than looked up as a name.
  */
 export function addressOrName(value: string): string | undefined {
-  if (typeof value === "string" && value.startsWith("0x")) return suiAddress(value);
+  if (typeof value === "string" && value.startsWith("0x") && !value.endsWith(".sui")) {
+    return suiAddress(value);
+  }
   if (typeof value !== "string" || !isValidSuiNSName(value)) {
     throw new StreamdError(`Not a valid Sui address or SuiNS name: ${String(value).slice(0, 80)}`);
   }

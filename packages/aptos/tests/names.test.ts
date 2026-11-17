@@ -29,11 +29,13 @@ describe("resolveName", () => {
     expect(names).toEqual([]);
   });
 
-  it("resolves a name to its target in long form", async () => {
+  it("resolves a name to its target in long form, including 0x-prefixed .apt names", async () => {
     const { aptos, names } = fakeAptos(() => AccountAddress.from(TARGET));
     expect(await resolveName(aptos, "alice.apt")).toBe(TARGET);
     expect(await resolveName(aptos, "sub.alice")).toBe(TARGET);
-    expect(names).toEqual(["alice.apt", "sub.alice"]);
+    expect(await resolveName(aptos, "0xbob.apt")).toBe(TARGET);
+    expect(await resolveName(aptos, "0x1.0xbob.apt")).toBe(TARGET);
+    expect(names).toEqual(["alice.apt", "sub.alice", "0xbob.apt", "0x1.0xbob.apt"]);
   });
 
   it("rejects a name with no target as a StreamdError naming it", async () => {
@@ -135,6 +137,12 @@ describe("primaryName", () => {
 
   it("returns a subdomain with .apt", async () => {
     expect(await primaryName(reverse(() => "sub.alice").aptos, TARGET)).toBe("sub.alice.apt");
+  });
+
+  it("returns a primary name starting with 0x", async () => {
+    const { aptos, names } = reverse(() => "0xbob", () => AccountAddress.from(TARGET));
+    expect(await primaryName(aptos, TARGET)).toBe("0xbob.apt");
+    expect(names).toEqual(["0xbob.apt"]);
   });
 
   it("gives undefined with no forward read when there is no name", async () => {

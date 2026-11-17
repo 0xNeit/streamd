@@ -27,12 +27,18 @@ describe("resolveName", () => {
     expect(calls.lookups).toEqual([]);
   });
 
-  it("resolves both name forms and subnames to the target in long form", async () => {
-    const { sui, calls } = client({ "alice.sui": "0xa11ce", "@alice": "0xa11ce", "pay.alice.sui": "0xb0b" });
+  it("resolves both name forms and subnames to the target in long form, including 0x-prefixed .sui names", async () => {
+    const { sui, calls } = client({
+      "alice.sui": "0xa11ce",
+      "@alice": "0xa11ce",
+      "pay.alice.sui": "0xb0b",
+      "0xbob.sui": "0xb0b",
+    });
     expect(await resolveName(sui, "alice.sui")).toBe(ALICE);
     expect(await resolveName(sui, "@alice")).toBe(ALICE);
     expect(await resolveName(sui, "pay.alice.sui")).toBe(BOB);
-    expect(calls.lookups).toEqual(["alice.sui", "@alice", "pay.alice.sui"]);
+    expect(await resolveName(sui, "0xbob.sui")).toBe(BOB);
+    expect(calls.lookups).toEqual(["alice.sui", "@alice", "pay.alice.sui", "0xbob.sui"]);
   });
 
   it("rejects what the name service says about the name as a plain StreamdError naming it", async () => {
@@ -70,10 +76,11 @@ describe("resolveName", () => {
 });
 
 describe("primaryName", () => {
-  it("returns the name when it points back, asking in long form", async () => {
-    const { sui, calls } = client({ "alice.sui": ALICE }, { [ALICE]: "alice.sui" });
+  it("returns the name when it points back, asking in long form, including 0x-prefixed .sui names", async () => {
+    const { sui, calls } = client({ "alice.sui": ALICE, "0xbob.sui": BOB }, { [ALICE]: "alice.sui", [BOB]: "0xbob.sui" });
     expect(await primaryName(sui, "0xa11ce")).toBe("alice.sui");
-    expect(calls.reverse).toEqual([ALICE]);
+    expect(await primaryName(sui, "0xb0b")).toBe("0xbob.sui");
+    expect(calls.reverse).toEqual([ALICE, BOB]);
   });
 
   it("gives undefined with no forward read when there is none or it expired", async () => {
