@@ -349,11 +349,14 @@ export class AptosClient extends StreamdClient {
 
   /**
    * Keep one wallet's balances current, by reading each at the head every
-   * `pollInterval`, so it cannot drift or fall behind. `asset` names what to
-   * follow, one or a list, since no view lists a wallet's assets; without
-   * it, APT is followed. `address` may be an Aptos name. Like `reduce()`, it
-   * is not a listener for `off()`
-   * or `listenerCount()`; `destroy()` ends it.
+   * `pollInterval` (one head read plus one view per followed asset per poll;
+   * default 1000ms), so it cannot drift or fall behind. Even one asset at the
+   * default interval makes 2 requests per second and needs an API key or a
+   * higher `pollInterval` (such as 5000ms) on the anonymous fullnode. `asset`
+   * names what to follow, one or a list, since no view lists a wallet's assets;
+   * without it, APT is followed. `address` may be an Aptos name. Like
+   * `reduce()`, it is not a listener for `off()` or `listenerCount()`;
+   * `destroy()` ends it.
    */
   balances(address: string, options?: BalancesOptions): Balances {
     if (address === undefined) throw new StreamdError("balances needs an address or Aptos name");

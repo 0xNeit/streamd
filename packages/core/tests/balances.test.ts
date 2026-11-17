@@ -109,6 +109,41 @@ describe("startBalances", () => {
     await expect(aborted.ready).rejects.toThrow("cancelled");
     expect(aborted.active).toBe(false);
   });
+
+  it("delivers all changed assets of a poll with the complete post-poll map", async () => {
+    const head = { value: 5n };
+    const ledger = new Map([["U", 100n], ["V", 0n]]);
+    const snapshots: [string, bigint, ReadonlyMap<string, bigint>][] = [];
+    const errors: Error[] = [];
+    let shouldThrow = false;
+    using wallet = client(head).balances(reader(ledger), {
+      asset: ["u", "v"],
+      pollInterval: 5,
+      batchSize: 1,
+      onError: (err) => errors.push(err),
+      onChange: (all, change) => {
+        if (shouldThrow && change.data.asset === "U") throw new Error("handler boom");
+        snapshots.push([change.data.asset, change.version, new Map(all)]);
+      },
+    });
+    expect(await wallet.ready).toEqual(new Map([["U", 100n], ["V", 0n]]));
+    ledger.set("U", 0n);
+    ledger.set("V", 100n);
+    head.value = 6n;
+    await wait(30);
+    expect(snapshots).toEqual([
+      ["U", 6n, new Map([["U", 0n], ["V", 100n]])],
+      ["V", 6n, new Map([["U", 0n], ["V", 100n]])],
+    ]);
+
+    shouldThrow = true;
+    ledger.set("U", 50n);
+    ledger.set("V", 50n);
+    head.value = 7n;
+    await wait(30);
+    expect(errors.map((e) => e.message)).toEqual([expect.stringContaining("Balance change handler threw")]);
+    expect(snapshots.at(-1)).toEqual(["V", 7n, new Map([["U", 50n], ["V", 50n]])]);
+  });
 });
 
 describe("formatAmount", () => {

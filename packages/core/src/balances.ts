@@ -4,6 +4,7 @@ import type {
   BalanceChange,
   Balances,
   BalancesOptions,
+  BatchCallback,
   EventAdapter,
   EventCallback,
   EventDescriptor,
@@ -48,7 +49,7 @@ export interface BalancesHost {
   descriptor: EventDescriptor;
   onError: ((error: Error) => void) | undefined;
   subscribe(
-    callback: EventCallback,
+    delivery: EventCallback | { batch: BatchCallback },
     options: ListenerOptions,
     wrap: (source: EventAdapter) => EventAdapter,
   ): Subscription;
@@ -108,13 +109,11 @@ const ALLOWED: readonly string[] = [
   "signal",
 ] satisfies readonly (keyof BalancesOptions)[];
 
-/** A chain client's `balances()`: read each asset at the head, then keep reading it. */
-export function startBalances(
+function checkBalancesOptions(
   host: BalancesHost,
-  account: () => Promise<string>,
   reader: BalanceReader,
-  options: BalancesOptions = {},
-): Balances {
+  options: BalancesOptions,
+): readonly string[] {
   const refused = Object.keys(options).find((k) => !ALLOWED.includes(k));
   if (refused !== undefined) {
     throw new StreamdError(`Unsupported balances option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
@@ -123,10 +122,86 @@ export function startBalances(
   if (typeof host.adapter.getHeadVersion !== "function") {
     throw new StreamdError("balances needs an adapter that implements getHeadVersion");
   }
-  const { asset: named, onChange, ...listener } = options;
-  if (Array.isArray(named) && named.length === 0) throw new StreamdError("asset must not be an empty list");
-  const assets = reader.assets(named);
+  if (Array.isArray(options.asset) && options.asset.length === 0) {
+    throw new StreamdError("asset must not be an empty list");
+  }
+  return reader.assets(options.asset);
+}
 
+function applyBalanceBatch(
+  amounts: Map<string, bigint>,
+  events: readonly StreamdEvent[],
+  onChange: BalancesOptions["onChange"],
+  report: (err: Error) => void,
+): void {
+  // Apply every balance change from this head version before notifying, so
+  // `onChange` never observes a half-applied swap across assets.
+  for (const event of events) {
+    const { asset, balance: next } = event.data as BalanceChange;
+    amounts.set(asset, next);
+  }
+  if (onChange === undefined) return;
+  for (const event of events) {
+    try {
+      onChange(new Map(amounts), event as StreamdEvent<BalanceChange>);
+    } catch (err) {
+      report(new StreamdError(`Balance change handler threw for ${event.version}:${event.eventIndex}`, err));
+    }
+  }
+}
+
+interface BalanceRunConfig {
+  host: BalancesHost;
+  account: () => Promise<string>;
+  reader: BalanceReader;
+  assets: readonly string[];
+  amounts: Map<string, bigint>;
+  listener: Omit<BalancesOptions, "asset" | "onChange">;
+  onChange: BalancesOptions["onChange"];
+  report: (err: Error) => void;
+  throwIfStopped: () => void;
+  onStop: () => void;
+  attachPolling: (sub: Subscription) => void;
+}
+
+async function runBalances(cfg: BalanceRunConfig): Promise<ReadonlyMap<string, bigint>> {
+  cfg.throwIfStopped();
+  const who = await cfg.account();
+  const head = await cfg.host.adapter.getHeadVersion!(cfg.host.descriptor);
+  const first: [string, bigint][] = [];
+  for (const asset of cfg.assets) {
+    first.push([asset, await cfg.reader.read(cfg.host.adapter, who, asset, head)]);
+  }
+  cfg.throwIfStopped();
+  for (const [asset, balance] of first) cfg.amounts.set(asset, balance);
+
+  let polling: Subscription | undefined;
+  polling = cfg.host.subscribe(
+    { batch: (events) => applyBalanceBatch(cfg.amounts, events, cfg.onChange, cfg.report) },
+    {
+      ...cfg.listener,
+      fromVersion: 0n,
+      onError: (err) => {
+        if (!polling?.active && !polling?.paused) cfg.onStop();
+        cfg.report(err);
+      },
+    },
+    (source) =>
+      balancePoll(source, cfg.host.descriptor, cfg.reader, who, cfg.amounts, cfg.assets, head),
+  );
+  cfg.attachPolling(polling);
+  return new Map(cfg.amounts);
+}
+
+/** A chain client's `balances()`: read each asset at the head, then keep reading it. */
+export function startBalances(
+  host: BalancesHost,
+  account: () => Promise<string>,
+  reader: BalanceReader,
+  options: BalancesOptions = {},
+): Balances {
+  const assets = checkBalancesOptions(host, reader, options);
+  const { asset: _named, onChange, ...listener } = options;
   const amounts = new Map<string, bigint>();
   let polling: Subscription | undefined;
   let stopped = false;
@@ -144,39 +219,21 @@ export function startBalances(
   const detachSignal = onAbort(options.signal, () => stop(options.signal!.reason));
   if (options.signal?.aborted) stop(options.signal.reason);
 
-  const throwIfStopped = () => {
-    if (stopped) throw abandon.signal.reason;
-  };
-
-  const run = async (): Promise<ReadonlyMap<string, bigint>> => {
-    throwIfStopped();
-    const who = await account();
-    const head = await host.adapter.getHeadVersion!(host.descriptor);
-    const first: [string, bigint][] = [];
-    for (const asset of assets) first.push([asset, await reader.read(host.adapter, who, asset, head)]);
-    throwIfStopped();
-    for (const [asset, balance] of first) amounts.set(asset, balance);
-
-    polling = host.subscribe(
-      (event) => {
-        const { asset, balance: next } = event.data as BalanceChange;
-        amounts.set(asset, next);
-        onChange?.(new Map(amounts), event as StreamdEvent<BalanceChange>);
-      },
-      {
-        ...listener,
-        fromVersion: 0n,
-        onError: (err) => {
-          if (!polling?.active && !polling?.paused) stop();
-          report(err);
-        },
-      },
-      (source) => balancePoll(source, host.descriptor, reader, who, amounts, assets, head),
-    );
-    return new Map(amounts);
-  };
-
-  const ready = run().catch((err: unknown) => {
+  const ready = runBalances({
+    host,
+    account,
+    reader,
+    assets,
+    amounts,
+    listener,
+    onChange,
+    report,
+    throwIfStopped: () => {
+      if (stopped) throw abandon.signal.reason;
+    },
+    onStop: () => stop(),
+    attachPolling: (sub) => (polling = sub),
+  }).catch((err: unknown) => {
     const wasStopped = stopped;
     stop(err);
     if (!wasStopped) report(err as Error);
