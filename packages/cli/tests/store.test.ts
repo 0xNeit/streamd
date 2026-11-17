@@ -103,6 +103,43 @@ describe("runStore", () => {
     expect(cursors(db)[0]).toContain('"creationNumber":"7"');
   });
 
+  it("saves the cursor across empty sparse pages on abort and resumes past them", async () => {
+    const db = new Database(":memory:");
+    let count = 0;
+    const sparse: EventAdapter = {
+      fetchEvents: async () => {
+        count++;
+        if (count <= 3) {
+          return {
+            events: [],
+            nextCursor: String(count * 100),
+            hasMore: true,
+            throughVersion: BigInt(count * 100),
+          };
+        }
+        return new Promise(() => {});
+      },
+    };
+    const { code, errors } = await run(sparse, db, options(), () => count >= 4);
+    expect(code).toBe(0);
+    expect(errors).toEqual([]);
+    const key = `mainnet:${JSON.stringify(options().descriptor)}`;
+    expect(cursors(db)).toEqual([key]);
+    const saved = (db.query("SELECT cursor FROM streamd_cursors WHERE name = ?").get(key) as { cursor: string }).cursor;
+    expect(saved).toBe("300");
+
+    const resumedFrom: (string | undefined)[] = [];
+    const second: EventAdapter = {
+      fetchEvents: async (_d, o) => {
+        resumedFrom.push(o.cursor);
+        return { events: [ev(305)], nextCursor: "306", hasMore: false };
+      },
+    };
+    await run(second, db, options({ fromVersion: 0n }), () => stored(db).length === 1);
+    expect(resumedFrom[0]).toBe("300");
+    expect(stored(db)).toEqual([305]);
+  });
+
   it("exits 1 when polling gives up", async () => {
     const db = new Database(":memory:");
     const errors: string[] = [];
@@ -263,6 +300,31 @@ describe("runStore --postgres", () => {
     await pgRun(adapter, connection, pgOptions({ filter }), async () => (await pgCursors(pg)).length === 3);
     const descriptor = JSON.stringify(options().descriptor);
     expect(await pgCursors(pg)).toEqual([`mainnet:${descriptor}:${JSON.stringify(filter)}`, "mine", `sui:mainnet:${descriptor}`]);
+  });
+
+  it("saves the cursor across empty sparse pages on abort for --postgres and resumes past them", async () => {
+    const { pg, connection } = pglite();
+    let count = 0;
+    const sparse: EventAdapter = {
+      fetchEvents: async () => {
+        count++;
+        if (count <= 3) {
+          return {
+            events: [],
+            nextCursor: String(count * 100),
+            hasMore: true,
+            throughVersion: BigInt(count * 100),
+          };
+        }
+        return new Promise(() => {});
+      },
+    };
+    const result = await pgRun(sparse, connection, pgOptions(), async () => count >= 4);
+    expect(result).toEqual({ code: 0, errors: [], connected: [URL_WITH_PASSWORD] });
+    const key = `mainnet:${JSON.stringify(options().descriptor)}`;
+    const row = (await pg.query<{ cursor: string }>("SELECT cursor FROM streamd_cursors WHERE name = $1", [key])).rows[0];
+    expect(row?.cursor).toBe("300");
+    expect(connection.closed).toBe(1);
   });
 
   it("exits 1 when the server refuses, naming the redacted URL and never the password", async () => {

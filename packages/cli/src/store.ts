@@ -176,6 +176,11 @@ export async function runStore(options: StoreOptions, io: StoreIO): Promise<numb
   io.signal.removeEventListener("abort", onAbort);
   // Stops the subscription and lets a batch already being written finish before the connection goes.
   await io.client.close({ timeout: CLOSE_TIMEOUT });
+  // Persist any advanced sparse cursor (even if no batch arrived) before closing the database.
+  if (code === 0 && sub !== undefined) {
+    const asyncDispose = Symbol.asyncDispose ?? Symbol.for("Symbol.asyncDispose");
+    await (sub as unknown as Record<symbol, (() => Promise<void>) | undefined>)[asyncDispose]?.();
+  }
   await Promise.race([backend.close(), new Promise((resolve) => setTimeout(resolve, DISCONNECT_TIMEOUT).unref())]);
   return code;
 }
