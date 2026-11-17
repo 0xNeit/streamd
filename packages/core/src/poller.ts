@@ -428,7 +428,8 @@ export class EventPoller {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
       if (this.position.hasSeen(raw) || pending.hasSeen(raw)) continue;
-      const outcome = await this.deliverRaw(raw, gen, adapter, run, prefetched);
+      const step = this.deliverRaw(raw, gen, adapter, run, prefetched);
+      const outcome = isThenable(step) ? await step : step;
       if (outcome === undefined) return;
       if ("failure" in outcome) {
         failure = outcome.failure;
@@ -448,7 +449,8 @@ export class EventPoller {
       if (!attached.current) return;
       if ("failure" in attached) failure = attached.failure;
     }
-    await this.finishPage(page, batch, batched, gen, reached, failure);
+    const finished = this.finishPage(page, batch, batched, gen, reached, failure);
+    if (isThenable(finished)) await finished;
   }
 
   private prefetchPage(events: readonly StreamdEvent[]): Map<string, Promise<string | null>> | undefined {
@@ -470,15 +472,43 @@ export class EventPoller {
     }
   }
 
-  private async deliverRaw(
+  /**
+   * Synchronous fast path when no async predicate, view or name lookup applies,
+   * so synchronous callbacks advance `position.token` before queued microtasks run.
+   */
+  private deliverRaw(
     raw: StreamdEvent,
     gen: number,
     adapter: EventAdapter,
     run: AbortSignal,
     prefetched: Map<string, Promise<string | null>> | undefined,
-  ): Promise<{ event?: StreamdEvent } | { failure: unknown } | undefined> {
-    let prepared = this.prepare(raw);
+  ):
+    | { event?: StreamdEvent }
+    | { failure: unknown }
+    | undefined
+    | Promise<{ event?: StreamdEvent } | { failure: unknown } | undefined> {
+    const prepared = this.prepare(raw);
     if (prepared !== undefined && "verdict" in prepared) {
+      return this.deliverSlow(raw, prepared, gen, adapter, run, prefetched);
+    }
+    if (prepared === undefined) return this.isCurrent(gen) ? {} : undefined;
+    if (prepared.request !== undefined || (this.callback !== undefined && this.nameTtl !== undefined)) {
+      return this.deliverSlow(raw, prepared, gen, adapter, run, prefetched);
+    }
+    if (this.callback === undefined) return { event: prepared.event };
+    return this.invokeCallback(raw, prepared.event, gen);
+  }
+
+  private async deliverSlow(
+    raw: StreamdEvent,
+    prepared: Prepared | { event: StreamdEvent; verdict: PromiseLike<boolean> },
+    gen: number,
+    adapter: EventAdapter,
+    run: AbortSignal,
+    prefetched: Map<string, Promise<string | null>> | undefined,
+  ): Promise<{ event?: StreamdEvent } | { failure: unknown } | undefined> {
+    let resolved: Prepared | undefined;
+    if ("verdict" in prepared) {
       let matched: unknown;
       try {
         // Raced against the run, so a hung predicate never holds a restart.
@@ -487,13 +517,15 @@ export class EventPoller {
         return { failure: err };
       }
       if (!this.isCurrent(gen)) return undefined;
-      prepared = this.admit(raw, prepared.event, matched);
+      resolved = this.admit(raw, prepared.event, matched);
+      if (resolved === undefined) return this.isCurrent(gen) ? {} : undefined;
+    } else {
+      resolved = prepared;
     }
-    if (prepared === undefined) return this.isCurrent(gen) ? {} : undefined;
-    let event = prepared.event;
-    if (prepared.request !== undefined) {
+    let event = resolved.event;
+    if (resolved.request !== undefined) {
       try {
-        event = await readState(adapter, this.descriptor, event, prepared.request);
+        event = await readState(adapter, this.descriptor, event, resolved.request);
       } catch (err) {
         return { failure: err };
       }
@@ -508,17 +540,32 @@ export class EventPoller {
       }
       if (!this.isCurrent(gen)) return undefined;
     }
+    return this.invokeCallback(raw, event, gen);
+  }
+
+  private invokeCallback(
+    raw: StreamdEvent,
+    event: StreamdEvent,
+    gen: number,
+  ): {} | undefined | Promise<{} | undefined> {
     this.see(raw);
     try {
       // Awaited one event at a time, so a slow handler holds back the rest
       // of the page and the next poll rather than piling up work.
       const result: unknown = this.callback!(event);
-      if (isThenable(result)) await result;
+      if (isThenable(result)) {
+        return Promise.resolve(result).then(
+          () => (this.isCurrent(gen) ? {} : undefined),
+          (err) => {
+            this.reportHandlerError(callbackError(event, err));
+            return this.isCurrent(gen) ? {} : undefined;
+          },
+        );
+      }
     } catch (err) {
       this.reportHandlerError(callbackError(event, err));
-      if (!this.isCurrent(gen)) return undefined;
     }
-    return {};
+    return this.isCurrent(gen) ? {} : undefined;
   }
 
   private async attachBatchNames(
@@ -541,33 +588,56 @@ export class EventPoller {
     return { current: true };
   }
 
-  private async finishPage(
+  private finishPage(
     page: EventPage,
     batch: StreamdEvent[],
     batched: StreamdEvent[],
     gen: number,
     reached: boolean,
     failure: unknown,
-  ): Promise<void> {
+  ): void | Promise<void> {
+    const step = this.handOverPage(page, batch, batched, gen, reached, failure);
+    if (isThenable(step)) {
+      return Promise.resolve(step).then(() => this.advancePage(page, gen, reached, failure));
+    }
+    this.advancePage(page, gen, reached, failure);
+  }
+
+  private handOverPage(
+    page: EventPage,
+    batch: StreamdEvent[],
+    batched: StreamdEvent[],
+    gen: number,
+    reached: boolean,
+    failure: unknown,
+  ): void | Promise<void> {
     if (this.onPage !== undefined) {
-      await this.handOver(
+      return this.handOver(
         batch,
         batched,
         reached ? page : { ...page, nextCursor: undefined },
         gen,
         failure,
       );
-    } else if (batch.length > 0 && this.isCurrent(gen)) {
-      // Delivered even when the page failed: these events are marked seen, so a
-      // retried page would skip them.
-      for (const raw of batched) this.see(raw);
-      try {
-        const result: unknown = this.onBatch!(batch);
-        if (isThenable(result)) await result;
-      } catch (err) {
-        this.reportHandlerError(batchError(batch, err));
-      }
     }
+    if (batch.length === 0 || !this.isCurrent(gen)) return;
+    // Delivered even when the page failed: these events are marked seen, so a
+    // retried page would skip them.
+    for (const raw of batched) this.see(raw);
+    try {
+      const result: unknown = this.onBatch!(batch);
+      if (isThenable(result)) {
+        return Promise.resolve(result).then(
+          () => {},
+          (err) => this.reportHandlerError(batchError(batch, err)),
+        );
+      }
+    } catch (err) {
+      this.reportHandlerError(batchError(batch, err));
+    }
+  }
+
+  private advancePage(page: EventPage, gen: number, reached: boolean, failure: unknown): void {
     if (failure !== undefined) throw failure;
 
     // A run stopped while a handler was pending must not move the cursor past

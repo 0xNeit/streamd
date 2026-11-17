@@ -205,14 +205,15 @@ export class EventQuery {
     ttl: number,
     retries: number,
     signal: AbortSignal | undefined,
-    prefetched = this.names!.prefetch(events, ttl),
+    prefetched?: Map<string, Promise<string | null>>,
   ): Promise<StreamdEvent[]> {
     if (signal?.aborted) throw signal.reason;
+    const started = prefetched ?? this.names!.prefetch(events, ttl);
     const named: StreamdEvent[] = [];
     for (const event of events) {
       if (signal?.aborted) throw signal.reason;
       named.push(
-        await withRetries(() => this.names!.attach(event, ttl, signal, prefetched), retries, signal),
+        await withRetries(() => this.names!.attach(event, ttl, signal, started), retries, signal),
       );
     }
     return named;
