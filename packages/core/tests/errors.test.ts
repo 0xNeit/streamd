@@ -74,4 +74,47 @@ describe("toStreamdError", () => {
     expect(withHeaders.statusCode).toBe(503);
     expect(withHeaders.retryAfter).toBe(3000);
   });
+
+  it("ignores malformed or throwing headers and drops SDK request objects containing secrets", () => {
+    const emptyPrimary = toStreamdError(
+      {
+        message: "busy",
+        status: 429,
+        headers: {},
+        aptosResponse: { headers: { "Retry-After": "4" } },
+      },
+      "tx",
+    ) as StreamdNetworkError;
+    expect(emptyPrimary.retryAfter).toBe(4000);
+
+    const arrayHeader = toStreamdError(
+      { message: "busy", status: 429, headers: { "retry-after": ["5"] } },
+      "tx",
+    ) as StreamdNetworkError;
+    expect(arrayHeader.retryAfter).toBe(5000);
+
+    for (const headers of [
+      { get: () => 12 },
+      {
+        get: () => {
+          throw new Error("bad getter");
+        },
+      },
+      { "retry-after": [Object.create(null)] },
+    ]) {
+      const err = toStreamdError(
+        {
+          message: "busy",
+          status: 429,
+          headers,
+          request: { headers: { Authorization: "Bearer secret-key" } },
+        },
+        "tx",
+      ) as StreamdNetworkError;
+      expect(err).toBeInstanceOf(StreamdNetworkError);
+      expect(err.retryAfter).toBeUndefined();
+      expect(err.cause).toBeUndefined();
+      expect(err.message).not.toContain("secret-key");
+    }
+  });
 });

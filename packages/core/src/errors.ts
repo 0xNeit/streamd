@@ -108,13 +108,19 @@ export class StreamdAssertionError extends StreamdError {
 
 function headerRetryAfter(headers: unknown): string | undefined {
   if (typeof headers !== "object" || headers === null) return undefined;
-  const getter = (headers as { get?: unknown }).get;
-  if (typeof getter === "function") {
-    return (headers as { get: (k: string) => string | null }).get("retry-after") ?? undefined;
-  }
-  for (const [k, v] of Object.entries(headers as Record<string, unknown>)) {
-    if (k.toLowerCase() !== "retry-after") continue;
-    return Array.isArray(v) ? String(v[0] ?? "") : typeof v === "string" ? v : undefined;
+  try {
+    const getter = (headers as { get?: unknown }).get;
+    if (typeof getter === "function") {
+      const value: unknown = (headers as { get: (k: string) => unknown }).get("retry-after");
+      return typeof value === "string" ? value : undefined;
+    }
+    for (const [k, v] of Object.entries(headers as Record<string, unknown>)) {
+      if (k.toLowerCase() !== "retry-after") continue;
+      const first = Array.isArray(v) ? v[0] : v;
+      return typeof first === "string" ? first : undefined;
+    }
+  } catch {
+    return undefined;
   }
   return undefined;
 }
@@ -129,7 +135,9 @@ export function toStreamdError(err: unknown, what: string): StreamdError {
   if (err instanceof StreamdError) return err;
   const raw = err as { status?: unknown; headers?: unknown; aptosResponse?: { headers?: unknown } } | null;
   const status = raw?.status;
-  const retryAfter = parseRetryAfter(headerRetryAfter(raw?.headers ?? raw?.aptosResponse?.headers));
+  const retryAfter = parseRetryAfter(
+    headerRetryAfter(raw?.headers) ?? headerRetryAfter(raw?.aptosResponse?.headers),
+  );
   return new StreamdNetworkError(
     `Fullnode request for ${what} failed: ${
       err instanceof Error ? err.message : String(err)
