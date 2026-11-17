@@ -133,6 +133,7 @@ function applyBalanceBatch(
   events: readonly StreamdEvent[],
   onChange: BalancesOptions["onChange"],
   report: (err: Error) => void,
+  isStopped: () => boolean,
 ): void {
   // Apply every balance change from this head version before notifying, so
   // `onChange` never observes a half-applied swap across assets.
@@ -142,10 +143,13 @@ function applyBalanceBatch(
   }
   if (onChange === undefined) return;
   for (const event of events) {
+    if (isStopped()) return;
     try {
       onChange(new Map(amounts), event as StreamdEvent<BalanceChange>);
     } catch (err) {
-      report(new StreamdError(`Balance change handler threw for ${event.version}:${event.eventIndex}`, err));
+      if (!isStopped()) {
+        report(new StreamdError(`Balance change handler threw for ${event.version}:${event.eventIndex}`, err));
+      }
     }
   }
 }
@@ -159,25 +163,25 @@ interface BalanceRunConfig {
   listener: Omit<BalancesOptions, "asset" | "onChange">;
   onChange: BalancesOptions["onChange"];
   report: (err: Error) => void;
-  throwIfStopped: () => void;
+  signal: AbortSignal;
   onStop: () => void;
   attachPolling: (sub: Subscription) => void;
 }
 
 async function runBalances(cfg: BalanceRunConfig): Promise<ReadonlyMap<string, bigint>> {
-  cfg.throwIfStopped();
+  if (cfg.signal.aborted) throw cfg.signal.reason;
   const who = await cfg.account();
   const head = await cfg.host.adapter.getHeadVersion!(cfg.host.descriptor);
   const first: [string, bigint][] = [];
   for (const asset of cfg.assets) {
     first.push([asset, await cfg.reader.read(cfg.host.adapter, who, asset, head)]);
   }
-  cfg.throwIfStopped();
+  if (cfg.signal.aborted) throw cfg.signal.reason;
   for (const [asset, balance] of first) cfg.amounts.set(asset, balance);
 
   let polling: Subscription | undefined;
   polling = cfg.host.subscribe(
-    { batch: (events) => applyBalanceBatch(cfg.amounts, events, cfg.onChange, cfg.report) },
+    { batch: (events) => applyBalanceBatch(cfg.amounts, events, cfg.onChange, cfg.report, () => cfg.signal.aborted) },
     {
       ...cfg.listener,
       fromVersion: 0n,
@@ -193,6 +197,43 @@ async function runBalances(cfg: BalanceRunConfig): Promise<ReadonlyMap<string, b
   return new Map(cfg.amounts);
 }
 
+function safeReporter(
+  handler: ((error: Error) => void) | undefined,
+): (error: Error) => void {
+  return (err) => {
+    try {
+      handler?.(err);
+    } catch (thrown) {
+      queueMicrotask(() => {
+        throw thrown;
+      });
+    }
+  };
+}
+
+function balancesHandle(
+  amounts: Map<string, bigint>,
+  reader: BalanceReader,
+  ready: Promise<ReadonlyMap<string, bigint>>,
+  isActive: () => boolean,
+  stop: () => void,
+): Balances {
+  return {
+    get value() {
+      return new Map(amounts);
+    },
+    get(asset: string) {
+      return amounts.get(reader.canonical(asset));
+    },
+    ready,
+    get active() {
+      return isActive();
+    },
+    unsubscribe: stop,
+    [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: stop,
+  } as Balances;
+}
+
 /** A chain client's `balances()`: read each asset at the head, then keep reading it. */
 export function startBalances(
   host: BalancesHost,
@@ -206,7 +247,7 @@ export function startBalances(
   let polling: Subscription | undefined;
   let stopped = false;
   const abandon = new AbortController();
-  const report = (err: Error) => (options.onError ?? host.onError)?.(err);
+  const report = safeReporter(options.onError ?? host.onError);
   const stop = (reason: unknown = new StreamdError("Balances stopped before the first read finished")) => {
     if (stopped) return;
     stopped = true;
@@ -228,9 +269,7 @@ export function startBalances(
     listener,
     onChange,
     report,
-    throwIfStopped: () => {
-      if (stopped) throw abandon.signal.reason;
-    },
+    signal: abandon.signal,
     onStop: () => stop(),
     attachPolling: (sub) => (polling = sub),
   }).catch((err: unknown) => {
@@ -241,18 +280,5 @@ export function startBalances(
   });
   ready.catch(() => {});
 
-  return {
-    get value() {
-      return new Map(amounts);
-    },
-    get(asset: string) {
-      return amounts.get(reader.canonical(asset));
-    },
-    ready,
-    get active() {
-      return !stopped && polling?.active !== false;
-    },
-    unsubscribe: () => stop(),
-    [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: () => stop(),
-  } as Balances;
+  return balancesHandle(amounts, reader, ready, () => !stopped && polling?.active !== false, () => stop());
 }
