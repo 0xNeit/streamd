@@ -28,6 +28,14 @@ const TRANSACTIONS_QUERY = `query AccountTransactions($address: String!, $from: 
   ) { transaction_version }
 }`;
 
+const TRANSACTIONS_DESC_QUERY = `query AccountTransactionsDesc($address: String!, $from: bigint!, $to: bigint!, $limit: Int!) {
+  account_transactions(
+    where: { account_address: { _eq: $address }, transaction_version: { _gte: $from, _lte: $to } }
+    order_by: { transaction_version: desc }
+    limit: $limit
+  ) { transaction_version }
+}`;
+
 export interface IndexerAccountAdapterOptions {
   /** GraphQL endpoint (default: the Indexer of the `Aptos` instance's network). */
   indexerUrl?: string;
@@ -217,16 +225,17 @@ export class IndexerAccountAdapter implements EventAdapter {
 
   /**
    * Up to `limit` (1 to 100) versions of transactions that touched `address`
-   * in `[fromVersion, toVersion]`, ascending, as the Indexer lists them:
-   * signed, received, or writing its state alone. An object's address lists
-   * every transaction that changed the object. A range above
-   * `getHeadVersion()` lists only what the Indexer has processed.
+   * in `[fromVersion, toVersion]`, in `orderBy` order (default `"asc"`), as the
+   * Indexer lists them: signed, received, or writing its state alone. An
+   * object's address lists every transaction that changed the object. A range
+   * above `getHeadVersion()` lists only what the Indexer has processed.
    */
   async listTransactionVersions(
     address: string,
     fromVersion: bigint,
     toVersion: bigint,
     limit: number,
+    orderBy: "asc" | "desc" = "asc",
   ): Promise<bigint[]> {
     const account = requireAddress(address);
     if (typeof fromVersion !== "bigint" || typeof toVersion !== "bigint" || fromVersion < 0n || toVersion < fromVersion) {
@@ -235,12 +244,22 @@ export class IndexerAccountAdapter implements EventAdapter {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > INDEXER_PAGE) {
       throw new StreamdError(`limit must be an integer from 1 to ${INDEXER_PAGE}`);
     }
-    return this.listVersions(account, fromVersion, toVersion, limit);
+    if (orderBy !== "asc" && orderBy !== "desc") {
+      throw new StreamdError('orderBy must be "asc" or "desc"');
+    }
+    return this.listVersions(account, fromVersion, toVersion, limit, orderBy);
   }
 
-  /** Versions touching `address` in `[from, to]`, ascending, checked to be just that. */
-  private async listVersions(address: string, from: bigint, to: bigint, limit: number): Promise<bigint[]> {
-    const data = await this.query(TRANSACTIONS_QUERY, {
+  /** Versions touching `address` in `[from, to]`, ordered by `orderBy`, checked to be just that. */
+  private async listVersions(
+    address: string,
+    from: bigint,
+    to: bigint,
+    limit: number,
+    orderBy: "asc" | "desc" = "asc",
+  ): Promise<bigint[]> {
+    const desc = orderBy === "desc";
+    const data = await this.query(desc ? TRANSACTIONS_DESC_QUERY : TRANSACTIONS_QUERY, {
       address,
       from: from.toString(),
       to: to.toString(),
@@ -250,13 +269,13 @@ export class IndexerAccountAdapter implements EventAdapter {
     if (!Array.isArray(rows) || rows.length > limit) {
       throw new StreamdNetworkError("Indexer returned a malformed account_transactions listing");
     }
-    let last = from - 1n;
+    let prev = desc ? to + 1n : from - 1n;
     return rows.map((row) => {
       const version = isObject(row) ? toVersion(row.transaction_version) : undefined;
-      if (version === undefined || version <= last || version > to) {
+      if (version === undefined || (desc ? version >= prev || version < from : version <= prev || version > to)) {
         throw new StreamdNetworkError("Indexer returned a malformed account_transactions listing");
       }
-      last = version;
+      prev = version;
       return version;
     });
   }
