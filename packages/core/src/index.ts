@@ -19,6 +19,7 @@ export { compareAdapters } from "./compare.js";
 export { defineEvent, defineEvents } from "./define.js";
 export type { TaggedEvents } from "./define.js";
 export { RequestLimiter } from "./limiter.js";
+export { SharedFetches } from "./shared.js";
 // Building blocks the chain packages use for their own client methods.
 export { UNSIGNED_INTEGER, fieldDecoder } from "./decode.js";
 export { descriptorKey, onAbort, raceAbort, resolveFromVersion, sleep } from "./utils.js";

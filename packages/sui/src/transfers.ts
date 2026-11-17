@@ -1,6 +1,6 @@
 import { normalizeStructTag, normalizeSuiAddress } from "@mysten/sui/utils";
-import { StreamdError } from "@streamd/core";
-import type { EventAdapter, EventDescriptor, EventFilter, StreamdEvent, SubscriptionOptions, Transfer } from "@streamd/core";
+import { RequestLimiter, StreamdError, StreamdNetworkError } from "@streamd/core";
+import type { EventAdapter, EventDescriptor, EventFilter, MoveEventType, StreamdEvent, SubscriptionOptions, Transfer } from "@streamd/core";
 import type { SuiAdapter } from "./adapter.js";
 
 /** The part of a `ListTransactions` transaction that transfers are built from. */
@@ -122,6 +122,7 @@ export const TRANSFER_DESCRIPTOR: EventDescriptor = { kind: "module", eventType:
 
 // Coin metadata never changes, so overflowing only costs a repeat read.
 const CACHE_SIZE = 10_000;
+const MAX_LOOKUPS = 4;
 
 /** A coin type in long form, and the account as a lazy address, since it may be a name. */
 export interface TransferNarrowing {
@@ -129,34 +130,72 @@ export interface TransferNarrowing {
   account?: () => Promise<string>;
 }
 
+function coinInfoCache(
+  sui: SuiAdapter,
+  limiter: RequestLimiter,
+  track: (drop: () => void) => void,
+) {
+  const entries = new Map<string, Promise<{ symbol: string; decimals: number } | undefined>>();
+  return (asset: string, signal: AbortSignal) => {
+    let found = entries.get(asset);
+    if (found !== undefined) {
+      entries.delete(asset);
+    } else {
+      const loaded = limiter.run(() => sui.coinInfo(asset), signal, signal);
+      let settled = false;
+      const forget = () => entries.get(asset) === loaded && entries.delete(asset);
+      loaded.catch(forget).finally(() => (settled = true));
+      track(() => settled || forget());
+      if (entries.size >= CACHE_SIZE) entries.delete(entries.keys().next().value!);
+      found = loaded;
+    }
+    entries.set(asset, found);
+    return found;
+  };
+}
+
 /** `sui`'s transfers as an `EventAdapter`, so the poller and queries walk them as events. */
 export function transferSource(
   sui: SuiAdapter,
   { asset, account }: TransferNarrowing,
   withAssetInfo = false,
+  requestTimeout?: number,
+  shared?: EventAdapter,
 ): EventAdapter {
-  const infos = new Map<string, Promise<{ symbol: string; decimals: number } | undefined>>();
-  const info = (asset: string) => {
-    let found = infos.get(asset);
-    if (found === undefined) {
-      found = sui.coinInfo(asset);
-      found.catch(() => infos.delete(asset));
-      if (infos.size >= CACHE_SIZE) infos.delete(infos.keys().next().value!);
-      infos.set(asset, found);
-    }
-    return found;
-  };
+  const limiter = new RequestLimiter(MAX_LOOKUPS, Infinity, requestTimeout);
+  let loads: (() => void)[] = [];
+  let generation = 0;
+  let page = new AbortController();
+  const info = coinInfoCache(sui, limiter, (drop) => void loads.push(drop));
   return {
     fetchEvents: async (_descriptor, options) => {
-      const page = await sui.fetchTransfers(options, { asset, ...(account !== undefined && { account: await account() }) });
-      if (!withAssetInfo) return page;
+      const mine = ++generation;
+      // A page overtaken while it waited was abandoned; its reads would only be joined.
+      const overtaken = () => {
+        if (generation !== mine) throw new StreamdNetworkError("Transfer page abandoned for a newer one");
+      };
+      for (const drop of loads.splice(0)) drop();
+      page.abort(new StreamdNetworkError("Transfer page abandoned for a newer one"));
+      page = new AbortController();
+      const { signal } = page;
+      const who = await account?.();
+      overtaken();
+      const fetched =
+        shared === undefined
+          ? await sui.fetchTransfers(options, { asset, ...(who !== undefined && { account: who }) })
+          : await shared.fetchEvents(
+              { kind: "module", eventType: [`0x0::asset::${asset ?? ""}`, `0x0::account::${who ?? ""}`] satisfies MoveEventType[] },
+              options,
+            );
+      overtaken();
+      if (!withAssetInfo) return fetched;
       const events = await Promise.all(
-        page.events.map(async (event) => {
-          const known = await info(event.data.asset);
-          return known === undefined ? event : { ...event, data: { ...event.data, ...known } };
+        fetched.events.map(async (event) => {
+          const known = await info((event as StreamdEvent<Transfer>).data.asset, signal);
+          return known === undefined ? event : { ...event, data: { ...(event as StreamdEvent<Transfer>).data, ...known } };
         }),
       );
-      return { ...page, events };
+      return { ...fetched, events };
     },
     getHeadVersion: () => sui.getHeadVersion(),
     getEarliestVersion: () => sui.getEarliestVersion(),

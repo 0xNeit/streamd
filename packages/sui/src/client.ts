@@ -1,5 +1,5 @@
 import { SuiGrpcClient, type SuiGrpcClientOptions } from "@mysten/sui/grpc";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsOf, expectEvents, expectPreview, previewEvents, startBalances } from "@streamd/core";
+import { EventQuery, SharedFetches, StreamdClient, StreamdError, checkTimeout, eventsOf, expectEvents, expectPreview, previewEvents, startBalances } from "@streamd/core";
 import type {
   BalanceReader,
   Balances,
@@ -11,6 +11,7 @@ import type {
   EventOf,
   EventsOfOptions,
   ExpectEventsOptions,
+  ModuleEventDescriptor,
   StreamdConfig,
   StreamdEvent,
   Subscription,
@@ -74,6 +75,7 @@ export class SuiClient extends StreamdClient {
   protected readonly sui: SuiGrpcClient;
   /** Reads balances and balance changes, which no `EventAdapter` method carries: the client's adapter when it is a `SuiAdapter`. */
   private readonly ledger: SuiAdapter;
+  private readonly sharedTransfers: SharedFetches;
 
   constructor(config: SuiClientConfig) {
     const given: unknown = config?.sui;
@@ -87,7 +89,26 @@ export class SuiClient extends StreamdClient {
     super({ ...rest, adapter: config.adapter ?? new SuiAdapter(sui) });
     this.sui = sui;
     this.ledger = this.adapter instanceof SuiAdapter ? this.adapter : new SuiAdapter(sui);
+    this.sharedTransfers = new SharedFetches(
+      {
+        fetchEvents: (descriptor, options) => {
+          const [assetTag = "", accountTag = ""] = (descriptor as ModuleEventDescriptor).eventType as readonly string[];
+          const asset = assetTag.slice("0x0::asset::".length);
+          const account = accountTag.slice("0x0::account::".length);
+          return this.ledger.fetchTransfers(options, {
+            ...(asset !== "" && { asset }),
+            ...(account !== "" && { account }),
+          });
+        },
+      },
+      this.requestTimeout,
+    );
     this.names.serve((address) => primaryName(sui, address));
+  }
+
+  override destroy(): void {
+    this.sharedTransfers.clear();
+    super.destroy();
   }
 
   /**
@@ -115,7 +136,8 @@ export class SuiClient extends StreamdClient {
    */
   transfers(callback: EventCallback<Transfer>, options: SuiTransferListenerOptions = {}): Subscription {
     const { asset, account, withAssetInfo, ...rest } = options;
-    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo);
+    const shared = this.sharedTransfers.view(rest.pollInterval ?? this.defaults.pollInterval!);
+    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo, this.requestTimeout, shared);
     return this.subscribe(TRANSFER_DESCRIPTOR, callback as EventCallback, rest, undefined, rest.id, () => source);
   }
 
@@ -125,7 +147,7 @@ export class SuiClient extends StreamdClient {
    */
   async getTransfers(filter: SuiTransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
     const { asset, account, withAssetInfo, ...rest } = filter;
-    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo);
+    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo, this.requestTimeout);
     return new EventQuery(source, this.limiter, this.names).getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
