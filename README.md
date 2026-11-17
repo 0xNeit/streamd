@@ -1359,9 +1359,14 @@ Each type gets one status:
 | `missing-module` | No such module is published at that address. |
 | `missing-struct` | The module exists but declares no such struct. |
 
-`ok` is true when every type is `event` or `legacy`. A generic type is checked
-by its outer struct only; its type arguments are not looked up. It makes one
-request per distinct module.
+`ok` is true when every type is `event` or `legacy`. It makes one request per
+distinct module, at the normalized address. A generic type is checked by its
+outer struct only; neither its `<...>` type-argument count (`generic_type_params`)
+nor the type arguments themselves are checked. Module scans (`on`, `getEvents`,
+`streamd tail`, `streamd forward`) match an unparameterized `address::module::Struct`
+against any `<...>`, but require an exact string match whenever `<...>` is written
+and do not normalize addresses, so wrong type-argument arity or an address not in
+the fullnode's reported form still passes here while matching nothing in a scan.
 
 `handle` and `resource` descriptors get one entry in `types`, whose `eventType`
 is the resource type, or for a handle by creation number that number as a string:
@@ -5099,7 +5104,10 @@ streamd check 0x1::fungible_asset::Deposit 0x1::coin::Depositt
 The statuses are `event`, `legacy` (no `#[event]`, but a legacy `EventHandle` can emit it),
 `not-event`, `missing-module` and `missing-struct`. It exits 0 when every type is `event` or
 `legacy`, 1 when one is not or the fullnode fails, and 2 for bad usage. It takes event types
-only, not `--account` or `--handle`.
+only, not `--account` or `--handle`. Like `checkDescriptor`, it checks only the outer struct
+at the normalized address (not `<...>` type-argument arity or the type arguments themselves),
+whereas `tail` and `forward` compare `event.type` without normalizing addresses and require an
+exact match whenever `<...>` is given.
 
 ### Record a session for tests
 
