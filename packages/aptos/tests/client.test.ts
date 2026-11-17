@@ -194,7 +194,7 @@ describe("withNames", () => {
     const { client, reads } = named(Network.MAINNET);
     const events = await client.getEvents({ kind: "module", eventType: TYPE }, { withNames: true });
     expect(events.map((e) => e.senderName)).toEqual(["alice.apt", null, undefined, "alice.apt"]);
-    expect(reads).toEqual([`primary ${ALICE}`, "target alice.apt", `primary ${BOB}`]);
+    expect(reads).toEqual([`primary ${ALICE}`, `primary ${BOB}`, "target alice.apt"]);
   });
 
   it("names a live subscription's events", async () => {

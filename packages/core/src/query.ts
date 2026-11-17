@@ -199,17 +199,22 @@ export class EventQuery {
     }
   }
 
-  /** `events` with `senderName` looked up for each in order, through the client's name cache. */
+  /** `events` with `senderName` looked up concurrently per page and delivered in order. */
   private async attachNames(
     events: readonly StreamdEvent[],
     ttl: number,
     retries: number,
     signal: AbortSignal | undefined,
+    prefetched?: Map<string, Promise<string | null>>,
   ): Promise<StreamdEvent[]> {
+    if (signal?.aborted) throw signal.reason;
+    const started = prefetched ?? this.names!.prefetch(events, ttl);
     const named: StreamdEvent[] = [];
     for (const event of events) {
       if (signal?.aborted) throw signal.reason;
-      named.push(await withRetries(() => this.names!.attach(event, ttl, signal), retries, signal));
+      named.push(
+        await withRetries(() => this.names!.attach(event, ttl, signal, started), retries, signal),
+      );
     }
     return named;
   }
@@ -286,14 +291,37 @@ export class EventQuery {
     if (desc) groups = (limit === undefined ? groups : groups.slice(-limit)).reverse();
     if (withState !== undefined || ttl !== undefined) {
       const { retries = 0, signal } = rest;
+      await this.enrichGroups(descriptor, groups, withState, ttl, retries, signal);
+    }
+    return groups as TransactionGroup<TData>[];
+  }
+
+  /** Attach state and/or sender names across collected transaction groups, prefetching all names together. */
+  private async enrichGroups(
+    descriptor: Descriptors,
+    groups: TransactionGroup[],
+    withState: StateRequestBuilder | undefined,
+    ttl: number | undefined,
+    retries: number,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    if (withState !== undefined) {
       for (const [i, group] of groups.entries()) {
-        let events: StreamdEvent[] = group.events;
-        if (withState !== undefined) events = await this.attachState(descriptor, events, withState, retries, signal);
-        if (ttl !== undefined) events = await this.attachNames(events, ttl, retries, signal);
+        const events = await this.attachState(descriptor, group.events, withState, retries, signal);
         groups[i] = groupOf(group.version, events);
       }
     }
-    return groups as TransactionGroup<TData>[];
+    if (ttl !== undefined) {
+      if (signal?.aborted) throw signal.reason;
+      const prefetched = this.names!.prefetch(
+        groups.flatMap((g) => g.events),
+        ttl,
+      );
+      for (const [i, group] of groups.entries()) {
+        const events = await this.attachNames(group.events, ttl, retries, signal, prefetched);
+        groups[i] = groupOf(group.version, events);
+      }
+    }
   }
 
   private async *pages<TData>(
