@@ -535,6 +535,35 @@ describe("reduce resume", () => {
     b.unsubscribe();
   });
 
+  it("skips already-folded events when a live async where predicate rejects mid-page with small dedupWindow", async () => {
+    const events: StreamdEvent[] = [];
+    const client = new StreamdClient({ adapter: growing(events).adapter });
+    const errors: Error[] = [];
+    let rejected = false;
+    const r = client.reduce(descriptor, collect, none, {
+      pollInterval: 10,
+      maxBackoff: 10,
+      dedupWindow: 0,
+      where: async (e) => {
+        if (e.version === 2n && !rejected) {
+          rejected = true;
+          throw new Error("transient filter failure");
+        }
+        return true;
+      },
+      onError: (err) => void errors.push(err),
+    });
+    await r.ready;
+
+    events.push(ev(1), ev(2), ev(3));
+    await settle(20);
+    await settle(20);
+    r.unsubscribe();
+
+    expect(errors).toHaveLength(1);
+    expect(ids(r.value)).toEqual(["1:0", "2:0", "3:0"]);
+  });
+
   it("takes an adapter cursor from onCursor", async () => {
     const events = [ev(1), ev(2)];
     const source = growing(events);

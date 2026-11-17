@@ -171,14 +171,14 @@ export function startReduction<S, TData>(
     return true;
   };
 
-  // Without a cursor, follow from the last folded version; `after` skips what
-  // was already folded there or, on a resume, earlier in the cursor's page.
-  const follow = (cursor: string | undefined, after: Folded | undefined) => {
+  // Without a cursor, follow from the last folded version; `isAfter(event, last)`
+  // skips what was already folded in backfill, on resume, or before a live retry.
+  const follow = (cursor: string | undefined) => {
     const start = cursor !== undefined ? { cursor } : { fromVersion: last!.version };
     live = host.subscribe(
       descriptor,
       (event) => {
-        if (after !== undefined && !isAfter(event, after)) return;
+        if (last !== undefined && !isAfter(event, last)) return;
         if (fold(event)) options.onChange?.(state, event as unknown as EventOf<TData>);
       },
       {
@@ -197,7 +197,7 @@ export function startReduction<S, TData>(
   const run = async (): Promise<S> => {
     if (stopped) throw backfill.signal.reason;
     if (resumed !== undefined) {
-      follow(resumed.cursor, resumed.last);
+      follow(resumed.cursor);
       return state;
     }
     let cursor: string | undefined;
@@ -239,7 +239,7 @@ export function startReduction<S, TData>(
       report(error);
     }
     if (stopped) throw backfill.signal.reason;
-    follow(cursor, cursor === undefined ? last : undefined);
+    follow(cursor);
     return state;
   };
 
