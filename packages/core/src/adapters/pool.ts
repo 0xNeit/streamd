@@ -1,5 +1,6 @@
 import type { EventAdapter, EventDescriptor, EventPage, FetchOptions } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
+import { hasArchiveHeights, markHasArchive } from "../time.js";
 import { requireAdapter } from "./validate.js";
 import { descriptorKey } from "../utils.js";
 
@@ -71,6 +72,21 @@ export class PoolAdapter implements EventAdapter {
           (await this.call(this.rotate(), (n) => (n[name] as (...a: unknown[]) => Promise<unknown>)(...args))).result;
       }
     }
+    if (this.getEarliestVersion) {
+      this.getEarliestVersion = async (descriptor) => {
+        const versions = await this.allOpen((n) => n.getEarliestVersion!(descriptor));
+        return versions.reduce((a, b) => (a > b ? a : b));
+      };
+    }
+    if (this.getBlockHeights) {
+      this.getBlockHeights = async (descriptor) => {
+        const ranges = await this.allOpen((n) => n.getBlockHeights!(descriptor));
+        const oldest = ranges.reduce((a, b) => (a > b.oldest ? a : b.oldest), ranges[0]!.oldest);
+        const minNewest = ranges.reduce((a, b) => (a < b.newest ? a : b.newest), ranges[0]!.newest);
+        const combined = { oldest, newest: minNewest < oldest ? oldest : minNewest };
+        return ranges.some(hasArchiveHeights) ? markHasArchive(combined) : combined;
+      };
+    }
   }
 
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
@@ -89,24 +105,48 @@ export class PoolAdapter implements EventAdapter {
     return node;
   }
 
+  private openOrder(first: number): number[] {
+    const now = Date.now();
+    const order = this.nodes.map((_, step) => (first + step) % this.nodes.length);
+    const open = order.filter((node) => this.until[node]! <= now);
+    return open.length > 0 ? open : [first];
+  }
+
+  private recordLimit(node: number, err: unknown): StreamdNetworkError {
+    if (!limited(err)) throw err;
+    this.until[node] = Date.now() + (err.retryAfter ?? this.cooldown);
+    return err;
+  }
+
   /**
    * Runs `run` on `first`, or on the next node not set aside while each
    * answers 429. With every node set aside, `first` is asked anyway.
    */
   private async call<T>(first: number, run: (node: EventAdapter) => Promise<T>): Promise<{ node: number; result: T }> {
-    const now = Date.now();
-    const order = this.nodes.map((_, step) => (first + step) % this.nodes.length);
-    const open = order.filter((node) => this.until[node]! <= now);
     let last: StreamdNetworkError | undefined;
-    for (const node of open.length > 0 ? open : [first]) {
+    for (const node of this.openOrder(first)) {
       try {
         return { node, result: await run(this.nodes[node]!) };
       } catch (err) {
-        if (!limited(err)) throw err;
-        last = err;
-        this.until[node] = Date.now() + (err.retryAfter ?? this.cooldown);
+        last = this.recordLimit(node, err);
       }
     }
+    throw last;
+  }
+
+  private async allOpen<T>(run: (node: EventAdapter) => Promise<T>): Promise<T[]> {
+    let last: StreamdNetworkError | undefined;
+    const results: T[] = [];
+    await Promise.all(
+      this.openOrder(this.rotate()).map(async (node) => {
+        try {
+          results.push(await run(this.nodes[node]!));
+        } catch (err) {
+          last = this.recordLimit(node, err);
+        }
+      }),
+    );
+    if (results.length > 0) return results;
     throw last;
   }
 

@@ -176,3 +176,67 @@ describe("ArchiveFallbackAdapter lookup by version", () => {
     expect(bare.getTransactionEventsByVersion).toBeUndefined();
   });
 });
+
+describe("ArchiveFallbackAdapter block heights and fromTime", () => {
+  it("resolves a recent fromTime on the primary without calling the archive, even if the archive returns 429", async () => {
+    const calls: string[] = [];
+    const primary = fullnode(5, calls);
+    const old: EventAdapter = {
+      ...archive(calls),
+      getBlockHeights: async () => {
+        calls.push("archive heights");
+        throw new StreamdNetworkError("rate limited", 429);
+      },
+      getBlock: async () => {
+        calls.push("archive block");
+        throw new StreamdNetworkError("rate limited", 429);
+      },
+    };
+    const client = new StreamdClient({ adapter: new ArchiveFallbackAdapter(primary, old) });
+    const events = await client.getEvents(d, { fromTime: 8n });
+    expect(events.map(eventId)).toEqual(["8:0", "9:0", "10:0"]);
+    expect(calls.some((c) => c.startsWith("archive"))).toBe(false);
+    client.destroy();
+  });
+
+  it("extends fromTime into the archive when the timestamp predates the primary's oldest block", async () => {
+    const calls: string[] = [];
+    const old: EventAdapter = {
+      ...archive(calls),
+      getBlockHeights: async () => (calls.push("archive heights"), { oldest: 1n, newest: 9n }),
+    };
+    const client = new StreamdClient({ adapter: new ArchiveFallbackAdapter(fullnode(5, calls), old) });
+    const events = await client.getEvents(d, { fromTime: 2n });
+    expect(events.map(eventId)).toEqual(["2:0", "3:0", "4:0", "5:0", "6:0", "7:0", "8:0", "9:0", "10:0"]);
+    expect(calls).toContain("archive heights");
+    expect(calls).toContain("archive block");
+    client.destroy();
+  });
+
+  it("falls back to primary heights on archive StreamdNetworkError and rethrows StreamdError", async () => {
+    const calls: string[] = [];
+    const primary = fullnode(5, calls);
+    const limitedArchive: EventAdapter = {
+      ...archive(calls),
+      getBlockHeights: async () => {
+        calls.push("archive heights");
+        throw new StreamdNetworkError("rate limited", 429);
+      },
+    };
+    const adapter = new ArchiveFallbackAdapter(primary, limitedArchive);
+    expect(await adapter.getBlockHeights!(d)).toEqual({ oldest: 5n, newest: 10n });
+
+    const client = new StreamdClient({ adapter });
+    const events = await client.getEvents(d, { fromTime: 2n });
+    expect(events.map(eventId)).toEqual(["5:0", "6:0", "7:0", "8:0", "9:0", "10:0"]);
+    client.destroy();
+
+    const badArchive: EventAdapter = {
+      ...archive(calls),
+      getBlockHeights: async () => {
+        throw new StreamdError("bad config");
+      },
+    };
+    await expect(new ArchiveFallbackAdapter(primary, badArchive).getBlockHeights!(d)).rejects.toThrow(StreamdError);
+  });
+});

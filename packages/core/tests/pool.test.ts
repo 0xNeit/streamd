@@ -173,3 +173,72 @@ describe("PoolAdapter lookup by version", () => {
     expect(new PoolAdapter([looker("a", false), node("b", [])]).getTransactionEventsByVersion).toBeUndefined();
   });
 });
+
+describe("PoolAdapter conservative bounds", () => {
+  const PRUNED = new StreamdNetworkError("Version pruned", 410);
+
+  function boundedNode(edge: bigint, maxBlock = 9n, fail?: () => Error | undefined): EventAdapter {
+    const memory = new MemoryAdapter(HISTORY);
+    const guard = async () => {
+      const err = fail?.();
+      if (err !== undefined) throw err;
+    };
+    return {
+      fetchEvents: async (desc, o) => {
+        await guard();
+        if (o.fromVersion !== undefined && o.fromVersion < edge) throw PRUNED;
+        return memory.fetchEvents(desc, o);
+      },
+      getEarliestVersion: async () => (await guard(), edge),
+      getBlockHeights: async () => (await guard(), { oldest: edge, newest: maxBlock }),
+      getBlock: async (_d, h) => {
+        await guard();
+        if (h < edge) throw PRUNED;
+        if (h > maxBlock) throw new StreamdNetworkError("Block not found", 404);
+        return { height: h, firstVersion: h, lastVersion: h, timestamp: h };
+      },
+    };
+  }
+
+  it("uses the newest earliest version across nodes so fromVersion 'earliest' never hits a 410", async () => {
+    const pool = new PoolAdapter([boundedNode(1n), boundedNode(5n)]);
+    expect(await pool.getEarliestVersion!(d)).toBe(5n);
+    const client = new StreamdClient({ adapter: pool });
+    for (let i = 0; i < 4; i++) {
+      const events = await client.getEvents(d, { fromVersion: "earliest" });
+      expect(events.map(eventId)).toEqual(["5:0", "6:0", "7:0", "8:0", "9:0"]);
+    }
+    client.destroy();
+  });
+
+  it("intersects block heights across nodes for fromTime and clamps disjoint ranges", async () => {
+    const pool = new PoolAdapter([boundedNode(1n, 9n), boundedNode(5n, 8n)]);
+    expect(await pool.getBlockHeights!(d)).toEqual({ oldest: 5n, newest: 8n });
+    const client = new StreamdClient({ adapter: pool });
+    for (let i = 0; i < 4; i++) {
+      expect((await client.getEvents(d, { fromTime: 6n })).map(eventId)).toEqual(["6:0", "7:0", "8:0", "9:0"]);
+    }
+    expect((await client.getEvents(d, { fromTime: 2n })).map(eventId)).toEqual(["5:0", "6:0", "7:0", "8:0", "9:0"]);
+    client.destroy();
+
+    const disjoint = new PoolAdapter([boundedNode(1n, 3n), boundedNode(6n, 9n)]);
+    expect(await disjoint.getBlockHeights!(d)).toEqual({ oldest: 6n, newest: 6n });
+  });
+
+  it("cools down a 429 node during bound reads and answers from remaining open nodes", async () => {
+    let firstLimited = true;
+    const n0: EventAdapter = {
+      ...boundedNode(9n, 6n, () => (firstLimited ? limit(60_000) : undefined)),
+      getHeadVersion: async () => 1n,
+    };
+    const n1: EventAdapter = {
+      ...boundedNode(3n, 8n),
+      getHeadVersion: async () => 2n,
+    };
+    const pool = new PoolAdapter([n0, n1], { cooldown: 60_000 });
+    expect(await pool.getEarliestVersion!(d)).toBe(3n);
+    firstLimited = false;
+    expect(await pool.getBlockHeights!(d)).toEqual({ oldest: 3n, newest: 8n });
+    expect(await pool.getHeadVersion!(d)).toBe(2n);
+  });
+});
