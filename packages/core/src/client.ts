@@ -74,6 +74,21 @@ async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolea
   }
 }
 
+function guardedWhere(
+  where: ListenerOptions["where"],
+  onThrow: () => void,
+): ListenerOptions["where"] {
+  if (where === undefined) return undefined;
+  return (event) => {
+    try {
+      return where(event);
+    } catch (err) {
+      onThrow();
+      throw err;
+    }
+  };
+}
+
 /** A `timeout` option checked, or the error to throw for it. */
 export function checkTimeout(ms: number | undefined): StreamdError | undefined {
   if (ms === undefined || (typeof ms === "number" && ms >= 0 && ms <= MAX_TIMEOUT)) {
@@ -553,42 +568,33 @@ export class StreamdClient {
     return new Promise<EventOf<TData>>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let detach = () => {};
+      let sub: Subscription | undefined;
+      let closed = false;
       const close = () => {
+        if (closed) return;
+        closed = true;
         if (timer !== undefined) clearTimeout(timer);
         detach();
-        sub.unsubscribe();
+        sub?.unsubscribe();
       };
       const fail = (reason: unknown) => (close(), reject(reason));
-      // A throwing predicate would skip every event and leave the promise
-      // pending; other handler errors are per event, so waiting can still match.
       // Only a synchronous throw counts: a rejection fails the poll and is retried.
       let whereThrew = false;
-      const where = options?.where;
-      const sub = this.follow(
+      sub = this.follow(
         descriptor,
         ((event: EventOf<TData>) => (close(), resolve(event))) as unknown as EventCallback,
         {
           ...options,
-          where:
-            where === undefined
-              ? undefined
-              : (event) => {
-                  try {
-                    return where(event);
-                  } catch (err) {
-                    whereThrew = true;
-                    throw err;
-                  }
-                },
+          where: guardedWhere(options?.where, () => (whereThrew = true)),
           signal: undefined,
           onError: (err) => {
-            // Settle before the caller's handler runs, so a throw from it
-            // cannot leave the promise pending.
-            if (!sub.active || whereThrew) fail(err);
+            // Settle before the caller's handler runs, so a throw cannot strand the promise.
+            if (sub === undefined || !sub.active || whereThrew) fail(err);
             (options?.onError ?? this.onError)?.(err);
           },
         },
       );
+      if (closed) return sub.unsubscribe();
       detach = onAbort(options?.signal, () => fail(options!.signal!.reason));
       if (options?.timeout !== undefined) {
         const ms = options.timeout;

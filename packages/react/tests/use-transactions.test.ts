@@ -270,4 +270,70 @@ describe("useTransactions history", () => {
     await pause(30);
     expect(t.subscribes()).toBe(0);
   });
+
+  it("anchors an empty history window when fromVersion is negative and head moves during the read", async () => {
+    const t = setup([ev(3n, 0, OTHER), ev(4n, 0, OTHER)]);
+    const read = t.client.getTransactions.bind(t.client);
+    t.client.getTransactions = (async (...args: Parameters<typeof read>) => {
+      const groups = await read(...args);
+      t.chain.memory.push(ev(5n, 0, TYPE), ev(6n, 0, OTHER), ev(7n, 0, OTHER), ev(8n, 0, OTHER));
+      return groups;
+    }) as typeof t.client.getTransactions;
+    const root = await render(t.el(TYPE, { ...FAST, fromVersion: -2n, history: 2 }));
+    await waitFor(() => expect(t.groups()).toEqual(["5:0"]));
+    expect(t.last().status).toBe("live");
+    await unmount(root);
+  });
+
+  it("anchors an empty merged-descriptor history window and clamps negative starts below 0", async () => {
+    const t = setup([ev(1n, 0, "0x1::coin::Other")]);
+    const read = t.client.getTransactions.bind(t.client);
+    t.client.getTransactions = (async (...args: Parameters<typeof read>) => {
+      const groups = await read(...args);
+      t.chain.memory.push(ev(2n, 0, TYPE), ev(3n, 0, OTHER), ev(4n, 0, "0x1::coin::Other"), ev(5n, 0, "0x1::coin::Other"));
+      return groups;
+    }) as typeof t.client.getTransactions;
+    const root = await render(t.el([TYPE, OTHER], { ...FAST, fromVersion: -10n, history: 2 }));
+    await waitFor(() => expect(t.groups()).toEqual(["2:0", "3:0"]));
+    await unmount(root);
+  });
+
+  it("stops on missing or invalid getHeadVersion when fromVersion is negative", async () => {
+    const memory = new MemoryAdapter([]);
+    const missing = new StreamdClient({ adapter: { fetchEvents: (d, o) => memory.fetchEvents(d, o) } });
+    const bad = new StreamdClient({ adapter: { getHeadVersion: async () => -1n, fetchEvents: (d, o) => memory.fetchEvents(d, o) } });
+    for (const client of [missing, bad]) {
+      const results: UseTransactionsResult<unknown>[] = [];
+      function Probe() {
+        results.push(useTransactions(DEPOSIT, { ...FAST, client, fromVersion: -2n, history: 2 }));
+        return null;
+      }
+      const root = await render(createElement(Probe));
+      await waitFor(() => expect(results.at(-1)?.status).toBe("stopped"));
+      expect(results.at(-1)?.error).toBeInstanceOf(StreamdError);
+      await unmount(root);
+    }
+  });
+
+  it("frees the RequestLimiter slot on unmount during a slow negative-start head read", async () => {
+    const memory = new MemoryAdapter([ev(1n)]);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const adapter: EventAdapter = {
+      getHeadVersion: async () => (await gate, 1n),
+      fetchEvents: (d, o) => memory.fetchEvents(d, o),
+    };
+    const limited = new StreamdClient({ adapter, maxConcurrentRequests: 1 });
+    const results: UseTransactionsResult<unknown>[] = [];
+    function Probe() {
+      results.push(useTransactions(DEPOSIT, { ...FAST, client: limited, fromVersion: -2n, history: 1 }));
+      return null;
+    }
+    const root = await render(createElement(Probe));
+    await pause(10);
+    await unmount(root);
+    const events = await limited.getEvents(DEPOSIT, { fromVersion: 0n });
+    expect(events).toHaveLength(1);
+    release();
+  });
 });

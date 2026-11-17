@@ -1,8 +1,11 @@
 import { useMemo } from "react";
 import {
+  resolveFromVersion,
   StreamdError,
   type DescriptorData,
+  type EventAdapter,
   type EventDescriptor,
+  type RequestLimiter,
   type StreamdClient,
   type SubscriptionOptions,
   type TransactionGroup,
@@ -36,6 +39,27 @@ export interface UseTransactionsResult<TData> {
 type Descriptors = EventDescriptor | readonly EventDescriptor[];
 type Listener = Omit<UseTransactionsOptions, "client" | "maxTransactions" | "history">;
 
+async function resolveStart(
+  client: StreamdClient,
+  descriptor: Descriptors,
+  fromVersion: bigint | "earliest" | undefined,
+  fromTime: bigint | undefined,
+  signal: AbortSignal,
+): Promise<bigint | "earliest" | undefined> {
+  if (fromTime !== undefined || typeof fromVersion !== "bigint" || fromVersion >= 0n) {
+    return fromVersion;
+  }
+  const { adapter, limiter } = client as unknown as {
+    adapter?: EventAdapter;
+    limiter?: RequestLimiter;
+  };
+  if (adapter === undefined || limiter === undefined) {
+    throw new StreamdError("useTransactions requires a StreamdClient instance for relative fromVersion");
+  }
+  const first = Array.isArray(descriptor) ? descriptor[0]! : (descriptor as EventDescriptor);
+  return resolveFromVersion(limiter.wrap(adapter, signal, signal), first, fromVersion);
+}
+
 /**
  * Reads the newest `limit` transactions of the window, delivers them oldest
  * first, then follows from the version after the newest. That is exact: the
@@ -52,11 +76,13 @@ function withHistory(
 ): Following {
   const { fromVersion, fromTime, ...following } = options;
   const { where, decode, withState, onError } = following;
+  let resolvedFrom = fromVersion;
   return readThenFollow(
     "useTransactions",
-    (signal) =>
-      client.getTransactions(descriptor, {
-        ...(fromVersion !== undefined && { fromVersion }),
+    async (signal) => {
+      resolvedFrom = await resolveStart(client, descriptor, fromVersion, fromTime, signal);
+      const groups = await client.getTransactions(descriptor, {
+        ...(resolvedFrom !== undefined && { fromVersion: resolvedFrom }),
         ...(fromTime !== undefined && { fromTime }),
         ...(where !== undefined && { where }),
         ...(decode !== undefined && { decode }),
@@ -64,12 +90,16 @@ function withHistory(
         orderBy: "desc",
         limit,
         signal,
-      }).then((groups) => groups.reverse()),
+      });
+      return groups.reverse();
+    },
     (groups) =>
       client.onTransaction(
         descriptor,
         (group) => deliver([group]),
-        groups.length === 0 ? options : { ...following, fromVersion: groups.at(-1)!.version + 1n },
+        groups.length === 0
+          ? { ...options, ...(resolvedFrom !== undefined && { fromVersion: resolvedFrom }) }
+          : { ...following, fromVersion: groups.at(-1)!.version + 1n },
       ),
     deliver,
     onError,

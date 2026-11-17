@@ -223,4 +223,45 @@ describe("useTransactionEvents", () => {
     expect(t.lookups.length).toBe(0);
     expect(t.last().loading).toBe(true);
   });
+
+  it("clears the previous error immediately when retrying the same hash after null", async () => {
+    const t = setup();
+    const root = await render(t.el(THROWS));
+    await waitFor(() => expect(t.last().error).toBeInstanceOf(StreamdNetworkError));
+    expect(t.last().loading).toBe(false);
+
+    await rerender(root, t.el(null));
+    expect(t.last()).toEqual({ ...LOADING, loading: false });
+
+    let release!: () => void;
+    const orig = t.client.eventsOf.bind(t.client);
+    t.client.eventsOf = ((h: string, d: EventDescriptor<never> | undefined, o: EventsOfOptions) =>
+      new Promise((resolve) => {
+        release = () => resolve(orig(A, d, o));
+      })) as typeof t.client.eventsOf;
+
+    const beforeRetry = t.results.length;
+    await rerender(root, t.el(THROWS));
+    expect(t.results[beforeRetry]).toEqual(LOADING);
+    expect(t.last()).toEqual(LOADING);
+
+    release();
+    await waitFor(() => expect(t.last().loading).toBe(false));
+    expect(t.last().error).toBeUndefined();
+    expect(t.last().data?.length).toBe(2);
+    await unmount(root);
+  });
+
+  it("reports synchronous throws from client.eventsOf in error instead of crashing", async () => {
+    const t = setup();
+    t.client.eventsOf = (() => {
+      throw new StreamdNetworkError("sync eventsOf throw");
+    }) as typeof t.client.eventsOf;
+    const root = await render(t.el(A));
+    await waitFor(() => expect(t.last().loading).toBe(false));
+    expect(t.last().error).toBeInstanceOf(StreamdNetworkError);
+    expect(t.last().error!.message).toContain("sync eventsOf throw");
+    expect(t.last().data).toBeUndefined();
+    await unmount(root);
+  });
 });

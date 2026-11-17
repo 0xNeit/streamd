@@ -3539,3 +3539,57 @@ describe("caughtUp", () => {
     });
   });
 });
+
+describe("once() synchronous settlement cleanup", () => {
+  it("unsubscribes and registers no abort listener or timer when onError settles synchronously", async () => {
+    const adapter: EventAdapter = { fetchEvents: () => new Promise(() => {}) };
+    const client = new StreamdClient({ adapter });
+    let unsubscribed = false;
+    (client as unknown as { follow: StreamdClient["on"] }).follow = ((
+      _d: EventDescriptor,
+      _cb: Parameters<StreamdClient["on"]>[1],
+      opts?: Parameters<StreamdClient["on"]>[2],
+    ) => {
+      opts?.onError?.(new StreamdError("sync setup failure"));
+      return {
+        id: "sync",
+        active: false,
+        paused: false,
+        cursor: undefined,
+        status: {} as ReturnType<StreamdClient["on"]>["status"],
+        caughtUp: Promise.resolve(),
+        pause() {},
+        resume() {},
+        unsubscribe() {
+          unsubscribed = true;
+        },
+        [Symbol.dispose]() {},
+        async [Symbol.asyncDispose]() {},
+      };
+    }) as StreamdClient["on"];
+
+    const ac = new AbortController();
+    let listeners = 0;
+    const origAdd = ac.signal.addEventListener.bind(ac.signal);
+    ac.signal.addEventListener = ((...args: Parameters<typeof origAdd>) => {
+      listeners++;
+      return origAdd(...args);
+    }) as typeof ac.signal.addEventListener;
+
+    let timers = 0;
+    const origSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((...args: Parameters<typeof origSetTimeout>) => {
+      timers++;
+      return origSetTimeout(...args);
+    }) as typeof globalThis.setTimeout;
+    const desc: EventDescriptor = { kind: "module", eventType: "0x1::test::Event" };
+    try {
+      await expect(client.once(desc, { signal: ac.signal, timeout: 100 })).rejects.toThrow("sync setup failure");
+    } finally {
+      globalThis.setTimeout = origSetTimeout;
+    }
+    expect(unsubscribed).toBe(true);
+    expect(listeners).toBe(0);
+    expect(timers).toBe(0);
+  });
+});

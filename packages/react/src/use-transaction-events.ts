@@ -48,13 +48,20 @@ export function useTransactionEvents<TData = unknown>(
   }>();
 
   useEffect(() => {
+    setFinished((prev) => (prev === undefined ? prev : undefined));
     if (transactionHash == null) return;
     const controller = new AbortController();
     const finish = (result: UseTransactionEventsResult<TData>) => {
       if (!controller.signal.aborted) setFinished({ key, client, result });
     };
     const live = { ...withLatestFunctions(filter, () => latest.current), signal: controller.signal };
-    client.eventsOf<TData>(transactionHash, descriptor, live).then(
+    let lookup: Promise<EventOf<TData>[]>;
+    try {
+      lookup = client.eventsOf<TData>(transactionHash, descriptor, live);
+    } catch (err) {
+      lookup = Promise.reject(err);
+    }
+    lookup.then(
       (data) => finish({ data, error: undefined, loading: false, vmStatus: undefined }),
       (err: unknown) =>
         finish({
