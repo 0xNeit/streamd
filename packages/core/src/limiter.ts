@@ -1,5 +1,6 @@
 import type { EventAdapter } from "./types.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
+import { isPrimaryOnly, withPrimaryOnly } from "./time.js";
 import { onAbort, raceAbort } from "./utils.js";
 
 interface Waiter {
@@ -36,12 +37,14 @@ export class RequestLimiter {
    * frees, though the adapter call itself, which takes no signal, runs on.
    */
   run<T>(task: () => Promise<T>, drop?: AbortSignal, signal?: AbortSignal): Promise<T> {
+    const primaryOnly = isPrimaryOnly();
     return new Promise<T>((resolve, reject) => {
       const start = () => {
         this.active++;
         if (this.interval > 0) this.earliest = performance.now() + this.interval;
         // Wrapped so a task that throws synchronously still frees its slot.
-        raceAbort(this.withTimeout(new Promise<T>((r) => r(task()))), signal)
+        const started = new Promise<T>((r) => r(primaryOnly ? withPrimaryOnly(task) : task()));
+        raceAbort(this.withTimeout(started), signal)
           .then(resolve, reject)
           .finally(() => {
             this.active--;

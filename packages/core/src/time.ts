@@ -1,6 +1,66 @@
-import type { BlockInfo, EventAdapter, EventDescriptor } from "./types.js";
+import type { BlockHeights, BlockInfo, EventAdapter, EventDescriptor } from "./types.js";
 import { StreamdError, StreamdNetworkError } from "./errors.js";
 import { requireBlock, requireBlockHeights } from "./adapters/validate.js";
+
+let primaryProbeDepth = 0;
+const archiveBacked = new WeakSet<BlockHeights>();
+
+/** Whether the current adapter call was initiated as a primary-only probe by `resolveFromTime`. */
+export function isPrimaryOnly(): boolean {
+  return primaryProbeDepth > 0;
+}
+
+/** Runs synchronous call initiation `fn` marked as a primary-only probe. */
+export function withPrimaryOnly<T>(fn: () => T): T {
+  primaryProbeDepth++;
+  try {
+    return fn();
+  } finally {
+    primaryProbeDepth--;
+  }
+}
+
+/** Tags a `BlockHeights` copy so `resolveFromTime` knows an archive can extend its oldest bound. */
+export function markHasArchive(heights: BlockHeights): BlockHeights {
+  if (typeof heights !== "object" || heights === null) return heights;
+  const copy = { oldest: heights.oldest, newest: heights.newest };
+  archiveBacked.add(copy);
+  return copy;
+}
+
+/** Whether `heights` came from an archive-backed adapter or pool. */
+export function hasArchiveHeights(heights: BlockHeights): boolean {
+  return typeof heights === "object" && heights !== null && archiveBacked.has(heights);
+}
+
+async function initialBounds(
+  adapter: EventAdapter,
+  descriptor: EventDescriptor,
+  fromTime: bigint,
+  blockAt: (height: bigint) => Promise<BlockInfo>,
+): Promise<{ newest: bigint; lo: BlockInfo; hi?: BlockInfo }> {
+  const raw = await withPrimaryOnly(() => adapter.getBlockHeights!(descriptor));
+  const { oldest, newest } = requireBlockHeights(raw);
+  if (!hasArchiveHeights(raw)) return { newest, lo: await firstServed(blockAt, oldest, newest) };
+  let primaryLo: BlockInfo | undefined;
+  try {
+    primaryLo = await firstServed((h) => withPrimaryOnly(() => blockAt(h)), oldest, newest);
+  } catch (err) {
+    if (!isPruned(err)) throw err;
+  }
+  if (primaryLo !== undefined && primaryLo.timestamp < fromTime) return { newest, lo: primaryLo };
+  const fullRaw = await adapter.getBlockHeights!(descriptor);
+  const { oldest: archiveOldest } = requireBlockHeights(fullRaw);
+  if (primaryLo !== undefined && (!hasArchiveHeights(fullRaw) || archiveOldest >= primaryLo.height)) {
+    return { newest, lo: primaryLo };
+  }
+  const limit = primaryLo !== undefined ? primaryLo.height : newest;
+  return {
+    newest,
+    lo: await firstServed(blockAt, archiveOldest, limit),
+    ...(primaryLo !== undefined && { hi: primaryLo }),
+  };
+}
 
 /** Rejects a `fromTime` that is malformed or clashes with another start option. */
 export function validateFromTime(options: {
@@ -53,10 +113,10 @@ export async function resolveFromTime(
     if (stopped()) throw new StreamdError("fromTime search stopped");
     return requireBlock(await getBlock(descriptor, height), height);
   };
-  const { oldest, newest } = requireBlockHeights(await adapter.getBlockHeights(descriptor));
-  let lo = await firstServed(blockAt, oldest, newest);
+  const { newest, lo: initLo, hi: initHi } = await initialBounds(adapter, descriptor, fromTime, blockAt);
+  let lo = initLo;
   if (lo.timestamp >= fromTime) return lo.firstVersion;
-  let hi = await blockAt(newest);
+  let hi = initHi ?? (await blockAt(newest));
   if (hi.timestamp < fromTime) return hi.lastVersion + 1n;
 
   // Invariant: lo.timestamp < fromTime <= hi.timestamp, so the span is positive.
@@ -66,8 +126,7 @@ export async function resolveFromTime(
       probe % 2 === 0
         ? lo.height + ((fromTime - lo.timestamp) * span) / (hi.timestamp - lo.timestamp)
         : lo.height + span / 2n;
-    const height =
-      guess <= lo.height ? lo.height + 1n : guess >= hi.height ? hi.height - 1n : guess;
+    const height = guess <= lo.height ? lo.height + 1n : guess >= hi.height ? hi.height - 1n : guess;
     let block: BlockInfo;
     try {
       block = await blockAt(height);
