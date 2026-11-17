@@ -420,69 +420,124 @@ export class EventPoller {
     const batched: StreamdEvent[] = [];
     // Dedups the batch's events until they are marked seen on delivery.
     const pending = new CursorManager(undefined, this.dedupWindow);
-    // A rejected predicate or failed view is the source's: it fails this poll
-    // with the event unmarked, so a network failure's retry delivers it rather
-    // than losing it.
+    const prefetched =
+      this.nameTtl === undefined
+        ? undefined
+        : this.where === undefined && this.decode === undefined
+          ? this.names!.prefetch(
+              page.events.filter((raw) => !this.position.hasSeen(raw)),
+              this.nameTtl,
+            )
+          : new Map<string, Promise<string | null>>();
+    // A rejected predicate, view or name lookup is the source's: it fails this
+    // poll with the event unmarked, so a retry delivers it rather than losing it.
     let failure: unknown;
     for (const raw of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
       if (this.position.hasSeen(raw) || pending.hasSeen(raw)) continue;
-      let prepared = this.prepare(raw);
-      if (prepared !== undefined && "verdict" in prepared) {
-        let matched: unknown;
-        try {
-          // Raced against the run, so a hung predicate never holds a restart.
-          matched = await raceAbort(Promise.resolve(prepared.verdict), run);
-        } catch (err) {
-          failure = err;
-          break;
-        }
-        if (!this.isCurrent(gen)) return;
-        prepared = this.admit(raw, prepared.event, matched);
+      const outcome = await this.deliverRaw(raw, gen, adapter, run, prefetched);
+      if (outcome === undefined) return;
+      if ("failure" in outcome) {
+        failure = outcome.failure;
+        break;
       }
-      if (prepared === undefined) {
-        if (!this.isCurrent(gen)) return;
-        continue;
-      }
-      let event = prepared.event;
-      if (prepared.request !== undefined) {
-        try {
-          event = await readState(adapter, this.descriptor, event, prepared.request);
-        } catch (err) {
-          failure = err;
-          break;
-        }
-        if (!this.isCurrent(gen)) return;
-      }
-      if (this.nameTtl !== undefined) {
-        try {
-          event = await this.names!.attach(event, this.nameTtl, run);
-        } catch (err) {
-          failure = err;
-          break;
-        }
-        if (!this.isCurrent(gen)) return;
-      }
-      if (this.callback === undefined) {
-        // Marked seen only once handed over, so a batch a pause abandons is redelivered.
-        batch.push(event);
-        batched.push(raw);
-        pending.mark(raw);
-        continue;
-      }
-      this.see(raw);
-      try {
-        // Awaited one event at a time, so a slow handler holds back the rest
-        // of the page and the next poll rather than piling up work.
-        const result: unknown = this.callback!(event);
-        if (isThenable(result)) await result;
-      } catch (err) {
-        this.reportHandlerError(callbackError(event, err));
-        if (!this.isCurrent(gen)) return;
-      }
+      if (outcome.event === undefined) continue;
+      // Start batch lookups as each event is admitted so the whole batch settles together.
+      if (prefetched !== undefined) this.names!.prefetch([outcome.event], this.nameTtl!, prefetched);
+      // Marked seen only once handed over, so a batch a pause abandons is redelivered.
+      batch.push(outcome.event);
+      batched.push(raw);
+      pending.mark(raw);
     }
+    if (!this.isCurrent(gen)) return;
+    if (prefetched !== undefined && this.callback === undefined && batch.length > 0) {
+      const attached = await this.attachBatchNames(batch, batched, gen, run, prefetched);
+      if (!attached.current) return;
+      if ("failure" in attached) failure = attached.failure;
+    }
+    await this.finishPage(page, batch, batched, gen, reached, failure);
+  }
 
+  private async deliverRaw(
+    raw: StreamdEvent,
+    gen: number,
+    adapter: EventAdapter,
+    run: AbortSignal,
+    prefetched: Map<string, Promise<string | null>> | undefined,
+  ): Promise<{ event?: StreamdEvent } | { failure: unknown } | undefined> {
+    let prepared = this.prepare(raw);
+    if (prepared !== undefined && "verdict" in prepared) {
+      let matched: unknown;
+      try {
+        // Raced against the run, so a hung predicate never holds a restart.
+        matched = await raceAbort(Promise.resolve(prepared.verdict), run);
+      } catch (err) {
+        return { failure: err };
+      }
+      if (!this.isCurrent(gen)) return undefined;
+      prepared = this.admit(raw, prepared.event, matched);
+    }
+    if (prepared === undefined) return this.isCurrent(gen) ? {} : undefined;
+    let event = prepared.event;
+    if (prepared.request !== undefined) {
+      try {
+        event = await readState(adapter, this.descriptor, event, prepared.request);
+      } catch (err) {
+        return { failure: err };
+      }
+      if (!this.isCurrent(gen)) return undefined;
+    }
+    if (this.callback === undefined) return { event };
+    if (this.nameTtl !== undefined) {
+      try {
+        event = await this.names!.attach(event, this.nameTtl, run, prefetched);
+      } catch (err) {
+        return { failure: err };
+      }
+      if (!this.isCurrent(gen)) return undefined;
+    }
+    this.see(raw);
+    try {
+      // Awaited one event at a time, so a slow handler holds back the rest
+      // of the page and the next poll rather than piling up work.
+      const result: unknown = this.callback!(event);
+      if (isThenable(result)) await result;
+    } catch (err) {
+      this.reportHandlerError(callbackError(event, err));
+      if (!this.isCurrent(gen)) return undefined;
+    }
+    return {};
+  }
+
+  private async attachBatchNames(
+    batch: StreamdEvent[],
+    batched: StreamdEvent[],
+    gen: number,
+    run: AbortSignal,
+    prefetched: Map<string, Promise<string | null>>,
+  ): Promise<{ current: true } | { current: false } | { current: true; failure: unknown }> {
+    for (let i = 0; i < batch.length; i++) {
+      try {
+        batch[i] = await this.names!.attach(batch[i]!, this.nameTtl!, run, prefetched);
+      } catch (err) {
+        batch.length = i;
+        batched.length = i;
+        return this.isCurrent(gen) ? { current: true, failure: err } : { current: false };
+      }
+      if (!this.isCurrent(gen)) return { current: false };
+    }
+    return { current: true };
+  }
+
+  private async finishPage(
+    page: EventPage,
+    batch: StreamdEvent[],
+    batched: StreamdEvent[],
+    gen: number,
+    reached: boolean,
+    failure: unknown,
+  ): Promise<void> {
     if (this.onPage !== undefined) {
       await this.handOver(
         batch,

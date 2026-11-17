@@ -199,17 +199,21 @@ export class EventQuery {
     }
   }
 
-  /** `events` with `senderName` looked up for each in order, through the client's name cache. */
+  /** `events` with `senderName` looked up concurrently per page and delivered in order. */
   private async attachNames(
     events: readonly StreamdEvent[],
     ttl: number,
     retries: number,
     signal: AbortSignal | undefined,
   ): Promise<StreamdEvent[]> {
+    if (signal?.aborted) throw signal.reason;
+    const prefetched = this.names!.prefetch(events, ttl);
     const named: StreamdEvent[] = [];
     for (const event of events) {
       if (signal?.aborted) throw signal.reason;
-      named.push(await withRetries(() => this.names!.attach(event, ttl, signal), retries, signal));
+      named.push(
+        await withRetries(() => this.names!.attach(event, ttl, signal, prefetched), retries, signal),
+      );
     }
     return named;
   }
