@@ -50,11 +50,53 @@ export class SenderNames {
     return ttl;
   }
 
+  /**
+   * Start fetching uncached sender names in `events` so in-order `attach`
+   * calls share the in-flight lookups rather than waiting in series.
+   */
+  prefetch(
+    events: readonly StreamdEvent[],
+    ttl: number,
+    started = new Map<string, Promise<string | null>>(),
+  ): Map<string, Promise<string | null>> {
+    for (const event of events) {
+      const address = event.sender === undefined ? undefined : normalizeAddress(event.sender);
+      if (address === undefined || started.has(address)) continue;
+      const hit = this.cache.get(address);
+      if (hit !== undefined && this.now() - hit.at < ttl) continue;
+      const pending = this.fetch(address, true);
+      pending.catch(() => {});
+      started.set(address, pending);
+    }
+    return started;
+  }
+
   /** A copy of `event` with `senderName`, or `event` itself when it has no hex `sender`. */
-  async attach(event: StreamdEvent, ttl: number, signal?: AbortSignal): Promise<StreamdEvent> {
+  async attach(
+    event: StreamdEvent,
+    ttl: number,
+    signal?: AbortSignal,
+    prefetched?: Map<string, Promise<string | null>>,
+  ): Promise<StreamdEvent> {
     const address = event.sender === undefined ? undefined : normalizeAddress(event.sender);
     if (address === undefined) return event;
-    return { ...event, senderName: await this.name(address, ttl, signal) };
+    const started = prefetched?.get(address);
+    let pending: Promise<string | null>;
+    if (started !== undefined) {
+      pending = raceAbort(started, signal);
+    } else {
+      pending = this.name(address, ttl, signal);
+      if (prefetched !== undefined) {
+        pending.catch(() => {});
+        prefetched.set(address, pending);
+      }
+    }
+    try {
+      return { ...event, senderName: await pending };
+    } catch (err) {
+      prefetched?.delete(address);
+      throw err;
+    }
   }
 
   /** The primary name of a long-form `address`, `null` for none, from the cache while younger than `ttl`. */
