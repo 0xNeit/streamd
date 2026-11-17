@@ -460,4 +460,23 @@ describe("IndexerAccountAdapter.listTransactionVersions", () => {
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect((err as Error).message).toContain("malformed account_transactions");
   });
+
+  it("lists versions descending when orderBy is desc and refuses wrong order or bad orderBy", async () => {
+    const { adapter, calls } = adapterWith(() => ({
+      data: { account_transactions: [{ transaction_version: 9 }, { transaction_version: "5" }] },
+    }));
+    expect(await adapter.listTransactionVersions("0xb", 3n, 20n, 2, "desc")).toEqual([9n, 5n]);
+    expect(calls[0]!.query).toContain("desc");
+    expect(calls[0]!.variables).toEqual({ address: `0x${"b".padStart(64, "0")}`, from: "3", to: "20", limit: 2 });
+
+    await expect(
+      adapter.listTransactionVersions(OBJECT, 0n, 20n, 2, "sideways" as "asc"),
+    ).rejects.toThrow('orderBy must be "asc" or "desc"');
+    const badOrder = adapterWith(() => ({
+      data: { account_transactions: [{ transaction_version: 5 }, { transaction_version: 9 }] },
+    })).adapter;
+    await expect(badOrder.listTransactionVersions(OBJECT, 0n, 20n, 2, "desc")).rejects.toThrow(
+      "malformed account_transactions",
+    );
+  });
 });

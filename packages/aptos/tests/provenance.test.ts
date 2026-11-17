@@ -212,12 +212,14 @@ describe("toProvenance", () => {
 
 /** A lister over `versions` with `head` as its processed version, recording each listing. */
 function lister(versions: bigint[], head: () => bigint) {
-  const listings: [bigint, bigint, number][] = [];
+  const listings: [bigint, bigint, number, ("asc" | "desc")?][] = [];
   const indexer: TransactionLister = {
     getHeadVersion: async () => head(),
-    listTransactionVersions: async (_address, from, to, limit) => {
-      listings.push([from, to, limit]);
-      return versions.filter((v) => v >= from && v <= to).slice(0, limit);
+    listTransactionVersions: async (_address, from, to, limit, orderBy) => {
+      listings.push(orderBy === undefined ? [from, to, limit] : [from, to, limit, orderBy]);
+      const matched = versions.filter((v) => v >= from && v <= to);
+      if (orderBy === "desc") matched.reverse();
+      return matched.slice(0, limit);
     },
   };
   return { indexer, listings };
@@ -355,6 +357,55 @@ describe("provenanceSource", () => {
     await source.getBlockHeights!({ kind: "account", accountAddress: "0x1" });
     expect(seen).toEqual([descriptor, descriptor]);
   });
+
+  it("lists and pages descending for orderBy desc and refuses ascending responses", async () => {
+    const { indexer, listings } = lister([2n, 5n, 8n, 11n], () => 15n);
+    const { adapter, reads } = node();
+    const source = provenanceSource(indexer, adapter, TOKEN);
+    const first = await source.fetchEvents(descriptor, { fromVersion: 2n, limit: 2, orderBy: "desc" });
+    expect(first.events.map((e) => e.version)).toEqual([11n, 8n]);
+    expect(first).toMatchObject({ nextCursor: "7", hasMore: true, throughVersion: 15n });
+    const second = await source.fetchEvents(descriptor, { fromVersion: 2n, cursor: first.nextCursor, limit: 2, orderBy: "desc" });
+    expect(second.events.map((e) => e.version)).toEqual([5n, 2n]);
+    expect(second).toMatchObject({ nextCursor: "16", hasMore: false, throughVersion: 15n });
+    expect(listings).toEqual([
+      [2n, 15n, 2, "desc"],
+      [2n, 7n, 2, "desc"],
+    ]);
+    expect(reads.map(([v]) => v)).toEqual([11n, 8n, 5n, 2n]);
+
+    const badDesc: TransactionLister = { getHeadVersion: async () => 15n, listTransactionVersions: async () => [8n, 11n] };
+    await expect(provenanceSource(badDesc, adapter, TOKEN).fetchEvents(descriptor, { orderBy: "desc", limit: 2 })).rejects.toThrow(
+      "malformed transaction listing",
+    );
+  });
+
+  it("bounds each internal read with requestTimeout rather than the whole page", async () => {
+    const { indexer } = lister([1n, 2n, 3n, 4n, 5n], () => 5n);
+    const { adapter, reads } = node();
+    const paced: EventAdapter = {
+      ...adapter,
+      getTransactionEventsByVersion: async (version, d) => {
+        await new Promise((r) => setTimeout(r, 12));
+        return adapter.getTransactionEventsByVersion!(version, d);
+      },
+    };
+    const ok = await provenanceSource(indexer, paced, TOKEN, undefined, 35).fetchEvents(descriptor, { fromVersion: 0n });
+    expect(ok.events.map((e) => e.version)).toEqual([1n, 2n, 3n, 4n, 5n]);
+
+    reads.length = 0;
+    const hung: EventAdapter = {
+      ...adapter,
+      getTransactionEventsByVersion: async (version, d) => {
+        if (version === 2n) await new Promise((r) => setTimeout(r, 80));
+        return adapter.getTransactionEventsByVersion!(version, d);
+      },
+    };
+    await expect(
+      provenanceSource(indexer, hung, TOKEN, undefined, 35).fetchEvents(descriptor, { fromVersion: 0n }),
+    ).rejects.toThrow("Adapter call timed out after 35ms");
+    expect(reads.map(([v]) => v)).toEqual([1n]);
+  });
 });
 
 describe("provenance through the client", () => {
@@ -416,5 +467,47 @@ describe("provenance through the client", () => {
     expect(() => client.provenance(TOKEN, () => {}, { indexer: {} as TransactionLister })).toThrow("indexer must implement");
     const bare = testClient({ adapter: { fetchEvents: async () => ({ events: [], hasMore: false }) } });
     await expect(bare.getProvenance(TOKEN, { indexer })).rejects.toThrow("getTransactionEventsByVersion");
+  });
+
+  it("reads only the newest needed transactions for orderBy desc, with where and onCursor", async () => {
+    const { indexer } = lister([1n, 2n, 3n, 4n, 5n, 6n], () => 10n);
+    const { adapter, reads } = node();
+    const client = testClient({ adapter });
+    const cursors: (string | undefined)[] = [];
+    const newest = await client.getProvenance(TOKEN, {
+      indexer,
+      limit: 2,
+      orderBy: "desc",
+      onCursor: (c) => cursors.push(c),
+    });
+    expect(newest.map((r) => r.version)).toEqual([6n, 5n]);
+    expect(reads.map(([v]) => v)).toEqual([6n, 5n]);
+    expect(cursors).toEqual(["11"]);
+
+    reads.length = 0;
+    const filtered = await client.getProvenance(TOKEN, {
+      indexer,
+      limit: 2,
+      orderBy: "desc",
+      where: (r) => r.version % 2n === 1n,
+    });
+    expect(filtered.map((r) => r.version)).toEqual([5n, 3n]);
+    expect(reads.map(([v]) => v)).toEqual([6n, 5n, 4n, 3n]);
+  });
+
+  it("lets a multi-read provenance page finish past requestTimeout when each read finishes in time", async () => {
+    const { indexer } = lister([1n, 2n, 3n, 4n, 5n], () => 5n);
+    const { adapter } = node();
+    const paced: EventAdapter = {
+      ...adapter,
+      getTransactionEventsByVersion: async (version, d) => {
+        await new Promise((r) => setTimeout(r, 12));
+        return adapter.getTransactionEventsByVersion!(version, d);
+      },
+    };
+    const client = testClient({ adapter: paced, requestTimeout: 35 });
+    const records = await client.getProvenance(TOKEN, { indexer });
+    expect(records.map((r) => r.version)).toEqual([1n, 2n, 3n, 4n, 5n]);
+    client.destroy();
   });
 });

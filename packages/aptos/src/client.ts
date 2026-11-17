@@ -309,7 +309,7 @@ export class AptosClient extends StreamdClient {
    * which trails the fullnode by hundreds of versions, so the live head is
    * its processed version; each is read through the adapter's
    * `getTransactionEventsByVersion`, one at a time and outside
-   * `maxConcurrentRequests`, within the page's `requestTimeout`. Under
+   * `maxConcurrentRequests`, with `requestTimeout` bounding each read. Under
    * `withNames`, `names` holds the sender's and every action address's
    * primary name. Like `activity()`, it is not a listener for `off()` or
    * `listenerCount()`.
@@ -343,7 +343,13 @@ export class AptosClient extends StreamdClient {
     }
     const ttl = this.names.ttl(withNames);
     const name = ttl === undefined ? undefined : (a: string) => this.names.nameWithinSlot(a, ttl);
-    const source = provenanceSource(indexer ?? new IndexerAccountAdapter(this.aptos), this.adapter, address, name);
+    const source = provenanceSource(
+      indexer ?? new IndexerAccountAdapter(this.aptos),
+      this.adapter,
+      address,
+      name,
+      this.requestTimeout,
+    );
     return [provenanceDescriptor(address), source] as const;
   }
 
