@@ -31,6 +31,8 @@ export interface ReduceHost {
   head(descriptor: EventDescriptor): Promise<bigint>;
   /** Registers `stop` for `destroy()`; the returned function unregisters it. */
   track(stop: () => void): () => void;
+  /** Registers an in-flight async handler promise for `close()` to drain. */
+  trackHandler?: (work: Promise<unknown>) => void;
 }
 
 const HISTORY_KEYS = ["fromVersion", "fromBlock", "fromTime", "maxPages", "retries"] as const;
