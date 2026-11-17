@@ -4,6 +4,7 @@ import type {
   BalanceChange,
   Balances,
   BalancesOptions,
+  BatchCallback,
   EventAdapter,
   EventCallback,
   EventDescriptor,
@@ -48,7 +49,7 @@ export interface BalancesHost {
   descriptor: EventDescriptor;
   onError: ((error: Error) => void) | undefined;
   subscribe(
-    callback: EventCallback,
+    delivery: EventCallback | { batch: BatchCallback },
     options: ListenerOptions,
     wrap: (source: EventAdapter) => EventAdapter,
   ): Subscription;
@@ -108,13 +109,11 @@ const ALLOWED: readonly string[] = [
   "signal",
 ] satisfies readonly (keyof BalancesOptions)[];
 
-/** A chain client's `balances()`: read each asset at the head, then keep reading it. */
-export function startBalances(
+function checkBalancesOptions(
   host: BalancesHost,
-  account: () => Promise<string>,
   reader: BalanceReader,
-  options: BalancesOptions = {},
-): Balances {
+  options: BalancesOptions,
+): readonly string[] {
   const refused = Object.keys(options).find((k) => !ALLOWED.includes(k));
   if (refused !== undefined) {
     throw new StreamdError(`Unsupported balances option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
@@ -123,15 +122,132 @@ export function startBalances(
   if (typeof host.adapter.getHeadVersion !== "function") {
     throw new StreamdError("balances needs an adapter that implements getHeadVersion");
   }
-  const { asset: named, onChange, ...listener } = options;
-  if (Array.isArray(named) && named.length === 0) throw new StreamdError("asset must not be an empty list");
-  const assets = reader.assets(named);
+  if (Array.isArray(options.asset) && options.asset.length === 0) {
+    throw new StreamdError("asset must not be an empty list");
+  }
+  return reader.assets(options.asset);
+}
 
+function applyBalanceBatch(
+  amounts: Map<string, bigint>,
+  events: readonly StreamdEvent[],
+  onChange: BalancesOptions["onChange"],
+  report: (err: Error) => void,
+  isStopped: () => boolean,
+): void {
+  // Apply every balance change from this head version before notifying, so
+  // `onChange` never observes a half-applied swap across assets.
+  for (const event of events) {
+    const { asset, balance: next } = event.data as BalanceChange;
+    amounts.set(asset, next);
+  }
+  if (onChange === undefined) return;
+  for (const event of events) {
+    if (isStopped()) return;
+    try {
+      onChange(new Map(amounts), event as StreamdEvent<BalanceChange>);
+    } catch (err) {
+      if (!isStopped()) {
+        report(new StreamdError(`Balance change handler threw for ${event.version}:${event.eventIndex}`, err));
+      }
+    }
+  }
+}
+
+interface BalanceRunConfig {
+  host: BalancesHost;
+  account: () => Promise<string>;
+  reader: BalanceReader;
+  assets: readonly string[];
+  amounts: Map<string, bigint>;
+  listener: Omit<BalancesOptions, "asset" | "onChange">;
+  onChange: BalancesOptions["onChange"];
+  report: (err: Error) => void;
+  signal: AbortSignal;
+  onStop: () => void;
+  attachPolling: (sub: Subscription) => void;
+}
+
+async function runBalances(cfg: BalanceRunConfig): Promise<ReadonlyMap<string, bigint>> {
+  if (cfg.signal.aborted) throw cfg.signal.reason;
+  const who = await cfg.account();
+  const head = await cfg.host.adapter.getHeadVersion!(cfg.host.descriptor);
+  const first: [string, bigint][] = [];
+  for (const asset of cfg.assets) {
+    first.push([asset, await cfg.reader.read(cfg.host.adapter, who, asset, head)]);
+  }
+  if (cfg.signal.aborted) throw cfg.signal.reason;
+  for (const [asset, balance] of first) cfg.amounts.set(asset, balance);
+
+  let polling: Subscription | undefined;
+  polling = cfg.host.subscribe(
+    { batch: (events) => applyBalanceBatch(cfg.amounts, events, cfg.onChange, cfg.report, () => cfg.signal.aborted) },
+    {
+      ...cfg.listener,
+      fromVersion: 0n,
+      onError: (err) => {
+        if (!polling?.active && !polling?.paused) cfg.onStop();
+        cfg.report(err);
+      },
+    },
+    (source) =>
+      balancePoll(source, cfg.host.descriptor, cfg.reader, who, cfg.amounts, cfg.assets, head),
+  );
+  cfg.attachPolling(polling);
+  return new Map(cfg.amounts);
+}
+
+function safeReporter(
+  handler: ((error: Error) => void) | undefined,
+): (error: Error) => void {
+  return (err) => {
+    try {
+      handler?.(err);
+    } catch (thrown) {
+      queueMicrotask(() => {
+        throw thrown;
+      });
+    }
+  };
+}
+
+function balancesHandle(
+  amounts: Map<string, bigint>,
+  reader: BalanceReader,
+  ready: Promise<ReadonlyMap<string, bigint>>,
+  isActive: () => boolean,
+  stop: () => void,
+): Balances {
+  return {
+    get value() {
+      return new Map(amounts);
+    },
+    get(asset: string) {
+      return amounts.get(reader.canonical(asset));
+    },
+    ready,
+    get active() {
+      return isActive();
+    },
+    unsubscribe: stop,
+    [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: stop,
+  } as Balances;
+}
+
+/** A chain client's `balances()`: read each asset at the head, then keep reading it. */
+export function startBalances(
+  host: BalancesHost,
+  account: () => Promise<string>,
+  reader: BalanceReader,
+  options: BalancesOptions = {},
+): Balances {
+  const assets = checkBalancesOptions(host, reader, options);
+  const { asset: _named, onChange, ...listener } = options;
   const amounts = new Map<string, bigint>();
   let polling: Subscription | undefined;
   let stopped = false;
   const abandon = new AbortController();
-  const report = (err: Error) => (options.onError ?? host.onError)?.(err);
+  const report = safeReporter(options.onError ?? host.onError);
   const stop = (reason: unknown = new StreamdError("Balances stopped before the first read finished")) => {
     if (stopped) return;
     stopped = true;
@@ -144,39 +260,19 @@ export function startBalances(
   const detachSignal = onAbort(options.signal, () => stop(options.signal!.reason));
   if (options.signal?.aborted) stop(options.signal.reason);
 
-  const throwIfStopped = () => {
-    if (stopped) throw abandon.signal.reason;
-  };
-
-  const run = async (): Promise<ReadonlyMap<string, bigint>> => {
-    throwIfStopped();
-    const who = await account();
-    const head = await host.adapter.getHeadVersion!(host.descriptor);
-    const first: [string, bigint][] = [];
-    for (const asset of assets) first.push([asset, await reader.read(host.adapter, who, asset, head)]);
-    throwIfStopped();
-    for (const [asset, balance] of first) amounts.set(asset, balance);
-
-    polling = host.subscribe(
-      (event) => {
-        const { asset, balance: next } = event.data as BalanceChange;
-        amounts.set(asset, next);
-        onChange?.(new Map(amounts), event as StreamdEvent<BalanceChange>);
-      },
-      {
-        ...listener,
-        fromVersion: 0n,
-        onError: (err) => {
-          if (!polling?.active && !polling?.paused) stop();
-          report(err);
-        },
-      },
-      (source) => balancePoll(source, host.descriptor, reader, who, amounts, assets, head),
-    );
-    return new Map(amounts);
-  };
-
-  const ready = run().catch((err: unknown) => {
+  const ready = runBalances({
+    host,
+    account,
+    reader,
+    assets,
+    amounts,
+    listener,
+    onChange,
+    report,
+    signal: abandon.signal,
+    onStop: () => stop(),
+    attachPolling: (sub) => (polling = sub),
+  }).catch((err: unknown) => {
     const wasStopped = stopped;
     stop(err);
     if (!wasStopped) report(err as Error);
@@ -184,18 +280,5 @@ export function startBalances(
   });
   ready.catch(() => {});
 
-  return {
-    get value() {
-      return new Map(amounts);
-    },
-    get(asset: string) {
-      return amounts.get(reader.canonical(asset));
-    },
-    ready,
-    get active() {
-      return !stopped && polling?.active !== false;
-    },
-    unsubscribe: () => stop(),
-    [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: () => stop(),
-  } as Balances;
+  return balancesHandle(amounts, reader, ready, () => !stopped && polling?.active !== false, () => stop());
 }

@@ -109,6 +109,94 @@ describe("startBalances", () => {
     await expect(aborted.ready).rejects.toThrow("cancelled");
     expect(aborted.active).toBe(false);
   });
+
+  it("delivers all changed assets of a poll with the complete post-poll map", async () => {
+    const head = { value: 5n };
+    const ledger = new Map([["U", 100n], ["V", 0n]]);
+    const snapshots: [string, bigint, ReadonlyMap<string, bigint>][] = [];
+    const errors: Error[] = [];
+    let shouldThrow = false;
+    using wallet = client(head).balances(reader(ledger), {
+      asset: ["u", "v"],
+      pollInterval: 5,
+      batchSize: 1,
+      onError: (err) => errors.push(err),
+      onChange: (all, change) => {
+        if (shouldThrow && change.data.asset === "U") throw new Error("handler boom");
+        snapshots.push([change.data.asset, change.version, new Map(all)]);
+      },
+    });
+    expect(await wallet.ready).toEqual(new Map([["U", 100n], ["V", 0n]]));
+    ledger.set("U", 0n);
+    ledger.set("V", 100n);
+    head.value = 6n;
+    await wait(30);
+    expect(snapshots).toEqual([
+      ["U", 6n, new Map([["U", 0n], ["V", 100n]])],
+      ["V", 6n, new Map([["U", 0n], ["V", 100n]])],
+    ]);
+
+    shouldThrow = true;
+    ledger.set("U", 50n);
+    ledger.set("V", 50n);
+    head.value = 7n;
+    await wait(30);
+    expect(errors.map((e) => e.message)).toEqual([expect.stringContaining("Balance change handler threw")]);
+    expect(snapshots).toHaveLength(3);
+    expect(snapshots[2]).toEqual(["V", 7n, new Map([["U", 50n], ["V", 50n]])]);
+    expect(wallet.value).toEqual(new Map([["U", 50n], ["V", 50n]]));
+  });
+
+  it("stops remaining batch notifications and errors when onChange unsubscribes", async () => {
+    const head = { value: 5n };
+    const ledger = new Map([["U", 100n], ["V", 0n]]);
+    const seen: string[] = [];
+    const errors: Error[] = [];
+    const wallet = client(head).balances(reader(ledger), {
+      asset: ["u", "v"],
+      pollInterval: 5,
+      onError: (err) => errors.push(err),
+      onChange: (_all, change) => {
+        seen.push(change.data.asset);
+        wallet.unsubscribe();
+        throw new Error("after stop");
+      },
+    });
+    await wallet.ready;
+    ledger.set("U", 0n);
+    ledger.set("V", 100n);
+    head.value = 6n;
+    await wait(30);
+    expect(seen).toEqual(["U"]);
+    expect(errors).toEqual([]);
+    expect(wallet.active).toBe(false);
+  });
+
+  it("rejects ready and never subscribes when unsubscribed during the initial read", async () => {
+    let release!: () => void;
+    const errors: Error[] = [];
+    const base = client({ value: 1n });
+    let subscribed = 0;
+    const baseSub = (base as unknown as { subscribe: StreamdClient["subscribe"] }).subscribe.bind(base);
+    (base as unknown as { subscribe: StreamdClient["subscribe"] }).subscribe = ((...args: Parameters<StreamdClient["subscribe"]>) => {
+      subscribed++;
+      return baseSub(...args);
+    }) as StreamdClient["subscribe"];
+    const r = reader(new Map([["COIN", 1n]]));
+    const read = r.read;
+    r.read = async (...args) => {
+      await new Promise<void>((res) => (release = res));
+      return read(...args);
+    };
+    const wallet = base.balances(r, { onError: (e) => errors.push(e) });
+    await wait(5);
+    wallet.unsubscribe();
+    release();
+    await expect(wallet.ready).rejects.toThrow("Balances stopped before the first read finished");
+    expect(wallet.active).toBe(false);
+    expect(subscribed).toBe(0);
+    expect(errors).toEqual([]);
+  });
 });
 
 describe("formatAmount", () => {

@@ -2511,11 +2511,14 @@ wallet.unsubscribe();
   `get` takes any form.
 - **Tokens** have no balance here: a legacy token id is refused at the call, and a
   token object rejects `ready`.
-- **Cost.** One head read and one view per followed asset every `pollInterval`
-  (default 1 second), so raise it for a long list on the anonymous rate limit.
-  `onChange` sees each poll's result, not every transaction in between. The
-  inner asset views run inside the poll fetch (when fetching through a `streamd` client
-  with `maxRequestsPerSecond`, they are not spaced separately).
+- **Cost.** One head read plus one view per followed asset every `pollInterval`
+  (default 1 second): even a single asset makes 2 requests per second and exceeds the
+  anonymous Aptos fullnode rate limit over a few minutes, logging HTTP 429s and
+  updating with gaps. Pass an API key or raise `pollInterval` (for example to `5000`)
+  on the anonymous endpoint, and raise it further for longer asset lists.
+  `onChange` sees each poll's combined balances atomically rather than every transaction
+  in between. The inner asset views run inside the poll fetch (when fetching through a
+  `streamd` client with `maxRequestsPerSecond`, they are not spaced separately).
 - **Failures.** `ready` rejects if the first read fails. A later failed read retries
   with backoff, and `maxErrors` stops it; a view that aborts stops it at once. A balances handle is not a listener for
   `off()` or `listenerCount()`.
