@@ -1,5 +1,5 @@
 import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, requireAddress, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, lazyResolve, requireAddress, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -441,15 +441,7 @@ export class AptosClient extends StreamdClient {
    */
   private accountOf(account: string | undefined): (() => Promise<string>) | undefined {
     if (account === undefined) return undefined;
-    const address = addressOrName(account);
-    if (address !== undefined) return () => Promise.resolve(address);
-    const aptos = this.aptos;
-    let resolved: Promise<string> | undefined;
-    return () =>
-      (resolved ??= resolveName(aptos, account).catch((err: unknown) => {
-        resolved = undefined;
-        throw err;
-      }));
+    return lazyResolve(addressOrName(account), () => resolveName(this.aptos, account));
   }
 
   /**

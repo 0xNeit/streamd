@@ -1,5 +1,5 @@
 import { SuiGrpcClient, type SuiGrpcClientOptions } from "@mysten/sui/grpc";
-import { EventQuery, SharedFetches, StreamdClient, StreamdError, checkTimeout, eventsOf, expectEvents, expectPreview, previewEvents, startBalances } from "@streamd/core";
+import { EventQuery, SharedFetches, StreamdClient, StreamdError, checkTimeout, eventsOf, expectEvents, expectPreview, lazyResolve, previewEvents, startBalances } from "@streamd/core";
 import type {
   BalanceReader,
   Balances,
@@ -40,14 +40,8 @@ const SUI_BALANCES: BalanceReader = {
  */
 function accountOf(sui: SuiGrpcClient, account: string): () => Promise<string> {
   const address = addressOrName(account);
-  if (address !== undefined) return () => Promise.resolve(address);
-  nameService(sui);
-  let resolved: Promise<string> | undefined;
-  return () =>
-    (resolved ??= resolveName(sui, account).catch((err: unknown) => {
-      resolved = undefined;
-      throw err;
-    }));
+  if (address === undefined) nameService(sui);
+  return lazyResolve(address, () => resolveName(sui, account));
 }
 
 /** `asset` and `account` checked at the call, so a typo fails there rather than on the first page. */

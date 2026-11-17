@@ -1,14 +1,11 @@
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { isValidSuiAddress, normalizeSuiAddress } from "@mysten/sui/utils";
-import { RequestLimiter, StreamdError } from "@streamd/core";
-import type { EventPredicate, StreamdEvent } from "@streamd/core";
+import { StreamdError, lazyResolve, ownedByPredicate } from "@streamd/core";
+import type { EventPredicate } from "@streamd/core";
 import { networkError } from "./adapter.js";
 import { addressOrName, nameService, resolveName } from "./names.js";
 
 const DEFAULT_FIELDS = ["id", "object_id", "nft_id"];
-const DEFAULT_MAX_CONCURRENT = 4;
-// Entries are per (object, version), so overflowing only costs a repeat read.
-const CACHE_SIZE = 1000;
 const MAX_HOPS = 8;
 // `sui.rpc.v2.Owner.OwnerKind`.
 const ADDRESS = 1;
@@ -44,45 +41,16 @@ export function ownedBy(sui: SuiGrpcClient, wallet: string, options: OwnedByOpti
   const getObject = (sui as { ledgerService?: { getObject?: unknown } } | null)?.ledgerService?.getObject;
   if (typeof getObject !== "function") throw new StreamdError("ownedBy needs a SuiGrpcClient");
   if (address === undefined) nameService(sui);
-  const fields = options.fields ?? DEFAULT_FIELDS;
-  if (!Array.isArray(fields) || fields.length === 0 || fields.some((f) => typeof f !== "string" || f === "")) {
-    throw new StreamdError("ownedBy fields must be a non-empty array of field names");
-  }
-  const max = options.maxConcurrentRequests ?? DEFAULT_MAX_CONCURRENT;
-  if (!Number.isInteger(max) || max < 1) {
-    throw new StreamdError(`Invalid maxConcurrentRequests: ${String(max)} (expected a positive integer)`);
-  }
-  let owner: Promise<string> | undefined;
-  const resolveOwner = (): Promise<string> => {
-    if (owner !== undefined) return owner;
-    const pending = address !== undefined ? Promise.resolve(address) : resolveName(sui, wallet);
-    pending.catch(() => owner === pending && (owner = undefined));
-    return (owner = pending);
-  };
-  const limiter = new RequestLimiter(max);
-  const read = (id: string) => limiter.run(() => ownerOf(sui.ledgerService.getObject.bind(sui.ledgerService), id));
-  const cache = new Map<string, Promise<boolean>>();
-
-  const owns = (object: string, version: bigint): Promise<boolean> => {
-    const key = `${object}:${version}`;
-    let answer = cache.get(key);
-    if (answer !== undefined) {
-      cache.delete(key);
-    } else {
-      answer = resolveOwner().then((wallet) => walk(read, object, wallet));
-      answer.catch(() => cache.get(key) === answer && cache.delete(key));
-      if (cache.size >= CACHE_SIZE) cache.delete(cache.keys().next().value!);
-    }
-    cache.set(key, answer);
-    return answer;
-  };
-
-  return async (event: StreamdEvent) => {
-    for (const object of namedObjects(event.data, fields)) {
-      if (await owns(object, event.version)) return true;
-    }
-    return false;
-  };
+  const readObject = sui.ledgerService.getObject.bind(sui.ledgerService);
+  return ownedByPredicate(
+    {
+      defaultFields: DEFAULT_FIELDS,
+      resolveOwner: lazyResolve(address, () => resolveName(sui, wallet)),
+      namedObjects,
+      checkOwns: (limiter, object, owner) => walk((id) => limiter.run(() => ownerOf(readObject, id)), object, owner),
+    },
+    options,
+  );
 }
 
 function namedObjects(data: unknown, fields: readonly string[]): string[] {
