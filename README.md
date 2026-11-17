@@ -690,8 +690,11 @@ field holding it (`listEventHandles` reports each guid).
 
 A transaction that failed rejects with `StreamdTransactionError`, whose `vmStatus` says
 why: the chain discards a failed transaction's events, so there is nothing to return. One
-not committed within `timeout` (default 20 seconds) rejects with `StreamdTimeoutError`, an
-abort with `signal.reason`, and a failed lookup at once with its error. The adapter is not
+not committed within `timeout` (default 20 seconds) rejects with `StreamdTimeoutError`
+(carrying the last `429` or `5xx` error in its message and `cause` when retries
+exhausted the wait), an abort with `signal.reason`, and any other failed lookup
+at once with its error (`429` and `5xx` responses retry until `timeout`,
+honouring `Retry-After` hints). The adapter is not
 told about a timeout or abort, so a lookup already in flight runs to completion and holds
 its `maxConcurrentRequests` slot until then, or until the client's `requestTimeout`. The hash must be
 `0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which

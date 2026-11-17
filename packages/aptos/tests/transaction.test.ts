@@ -174,11 +174,27 @@ describe("eventsOf", () => {
     expect(await pending.catch((e: unknown) => e)).toBe(reason);
   });
 
-  it("rejects at once with a lookup error", async () => {
-    const boom = new StreamdNetworkError("down", 503);
+  it("rejects at once with a non-transient lookup error", async () => {
+    const boom = new StreamdNetworkError("bad request", 400);
     const { adapter, calls } = lookup(boom);
     expect(await client(adapter).eventsOf(HASH).catch((e: unknown) => e)).toBe(boom);
     expect(calls).toHaveLength(1);
+  });
+
+  it("retries transient 429 and 5xx lookup errors until committed or timed out", async () => {
+    let calls = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async getTransactionEvents() {
+        calls++;
+        if (calls === 1) throw new StreamdNetworkError("slow down", 429);
+        if (calls === 2) throw new StreamdNetworkError("down", 503);
+        return committed;
+      },
+    };
+    const events = await client(adapter).eventsOf(HASH, undefined, { timeout: 1000 });
+    expect(calls).toBe(3);
+    expect(events).toEqual(committed.events);
   });
 
   it("refuses bad input before any lookup", async () => {

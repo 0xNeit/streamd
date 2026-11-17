@@ -479,8 +479,10 @@ export class AptosClient extends StreamdClient {
    *
    * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
    * transaction failed, as its events were discarded on chain; with
-   * `StreamdTimeoutError` when it is not committed within `timeout`; with
-   * `signal.reason` on abort; and at once with any lookup error.
+   * `StreamdTimeoutError` when it is not committed within `timeout` (after
+   * retrying `429` and `5xx` lookup errors and honouring `Retry-After`, naming
+   * the last error in its message and `cause`); with `signal.reason` on abort;
+   * and at once with any other lookup error.
    */
   async eventsOf<TData = unknown>(
     transactionHash: string,
