@@ -83,6 +83,36 @@ export function readThenFollow<TItem>(
   };
 }
 
+function subscribeFollowing<TItem, TOptions extends Omit<SubscriptionOptions, "signal">>(
+  start: (deliver: (items: TItem[]) => void, options: TOptions) => Following,
+  listener: TOptions,
+  latest: { current: { listener: TOptions; maxEvents: number } },
+  isCurrent: () => boolean,
+  onBatch: (events: TItem[]) => void,
+  onFail: (error: Error, stopped: boolean) => void,
+): Following | undefined {
+  let sub: Following | undefined;
+  const opts = withLatestFunctions(listener, () => latest.current.listener);
+  try {
+    sub = start(
+      (batch) => isCurrent() && onBatch(batch),
+      {
+        ...opts,
+        onError: (err: Error) => {
+          if (isCurrent()) onFail(err, sub !== undefined && !sub.active && !sub.paused);
+          opts.onError?.(err);
+        },
+      },
+    );
+    return sub;
+  } catch (err) {
+    const error = toError(err);
+    if (isCurrent()) onFail(error, true);
+    opts.onError?.(error);
+    return undefined;
+  }
+}
+
 /**
  * Runs `start` while the component is mounted and `enabled`, restarting with
  * an empty list only when `key` changes, and keeps the latest `maxEvents`.
@@ -105,40 +135,22 @@ export function useFollowing<TItem, TOptions extends Omit<SubscriptionOptions, "
   const [state, setState] = useState(idle);
 
   useEffect(() => {
-    if (!enabled) {
-      setState(idle);
-      return;
-    }
+    if (!enabled) return setState(idle);
     let current = true;
-    let sub: Following | undefined;
-    const opts = withLatestFunctions(listener, () => latest.current.listener);
     setState({ events: [], error: undefined, status: initial });
-    try {
-      sub = start(
-        (batch) => {
-          if (!current) return;
-          setState((s) => ({
-            events: [...s.events, ...batch].slice(-latest.current.maxEvents),
-            error: undefined,
-            status: "live",
-          }));
-        },
-        {
-          ...opts,
-          onError: (err: Error) => {
-            opts.onError?.(err);
-            if (!current) return;
-            const stopped = sub !== undefined && !sub.active && !sub.paused;
-            setState((s) => ({ ...s, error: err, status: stopped ? "stopped" : "live" }));
-          },
-        },
-      );
-    } catch (err) {
-      const error = toError(err);
-      opts.onError?.(error);
-      if (current) setState({ events: [], error, status: "stopped" });
-      return;
-    }
+    const sub = subscribeFollowing(
+      start,
+      listener,
+      latest,
+      () => current,
+      (batch) =>
+        setState((s) => ({
+          events: [...s.events, ...batch].slice(-latest.current.maxEvents),
+          error: undefined,
+          status: "live",
+        })),
+      (error, stopped) => setState((s) => ({ ...s, error, status: stopped ? "stopped" : "live" })),
+    );
     return () => {
       current = false;
       sub?.unsubscribe();

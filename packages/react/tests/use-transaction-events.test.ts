@@ -251,4 +251,17 @@ describe("useTransactionEvents", () => {
     expect(t.last().data?.length).toBe(2);
     await unmount(root);
   });
+
+  it("reports synchronous throws from client.eventsOf in error instead of crashing", async () => {
+    const t = setup();
+    t.client.eventsOf = (() => {
+      throw new StreamdNetworkError("sync eventsOf throw");
+    }) as typeof t.client.eventsOf;
+    const root = await render(t.el(A));
+    await waitFor(() => expect(t.last().loading).toBe(false));
+    expect(t.last().error).toBeInstanceOf(StreamdNetworkError);
+    expect(t.last().error!.message).toContain("sync eventsOf throw");
+    expect(t.last().data).toBeUndefined();
+    await unmount(root);
+  });
 });

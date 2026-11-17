@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type { EventDescriptor, ReduceOptions, Reducer, Reduction, StreamdClient } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
 import { toError, valueKey, withLatestFunctions } from "./key.js";
@@ -18,6 +18,39 @@ export interface UseReductionResult<S> {
   /** The last error, cleared when the value next changes. */
   error: Error | undefined;
   status: UseReductionStatus;
+}
+
+function startHookReduction<S, TData>(
+  client: StreamdClient,
+  descriptor: EventDescriptor<TData>,
+  initial: S,
+  reduce: Omit<UseReductionOptions<S, TData>, "client">,
+  latest: { current: { reducer: Reducer<S, TData>; reduce: Omit<UseReductionOptions<S, TData>, "client"> } },
+  isCurrent: () => boolean,
+  setState: Dispatch<SetStateAction<UseReductionResult<S>>>,
+): Reduction<S> | undefined {
+  let reduction: Reduction<S> | undefined;
+  const opts = withLatestFunctions(reduce, () => latest.current.reduce);
+  try {
+    reduction = client.reduce<S, TData>(descriptor, (s, e) => latest.current.reducer(s, e), initial, {
+      ...opts,
+      onChange: (value, event) => {
+        if (isCurrent()) setState({ value, error: undefined, status: "live" });
+        opts.onChange?.(value, event);
+      },
+      onError: (err) => {
+        const stopped = reduction !== undefined && !reduction.active;
+        if (isCurrent()) setState((s) => ({ ...s, error: toError(err), status: stopped ? "stopped" : s.status }));
+        opts.onError?.(err);
+      },
+    });
+    return reduction;
+  } catch (err) {
+    const error = toError(err);
+    if (isCurrent()) setState({ value: initial, error, status: "stopped" });
+    opts.onError?.(error);
+    return undefined;
+  }
 }
 
 /**
@@ -43,39 +76,11 @@ export function useReduction<S, TData = unknown>(
   });
 
   useEffect(() => {
-    if (descriptor == null) {
-      setState({ value: initial, error: undefined, status: "idle" });
-      return;
-    }
+    if (descriptor == null) return setState({ value: initial, error: undefined, status: "idle" });
     let current = true;
-    let reduction: Reduction<S> | undefined;
-    const opts = withLatestFunctions(reduce, () => latest.current.reduce);
     setState({ value: initial, error: undefined, status: "loading" });
-    try {
-      reduction = client.reduce<S, TData>(
-        descriptor,
-        (s, event) => latest.current.reducer(s, event),
-        initial,
-        {
-          ...opts,
-          onChange: (value, event) => {
-            opts.onChange?.(value, event);
-            if (current) setState({ value, error: undefined, status: "live" });
-          },
-          onError: (err) => {
-            opts.onError?.(err);
-            if (!current) return;
-            const stopped = reduction !== undefined && !reduction.active;
-            setState((s) => ({ ...s, error: toError(err), status: stopped ? "stopped" : s.status }));
-          },
-        },
-      );
-    } catch (err) {
-      const error = toError(err);
-      opts.onError?.(error);
-      if (current) setState({ value: initial, error, status: "stopped" });
-      return;
-    }
+    const reduction = startHookReduction(client, descriptor, initial, reduce, latest, () => current, setState);
+    if (reduction === undefined) return;
     reduction.ready.then(
       (value) => {
         if (current) setState((s) => ({ ...s, value, status: "live" }));
@@ -84,7 +89,7 @@ export function useReduction<S, TData = unknown>(
     );
     return () => {
       current = false;
-      reduction?.unsubscribe();
+      reduction.unsubscribe();
     };
     // `key` stands for `descriptor`, `reduce` and `initial` by value.
   }, [client, key]);

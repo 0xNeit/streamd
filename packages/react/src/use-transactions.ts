@@ -1,9 +1,11 @@
 import { useMemo } from "react";
 import {
+  resolveFromVersion,
   StreamdError,
   type DescriptorData,
   type EventAdapter,
   type EventDescriptor,
+  type RequestLimiter,
   type StreamdClient,
   type SubscriptionOptions,
   type TransactionGroup,
@@ -37,6 +39,27 @@ export interface UseTransactionsResult<TData> {
 type Descriptors = EventDescriptor | readonly EventDescriptor[];
 type Listener = Omit<UseTransactionsOptions, "client" | "maxTransactions" | "history">;
 
+async function resolveStart(
+  client: StreamdClient,
+  descriptor: Descriptors,
+  fromVersion: bigint | "earliest" | undefined,
+  fromTime: bigint | undefined,
+  signal: AbortSignal,
+): Promise<bigint | "earliest" | undefined> {
+  if (fromTime !== undefined || typeof fromVersion !== "bigint" || fromVersion >= 0n) {
+    return fromVersion;
+  }
+  const { adapter, limiter } = client as unknown as {
+    adapter?: EventAdapter;
+    limiter?: RequestLimiter;
+  };
+  if (adapter === undefined || limiter === undefined) {
+    throw new StreamdError("useTransactions requires a StreamdClient instance for relative fromVersion");
+  }
+  const first = Array.isArray(descriptor) ? descriptor[0]! : (descriptor as EventDescriptor);
+  return resolveFromVersion(limiter.wrap(adapter, signal, signal), first, fromVersion);
+}
+
 /**
  * Reads the newest `limit` transactions of the window, delivers them oldest
  * first, then follows from the version after the newest. That is exact: the
@@ -57,22 +80,7 @@ function withHistory(
   return readThenFollow(
     "useTransactions",
     async (signal) => {
-      if (typeof fromVersion === "bigint" && fromVersion < 0n) {
-        const host = client as unknown as {
-          adapter?: EventAdapter;
-          limiter?: { wrap: (a: EventAdapter, s?: AbortSignal) => EventAdapter };
-        };
-        if (host.adapter?.getHeadVersion !== undefined) {
-          const source = host.limiter ? host.limiter.wrap(host.adapter, signal) : host.adapter;
-          const first = Array.isArray(descriptor) ? descriptor[0]! : (descriptor as EventDescriptor);
-          const head = await source.getHeadVersion!(first);
-          if (typeof head !== "bigint" || head < 0n) {
-            throw new StreamdError(`getHeadVersion returned invalid ledger version: ${String(head)}`);
-          }
-          const start = head + fromVersion;
-          resolvedFrom = start < 0n ? 0n : start;
-        }
-      }
+      resolvedFrom = await resolveStart(client, descriptor, fromVersion, fromTime, signal);
       const groups = await client.getTransactions(descriptor, {
         ...(resolvedFrom !== undefined && { fromVersion: resolvedFrom }),
         ...(fromTime !== undefined && { fromTime }),
