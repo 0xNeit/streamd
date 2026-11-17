@@ -5,16 +5,18 @@ import type {
   FetchOptions,
 } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
+import { isPrimaryOnly, withPrimaryOnly } from "../time.js";
 import { requireAdapter } from "./validate.js";
 
 async function tryInOrder<T>(
   adapters: readonly EventAdapter[],
   run: (adapter: EventAdapter) => Promise<T>,
 ): Promise<T> {
+  const primaryOnly = isPrimaryOnly();
   let lastError: unknown;
   for (const adapter of adapters) {
     try {
-      return await run(adapter);
+      return await (primaryOnly ? withPrimaryOnly(() => run(adapter)) : run(adapter));
     } catch (err) {
       if (
         err instanceof StreamdError &&

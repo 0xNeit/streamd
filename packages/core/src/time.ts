@@ -2,12 +2,22 @@ import type { BlockHeights, BlockInfo, EventAdapter, EventDescriptor } from "./t
 import { StreamdError, StreamdNetworkError } from "./errors.js";
 import { requireBlock, requireBlockHeights } from "./adapters/validate.js";
 
-const primaryOnly = new WeakSet<EventDescriptor>();
+let primaryProbeDepth = 0;
 const archiveBacked = new WeakSet<BlockHeights>();
 
-/** Whether `resolveFromTime` marked this probe descriptor as primary-only. */
-export function isPrimaryOnly(descriptor: EventDescriptor): boolean {
-  return primaryOnly.has(descriptor);
+/** Whether the current adapter call was initiated as a primary-only probe by `resolveFromTime`. */
+export function isPrimaryOnly(): boolean {
+  return primaryProbeDepth > 0;
+}
+
+/** Runs synchronous call initiation `fn` marked as a primary-only probe. */
+export function withPrimaryOnly<T>(fn: () => T): T {
+  primaryProbeDepth++;
+  try {
+    return fn();
+  } finally {
+    primaryProbeDepth--;
+  }
 }
 
 /** Tags a `BlockHeights` copy so `resolveFromTime` knows an archive can extend its oldest bound. */
@@ -27,22 +37,28 @@ async function initialBounds(
   adapter: EventAdapter,
   descriptor: EventDescriptor,
   fromTime: bigint,
-  blockAt: (d: EventDescriptor, height: bigint) => Promise<BlockInfo>,
-): Promise<{ d: EventDescriptor; newest: bigint; lo: BlockInfo; hi?: BlockInfo }> {
-  const probe = { ...descriptor };
-  primaryOnly.add(probe);
-  const raw = await adapter.getBlockHeights!(probe);
+  blockAt: (height: bigint) => Promise<BlockInfo>,
+): Promise<{ newest: bigint; lo: BlockInfo; hi?: BlockInfo }> {
+  const raw = await withPrimaryOnly(() => adapter.getBlockHeights!(descriptor));
   const { oldest, newest } = requireBlockHeights(raw);
-  const lo = await firstServed((h) => blockAt(probe, h), oldest, newest);
-  if (lo.timestamp <= fromTime || !hasArchiveHeights(raw)) return { d: probe, newest, lo };
+  if (!hasArchiveHeights(raw)) return { newest, lo: await firstServed(blockAt, oldest, newest) };
+  let primaryLo: BlockInfo | undefined;
+  try {
+    primaryLo = await firstServed((h) => withPrimaryOnly(() => blockAt(h)), oldest, newest);
+  } catch (err) {
+    if (!isPruned(err)) throw err;
+  }
+  if (primaryLo !== undefined && primaryLo.timestamp < fromTime) return { newest, lo: primaryLo };
   const fullRaw = await adapter.getBlockHeights!(descriptor);
   const { oldest: archiveOldest } = requireBlockHeights(fullRaw);
-  if (!hasArchiveHeights(fullRaw) || archiveOldest >= lo.height) return { d: probe, newest, lo };
+  if (primaryLo !== undefined && (!hasArchiveHeights(fullRaw) || archiveOldest >= primaryLo.height)) {
+    return { newest, lo: primaryLo };
+  }
+  const limit = primaryLo !== undefined ? primaryLo.height : newest;
   return {
-    d: descriptor,
     newest,
-    lo: await firstServed((h) => blockAt(descriptor, h), archiveOldest, lo.height),
-    hi: lo,
+    lo: await firstServed(blockAt, archiveOldest, limit),
+    ...(primaryLo !== undefined && { hi: primaryLo }),
   };
 }
 
@@ -93,14 +109,13 @@ export async function resolveFromTime(
     throw new StreamdError("fromTime needs an adapter that implements getBlockHeights and getBlock");
   }
   const getBlock = adapter.getBlock.bind(adapter);
-  const readBlock = async (d: EventDescriptor, height: bigint) => {
+  const blockAt = async (height: bigint) => {
     if (stopped()) throw new StreamdError("fromTime search stopped");
-    return requireBlock(await getBlock(d, height), height);
+    return requireBlock(await getBlock(descriptor, height), height);
   };
-  const { d, newest, lo: initLo, hi: initHi } = await initialBounds(adapter, descriptor, fromTime, readBlock);
+  const { newest, lo: initLo, hi: initHi } = await initialBounds(adapter, descriptor, fromTime, blockAt);
   let lo = initLo;
   if (lo.timestamp >= fromTime) return lo.firstVersion;
-  const blockAt = (height: bigint) => readBlock(d, height);
   let hi = initHi ?? (await blockAt(newest));
   if (hi.timestamp < fromTime) return hi.lastVersion + 1n;
 

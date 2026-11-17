@@ -20,9 +20,10 @@ function blockHeightsOf(
   a: EventAdapter,
 ): NonNullable<EventAdapter["getBlockHeights"]> {
   return async (d) => {
+    const primaryOnly = isPrimaryOnly();
     const newest = await p.getBlockHeights!(d);
     if (!a.getBlockHeights) return newest;
-    if (isPrimaryOnly(d)) return markHasArchive(newest);
+    if (primaryOnly) return markHasArchive(newest);
     try {
       return markHasArchive({ oldest: (await a.getBlockHeights(d)).oldest, newest: newest.newest });
     } catch (err) {
@@ -45,7 +46,9 @@ function blockHeightsOf(
  * route `handle` descriptors directly to the archive via `RoutingAdapter` for
  * multi-page pruned handle history. The head and
  * simulations come from the fullnode, which the archive trails; the earliest
- * version and oldest block come from the archive.
+ * version and oldest block come from the archive, while `fromTime` searches
+ * the fullnode's block range first and `getBlockHeights` falls back to the
+ * fullnode's range when the archive fails with a `StreamdNetworkError`.
  */
 export class ArchiveFallbackAdapter implements EventAdapter {
   private readonly primary: EventAdapter;
@@ -72,8 +75,10 @@ export class ArchiveFallbackAdapter implements EventAdapter {
     const oldest = a.getEarliestVersion ? a : p.getEarliestVersion ? p : undefined;
     if (oldest) this.getEarliestVersion = (d) => oldest.getEarliestVersion!(d);
     if (p.getBlock) {
-      this.getBlock = (d, h) =>
-        orArchive(() => p.getBlock!(d, h), a.getBlock && !isPrimaryOnly(d) ? () => a.getBlock!(d, h) : undefined);
+      this.getBlock = (d, h) => {
+        const primaryOnly = isPrimaryOnly();
+        return orArchive(() => p.getBlock!(d, h), a.getBlock && !primaryOnly ? () => a.getBlock!(d, h) : undefined);
+      };
     }
     if (p.getBlockHeights) this.getBlockHeights = blockHeightsOf(p, a);
     if (p.getTransactionEvents) {

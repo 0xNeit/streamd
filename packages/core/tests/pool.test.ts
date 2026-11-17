@@ -1,4 +1,5 @@
 import { describe, it, expect } from "bun:test";
+import { ArchiveFallbackAdapter } from "../src/adapters/archive.js";
 import { PoolAdapter } from "../src/adapters/pool.js";
 import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdClient } from "../src/client.js";
@@ -240,5 +241,54 @@ describe("PoolAdapter conservative bounds", () => {
     firstLimited = false;
     expect(await pool.getBlockHeights!(d)).toEqual({ oldest: 3n, newest: 8n });
     expect(await pool.getHeadVersion!(d)).toBe(2n);
+  });
+
+  it("composes with ArchiveFallbackAdapter in both nesting orders", async () => {
+    let archiveReads = 0;
+    const arch: EventAdapter = {
+      ...boundedNode(1n, 9n),
+      getBlockHeights: async () => (archiveReads++, { oldest: 1n, newest: 9n }),
+      getBlock: async (_d, h) => (archiveReads++, { height: h, firstVersion: h, lastVersion: h, timestamp: h }),
+    };
+    const wrappedPool = new ArchiveFallbackAdapter(new PoolAdapter([boundedNode(5n, 9n), boundedNode(6n, 8n)]), arch);
+    const client1 = new StreamdClient({ adapter: wrappedPool });
+    expect((await client1.getEvents(d, { fromTime: 7n })).map(eventId)).toEqual(["7:0", "8:0", "9:0"]);
+    expect(archiveReads).toBe(0);
+    expect((await client1.getEvents(d, { fromTime: 2n })).map(eventId)).toEqual(["2:0", "3:0", "4:0", "5:0", "6:0", "7:0", "8:0", "9:0"]);
+    expect(archiveReads).toBeGreaterThan(0);
+    client1.destroy();
+
+    archiveReads = 0;
+    const poolOfArchived = new PoolAdapter([
+      new ArchiveFallbackAdapter(boundedNode(6n, 9n), arch),
+      new ArchiveFallbackAdapter(boundedNode(5n, 8n), arch),
+    ]);
+    const client2 = new StreamdClient({ adapter: poolOfArchived });
+    expect((await client2.getEvents(d, { fromTime: 7n })).map(eventId)).toEqual(["7:0", "8:0", "9:0"]);
+    expect(archiveReads).toBe(0);
+    expect((await client2.getEvents(d, { fromTime: 2n })).map(eventId)).toEqual(["2:0", "3:0", "4:0", "5:0", "6:0", "7:0", "8:0", "9:0"]);
+    expect(archiveReads).toBeGreaterThan(0);
+    client2.destroy();
+  });
+
+  it("rethrows non-429 errors, handles all-limited/all-cooling pools, and rejects inverted node ranges", async () => {
+    const down = new StreamdNetworkError("down", 500);
+    const errPool = new PoolAdapter([boundedNode(1n), boundedNode(5n, 9n, () => down)]);
+    await expect(errPool.getEarliestVersion!(d)).rejects.toBe(down);
+    await expect(errPool.getBlockHeights!(d)).rejects.toBe(down);
+
+    let limitedAll = true;
+    const a = boundedNode(7n, 8n, () => (limitedAll ? limit(60_000) : undefined));
+    const b = boundedNode(4n, 9n, () => (limitedAll ? limit(60_000) : undefined));
+    const allCool = new PoolAdapter([a, b], { cooldown: 60_000 });
+    await expect(allCool.getEarliestVersion!(d)).rejects.toMatchObject({ statusCode: 429 });
+    limitedAll = false;
+    expect(await allCool.getBlockHeights!(d)).toEqual({ oldest: 4n, newest: 9n });
+
+    const broken: EventAdapter = {
+      ...boundedNode(1n),
+      getBlockHeights: async () => ({ oldest: 10n, newest: 5n }),
+    };
+    await expect(new PoolAdapter([broken, boundedNode(2n)]).getBlockHeights!(d)).rejects.toThrow(StreamdError);
   });
 });

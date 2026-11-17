@@ -239,4 +239,77 @@ describe("ArchiveFallbackAdapter block heights and fromTime", () => {
     };
     await expect(new ArchiveFallbackAdapter(primary, badArchive).getBlockHeights!(d)).rejects.toThrow(StreamdError);
   });
+
+  it("steps past lagging oldest height on primary for recent fromTime without hitting archive", async () => {
+    const calls: string[] = [];
+    const lagging: EventAdapter = {
+      ...fullnode(5, calls),
+      getBlockHeights: async () => ({ oldest: 2n, newest: 10n }),
+    };
+    const old: EventAdapter = {
+      ...archive(calls),
+      getBlockHeights: async () => (calls.push("archive heights"), { oldest: 0n, newest: 9n }),
+    };
+    const client = new StreamdClient({ adapter: new ArchiveFallbackAdapter(lagging, old) });
+    expect((await client.getEvents(d, { fromTime: 8n })).map(eventId)).toEqual(["8:0", "9:0", "10:0"]);
+    expect(calls.some((c) => c.startsWith("archive"))).toBe(false);
+    client.destroy();
+  });
+
+  it("falls back to archive when primary is pruned through newest or prunes mid-search", async () => {
+    const calls: string[] = [];
+    const prunedPrimary: EventAdapter = {
+      ...fullnode(11, calls),
+      getBlockHeights: async () => ({ oldest: 5n, newest: 10n }),
+    };
+    const old: EventAdapter = {
+      ...archive(calls),
+      getBlockHeights: async () => (calls.push("archive heights"), { oldest: 0n, newest: 10n }),
+    };
+    const client = new StreamdClient({ adapter: new ArchiveFallbackAdapter(prunedPrimary, old) });
+    expect((await client.getEvents(d, { fromTime: 8n })).map(eventId)).toEqual(["8:0", "9:0", "10:0"]);
+    expect(calls).toContain("archive block");
+    client.destroy();
+
+    const liveCalls: string[] = [];
+    let edge = 5n;
+    const moving: EventAdapter = {
+      ...fullnode(5, liveCalls),
+      fetchEvents: async (desc, o) => {
+        const start = o.cursor !== undefined ? Number(o.cursor) + 1 : Number(o.fromVersion ?? 0n);
+        if (BigInt(start) < edge) throw PRUNED;
+        return new MemoryAdapter(HISTORY).fetchEvents(desc, o);
+      },
+      getBlock: async (_d, h) => {
+        if (h < edge) throw PRUNED;
+        edge = 11n;
+        return { height: h, firstVersion: h, lastVersion: h, timestamp: h };
+      },
+      getBlockHeights: async () => ({ oldest: 5n, newest: 10n }),
+    };
+    const client2 = new StreamdClient({ adapter: new ArchiveFallbackAdapter(moving, archive(liveCalls)) });
+    expect((await client2.getEvents(d, { fromTime: 8n })).map(eventId)).toEqual(["8:0", "9:0", "10:0"]);
+    expect(liveCalls).toContain("archive block");
+    client2.destroy();
+  });
+
+  it("checks the archive when primary oldest block equals fromTime so earlier equal-timestamp blocks win", async () => {
+    const calls: string[] = [];
+    const stamp = (h: bigint) => (h === 4n ? 5n : h);
+    const primary: EventAdapter = {
+      ...fullnode(5, calls),
+      getBlock: async (_d, h) => {
+        if (h < 5n) throw PRUNED;
+        return { height: h, firstVersion: h, lastVersion: h, timestamp: stamp(h) };
+      },
+    };
+    const old: EventAdapter = {
+      ...archive(calls),
+      getBlock: async (_d, h) => (calls.push("archive block"), { height: h, firstVersion: h, lastVersion: h, timestamp: stamp(h) }),
+    };
+    const client = new StreamdClient({ adapter: new ArchiveFallbackAdapter(primary, old) });
+    expect((await client.getEvents(d, { fromTime: 5n })).map(eventId)).toEqual(["4:0", "5:0", "6:0", "7:0", "8:0", "9:0", "10:0"]);
+    expect(calls).toContain("archive block");
+    client.destroy();
+  });
 });

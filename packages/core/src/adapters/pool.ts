@@ -1,7 +1,7 @@
 import type { EventAdapter, EventDescriptor, EventPage, FetchOptions } from "../types.js";
 import { StreamdError, StreamdNetworkError } from "../errors.js";
-import { hasArchiveHeights, markHasArchive } from "../time.js";
-import { requireAdapter } from "./validate.js";
+import { hasArchiveHeights, isPrimaryOnly, markHasArchive, withPrimaryOnly } from "../time.js";
+import { requireAdapter, requireBlockHeights } from "./validate.js";
 import { descriptorKey } from "../utils.js";
 
 const DEFAULT_COOLDOWN = 30_000;
@@ -32,7 +32,9 @@ const limited = (err: unknown): err is StreamdNetworkError =>
  * Spreads reads across several fullnodes of one chain. A walk (a `fetchEvents`
  * without a cursor, then the cursors its pages return) stays on the node it
  * started on, since nodes lag one another and a cursor can outrun a slower
- * one; new walks and other calls rotate. A node that answers 429 is set aside
+ * one; new walks and other calls rotate, while `getEarliestVersion` and
+ * `getBlockHeights` query all open nodes and return the most conservative
+ * bounds. A node that answers 429 is set aside
  * for its `retryAfter`, or `cooldown`, and the call moves to the next one;
  * with every node set aside the 429 is rethrown, so backoff applies. Any
  * other failure is rethrown as it is.
@@ -81,8 +83,9 @@ export class PoolAdapter implements EventAdapter {
     if (this.getBlockHeights) {
       this.getBlockHeights = async (descriptor) => {
         const ranges = await this.allOpen((n) => n.getBlockHeights!(descriptor));
-        const oldest = ranges.reduce((a, b) => (a > b.oldest ? a : b.oldest), ranges[0]!.oldest);
-        const minNewest = ranges.reduce((a, b) => (a < b.newest ? a : b.newest), ranges[0]!.newest);
+        const checked = ranges.map(requireBlockHeights);
+        const oldest = checked.reduce((a, b) => (a > b.oldest ? a : b.oldest), checked[0]!.oldest);
+        const minNewest = checked.reduce((a, b) => (a < b.newest ? a : b.newest), checked[0]!.newest);
         const combined = { oldest, newest: minNewest < oldest ? oldest : minNewest };
         return ranges.some(hasArchiveHeights) ? markHasArchive(combined) : combined;
       };
@@ -123,10 +126,14 @@ export class PoolAdapter implements EventAdapter {
    * answers 429. With every node set aside, `first` is asked anyway.
    */
   private async call<T>(first: number, run: (node: EventAdapter) => Promise<T>): Promise<{ node: number; result: T }> {
+    const primaryOnly = isPrimaryOnly();
     let last: StreamdNetworkError | undefined;
     for (const node of this.openOrder(first)) {
       try {
-        return { node, result: await run(this.nodes[node]!) };
+        return {
+          node,
+          result: await (primaryOnly ? withPrimaryOnly(() => run(this.nodes[node]!)) : run(this.nodes[node]!)),
+        };
       } catch (err) {
         last = this.recordLimit(node, err);
       }
@@ -135,12 +142,13 @@ export class PoolAdapter implements EventAdapter {
   }
 
   private async allOpen<T>(run: (node: EventAdapter) => Promise<T>): Promise<T[]> {
+    const primaryOnly = isPrimaryOnly();
     let last: StreamdNetworkError | undefined;
     const results: T[] = [];
     await Promise.all(
       this.openOrder(this.rotate()).map(async (node) => {
         try {
-          results.push(await run(this.nodes[node]!));
+          results.push(await (primaryOnly ? withPrimaryOnly(() => run(this.nodes[node]!)) : run(this.nodes[node]!)));
         } catch (err) {
           last = this.recordLimit(node, err);
         }
