@@ -34,8 +34,11 @@ describe("resolveName", () => {
     expect(await resolveName(aptos, "alice.apt")).toBe(TARGET);
     expect(await resolveName(aptos, "sub.alice")).toBe(TARGET);
     expect(await resolveName(aptos, "0xbob.apt")).toBe(TARGET);
+    expect(await resolveName(aptos, "sub.0xbob.apt")).toBe(TARGET);
     expect(await resolveName(aptos, "0x1.0xbob.apt")).toBe(TARGET);
-    expect(names).toEqual(["alice.apt", "sub.alice", "0xbob.apt", "0x1.0xbob.apt"]);
+    expect(await resolveName(aptos, "0x1234.apt")).toBe(TARGET);
+    expect(await resolveName(aptos, "0x1234")).toBe(`0x${"1234".padStart(64, "0")}`);
+    expect(names).toEqual(["alice.apt", "sub.alice", "0xbob.apt", "sub.0xbob.apt", "0x1.0xbob.apt", "0x1234.apt"]);
   });
 
   it("rejects a name with no target as a StreamdError naming it", async () => {
@@ -93,7 +96,7 @@ describe("resolveName", () => {
 
   it("refuses malformed input before any read", async () => {
     const { aptos, names } = fakeAptos(() => AccountAddress.ONE);
-    for (const bad of ["0xzz", "ab", "-ab.apt", "a.b.c.apt", "Alice.apt", ""]) {
+    for (const bad of ["0xzz", "0xbob", "ab", "-ab.apt", "a.b.c.apt", "Alice.apt", "0Xbob.apt", ""]) {
       await expect(resolveName(aptos, bad)).rejects.toBeInstanceOf(StreamdError);
     }
     expect(names).toEqual([]);
@@ -142,7 +145,9 @@ describe("primaryName", () => {
   it("returns a primary name starting with 0x", async () => {
     const { aptos, names } = reverse(() => "0xbob", () => AccountAddress.from(TARGET));
     expect(await primaryName(aptos, TARGET)).toBe("0xbob.apt");
-    expect(names).toEqual(["0xbob.apt"]);
+    const sub = reverse(() => "0x1.0xbob", () => AccountAddress.from(TARGET));
+    expect(await primaryName(sub.aptos, TARGET)).toBe("0x1.0xbob.apt");
+    expect([...names, ...sub.names]).toEqual(["0xbob.apt", "0x1.0xbob.apt"]);
   });
 
   it("gives undefined with no forward read when there is no name", async () => {

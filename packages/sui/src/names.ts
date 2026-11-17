@@ -11,11 +11,11 @@ const EXPIRED = /^name(?: |%20)has(?: |%20)expired$/;
 /**
  * The long-form address of `value` when it is one, `undefined` when it is a
  * well-formed SuiNS name (`alice.sui`, `@alice`, `sub.alice.sui`, `sub@alice`);
- * anything else throws. `0x` means an address unless it ends in `.sui`, so a
- * mistyped address is refused rather than looked up as a name.
+ * anything else throws. `0x` means an address unless `value` is a valid SuiNS
+ * name, so a mistyped address is refused rather than looked up as a name.
  */
 export function addressOrName(value: string): string | undefined {
-  if (typeof value === "string" && value.startsWith("0x") && !value.endsWith(".sui")) {
+  if (typeof value === "string" && value.startsWith("0x") && !isValidSuiNSName(value)) {
     return suiAddress(value);
   }
   if (typeof value !== "string" || !isValidSuiNSName(value)) {
