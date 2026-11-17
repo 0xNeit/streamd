@@ -298,6 +298,127 @@ describe("runTail --cursor-file", () => {
     expect(code).toBe(1);
     expect(errors.join()).toContain("cannot write cursor file");
   });
+
+  it("checkpoints per event so repeated --limit runs inside one page make progress", async () => {
+    const cursorFile = join(dir(), "c");
+    const adapter = new MemoryAdapter([ev(100), ev(101), ev(102), ev(103), ev(104)]);
+
+    const r1 = harness(adapter);
+    expect(await runTail(options({ fromVersion: 100n, limit: 2, cursorFile }), r1.io)).toBe(0);
+    expect(versions(r1.lines)).toEqual(["100", "101"]);
+    expect(readFileSync(cursorFile, "utf8").trim()).toStartWith("streamd-tail:");
+
+    const r2 = harness(adapter);
+    expect(await runTail(options({ fromVersion: 100n, limit: 2, cursorFile }), r2.io)).toBe(0);
+    expect(versions(r2.lines)).toEqual(["102", "103"]);
+
+    const r3 = harness(adapter);
+    expect(await runTail(options({ fromVersion: 100n, limit: 1, cursorFile }), r3.io)).toBe(0);
+    expect(versions(r3.lines)).toEqual(["104"]);
+  });
+
+  it("distinguishes multiple module events at the same version using eventIndex and preserves guid", async () => {
+    const cursorFile = join(dir(), "c");
+    const guid = { accountAddress: "0x1", creationNumber: 7n };
+    const e0: StreamdEvent = { type: TYPE, data: { amount: 1n }, version: 10n, sequenceNumber: 0n, eventIndex: 0, guid };
+    const e1: StreamdEvent = { type: TYPE, data: { amount: 2n }, version: 10n, sequenceNumber: 0n, eventIndex: 1, guid };
+    const adapter = new MemoryAdapter([e0, e1]);
+
+    const r1 = harness(adapter);
+    expect(await runTail(options({ fromVersion: 10n, limit: 1, cursorFile }), r1.io)).toBe(0);
+    expect(r1.lines.map((l) => JSON.parse(l).data.amount)).toEqual(["1"]);
+    expect(readFileSync(cursorFile, "utf8")).toContain('"g":{"a":"0x1","n":"7"}');
+
+    const r2 = harness(adapter);
+    expect(await runTail(options({ fromVersion: 10n, limit: 1, cursorFile }), r2.io)).toBe(0);
+    expect(r2.lines.map((l) => JSON.parse(l).data.amount)).toEqual(["2"]);
+  });
+
+  it("keeps the outer page cursor alongside the per-event checkpoint across page boundaries", async () => {
+    const cursorFile = join(dir(), "c");
+    const seenCursors: (string | undefined)[] = [];
+    const pageAdapter: EventAdapter = {
+      async fetchEvents(_d, opts) {
+        seenCursors.push(opts.cursor);
+        if (opts.cursor === undefined) return { events: [ev(1), ev(2)], nextCursor: "p1", hasMore: true };
+        if (opts.cursor === "p1") return { events: [ev(3), ev(4)], nextCursor: "p2", hasMore: false };
+        return { events: [], nextCursor: "p2", hasMore: false };
+      },
+    };
+
+    const r1 = harness(pageAdapter);
+    expect(await runTail(options({ fromVersion: 0n, limit: 3, cursorFile }), r1.io)).toBe(0);
+    expect(versions(r1.lines)).toEqual(["1", "2", "3"]);
+
+    const r2 = harness(pageAdapter);
+    expect(await runTail(options({ fromVersion: 0n, limit: 1, cursorFile }), r2.io)).toBe(0);
+    expect(versions(r2.lines)).toEqual(["4"]);
+    expect(seenCursors).toEqual([undefined, "p1", "p1"]);
+  });
+
+  it("persists mid-page checkpoint on abort and resumes from saved version without repeating or clashing with fromTime", async () => {
+    const cursorFile = join(dir(), "c");
+    const controller = new AbortController();
+    const seenFromVersions: (bigint | undefined)[] = [];
+    const pageAdapter: EventAdapter = {
+      async fetchEvents(_d, opts) {
+        seenFromVersions.push(opts.fromVersion);
+        if (opts.fromVersion === undefined && opts.cursor === undefined) {
+          return { events: [ev(50), ev(51), ev(52)], nextCursor: "p1", hasMore: false };
+        }
+        const start = opts.fromVersion ?? 0n;
+        return {
+          events: [ev(50), ev(51), ev(52)].filter((e) => e.version >= start),
+          nextCursor: "p1",
+          hasMore: false,
+        };
+      },
+    };
+    const { lines, io, client } = harness(pageAdapter, controller.signal);
+    io.write = (line) => {
+      lines.push(line);
+      controller.abort();
+    };
+    expect(await runTail(options({ cursorFile }), io)).toBe(0);
+    client.destroy();
+    expect(versions(lines)).toEqual(["50"]);
+
+    const resumed = harness(pageAdapter);
+    expect(await runTail(options({ fromTime: 123n, limit: 2, cursorFile }), resumed.io)).toBe(0);
+    expect(versions(resumed.lines)).toEqual(["51", "52"]);
+    expect(seenFromVersions).toEqual([undefined, 50n]);
+  });
+
+  it("clears skipping when a changed filter skips the checkpointed event on resume", async () => {
+    const cursorFile = join(dir(), "c");
+    const adapter = new MemoryAdapter([ev(10), ev(11), ev(12)]);
+    const r1 = harness(adapter);
+    expect(await runTail(options({ fromVersion: 10n, limit: 1, cursorFile }), r1.io)).toBe(0);
+    expect(versions(r1.lines)).toEqual(["10"]);
+
+    const filter = { senders: [], functions: [], where: [{ path: "amount", op: ">=" as const, value: "110" }] };
+    const r2 = harness(adapter);
+    expect(await runTail(options({ fromVersion: 10n, limit: 2, filter, cursorFile }), r2.io)).toBe(0);
+    expect(versions(r2.lines)).toEqual(["11", "12"]);
+  });
+
+  it("rejects malformed streamd-tail checkpoint payloads with exit 1", async () => {
+    for (const payload of [
+      "streamd-tail:not-json",
+      "streamd-tail:[]",
+      'streamd-tail:{"v":"abc","i":0,"s":"0","t":"0x1::m::E"}',
+      'streamd-tail:{"v":"1","i":-1,"s":"0","t":"0x1::m::E"}',
+      'streamd-tail:{"v":"1","i":0,"s":"0","t":"0x1::m::E","g":{"a":"0x1","n":"bad"}}',
+    ]) {
+      const cursorFile = join(dir(), "c");
+      writeFileSync(cursorFile, `${payload}\n`);
+      const { lines, errors, io, client } = harness(new MemoryAdapter([ev(1)]));
+      expect(await runTail(options({ cursorFile }), io)).toBe(1);
+      expect(errors[0]).toContain("cannot read cursor file");
+      expect(lines).toEqual([]);
+      client.destroy();
+    }
+  });
 });
 
 describe("runTail filter", () => {
