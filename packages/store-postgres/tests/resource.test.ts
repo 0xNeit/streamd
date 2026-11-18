@@ -1,4 +1,4 @@
-import { PGlite } from "@electric-sql/pglite";
+import { PGlite } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
 import { MemoryAdapter, StreamdClient, StreamdError, checkAdapter, eventId } from "@streamd/core";
 import type { EventDescriptor, StreamdEvent } from "@streamd/core";

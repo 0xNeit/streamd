@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { PGlite } from "@electric-sql/pglite";
+import { PGlite } from "./helpers.js";
 import { StreamdError, parseEvent } from "@streamd/core";
 import type { StreamdEvent, Transfer } from "@streamd/core";
 import { PostgresEventStore } from "../src/index.js";

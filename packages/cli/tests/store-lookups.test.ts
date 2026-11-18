@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
 import { PGlite } from "@electric-sql/pglite";
 import { AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { AptosClient } from "@streamd/aptos";
@@ -29,6 +29,10 @@ async function stores(): Promise<[string, EventAdapter][]> {
   new SqliteEventStore(db).write(EVENTS);
   const pg = new PGlite();
   await new PostgresEventStore(pg).write(EVENTS);
+  afterAll(async () => {
+    db.close();
+    await pg.close();
+  });
   return [
     ["StoreAdapter", new StoreAdapter(db)],
     ["PostgresStoreAdapter", new PostgresStoreAdapter(pg)],
