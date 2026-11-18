@@ -156,9 +156,9 @@ export class SuiClient extends StreamdClient {
    * Past transfers one at a time, built as `getTransfers()` builds them;
    * leaving the loop early fetches nothing further.
    */
-  iterateTransfers(filter: SuiTransferFilter = {}): AsyncGenerator<StreamdEvent<Transfer>, void, unknown> {
+  async *iterateTransfers(filter: SuiTransferFilter = {}): AsyncGenerator<StreamdEvent<Transfer>, void, unknown> {
     const [query, rest] = this.transferQuery(filter);
-    return query.iterateEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
+    yield* query.iterateEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
   /**

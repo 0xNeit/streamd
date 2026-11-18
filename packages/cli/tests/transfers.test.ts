@@ -191,6 +191,19 @@ describe("runTransfers over a range", () => {
     expect(await fallback.run({ fromVersion: 1n, toVersion: 2n })).toBe(0);
     expect(fallback.versions()).toEqual(["1", "2"]);
 
+    const abortedMid = harness(new MemoryAdapter(events));
+    const midController = new AbortController();
+    abortedMid.io.signal = midController.signal;
+    const origIter = abortedMid.io.client.iterateTransfers!;
+    abortedMid.io.client.iterateTransfers = async function* (filter) {
+      for await (const r of origIter(filter)) {
+        yield r;
+        midController.abort();
+      }
+    };
+    expect(await runTransfers({ network: "mainnet", fromVersion: 1n, toVersion: 4n }, abortedMid.io)).toBe(0);
+    expect(abortedMid.errors).toEqual([]);
+
     const controller = new AbortController();
     controller.abort();
     const aborted = harness(new MemoryAdapter(events), controller.signal);

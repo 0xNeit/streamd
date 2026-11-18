@@ -1862,8 +1862,8 @@ for (const e of deposits) console.log(e.senderName ?? e.sender);
 ## Asset transfers
 
 `transfers(callback, options?)` follows coin, fungible-asset and token movements as
-`{ from, to, asset, amount }`, and `getTransfers(filter?)` / `iterateTransfers(filter?)` return them for a
-past range. Each arrives as an event whose `data` is a `Transfer`:
+`{ from, to, asset, amount }`, `getTransfers(filter?)` returns them for a past range, and
+`iterateTransfers(filter?)` yields them one at a time. Each arrives as an event whose `data` is a `Transfer`:
 
 ```ts
 const sub = streamd.transfers(

@@ -477,9 +477,9 @@ export class AptosClient extends StreamdClient {
    * Past transfers one at a time, built as `getTransfers()` builds them;
    * leaving the loop early fetches nothing further.
    */
-  iterateTransfers(filter: TransferFilter = {}): AsyncGenerator<StreamdEvent<Transfer>, void, unknown> {
+  async *iterateTransfers(filter: TransferFilter = {}): AsyncGenerator<StreamdEvent<Transfer>, void, unknown> {
     const [query, rest] = this.transferQuery(filter);
-    return query.iterateEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
+    yield* query.iterateEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
   /**

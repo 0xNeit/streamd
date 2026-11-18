@@ -953,7 +953,7 @@ describe("transfers with requestTimeout", () => {
     }
   });
 
-  it("iterateTransfers streams records and stops fetching on early break", async () => {
+  it("iterateTransfers streams records, stops fetching on early break, and rejects bad options on iteration", async () => {
     const pages: number[] = [];
     const base = withViews([fa(1, 0, "Deposit", "b1", "5"), fa(2, 0, "Deposit", "b1", "9")]);
     const adapter: EventAdapter = {
@@ -973,6 +973,8 @@ describe("transfers with requestTimeout", () => {
     }
     expect(seen).toEqual([5n]);
     expect(pages).toEqual([1]);
+    const bad = client.iterateTransfers({ asset: "not-an-asset" });
+    await expect(bad.next()).rejects.toThrow(StreamdError);
     client.destroy();
   });
 });

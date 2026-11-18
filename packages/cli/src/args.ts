@@ -121,7 +121,7 @@ export interface QueryOptions extends Endpoint {
   cache?: string;
 }
 
-/** Bounded when `toVersion` is set, through `getTransfers`; otherwise followed, through `transfers`. */
+/** Bounded when `toVersion` is set, through `iterateTransfers` or `getTransfers`; otherwise followed, through `transfers`. */
 export interface TransfersOptions extends Endpoint {
   /** An asset as the chain's client takes it; validated there. */
   asset?: string;

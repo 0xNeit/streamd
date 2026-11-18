@@ -214,11 +214,22 @@ describe("runMonitor disagreement", () => {
       fetchEvents: (d, o) => (fetches++, base.fetchEvents(d, o)),
       getHeadVersion: () => base.getHeadVersion!(OPTIONS.descriptor),
     };
-    const { lines } = await run([shared, memory(30n, all), memory(30n, all)], { limit: 1, range: 10 });
-    expect(fetches).toBe(1);
-    expect(lines[0]!.nodes[0].window.requests).toBe(2);
-    expect(lines[0]!.nodes[1].compare.matched).toBe(10);
-    expect(lines[0]!.nodes[2].compare.matched).toBe(10);
+    const { lines } = await run([shared, memory(30n, all), memory(30n, all)], { limit: 2, range: 10 });
+    expect(fetches).toBe(2);
+    expect(lines[1]!.nodes[0].window.requests).toBe(4);
+    expect(lines[1]!.nodes[1].compare.matched).toBe(10);
+    expect(lines[1]!.nodes[2].compare.matched).toBe(10);
+
+    let failFetches = 0;
+    const failingBase: EventAdapter = {
+      fetchEvents: async () => (failFetches++, Promise.reject(new StreamdNetworkError("node 0 down", 500))),
+      getHeadVersion: async () => 30n,
+    };
+    const failed = await run([failingBase, memory(30n, all), memory(30n, all)], { limit: 1, range: 10 });
+    expect(failFetches).toBe(1);
+    expect(failed.lines[0]!.nodes[0].window).toMatchObject({ requests: 2, errors: 1 });
+    expect(failed.lines[0]!.nodes[1].compare.window).toBeNull();
+    expect(failed.lines[0]!.nodes[2].compare.window).toBeNull();
   });
 });
 
