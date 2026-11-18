@@ -81,7 +81,7 @@ function wantsByType(options: StoreStatsOptions | undefined): boolean {
 function isMissingTable(err: unknown): boolean {
   if ((err as { code?: unknown } | null)?.code === "42P01") return true;
   const message = (err as { message?: unknown } | null)?.message;
-  return typeof message === "string" && /relation "streamd_\w+" does not exist/i.test(message);
+  return typeof message === "string" && /relation "[^"]+" does not exist/i.test(message);
 }
 
 type Row = [string, number, string, string | null, string | null, string | null, string, string | null, string | null];
@@ -289,6 +289,23 @@ export class PostgresEventStore {
     await this.upsertAll(WRITE_TRANSFERS, rows, checkpoint, TRANSFER_SCHEMA);
   }
 
+  private async runWrite(run: () => Promise<void>, table?: readonly string[]): Promise<void> {
+    const prepare = async () => {
+      await ensureSchema(this.client);
+      if (table !== undefined) await ensureSchema(this.client, table);
+    };
+    await prepare();
+    try {
+      await run();
+    } catch (err) {
+      if (!isMissingTable(err)) throw err;
+      forgetSchema(this.client);
+      if (table !== undefined) forgetSchema(this.client, table);
+      await prepare();
+      await run();
+    }
+  }
+
   private async upsertAll(
     statement: string,
     rows: unknown[],
@@ -296,20 +313,7 @@ export class PostgresEventStore {
     table?: readonly string[],
   ): Promise<void> {
     const [name, cursor] = checkpointParams(checkpoint);
-    const prepare = async () => {
-      await ensureSchema(this.client);
-      if (table !== undefined) await ensureSchema(this.client, table);
-    };
-    await prepare();
-    try {
-      await this.client.query(statement, [JSON.stringify(rows), name, cursor]);
-    } catch (err) {
-      if (!isMissingTable(err)) throw err;
-      forgetSchema(this.client);
-      if (table !== undefined) forgetSchema(this.client, table);
-      await prepare();
-      await this.client.query(statement, [JSON.stringify(rows), name, cursor]);
-    }
+    await this.runWrite(() => this.client.query(statement, [JSON.stringify(rows), name, cursor]).then(() => {}), table);
   }
 
   /**
@@ -328,14 +332,17 @@ export class PostgresEventStore {
       if (!byTable.has(table)) byTable.set(table, new Map());
       byTable.get(table)!.set(eventId(events[i]!), values);
     });
-    await ensureSchema(this.client);
-    await ensureSchema(this.client, eventTableSchema(spec));
     const present = spec.filter((t) => byTable.has(t));
-    if (present.length === 0 && (name === null || cursor === null)) return;
+    const tableSchema = eventTableSchema(spec);
+    if (present.length === 0 && (name === null || cursor === null)) {
+      await ensureSchema(this.client);
+      await ensureSchema(this.client, tableSchema);
+      return;
+    }
     const params = present.map((t) =>
       JSON.stringify([...byTable.get(t)!.values()], (_, v: unknown) => (typeof v === "bigint" ? v.toString() : v)),
     );
-    await this.client.query(eventTablesWrite(present), [...params, name, cursor]);
+    await this.runWrite(() => this.client.query(eventTablesWrite(present), [...params, name, cursor]).then(() => {}), tableSchema);
   }
 
   /**

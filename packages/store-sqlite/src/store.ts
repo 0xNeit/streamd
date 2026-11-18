@@ -238,10 +238,12 @@ export class SqliteEventStore {
    */
   writeTables(tables: readonly EventTable[], events: readonly StreamdEvent[], checkpoint?: StoreCheckpoint): void {
     const rows = eventTableRows(tables, events);
+    const spec = requireEventTables(tables);
+    // Checked on every write: a caller rolling back its own transaction around
+    // the first writeTables removes the tables while keeping cached statements.
+    for (const statement of eventTableSchema(spec)) this.db.exec(statement);
     let upserts = this.tableUpserts.get(tables);
     if (upserts === undefined) {
-      const spec = requireEventTables(tables);
-      for (const statement of eventTableSchema(spec)) this.db.exec(statement);
       upserts = new Map(spec.map((table) => [table, this.db.prepare(eventTableUpsert(table))]));
       this.tableUpserts.set(tables, upserts);
     }
