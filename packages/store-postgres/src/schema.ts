@@ -71,6 +71,7 @@ const SCHEMA = [
   END $$`,
   addedIndex("streamd_events_resource", "(account_address, type, version, event_index) WHERE account_address IS NOT NULL"),
   addedIndex("streamd_events_transaction", "(transaction_hash, version, event_index) WHERE transaction_hash IS NOT NULL"),
+  addedIndex("streamd_events_type_c", '(type COLLATE "C", version, event_index) WHERE account_address IS NULL'),
 ];
 
 // Its own schema, created only by what writes or prunes transfers, so the
