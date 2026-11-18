@@ -952,4 +952,27 @@ describe("transfers with requestTimeout", () => {
       expect(errors).toHaveLength(1);
     }
   });
+
+  it("iterateTransfers streams records and stops fetching on early break", async () => {
+    const pages: number[] = [];
+    const base = withViews([fa(1, 0, "Deposit", "b1", "5"), fa(2, 0, "Deposit", "b1", "9")]);
+    const adapter: EventAdapter = {
+      ...base.adapter,
+      fetchEvents: async (d, o) => {
+        pages.push(o.cursor === undefined ? 1 : 2);
+        return o.cursor === undefined
+          ? { events: [fa(1, 0, "Deposit", "b1", "5")], nextCursor: "p2", hasMore: true }
+          : { events: [fa(2, 0, "Deposit", "b1", "9")], hasMore: false };
+      },
+    };
+    const client = testClient({ adapter });
+    const seen: bigint[] = [];
+    for await (const record of client.iterateTransfers({ fromVersion: 0n })) {
+      seen.push(record.data.amount);
+      break;
+    }
+    expect(seen).toEqual([5n]);
+    expect(pages).toEqual([1]);
+    client.destroy();
+  });
 });

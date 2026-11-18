@@ -180,4 +180,18 @@ describe("SuiClient transfers sharing and coinInfo timeout", () => {
     expect(abandoned.getCoinCalls()).toBe(2);
     expect(await first).toBeInstanceOf(StreamdNetworkError);
   });
+
+  it("iterateTransfers yields coin transfers from the client", async () => {
+    const listed: FakeListed[] = [
+      { cp: 1n, ti: 0n, changes: [[ALICE, SUI, -10n], [BOB, SUI, 10n]] },
+      { cp: 2n, ti: 0n, changes: [[ALICE, SUI, -4n], [BOB, SUI, 4n]] },
+    ];
+    const base = fakeLedger(SIZES, []).client;
+    const wired = withTransfers(base, SIZES, listed);
+    const sui = new SuiClient({ sui: wired.client as unknown as SuiGrpcClient });
+    const seen: bigint[] = [];
+    for await (const record of sui.iterateTransfers({ fromVersion: 0n })) seen.push(record.data.amount);
+    expect(seen).toEqual([10n, 4n]);
+    sui.destroy();
+  });
 });

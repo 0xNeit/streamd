@@ -135,14 +135,30 @@ export class SuiClient extends StreamdClient {
     return this.subscribe(TRANSFER_DESCRIPTOR, callback as EventCallback, rest, undefined, rest.id, () => source);
   }
 
+  private transferQuery(
+    filter: SuiTransferFilter = {},
+  ): [EventQuery, Omit<SuiTransferFilter, "asset" | "account" | "withAssetInfo">] {
+    const { asset, account, withAssetInfo, ...rest } = filter;
+    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo, this.requestTimeout);
+    return [new EventQuery(source, this.limiter, this.names), rest];
+  }
+
   /**
    * Past transfers, built as `transfers()` builds them, over the range and
    * options `getEvents` takes; `where` and `limit` apply to the records.
    */
   async getTransfers(filter: SuiTransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
-    const { asset, account, withAssetInfo, ...rest } = filter;
-    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo, this.requestTimeout);
-    return new EventQuery(source, this.limiter, this.names).getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
+    const [query, rest] = this.transferQuery(filter);
+    return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
+  }
+
+  /**
+   * Past transfers one at a time, built as `getTransfers()` builds them;
+   * leaving the loop early fetches nothing further.
+   */
+  iterateTransfers(filter: SuiTransferFilter = {}): AsyncGenerator<StreamdEvent<Transfer>, void, unknown> {
+    const [query, rest] = this.transferQuery(filter);
+    return query.iterateEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
   /**
