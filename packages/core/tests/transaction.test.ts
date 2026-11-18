@@ -3,6 +3,7 @@ import {
   RequestLimiter,
   StreamdAssertionError,
   StreamdError,
+  StreamdNetworkError,
   StreamdTimeoutError,
   StreamdTransactionError,
   committedTransaction,
@@ -88,6 +89,108 @@ describe("eventsOf in core", () => {
     const err = await eventsOf(adapter, limiter, 0, ID, undefined, { timeout: 250 }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdTimeoutError);
     expect((err as StreamdTimeoutError).timeout).toBe(250);
+  });
+
+  it("retries 429 (honouring Retry-After) and 5xx (500..599) up to timeout until committed", async () => {
+    let calls = 0;
+    const found: TransactionEvents = { version: 9n, success: true, vmStatus: "success", events: [ev(A, 0, "4")] };
+    const adapter: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async getTransactionEvents() {
+        calls++;
+        if (calls === 1) throw new StreamdNetworkError("rate limited", 429, undefined, 300);
+        if (calls === 2) throw new StreamdNetworkError("internal error", 500);
+        if (calls === 3) throw new StreamdNetworkError("timeout", 599);
+        return found;
+      },
+    };
+    const started = performance.now();
+    const events = await eventsOf(adapter, limiter, 0, ID, undefined, { timeout: 2000 });
+    expect(performance.now() - started).toBeGreaterThanOrEqual(450);
+    expect(calls).toBe(4);
+    expect(events).toEqual(found.events);
+  });
+
+  it("uses interval when Retry-After is smaller and clamps large Retry-After to 32-bit timer max", async () => {
+    let calls = 0;
+    const found: TransactionEvents = { version: 9n, success: true, vmStatus: "success", events: [ev(A, 0)] };
+    const adapter: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async getTransactionEvents() {
+        calls++;
+        if (calls === 1) throw new StreamdNetworkError("rate limited", 429, undefined, 20);
+        return found;
+      },
+    };
+    const started = performance.now();
+    expect(await eventsOf(adapter, limiter, 200, ID, undefined, { timeout: 1000 })).toEqual(found.events);
+    expect(performance.now() - started).toBeGreaterThanOrEqual(180);
+    expect(calls).toBe(2);
+
+    const delays: number[] = [];
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((fn: Parameters<typeof realSetTimeout>[0], delay?: number, ...args: unknown[]) => {
+      if (typeof delay === "number") delays.push(delay);
+      return realSetTimeout(fn, delay, ...(args as []));
+    }) as typeof setTimeout;
+    try {
+      let limitedCalls = 0;
+      const huge: EventAdapter = {
+        fetchEvents: async () => ({ events: [], hasMore: false }),
+        async getTransactionEvents() {
+          limitedCalls++;
+          throw new StreamdNetworkError("huge retry-after", 429, undefined, 3_000_000_000);
+        },
+      };
+      const err = await eventsOf(huge, limiter, 100, ID, undefined, { timeout: 60 }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdTimeoutError);
+      expect(limitedCalls).toBe(1);
+      expect(delays).toContain(2_147_483_647);
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
+  });
+
+  it("times out with the last 429 or 5xx error instead of claiming not found", async () => {
+    let calls = 0;
+    const rateLimited = new StreamdNetworkError("rate limit exceeded (429)", 429, undefined, 120_000);
+    const adapter: EventAdapter = {
+      fetchEvents: async () => ({ events: [], hasMore: false }),
+      async getTransactionEvents() {
+        calls++;
+        if (calls === 1) throw new StreamdNetworkError("temporary 503", 503);
+        throw rateLimited;
+      },
+    };
+    const err = await eventsOf(adapter, limiter, 100, ID, undefined, { timeout: 180 }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdTimeoutError);
+    expect((err as StreamdTimeoutError).timeout).toBe(180);
+    expect((err as Error).message).toContain("last error: rate limit exceeded (429)");
+    expect((err as StreamdTimeoutError).cause).toBe(rateLimited);
+  });
+
+  it("rejects non-transient lookup errors immediately without retrying", async () => {
+    for (const fatal of [
+      new StreamdNetworkError("bad request", 400),
+      new StreamdNetworkError("gone", 410),
+      new StreamdNetworkError("client closed", 499),
+      new StreamdNetworkError("upper bound", 600),
+      new StreamdNetworkError("no status", undefined),
+      new StreamdError("bad descriptor"),
+      new Error("socket error"),
+    ]) {
+      let calls = 0;
+      const adapter: EventAdapter = {
+        fetchEvents: async () => ({ events: [], hasMore: false }),
+        async getTransactionEvents() {
+          calls++;
+          throw fatal;
+        },
+      };
+      const err = await eventsOf(adapter, limiter, 0, ID, undefined, { timeout: 500 }).catch((e: unknown) => e);
+      expect(err).toBe(fatal);
+      expect(calls).toBe(1);
+    }
   });
 
   it("expectEvents asserts over the same lookup", async () => {

@@ -10,8 +10,10 @@ export interface TracedTransaction {
   transfers: readonly Transfer[];
 }
 
-/** Every transaction a node sent or received over the trace's range. */
-export type TraceReader = (address: string) => Promise<readonly TracedTransaction[]>;
+/** Every transaction a node sent or received over the trace's range, all at once or page by page. */
+export type TraceReader = (
+  address: string,
+) => Promise<readonly TracedTransaction[]> | AsyncIterable<readonly TracedTransaction[]>;
 
 export interface WalkOptions {
   hops: number;
@@ -25,7 +27,9 @@ export interface WalkOptions {
 }
 
 /** Thrown by `countedAdapter` once the budget is spent; a caller's limit, so never retried. */
-export class TraceBudgetError extends StreamdError {}
+export class TraceBudgetError extends StreamdError {
+  readonly aborted = false;
+}
 
 // What a node read can call: the methods activitySource passes on, and the head read.
 const METHODS = ["fetchEvents", "getHeadVersion", "getEarliestVersion", "getBlock", "getBlockHeights", "view"] as const;
@@ -59,68 +63,97 @@ export function countedAdapter(
   return { adapter: counted, requests: () => requests, refused: () => refused };
 }
 
+interface WalkState {
+  nodes: Map<string, TraceNode>;
+  edges: Map<string, TraceEdge>;
+  // Per transfer key, how many of it the graph holds: a node sees every transfer
+  // it took part in, so the most any one node saw in a transaction is the count.
+  counted: Map<string, number>;
+  queue: string[];
+}
+
+async function* readBatches(
+  read: TraceReader,
+  address: string,
+): AsyncGenerator<readonly TracedTransaction[], void, unknown> {
+  const result = read(address);
+  if (Symbol.asyncIterator in result) yield* result;
+  else yield await result;
+}
+
+function foldBatch(
+  node: TraceNode,
+  history: readonly TracedTransaction[],
+  options: WalkOptions,
+  state: WalkState,
+): "nodes" | "target" | undefined {
+  for (const { version, transfers } of history) {
+    const inTransaction = new Map<string, number>();
+    for (const transfer of transfers) {
+      const { from, to, asset, amount } = transfer;
+      if (from === undefined || to === undefined || from === to || amount < options.minAmount) continue;
+      if (from !== node.address && to !== node.address) continue;
+      if (options.asset !== undefined && assetKey(asset) !== options.asset) continue;
+      const outward = from === node.address;
+      if (options.direction === (outward ? "in" : "out")) continue;
+      const key = `${version}|${from}|${to}|${asset}|${amount}`;
+      const n = (inTransaction.get(key) ?? 0) + 1;
+      inTransaction.set(key, n);
+      if (n <= (state.counted.get(key) ?? 0)) continue;
+      const other = outward ? to : from;
+      if (!state.nodes.has(other)) {
+        if (state.nodes.size >= options.maxNodes) return "nodes";
+        state.nodes.set(other, { address: other, hop: node.hop + 1, expanded: false });
+        state.queue.push(other);
+      }
+      state.counted.set(key, n);
+      addEdge(state.edges, from, to, asset, amount, version);
+      if (other === options.target) return "target";
+    }
+  }
+  return undefined;
+}
+
 /**
  * Breadth first from `root`: each node within `hops` is read once, and every
- * transfer it took part in, in the directions followed, adds to the edge of
- * its `(from, to, asset)` and brings in the counterparty. A transfer read from
- * both of its ends counts once.
+ * transfer it took part in, in the directions followed, folds page by page
+ * into the edge of its `(from, to, asset)` and brings in the counterparty. A
+ * transfer read from both of its ends counts once.
  */
 export async function walkTransfers(
   read: TraceReader,
   root: string,
   options: WalkOptions,
 ): Promise<Omit<FundFlowGraph, "requests">> {
-  const nodes = new Map<string, TraceNode>([[root, { address: root, hop: 0, expanded: false }]]);
-  const edges = new Map<string, TraceEdge>();
-  // Per transfer key, how many of it the graph holds: a node sees every transfer
-  // it took part in, so the most any one node saw in a transaction is the count.
-  const counted = new Map<string, number>();
+  const state: WalkState = {
+    nodes: new Map([[root, { address: root, hop: 0, expanded: false }]]),
+    edges: new Map(),
+    counted: new Map(),
+    queue: [root],
+  };
   let stoppedBy: FundFlowGraph["stoppedBy"];
   const graph = () => ({
     root,
-    nodes: [...nodes.values()],
-    edges: [...edges.values()],
+    nodes: [...state.nodes.values()],
+    edges: [...state.edges.values()],
     ...(stoppedBy !== undefined && { stoppedBy }),
   });
   if (root === options.target) return (stoppedBy = "target"), graph();
 
-  const queue = [root];
-  for (let i = 0; i < queue.length; i++) {
-    const node = nodes.get(queue[i]!)!;
+  for (let i = 0; i < state.queue.length; i++) {
+    const node = state.nodes.get(state.queue[i]!)!;
     if (node.hop >= options.hops || options.stop.has(node.address)) continue;
-    let history: readonly TracedTransaction[];
     try {
-      history = await read(node.address);
+      for await (const history of readBatches(read, node.address)) {
+        const stop = foldBatch(node, history, options, state);
+        if (stop !== undefined) return (node.expanded = true), (stoppedBy = stop), graph();
+      }
     } catch (err) {
       if (!(err instanceof TraceBudgetError)) throw err;
       stoppedBy = "requests";
       break;
     }
     node.expanded = true;
-    for (const { version, transfers } of history) {
-      const inTransaction = new Map<string, number>();
-      for (const transfer of transfers) {
-        const { from, to, asset, amount } = transfer;
-        if (from === undefined || to === undefined || from === to || amount < options.minAmount) continue;
-        if (from !== node.address && to !== node.address) continue;
-        if (options.asset !== undefined && assetKey(asset) !== options.asset) continue;
-        const outward = from === node.address;
-        if (options.direction === (outward ? "in" : "out")) continue;
-        const key = `${version}|${from}|${to}|${asset}|${amount}`;
-        const n = (inTransaction.get(key) ?? 0) + 1;
-        inTransaction.set(key, n);
-        if (n <= (counted.get(key) ?? 0)) continue;
-        const other = outward ? to : from;
-        if (!nodes.has(other)) {
-          if (nodes.size >= options.maxNodes) return (stoppedBy = "nodes"), graph();
-          nodes.set(other, { address: other, hop: node.hop + 1, expanded: false });
-          queue.push(other);
-        }
-        counted.set(key, n);
-        addEdge(edges, from, to, asset, amount, version);
-        if (other === options.target) return (stoppedBy = "target"), graph();
-      }
-    }
   }
   return graph();
 }
@@ -245,16 +278,18 @@ export async function trace(
   // nodes are read one at a time, as one getActivity reads its pages.
   let node = address;
   const source = activitySource(counted.adapter, () => Promise.resolve(node), false, requestTimeout);
-  const read: TraceReader = async (next) => {
+  const read: TraceReader = async function* (next) {
     node = next;
-    const records = await new EventQuery(source, limiter).getEvents<Activity>(activityDescriptor(node), {
+    for await (const page of new EventQuery(source, limiter).getEventPages<Activity>(activityDescriptor(node), {
       ...(fromVersion !== undefined && { fromVersion }),
       toVersion,
       ...(retries !== undefined && { retries }),
       ...(signal !== undefined && { signal }),
-    });
+    })) {
+      if (counted.refused()) throw new TraceBudgetError(`trace spent its maxRequests of ${walk.maxRequests}`);
+      yield page.map(({ version, data }) => ({ version, transfers: data.transfers }));
+    }
     if (counted.refused()) throw new TraceBudgetError(`trace spent its maxRequests of ${walk.maxRequests}`);
-    return records.map(({ version, data }) => ({ version, transfers: data.transfers }));
   };
   const graph = await walkTransfers(read, address, walk);
   return { ...graph, requests: counted.requests() };

@@ -79,6 +79,8 @@ interface Walk {
   events: StreamdEvent[];
   pages: number;
   covered: bigint;
+  ended: boolean;
+  through: bigint | undefined;
   error?: string;
 }
 
@@ -161,7 +163,7 @@ async function walk(adapter: EventAdapter, descriptor: EventDescriptor, s: Setti
     if (valid.nextCursor === undefined || valid.nextCursor === cursor) break;
     cursor = valid.nextCursor;
   }
-  return { events, pages, covered: covered(events, through, ended, s), error };
+  return { events, pages, covered: covered(events, through, ended, s), ended, through, error };
 }
 
 /** Deep equality over JSON-like values. */
@@ -239,7 +241,12 @@ export async function compareAdapters(
   requireAdapter(b, "compareAdapters");
   const s = settings(range);
   const [wa, wb] = await Promise.all([walk(a, descriptor, s), walk(b, descriptor, s)]);
-  const end = wa.covered < wb.covered ? wa.covered : wb.covered;
+  const highest = wa.covered > wb.covered ? wa.covered : wb.covered;
+  // Without `throughVersion`, an ended walk with fewer tail events extends to
+  // the compared end so missing tail events are flagged rather than excluded.
+  const bound = (w: Walk) =>
+    w.ended && w.through === undefined && w.covered >= s.fromVersion ? highest : w.covered;
+  const end = bound(wa) < bound(wb) ? bound(wa) : bound(wb);
   const report: AdapterComparison = {
     ok: false,
     coverage: { a: wa.covered, b: wb.covered },

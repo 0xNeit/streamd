@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { MemoryAdapter, StreamdClient, eventId } from "@streamd/core";
-import type { EventCallback, EventDescriptor, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
+import type { EventAdapter, EventCallback, EventDescriptor, FetchOptions, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
 import { SqliteEventStore, StoreAdapter, storeEvents, storeTransfers } from "../src/index.js";
 import type { TransferClient } from "../src/index.js";
 
@@ -158,6 +158,81 @@ describe("storeEvents", () => {
     sub.unsubscribe();
     restarted.destroy();
     expect(await stored(db)).toEqual(history(6).map(eventId));
+  });
+
+  it("saves the cursor on unsubscribe during a sparse backfill and resumes without restarting at 0", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    let pageCount = 0;
+    const cursorsSeen: (string | undefined)[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: async (_d, o: FetchOptions) => {
+        cursorsSeen.push(o.cursor);
+        pageCount++;
+        if (pageCount <= 4) {
+          return {
+            events: [],
+            nextCursor: String(pageCount * 10),
+            hasMore: true,
+            throughVersion: BigInt(pageCount * 10),
+          };
+        }
+        return new Promise(() => {});
+      },
+    };
+    const first = new StreamdClient({ adapter });
+    const sub = storeEvents(first, store, swaps, { name: "swaps", fromVersion: 0n, pollInterval: 5 });
+    for (let i = 0; i < 200 && pageCount < 5; i++) await new Promise((r) => setTimeout(r, 2));
+    sub.unsubscribe();
+    first.destroy();
+    expect(store.readCursor("swaps")).toBe("40");
+
+    const resumedCursors: (string | undefined)[] = [];
+    const second = new StreamdClient({
+      adapter: {
+        fetchEvents: async (_d, o: FetchOptions) => {
+          resumedCursors.push(o.cursor);
+          return { events: [], nextCursor: "50", hasMore: false };
+        },
+      },
+    });
+    const sub2 = await caughtUp((onCaughtUp) => storeEvents(second, store, swaps, { name: "swaps", fromVersion: 0n, onCaughtUp }));
+    sub2.unsubscribe();
+    second.destroy();
+    expect(cursorsSeen[0]).toBeUndefined();
+    expect(resumedCursors[0]).toBe("40");
+  });
+
+  describe("periodic empty-page checkpoints", () => {
+    const realImmediate = globalThis.setImmediate;
+    const flush = () => new Promise<void>((r) => realImmediate(r));
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("saves the cursor every 5s while scanning empty pages before catch-up or stop", async () => {
+      const db = new Database(":memory:");
+      const store = new SqliteEventStore(db);
+      let fetches = 0;
+      const adapter: EventAdapter = {
+        fetchEvents: async () => {
+          fetches++;
+          if (fetches === 1) return { events: [], nextCursor: "100", hasMore: true, throughVersion: 100n };
+          return new Promise(() => {});
+        },
+      };
+      const client = new StreamdClient({ adapter });
+      const sub = storeEvents(client, store, swaps, { name: "swaps", fromVersion: 0n, pollInterval: 100 });
+      await flush();
+      vi.advanceTimersByTime(0);
+      await flush();
+      expect(fetches).toBeGreaterThanOrEqual(1);
+      expect(store.readCursor("swaps")).toBeUndefined();
+
+      vi.advanceTimersByTime(5_000);
+      expect(store.readCursor("swaps")).toBe("100");
+      sub.unsubscribe();
+      client.destroy();
+    });
   });
 });
 

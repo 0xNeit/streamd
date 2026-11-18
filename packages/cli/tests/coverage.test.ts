@@ -142,12 +142,16 @@ describe("runCoverage", () => {
     return dir;
   }
 
-  function fakeLocalnet(options: { structs?: { name: string; is_event: boolean }[]; events?: StreamdEvent[] | Error; publish?: () => Promise<unknown> } = {}) {
-    const calls = { published: [] as unknown[], queried: [] as unknown[], stopped: 0 };
+  function fakeLocalnet(options: { structs?: { name: string; is_event: boolean }[]; events?: StreamdEvent[] | Error; publish?: () => Promise<unknown>; fundedAccount?: () => Promise<unknown> } = {}) {
+    const calls = { funded: 0, published: [] as unknown[], queried: [] as unknown[], stopped: 0 };
     const localnet = {
       nodeUrl: "http://127.0.0.1:9/v1",
       faucetUrl: "http://127.0.0.1:10",
-      fundedAccount: async () => PUBLISHER,
+      fundedAccount: async () => {
+        calls.funded++;
+        if (options.fundedAccount !== undefined) await options.fundedAccount();
+        return PUBLISHER;
+      },
       publish: async (dir: string, opts: unknown) => {
         calls.published.push([dir, opts]);
         if (options.publish !== undefined) return options.publish();
@@ -194,7 +198,9 @@ describe("runCoverage", () => {
       STREAMD_PACKAGE_ADDRESS: LONG,
       STREAMD_PUBLISHER_KEY: (PUBLISHER as Ed25519Account).privateKey.toString(),
     }]]);
-    expect(calls.queried).toEqual([[{ kind: "module", eventType: [`${LONG}::m::Bumped`, `${LONG}::m::Never`] }, { fromVersion: 7n, toVersion: "head" }]]);
+    expect(calls.queried).toEqual([
+      [{ kind: "module", eventType: [`${LONG}::m::Bumped`, `${LONG}::m::Never`] }, { fromVersion: 7n, toVersion: "head", signal: coverageIO.signal }],
+    ]);
     expect(out.lines.map((line) => JSON.parse(line).event)).toEqual([`${LONG}::m::Bumped`, `${LONG}::m::Never`]);
     expect(JSON.parse(out.lines[0]!).first.function).toBe(`${LONG}::m::bump`);
     expect(out.errors).toEqual(["streamd: 1 of 2 event structs emitted"]);
@@ -275,25 +281,105 @@ describe("runCoverage", () => {
     expect(calls.stopped).toBe(1);
   });
 
-  it("does not start the command when interrupted before it", async () => {
-    const dir = await packageDir();
-    const { localnet, calls } = fakeLocalnet();
-    const { coverageIO, out } = io(localnet, 0, AbortSignal.abort());
+  async function checkInterrupted(
+    dir: string,
+    build: (controller: AbortController) => {
+      start: Localnet | (() => Promise<Localnet>);
+      calls?: { funded: number; published: unknown[]; queried: unknown[]; stopped: number };
+      wire?: (coverageIO: CoverageIO, out: { lines: string[]; errors: string[]; runs: unknown[] }) => void;
+    },
+  ) {
+    const controller = new AbortController();
+    const { start, calls, wire } = build(controller);
+    const { coverageIO, out } = io(start, 0, controller.signal);
+    wire?.(coverageIO, out);
     expect(await runCoverage({ packageDir: dir, command: ["true"], format: "json" }, coverageIO)).toBe(130);
-    expect(out.runs).toEqual([]);
-    expect(calls.stopped).toBe(1);
+    expect(out.errors).toEqual(["streamd: interrupted; no coverage report"]);
+    if (calls !== undefined) expect(calls.stopped).toBe(1);
+    return { calls, out };
+  }
+
+  it("does not start the command when interrupted during startup, funding, or publish", async () => {
+    const dir = await packageDir();
+    try {
+      let started = false;
+      const pre = await checkInterrupted(dir, (c) => (c.abort(), { start: async () => ((started = true), fakeLocalnet().localnet) }));
+      expect(started).toBe(false);
+      expect(pre.out.runs).toEqual([]);
+
+      const onStart = fakeLocalnet();
+      const s = await checkInterrupted(dir, (c) => ({ start: async () => (c.abort(), onStart.localnet), calls: onStart.calls }));
+      expect([onStart.calls.funded, onStart.calls.published, s.out.runs]).toEqual([0, [], []]);
+
+      const f = await checkInterrupted(dir, (c) => {
+        const x = fakeLocalnet({ fundedAccount: async () => void c.abort() });
+        return { start: x.localnet, calls: x.calls };
+      });
+      expect([f.calls!.funded, f.calls!.published, f.out.runs]).toEqual([1, [], []]);
+
+      const p = await checkInterrupted(dir, (c) => {
+        const x = fakeLocalnet({ publish: async () => (c.abort(), { transactionHash: "0xp", version: 7n }) });
+        return { start: x.localnet, calls: x.calls };
+      });
+      expect([p.calls!.published.length, p.out.runs]).toEqual([1, []]);
+    } finally {
+      await rm(dir, { recursive: true });
+    }
   });
 
   it("reports an interrupt, not the failure it caused, during startup or publish", async () => {
     const dir = await packageDir();
-    const startFails = io(() => Promise.reject(new Error("The localnet exited before it was ready")), 0, AbortSignal.abort());
-    expect(await runCoverage({ packageDir: dir, command: ["true"], format: "json" }, startFails.coverageIO)).toBe(130);
-    expect(startFails.out.errors).toEqual(["streamd: interrupted; no coverage report"]);
-    const { localnet, calls } = fakeLocalnet({ publish: () => Promise.reject(new Error("Compiling failed")) });
-    const publishFails = io(localnet, 0, AbortSignal.abort());
-    expect(await runCoverage({ packageDir: dir, command: ["true"], format: "json" }, publishFails.coverageIO)).toBe(130);
-    expect(publishFails.out.errors).toEqual(["streamd: interrupted; no coverage report"]);
-    expect(calls.stopped).toBe(1);
+    try {
+      await checkInterrupted(dir, (c) => ({
+        start: () => (c.abort(), Promise.reject(new Error("The localnet exited before it was ready"))),
+      }));
+      await checkInterrupted(dir, (c) => {
+        const x = fakeLocalnet({ publish: () => (c.abort(), Promise.reject(new Error("Compiling failed"))) });
+        return { start: x.localnet, calls: x.calls };
+      });
+    } finally {
+      await rm(dir, { recursive: true });
+    }
+  });
+
+  it("prints no report and exits 130 when interrupted during reporting or writes", async () => {
+    const dir = await packageDir();
+    try {
+      const m = await checkInterrupted(dir, (c) => {
+        const x = fakeLocalnet();
+        const orig = x.localnet.aptos.getAccountModules;
+        x.localnet.aptos.getAccountModules = (async (...a: Parameters<typeof orig>) => (c.abort(), orig(...a))) as typeof orig;
+        return { start: x.localnet, calls: x.calls };
+      });
+      expect([m.calls!.queried, m.out.lines]).toEqual([[], []]);
+
+      const e = await checkInterrupted(dir, (c) => {
+        const x = fakeLocalnet();
+        const orig = x.localnet.client.getEvents;
+        x.localnet.client.getEvents = (async (...a: Parameters<typeof orig>) => (c.abort(), orig(...a))) as typeof orig;
+        return { start: x.localnet, calls: x.calls };
+      });
+      expect([e.calls!.queried.length, e.out.lines]).toEqual([1, []]);
+
+      for (const stopAfter of [1, 2]) {
+        const w = await checkInterrupted(dir, (c) => {
+          const x = fakeLocalnet();
+          return {
+            start: x.localnet,
+            calls: x.calls,
+            wire: (coverageIO, out) => {
+              coverageIO.write = (line) => {
+                out.lines.push(line);
+                if (out.lines.length === stopAfter) c.abort();
+              };
+            },
+          };
+        });
+        expect(w.out.lines).toHaveLength(stopAfter);
+      }
+    } finally {
+      await rm(dir, { recursive: true });
+    }
   });
 
   it("exits 1 when the localnet does not start", async () => {

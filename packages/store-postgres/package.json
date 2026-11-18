@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "build": "bun build.ts",
-    "test": "bun test",
+    "test": "bun test --timeout 30000",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

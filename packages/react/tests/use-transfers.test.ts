@@ -85,4 +85,17 @@ describe("useTransfers", () => {
     await new Promise((r) => setTimeout(r, 30));
     expect(t.last().events).toHaveLength(seen);
   });
+
+  it("reports synchronous setup errors in state instead of crashing", async () => {
+    const t = setup();
+    const errors: Error[] = [];
+    const root = await render(
+      t.el({ ...FAST, account: "not-an-address", onError: (err) => errors.push(err) }),
+    );
+    await waitFor(() => expect(t.last().status).toBe("stopped"));
+    expect(t.last().error).toBeInstanceOf(Error);
+    expect(t.last().events).toEqual([]);
+    expect(errors).toHaveLength(1);
+    await unmount(root);
+  });
 });

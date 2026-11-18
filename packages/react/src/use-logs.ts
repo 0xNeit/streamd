@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { EventDescriptor, EventFilter, EventOf, StreamdClient } from "@streamd/core";
+import type { EventDescriptor, EventFilter, StreamdClient, StreamdEvent } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
 import { toError, valueKey, withLatestFunctions } from "./key.js";
 
@@ -9,9 +9,9 @@ export interface UseLogsOptions extends Omit<EventFilter, "signal"> {
   client?: StreamdClient;
 }
 
-export interface UseLogsResult<TData> {
+export interface UseLogsResult<TData, TEvent = StreamdEvent<TData>> {
   /** The last successful result; kept through later refetches and errors. */
-  data: EventOf<TData>[] | undefined;
+  data: TEvent[] | undefined;
   /** The last request's failure, cleared by the next success. */
   error: Error | undefined;
   /** True while a request is in flight. */
@@ -24,7 +24,7 @@ export interface UseLogsResult<TData> {
   refetch: () => Promise<void>;
 }
 
-type LogsState<TData> = Omit<UseLogsResult<TData>, "refetch">;
+type LogsState<TData, TEvent = StreamdEvent<TData>> = Omit<UseLogsResult<TData, TEvent>, "refetch">;
 
 /**
  * `client.getEvents(descriptor, options)` for a component: runs after mount,
@@ -32,17 +32,17 @@ type LogsState<TData> = Omit<UseLogsResult<TData>, "refetch">;
  * called, aborting the request it replaces. A `null` or `undefined` descriptor
  * fetches nothing.
  */
-export function useLogs<TData = unknown>(
-  descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[] | null | undefined,
+export function useLogs<TData = unknown, TEvent = StreamdEvent<TData>>(
+  descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[] | null | undefined,
   options: UseLogsOptions = {},
-): UseLogsResult<TData> {
+): UseLogsResult<TData, TEvent> {
   const { client: explicit, ...filter } = options;
   const client = useStreamdClient(explicit);
   const latest = useRef(filter);
   latest.current = filter;
   const start = useRef<(() => Promise<void>) | undefined>(undefined);
   const key = valueKey([descriptor, filter]);
-  const [state, setState] = useState<LogsState<TData>>({
+  const [state, setState] = useState<LogsState<TData, TEvent>>({
     data: undefined,
     error: undefined,
     loading: descriptor != null,
@@ -59,7 +59,7 @@ export function useLogs<TData = unknown>(
       const current = (controller = new AbortController());
       setState((s) => (s.loading ? s : { ...s, loading: true }));
       const live = { ...withLatestFunctions(filter, () => latest.current), signal: current.signal };
-      return client.getEvents<TData>(descriptor, live).then(
+      return client.getEvents<TData, TEvent>(descriptor, live).then(
         (data) => {
           if (!current.signal.aborted) setState({ data, error: undefined, loading: false });
         },

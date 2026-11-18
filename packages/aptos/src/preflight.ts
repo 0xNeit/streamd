@@ -245,7 +245,11 @@ async function checkCreationNumber(
 /**
  * Whether a descriptor names something on chain that can deliver: each struct
  * of a `module` descriptor, a `handle`'s `EventHandle`, or a `resource`'s type.
- * Only the outer struct of a generic type is checked, not its type arguments.
+ * Only the outer struct of a generic type is checked (not its `<...>` arity
+ * against `generic_type_params` or its type arguments), and the module is
+ * fetched at the normalized address, whereas `FullnodeScanAdapter` module
+ * scans match `event.type` without normalizing addresses and require an
+ * exact string match when `<...>` is written.
  * `account` descriptors are refused: there is nothing to check but the address.
  */
 export async function checkDescriptor(

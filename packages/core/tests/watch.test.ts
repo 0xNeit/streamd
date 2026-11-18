@@ -159,6 +159,57 @@ describe("watch", () => {
     client.destroy();
   });
 
+  it("rejects caughtUp and skips onCaughtUp when every initial address gives up or is removed", async () => {
+    const failing = setup([ev(1, A)], [A]);
+    const onFailingCaughtUp = vi.fn();
+    const wFail = failing.watch([A], {
+      onCaughtUp: onFailingCaughtUp,
+      maxErrors: 1,
+      pollInterval: 10,
+      maxBackoff: 10,
+    });
+    const failErr = wFail.caughtUp.catch((e: unknown) => e);
+    await advanceTimersByTimeAsync(50);
+    expect(await failErr).toBeInstanceOf(StreamdError);
+    expect((await failErr as Error).message).toBe("Watch ended before catching up");
+    expect(onFailingCaughtUp).not.toHaveBeenCalled();
+    failing.client.destroy();
+
+    const removed = setup([ev(1, A)]);
+    const onRemovedCaughtUp = vi.fn();
+    const wRemove = removed.watch([A], { onCaughtUp: onRemovedCaughtUp, pollInterval: 10 });
+    const removeErr = wRemove.caughtUp.catch((e: unknown) => e);
+    expect(wRemove.remove(A)).toBe(true);
+    expect(await removeErr).toBeInstanceOf(StreamdError);
+    expect((await removeErr as Error).message).toBe("Watch ended before catching up");
+    expect(onRemovedCaughtUp).not.toHaveBeenCalled();
+    removed.client.destroy();
+  });
+
+  it("resolves caughtUp when one initial address catches up and another gives up or is removed", async () => {
+    const partialFail = setup([ev(1, A)], [B]);
+    const onPartialFail = vi.fn();
+    const wPartial = partialFail.watch([A, B], {
+      onCaughtUp: onPartialFail,
+      maxErrors: 1,
+      pollInterval: 10,
+      maxBackoff: 10,
+    });
+    await advanceTimersByTimeAsync(50);
+    await expect(wPartial.caughtUp).resolves.toBeUndefined();
+    expect(onPartialFail).toHaveBeenCalledTimes(1);
+    partialFail.client.destroy();
+
+    const partialRemove = setup([ev(1, A), ev(2, B)]);
+    const onPartialRemove = vi.fn();
+    const wRem = partialRemove.watch([A, B], { onCaughtUp: onPartialRemove, pollInterval: 10 });
+    expect(wRem.remove(B)).toBe(true);
+    await advanceTimersByTimeAsync(20);
+    await expect(wRem.caughtUp).resolves.toBeUndefined();
+    expect(onPartialRemove).toHaveBeenCalledTimes(1);
+    partialRemove.client.destroy();
+  });
+
   it("reports a throwing callback and carries on", async () => {
     const client = new StreamdClient({ adapter: bySender([ev(1, A), ev(2, A)]) });
     const errors: Error[] = [];

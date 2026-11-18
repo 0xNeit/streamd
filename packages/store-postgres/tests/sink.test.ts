@@ -1,7 +1,7 @@
-import { PGlite } from "@electric-sql/pglite";
+import { PGlite } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
 import { MemoryAdapter, StreamdClient, eventId } from "@streamd/core";
-import type { EventCallback, EventDescriptor, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
+import type { EventAdapter, EventCallback, EventDescriptor, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
 import { PostgresEventStore, PostgresStoreAdapter, storeEvents, storeTransfers } from "../src/index.js";
 import type { TransferClient } from "../src/index.js";
 
@@ -168,6 +168,46 @@ describe("storeEvents", () => {
     sub.unsubscribe();
     restarted.destroy();
     expect(await stored(db)).toEqual(history(6).map(eventId));
+  });
+
+  it("saves the cursor on clean close during a sparse backfill and resumes past empty pages", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    let pageCount = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: async () => {
+        pageCount++;
+        if (pageCount <= 4) {
+          return {
+            events: [],
+            nextCursor: String(pageCount * 10),
+            hasMore: true,
+            throughVersion: BigInt(pageCount * 10),
+          };
+        }
+        return new Promise(() => {});
+      },
+    };
+    const first = new StreamdClient({ adapter });
+    const sub = await storeEvents(first, store, swaps, { name: "swaps", fromVersion: 0n, pollInterval: 5 });
+    for (let i = 0; i < 200 && pageCount < 5; i++) await new Promise((r) => setTimeout(r, 2));
+    await (sub as unknown as { [Symbol.asyncDispose]: () => Promise<void> })[Symbol.asyncDispose]();
+    first.destroy();
+    expect(await store.readCursor("swaps")).toBe("40");
+
+    const resumedCursors: (string | undefined)[] = [];
+    const second = new StreamdClient({
+      adapter: {
+        fetchEvents: async (_d, o) => {
+          resumedCursors.push(o.cursor);
+          return { events: [], nextCursor: "50", hasMore: false };
+        },
+      },
+    });
+    const sub2 = await caughtUp((onCaughtUp) => storeEvents(second, store, swaps, { name: "swaps", fromVersion: 0n, onCaughtUp }));
+    sub2.unsubscribe();
+    second.destroy();
+    expect(resumedCursors[0]).toBe("40");
   });
 
   it("stores an event holding a NUL character and carries on", async () => {

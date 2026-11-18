@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { request as httpRequest } from "node:http";
 import { MemoryAdapter, StreamdNetworkError } from "@streamd/core";
 import type { EventAdapter } from "@streamd/core";
 import { runMonitor, serveMetrics } from "../src/monitor.js";
@@ -205,6 +206,31 @@ describe("runMonitor disagreement", () => {
     expect(lines[0]!.nodes[1].window).toMatchObject({ requests: 2, errors: 1, disagreements: 0 });
     expect(lines[0]!.nodes[0].window).toMatchObject({ requests: 2, errors: 0 });
   });
+
+  it("reads node 0 once per shared compare page across all other nodes in a round", async () => {
+    let fetches = 0;
+    const base = memory(30n, all);
+    const shared: EventAdapter = {
+      fetchEvents: (d, o) => (fetches++, base.fetchEvents(d, o)),
+      getHeadVersion: () => base.getHeadVersion!(OPTIONS.descriptor),
+    };
+    const { lines } = await run([shared, memory(30n, all), memory(30n, all)], { limit: 2, range: 10 });
+    expect(fetches).toBe(2);
+    expect(lines[1]!.nodes[0].window.requests).toBe(4);
+    expect(lines[1]!.nodes[1].compare.matched).toBe(10);
+    expect(lines[1]!.nodes[2].compare.matched).toBe(10);
+
+    let failFetches = 0;
+    const failingBase: EventAdapter = {
+      fetchEvents: async () => (failFetches++, Promise.reject(new StreamdNetworkError("node 0 down", 500))),
+      getHeadVersion: async () => 30n,
+    };
+    const failed = await run([failingBase, memory(30n, all), memory(30n, all)], { limit: 1, range: 10 });
+    expect(failFetches).toBe(1);
+    expect(failed.lines[0]!.nodes[0].window).toMatchObject({ requests: 2, errors: 1 });
+    expect(failed.lines[0]!.nodes[1].compare.window).toBeNull();
+    expect(failed.lines[0]!.nodes[2].compare.window).toBeNull();
+  });
 });
 
 describe("runMonitor prometheus", () => {
@@ -277,6 +303,16 @@ describe("serveMetrics", () => {
       latest = 'streamd_monitor_up{node="0"} 1\n';
       expect(await (await fetch(`${url}/metrics?x=1`)).text()).toBe(latest);
       expect((await fetch(`${url}/`)).status).toBe(404);
+      const malformed = await new Promise<number>((resolve, reject) => {
+        const req = httpRequest({ host: "127.0.0.1", port, path: "//a:b", method: "GET" }, (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+        });
+        req.on("error", reject);
+        req.end();
+      });
+      expect(malformed).toBe(404);
+      expect((await fetch(`${url}/metrics`)).status).toBe(200);
     } finally {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

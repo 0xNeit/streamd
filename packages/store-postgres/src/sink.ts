@@ -25,6 +25,9 @@ export interface TransferClient<O extends SubscriptionOptions = SubscriptionOpti
 export type StoreTransfersOptions<O extends SubscriptionOptions = SubscriptionOptions> = O & { name: string };
 
 const SAVE_RETRY_MS = 10;
+const CURSOR_SAVE_INTERVAL_MS = 5_000;
+const DISPOSE: typeof Symbol.dispose = (Symbol.dispose ?? Symbol.for("Symbol.dispose")) as typeof Symbol.dispose;
+const ASYNC_DISPOSE: typeof Symbol.asyncDispose = (Symbol.asyncDispose ?? Symbol.for("Symbol.asyncDispose")) as typeof Symbol.asyncDispose;
 
 // Transfer cursors are saved apart from event cursors of the same name.
 const TRANSFER_CURSOR_PREFIX = "transfers:";
@@ -133,13 +136,34 @@ async function sink(
       });
     }
   };
+  let lastSaved = cursor;
   let saving = false;
+  let failed = false;
+  let stopped = false;
+  let inflight: Promise<void> = Promise.resolve();
+  const saveCursor = (target: string | undefined): Promise<void> => {
+    if (failed || stopped || target === undefined || target === lastSaved) return inflight;
+    const next = inflight.then(async () => {
+      if (failed || stopped || target === lastSaved) return;
+      try {
+        await store.write([], { name, cursor: target });
+        lastSaved = target;
+      } catch {
+        // The cursor saved with the batch stands; resuming there only redelivers it.
+      }
+    });
+    inflight = next;
+    return next;
+  };
   const subscription: Subscription = subscribe(
     async (events) => {
       const before = subscription.cursor;
       try {
         await write(events, { name, cursor: before });
+        if (before !== undefined) lastSaved = before;
       } catch (err) {
+        failed = true;
+        clearInterval(timer);
         // Pausing stops the cursor moving past this batch and still lets the
         // rejection reach onError, which an ended subscription would drop. It
         // then ends, because a resumed one would skip the batch it has marked
@@ -156,13 +180,16 @@ async function sink(
       if (saving) return;
       saving = true;
       const save = () => {
+        if (stopped || failed) {
+          saving = false;
+          return;
+        }
         if (subscription.active && subscription.cursor === before) {
           setTimeout(save, SAVE_RETRY_MS);
           return;
         }
         saving = false;
-        // The cursor saved with the batch stands; resuming there only redelivers it.
-        store.write([], { name, cursor: subscription.cursor }).catch(() => {});
+        void saveCursor(subscription.cursor);
       };
       setTimeout(save, 0);
     },
@@ -172,18 +199,67 @@ async function sink(
       onCaughtUp: () => {
         // Every page so far is stored, so the live cursor is safe to save. A
         // failed save reaches onError, and onCaughtUp is still called.
-        void store
-          .write([], { name, cursor: subscription.cursor })
-          .catch((err: unknown) => report(new StreamdError("Saving the cursor on catching up failed", err)))
-          .then(() => {
-            try {
-              listener.onCaughtUp?.();
-            } catch (err) {
-              report(new StreamdError("onCaughtUp threw", err));
-            }
-          });
+        const cur = subscription.cursor;
+        const writeCatchUp = inflight.then(async () => {
+          if (failed || cur === undefined) return;
+          try {
+            await store.write([], { name, cursor: cur });
+            lastSaved = cur;
+          } catch (err: unknown) {
+            report(new StreamdError("Saving the cursor on catching up failed", err));
+          }
+        });
+        inflight = writeCatchUp;
+        void writeCatchUp.then(() => {
+          try {
+            listener.onCaughtUp?.();
+          } catch (err) {
+            report(new StreamdError("onCaughtUp threw", err));
+          }
+        });
       },
     },
   );
-  return subscription;
+  const timer = setInterval(() => {
+    if (stopped || (!subscription.active && !subscription.paused)) {
+      clearInterval(timer);
+      return;
+    }
+    if (!failed && !saving && subscription.active) void saveCursor(subscription.cursor);
+  }, CURSOR_SAVE_INTERVAL_MS);
+  timer.unref?.();
+
+  const stopOnly = () => {
+    clearInterval(timer);
+    subscription.unsubscribe();
+    void saveCursor(subscription.cursor).finally(() => {
+      stopped = true;
+    });
+  };
+  return {
+    id: subscription.id,
+    get active() {
+      return subscription.active;
+    },
+    get paused() {
+      return subscription.paused;
+    },
+    get cursor() {
+      return subscription.cursor;
+    },
+    get status() {
+      return subscription.status;
+    },
+    caughtUp: subscription.caughtUp,
+    pause: () => subscription.pause(),
+    resume: () => subscription.resume(),
+    unsubscribe: stopOnly,
+    [DISPOSE]: stopOnly,
+    [ASYNC_DISPOSE]: async () => {
+      clearInterval(timer);
+      await subscription[ASYNC_DISPOSE]();
+      await saveCursor(subscription.cursor);
+      stopped = true;
+    },
+  };
 }

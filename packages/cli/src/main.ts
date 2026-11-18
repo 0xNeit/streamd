@@ -4,11 +4,8 @@ import { once } from "node:events";
 import { readFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { writeFile } from "node:fs/promises";
-import { Aptos, getAptosFullNode } from "@aptos-labs/ts-sdk";
+import { Aptos } from "@aptos-labs/ts-sdk";
 import { listEventHandles } from "@streamd/aptos";
-import { StreamdError } from "@streamd/core";
-import { parseModuleAbi } from "./abi.js";
-import type { ModuleAbi } from "./abi.js";
 import { parseCommand, USAGE, UsageError } from "./args.js";
 import type {
   AlertOptions,
@@ -38,7 +35,7 @@ import type { AlertRule } from "./alert-rules.js";
 import { runBalances } from "./balances.js";
 import { openCache } from "./cache.js";
 import type { PageCache } from "./cache.js";
-import { aptosConfig, chainFor, resourceReader } from "./chain.js";
+import { aptosCodegenLoader, aptosConfig, chainFor, resourceReader } from "./chain.js";
 import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
 import { generateEventTypes } from "./codegen.js";
@@ -413,46 +410,7 @@ async function write(options: CodegenOptions, source: string): Promise<number> {
 
 async function codegen(options: CodegenOptions): Promise<number> {
   if (options.chain === "sui") return write(options, await suiSource(options));
-  const config = aptosConfig(options);
-  // Both parts were validated as an address and an identifier before reaching the path.
-  const load = async (address: string, module: string): Promise<ModuleAbi> => {
-    let data: object;
-    try {
-      ({ data } = await getAptosFullNode<{}, object>({
-        aptosConfig: config,
-        originMethod: "codegen",
-        path: `accounts/${address}/module/${module}`,
-      }));
-    } catch (err) {
-      if ((err as { status?: unknown } | null)?.status === 404) {
-        throw new StreamdError(`Module ${address}::${module} not found`);
-      }
-      throw new StreamdError(`Fullnode request for module ${address}::${module} failed: ${message(err)}`);
-    }
-    return parseModuleAbi(data);
-  };
-  const list = async (address: string): Promise<ModuleAbi[]> => {
-    const abis: ModuleAbi[] = [];
-    let start: string | undefined;
-    do {
-      let response: { data: unknown[]; headers: Record<string, unknown> };
-      try {
-        response = await getAptosFullNode<{}, unknown[]>({
-          aptosConfig: config,
-          originMethod: "codegen",
-          path: `accounts/${address}/modules`,
-          params: { limit: 100, ...(start === undefined ? {} : { start }) },
-        });
-      } catch (err) {
-        throw new StreamdError(`Fullnode request for the modules of ${address} failed: ${message(err)}`);
-      }
-      if (!Array.isArray(response.data)) throw new StreamdError(`Malformed module list for ${address}`);
-      abis.push(...response.data.map(parseModuleAbi));
-      const next = response.headers["x-aptos-cursor"];
-      start = typeof next === "string" && next !== "" && next !== start ? next : undefined;
-    } while (start !== undefined);
-    return abis;
-  };
+  const { load, list } = aptosCodegenLoader(aptosConfig(options));
   return write(options, await generateEventTypes(options.modules, load, {
     list,
     validators: options.validators === true,

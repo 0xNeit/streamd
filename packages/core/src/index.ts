@@ -18,10 +18,11 @@ export { checkAdapter } from "./conformance.js";
 export { compareAdapters } from "./compare.js";
 export { defineEvent, defineEvents } from "./define.js";
 export type { TaggedEvents } from "./define.js";
-export { RequestLimiter } from "./limiter.js";
+export { RequestLimiter, markDescending, markSelfTimed, supportsDescending } from "./limiter.js";
+export { SharedFetches } from "./shared.js";
 // Building blocks the chain packages use for their own client methods.
 export { UNSIGNED_INTEGER, fieldDecoder } from "./decode.js";
-export { descriptorKey, onAbort, raceAbort, sleep } from "./utils.js";
+export { descriptorKey, onAbort, raceAbort, resolveFromVersion, sleep } from "./utils.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
 export { STANDARD_COLUMNS, eventTableRows, requireEventTables } from "./tables.js";
 export type { EventTableRow } from "./tables.js";
@@ -32,6 +33,8 @@ export type { ReduceHost } from "./reduce.js";
 export { WEBHOOK_SIGNATURE_HEADER, verifyWebhook } from "./webhook.js";
 export { formatAmount, startBalances } from "./balances.js";
 export type { BalanceReader, BalancesHost } from "./balances.js";
+export { lazyResolve, ownedByPredicate } from "./ownership.js";
+export type { OwnedByHost } from "./ownership.js";
 export {
   committedEvents,
   committedTransaction,
@@ -181,7 +184,9 @@ export type {
   CloseOptions,
   EventOf,
   DescriptorData,
+  DescriptorEvent,
   TaggedEvent,
+  TaggedModuleEventDescriptor,
   StreamdConfig,
   StreamdEvent,
   Subscription,

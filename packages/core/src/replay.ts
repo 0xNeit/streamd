@@ -1,5 +1,4 @@
 import type {
-  EventOf,
   EventCallback,
   EventDescriptor,
   EventFilter,
@@ -16,7 +15,7 @@ import { onAbort } from "./utils.js";
 const MAX_WAIT = 2_147_483_647;
 
 /** What a replay needs from its client. */
-export type ReplayHost = Pick<ReduceHost, "query" | "defaults" | "onError" | "track">;
+export type ReplayHost = Pick<ReduceHost, "query" | "defaults" | "onError" | "track" | "trackHandler">;
 
 const QUERY_KEYS = [
   "fromVersion",
@@ -58,10 +57,10 @@ function checkOptions(options: ReplayOptions): number {
 }
 
 /** `client.replay()`: past events through an `on()` callback, in order. */
-export function startReplay<TData>(
+export function startReplay<TData, TEvent = StreamdEvent<TData>>(
   host: ReplayHost,
-  descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
-  callback: EventCallback<TData>,
+  descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
+  callback: EventCallback<TData, TEvent>,
   options: ReplayOptions = {},
 ): Replay {
   const speed = checkOptions(options);
@@ -119,8 +118,15 @@ export function startReplay<TData>(
 
   const deliver = async (event: StreamdEvent) => {
     try {
-      const result: unknown = callback(event as unknown as EventOf<TData>);
-      if (isThenable(result)) await result;
+      const result: unknown = callback(event as unknown as TEvent);
+      if (isThenable(result)) {
+        const pending = Promise.resolve(result).then(
+          () => {},
+          () => {},
+        );
+        host.trackHandler?.(pending);
+        await result;
+      }
     } catch (err) {
       if (!stopped) report(new StreamdError(`Event callback threw for ${eventId(event)}`, err));
     }
@@ -136,7 +142,11 @@ export function startReplay<TData>(
     filter.signal = controller.signal;
     const pageSize = options.batchSize ?? host.defaults.batchSize;
     try {
-      for await (const event of host.query.iterateEvents(descriptor, filter, pageSize)) {
+      for await (const event of host.query.iterateEvents(
+        descriptor as EventDescriptor | readonly EventDescriptor[],
+        filter,
+        pageSize,
+      )) {
         await pace(event);
         while (paused) await new Promise<void>((resolve) => (release = resolve));
         if (stopped) break;

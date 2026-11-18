@@ -1,24 +1,29 @@
 import { useEffect, useRef, useState } from "react";
-import { StreamdTransactionError, type EventDescriptor, type EventOf, type EventsOfOptions, type StreamdClient } from "@streamd/core";
+import { StreamdTransactionError, type EventDescriptor, type EventsOfOptions, type StreamdClient, type StreamdEvent } from "@streamd/core";
 import { useClientWith } from "./context.js";
 import { toError, valueKey, withLatestFunctions } from "./key.js";
 
 /** A client that waits for a transaction's events: an `AptosClient`, a `SuiClient`, or one shaped like them. */
 export interface TransactionEventsClient extends StreamdClient {
-  eventsOf<TData = unknown>(hash: string, descriptor?: EventDescriptor<TData>, options?: EventsOfOptions): Promise<EventOf<TData>[]>;
+  eventsOf<TData = unknown, TEvent = StreamdEvent<TData>>(
+    hash: string,
+    descriptor?: EventDescriptor<TData, TEvent>,
+    options?: EventsOfOptions,
+  ): Promise<TEvent[]>;
 }
 
 /** `eventsOf` options, minus `signal`: the hook aborts on unmount and on input change. */
-export interface UseTransactionEventsOptions<TData = unknown> extends Omit<EventsOfOptions, "signal"> {
+export interface UseTransactionEventsOptions<TData = unknown, TEvent = StreamdEvent<TData>>
+  extends Omit<EventsOfOptions, "signal"> {
   /** Keep only the events this descriptor matches. */
-  descriptor?: EventDescriptor<TData>;
+  descriptor?: EventDescriptor<TData, TEvent>;
   /** Use this client instead of the nearest `StreamdProvider`'s. */
   client?: TransactionEventsClient;
 }
 
-export interface UseTransactionEventsResult<TData> {
+export interface UseTransactionEventsResult<TData, TEvent = StreamdEvent<TData>> {
   /** The transaction's matching events, once it has committed successfully. */
-  data: EventOf<TData>[] | undefined;
+  data: TEvent[] | undefined;
   /** Why there are no events: the transaction failed, was not found in time, or a lookup failed. */
   error: Error | undefined;
   /** True while waiting for the transaction. */
@@ -32,10 +37,10 @@ export interface UseTransactionEventsResult<TData> {
  * mount, again whenever the hash or options change by value, aborting the wait
  * it replaces. A `null` or `undefined` hash waits for nothing.
  */
-export function useTransactionEvents<TData = unknown>(
+export function useTransactionEvents<TData = unknown, TEvent = StreamdEvent<TData>>(
   transactionHash: string | null | undefined,
-  options: UseTransactionEventsOptions<TData> = {},
-): UseTransactionEventsResult<TData> {
+  options: UseTransactionEventsOptions<TData, TEvent> = {},
+): UseTransactionEventsResult<TData, TEvent> {
   const { client: explicit, descriptor, ...filter } = options;
   const client = useClientWith<TransactionEventsClient>("eventsOf", explicit);
   const latest = useRef(filter);
@@ -44,17 +49,24 @@ export function useTransactionEvents<TData = unknown>(
   const [finished, setFinished] = useState<{
     key: string;
     client: TransactionEventsClient;
-    result: UseTransactionEventsResult<TData>;
+    result: UseTransactionEventsResult<TData, TEvent>;
   }>();
 
   useEffect(() => {
+    setFinished((prev) => (prev === undefined ? prev : undefined));
     if (transactionHash == null) return;
     const controller = new AbortController();
-    const finish = (result: UseTransactionEventsResult<TData>) => {
+    const finish = (result: UseTransactionEventsResult<TData, TEvent>) => {
       if (!controller.signal.aborted) setFinished({ key, client, result });
     };
     const live = { ...withLatestFunctions(filter, () => latest.current), signal: controller.signal };
-    client.eventsOf<TData>(transactionHash, descriptor, live).then(
+    let lookup: Promise<TEvent[]>;
+    try {
+      lookup = client.eventsOf<TData, TEvent>(transactionHash, descriptor, live);
+    } catch (err) {
+      lookup = Promise.reject(err);
+    }
+    lookup.then(
       (data) => finish({ data, error: undefined, loading: false, vmStatus: undefined }),
       (err: unknown) =>
         finish({

@@ -1,5 +1,4 @@
 import type {
-  EventOf,
   EventCallback,
   EventDescriptor,
   EventFilter,
@@ -31,6 +30,8 @@ export interface ReduceHost {
   head(descriptor: EventDescriptor): Promise<bigint>;
   /** Registers `stop` for `destroy()`; the returned function unregisters it. */
   track(stop: () => void): () => void;
+  /** Registers an in-flight async handler promise for `close()` to drain. */
+  trackHandler?: (work: Promise<unknown>) => void;
 }
 
 const HISTORY_KEYS = ["fromVersion", "fromBlock", "fromTime", "maxPages", "retries"] as const;
@@ -112,12 +113,12 @@ function parseFields(text: string): [string | null, string | null, number | null
 }
 
 /** `client.reduce()`: fold the history, then follow live from where it ended. */
-export function startReduction<S, TData>(
+export function startReduction<S, TData, TEvent = StreamdEvent<TData>>(
   host: ReduceHost,
-  descriptors: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
-  reducer: Reducer<S, TData>,
+  descriptors: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
+  reducer: Reducer<S, TData, TEvent>,
   initial: S,
-  options: ReduceOptions<S, TData> = {},
+  options: ReduceOptions<S, TData, TEvent> = {},
 ): Reduction<S> {
   const refused = Object.keys(options).find((k) => !ALLOWED.includes(k));
   if (refused !== undefined) {
@@ -160,7 +161,7 @@ export function startReduction<S, TData>(
   /** Folds `event`, or stops and reports when the reducer throws. */
   const fold = (event: StreamdEvent): boolean => {
     try {
-      state = reducer(state, event as unknown as EventOf<TData>);
+      state = reducer(state, event as unknown as TEvent);
     } catch (err) {
       const error = new StreamdError(`Reducer threw for ${eventId(event)}`, err);
       stop(error);
@@ -171,15 +172,15 @@ export function startReduction<S, TData>(
     return true;
   };
 
-  // Without a cursor, follow from the last folded version; `after` skips what
-  // was already folded there or, on a resume, earlier in the cursor's page.
-  const follow = (cursor: string | undefined, after: Folded | undefined) => {
+  // Without a cursor, follow from the last folded version; `isAfter(event, last)`
+  // skips what was already folded in backfill, on resume, or before a live retry.
+  const follow = (cursor: string | undefined) => {
     const start = cursor !== undefined ? { cursor } : { fromVersion: last!.version };
     live = host.subscribe(
       descriptor,
       (event) => {
-        if (after !== undefined && !isAfter(event, after)) return;
-        if (fold(event)) options.onChange?.(state, event as unknown as EventOf<TData>);
+        if (last !== undefined && !isAfter(event, last)) return;
+        if (fold(event)) options.onChange?.(state, event as unknown as TEvent);
       },
       {
         ...pick(options, LIVE_KEYS),
@@ -197,7 +198,7 @@ export function startReduction<S, TData>(
   const run = async (): Promise<S> => {
     if (stopped) throw backfill.signal.reason;
     if (resumed !== undefined) {
-      follow(resumed.cursor, resumed.last);
+      follow(resumed.cursor);
       return state;
     }
     let cursor: string | undefined;
@@ -239,7 +240,7 @@ export function startReduction<S, TData>(
       report(error);
     }
     if (stopped) throw backfill.signal.reason;
-    follow(cursor, cursor === undefined ? last : undefined);
+    follow(cursor);
     return state;
   };
 

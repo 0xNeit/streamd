@@ -1,7 +1,9 @@
+import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { testClient } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
-import { MemoryAdapter } from "@streamd/core";
-import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import { MemoryAdapter, RoutingAdapter, StreamdError, StreamdNetworkError } from "@streamd/core";
+import { activityDescriptor, activitySource } from "../src/activity.js";
+import { FullnodeScanAdapter } from "../src/fullnode.js";
 import { TRANSFER_DESCRIPTOR, formatAmount, transferSource } from "../src/transfers.js";
 import type { EventAdapter, FetchOptions, StreamdEvent, ViewRequest } from "@streamd/core";
 import type { Transfer } from "../src/types.js";
@@ -505,7 +507,9 @@ describe("transferSource with asset info", () => {
         return inner.adapter.view!(request, version, descriptor);
       },
     };
-    await expect(fetch(transferSource(adapter, undefined, undefined, true))).rejects.toThrow("malformed");
+    const err = await fetch(transferSource(adapter, undefined, undefined, true)).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("malformed");
   });
 });
 
@@ -782,5 +786,195 @@ describe("transfers with requestTimeout", () => {
     });
     client.destroy();
     expect(record.data.amount).toBe(100n);
+  });
+
+  it("fails instead of skipping on non-abort 400 view errors from FullnodeScanAdapter", async () => {
+    let viewCalls = 0;
+    const aptos = new Aptos(
+      new AptosConfig({
+        network: Network.LOCAL,
+        fullnode: "http://fake/v1",
+        clientConfig: { http2: false },
+        client: {
+          provider: async <Req, Res>() => {
+            viewCalls++;
+            return {
+              status: 400,
+              statusText: "Bad Request",
+              data: { message: "bad args", error_code: "invalid_input" } as unknown as Res,
+              headers: {},
+            };
+          },
+        },
+      }),
+    );
+    const fullnode = new FullnodeScanAdapter(aptos);
+    const memory = new MemoryAdapter([fa(9, 0, "Deposit", "b1", "1")]);
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => memory.fetchEvents(d, o),
+      view: (req, version) => fullnode.view(req, version),
+    };
+    const err = await transferSource(adapter).fetchEvents(TRANSFER_DESCRIPTOR, all).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect(viewCalls).toBe(1);
+
+    const coinMemory = new MemoryAdapter([coin(9, 0, "Deposit", ALICE, "5")]);
+    const infoAdapter: EventAdapter = {
+      fetchEvents: (d, o) => coinMemory.fetchEvents(d, o),
+      view: (req, version) => fullnode.view(req, version),
+    };
+    const infoErr = await transferSource(infoAdapter, undefined, undefined, true)
+      .fetchEvents(TRANSFER_DESCRIPTOR, all)
+      .catch((e: unknown) => e);
+    expect(infoErr).toBeInstanceOf(StreamdError);
+    expect(infoErr).not.toBeInstanceOf(StreamdNetworkError);
+    const callsBeforeBadCoin = viewCalls;
+
+    const badVersion = new MemoryAdapter([
+      { ...coin(9, 0, "Deposit", ALICE, "5"), version: 2n ** 64n },
+    ]);
+    const badAdapter: EventAdapter = {
+      fetchEvents: (d, o) => badVersion.fetchEvents(d, o),
+      view: (req, version) => fullnode.view(req, version),
+    };
+    const badErr = await transferSource(badAdapter, undefined, undefined, true)
+      .fetchEvents(TRANSFER_DESCRIPTOR, all)
+      .catch((e: unknown) => e);
+    expect(badErr).toBeInstanceOf(StreamdError);
+    expect(badErr).not.toBeInstanceOf(StreamdNetworkError);
+    expect((badErr as { aborted?: boolean }).aborted).toBe(false);
+    expect(viewCalls).toBe(callsBeforeBadCoin);
+  });
+
+  it("still falls back to version - 1 on a genuine FullnodeScanAdapter Move abort (web_framework_error + 4016)", async () => {
+    const abortCalls: (bigint | undefined)[] = [];
+    const aptos = new Aptos(
+      new AptosConfig({
+        network: Network.LOCAL,
+        fullnode: "http://fake/v1",
+        clientConfig: { http2: false },
+        client: {
+          provider: async <Req, Res>(req: { url: string; params?: Record<string, unknown>; body?: unknown }) => {
+            const version = req.params?.ledger_version;
+            const fn = (req.body as { function?: string } | undefined)?.function;
+            if (version === 9n) {
+              abortCalls.push(9n);
+              return {
+                status: 400,
+                statusText: "Bad Request",
+                data: {
+                  message: "Move abort in 0x1::fungible_asset::store_metadata",
+                  error_code: "web_framework_error",
+                  vm_error_code: 4016,
+                } as unknown as Res,
+                headers: {},
+              };
+            }
+            abortCalls.push(8n);
+            const data = fn === OWNER ? [ALICE] : [{ inner: APT }];
+            return { status: 200, statusText: "OK", data: data as unknown as Res, headers: {} };
+          },
+        },
+      }),
+    );
+    const fullnode = new FullnodeScanAdapter(aptos);
+    const memory = new MemoryAdapter([fa(9, 0, "Withdraw", "a1", "3")]);
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => memory.fetchEvents(d, o),
+      view: (req, version) => fullnode.view(req, version),
+    };
+    const records = await transfers(transferSource(adapter));
+    expect(records).toEqual([{ at: "9:0", asset: APT, amount: 3n, from: ALICE, to: undefined }]);
+    expect(abortCalls).toEqual([9n, 8n, 9n, 8n]);
+  });
+
+  it("fails instead of hiding tokens when a routed adapter lacks view or a module route", async () => {
+    const routed = new RoutingAdapter({
+      module: new MemoryAdapter([moved(4, 2, NFT, ALICE, BOB)]),
+      default: withViews([]).adapter,
+    });
+    const source = transferSource(routed);
+    const err = await source.fetchEvents(TRANSFER_DESCRIPTOR, all).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as Error).message).toContain("does not run views");
+
+    const accountOnly = new RoutingAdapter({
+      account: new MemoryAdapter([moved(4, 2, NFT, ALICE, BOB)]),
+      handle: withViews([]).adapter,
+    });
+    const noModuleErr = await activitySource(accountOnly, async () => ALICE)
+      .fetchEvents(activityDescriptor(ALICE), all)
+      .catch((e: unknown) => e);
+    expect(noModuleErr).toBeInstanceOf(StreamdError);
+    expect(noModuleErr).not.toBeInstanceOf(StreamdNetworkError);
+    expect((noModuleErr as Error).message).toContain('No adapter configured for descriptor kind "module"');
+  });
+
+  it("retries malformed view address or metadata answers under maxErrors", async () => {
+    for (const kind of ["address", "metadata"] as const) {
+      let attempt = 0;
+      const base = withViews([fa(1, 0, "Deposit", "b1", "7")], (call) => {
+        if (kind === "address" && attempt === 1 && call.function === METADATA) return [];
+        return undefined;
+      });
+      const adapter: EventAdapter = {
+        ...base.adapter,
+        fetchEvents: async (d, o) => {
+          attempt++;
+          return base.adapter.fetchEvents(d, o);
+        },
+        view: async (req, v, d) => {
+          if (req.function.endsWith("::symbol")) return attempt === 1 ? [7] : ["APT"];
+          if (req.function.endsWith("::decimals")) return [8];
+          return base.adapter.view!(req, v, d);
+        },
+      };
+      const errors: unknown[] = [];
+      const client = testClient({ adapter });
+      const record = await new Promise<StreamdEvent<Transfer>>((resolve, reject) => {
+        const sub = client.transfers(resolve, {
+          fromVersion: 0n,
+          pollInterval: 1,
+          maxBackoff: 1,
+          maxErrors: 2,
+          withAssetInfo: kind === "metadata",
+          onError: (err) => {
+            errors.push(err);
+            if (!sub.active || errors.length > 1) reject(err);
+          },
+        });
+      });
+      client.destroy();
+      expect(record.data.amount).toBe(7n);
+      if (kind === "metadata") expect(record.data).toMatchObject({ symbol: "APT", decimals: 8 });
+      expect(errors).toHaveLength(1);
+    }
+  });
+
+  it("iterateTransfers streams records, stops fetching on early break, and rejects bad options on iteration", async () => {
+    const pages: number[] = [];
+    const base = withViews([fa(1, 0, "Deposit", "b1", "5"), fa(2, 0, "Deposit", "b1", "9")]);
+    const adapter: EventAdapter = {
+      ...base.adapter,
+      fetchEvents: async (d, o) => {
+        pages.push(o.cursor === undefined ? 1 : 2);
+        return o.cursor === undefined
+          ? { events: [fa(1, 0, "Deposit", "b1", "5")], nextCursor: "p2", hasMore: true }
+          : { events: [fa(2, 0, "Deposit", "b1", "9")], hasMore: false };
+      },
+    };
+    const client = testClient({ adapter });
+    const seen: bigint[] = [];
+    for await (const record of client.iterateTransfers({ fromVersion: 0n })) {
+      seen.push(record.data.amount);
+      break;
+    }
+    expect(seen).toEqual([5n]);
+    expect(pages).toEqual([1]);
+    const bad = client.iterateTransfers({ asset: "not-an-asset" });
+    await expect(bad.next()).rejects.toThrow(StreamdError);
+    client.destroy();
   });
 });

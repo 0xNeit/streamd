@@ -3,6 +3,10 @@ dist/
 .turbo/
 .claude/settings.local.json
 .DS_Store
+.validators-*/
+.arbitraries-*/
+.sui-codegen-*/
+.shadowed-*/
 
 # Religion workflow files (kept local)
 religion/

@@ -1,4 +1,4 @@
-import { PGlite } from "@electric-sql/pglite";
+import { PGlite } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
 import {
   MemoryAdapter,
@@ -342,5 +342,36 @@ describe("PostgresStoreAdapter after prune", () => {
     const { adapter } = await pruned(5n);
     const report = await checkAdapter(adapter, swaps);
     expect(report.results.filter((r) => r.status === "fail")).toEqual([]);
+  });
+
+  it("uses streamd_events_type_c instead of streamd_events_pkey for module reads", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.write([ev(1n, 0, `${SWAP}<0x1::a::A>`)]);
+    await db.exec(
+      `INSERT INTO streamd_events (version, event_index, type, event)
+       SELECT g, 0, '0x1::other::Noise', '{"type":"0x1::other::Noise","data":{},"version":"1","sequenceNumber":"0","eventIndex":0}'
+       FROM generate_series(2, 2000) AS g;
+       ANALYZE streamd_events;`,
+    );
+    const plans: string[] = [];
+    const adapter = new PostgresStoreAdapter({
+      query: async (text, params) => {
+        if (text.includes("LEFT JOIN LATERAL")) {
+          const { rows } = await db.query<{ "QUERY PLAN": string }>(`EXPLAIN ${text}`, params);
+          plans.push(rows.map((r) => r["QUERY PLAN"]).join("\n"));
+        }
+        return db.query(text, params);
+      },
+    });
+    expect(ids((await adapter.fetchEvents({ kind: "module", eventType: [SWAP, SWAP] }, { fromVersion: 2n })).events)).toEqual([]);
+    expect(ids((await adapter.fetchEvents({ kind: "module", eventType: `${SWAP}<0x1::a::A>` }, { fromVersion: 2n })).events)).toEqual([]);
+    expect(ids((await adapter.fetchEvents({ kind: "module", eventType: [`${SWAP}<0x1::a::A>`, `${SWAP}<0x1::a::A>`] }, {})).events)).toEqual(["1:0"]);
+    expect(plans).toHaveLength(3);
+    for (const plan of plans) {
+      expect(plan).toContain("streamd_events_type_c");
+      expect(plan).not.toContain("streamd_events_pkey");
+      expect(plan).not.toContain("Seq Scan on streamd_events");
+    }
   });
 });

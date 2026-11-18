@@ -27,7 +27,7 @@ import { nameTtl, type SenderNames } from "./names.js";
 import { isThenable } from "./filter.js";
 
 const DEFAULT_POLL_INTERVAL = 1000;
-const DEFAULT_BATCH_SIZE = 25;
+export const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_MAX_ERRORS = 10;
 const DEFAULT_MAX_BACKOFF = 60_000;
 const MAX_DELAY = 2_147_483_647;
@@ -110,6 +110,8 @@ export class EventPoller {
   private fromVersion?: bigint | "earliest";
   /** Cleared once the first poll has resolved it into `fromVersion`. */
   private fromTime?: bigint;
+  /** Whether the caller asked for a head-relative, earliest, or time-based start. */
+  private readonly relativeStart: boolean;
   /** The start a run with no cursor resolved to; every page is bounded by it. */
   private floor?: bigint;
   /** Whether a page has reached `floor`, before which no position is worth saving. */
@@ -143,6 +145,10 @@ export class EventPoller {
     validateFromTime(options);
     this.fromVersion = options.fromVersion;
     this.fromTime = options.fromTime;
+    this.relativeStart =
+      options.fromTime !== undefined ||
+      options.fromVersion === "earliest" ||
+      (typeof options.fromVersion === "bigint" && options.fromVersion < 0n);
     this.where = options.where;
     this.decode = fieldDecoder(options.decode);
     validateWithState(options.withState);
@@ -196,6 +202,7 @@ export class EventPoller {
       this.consecutiveErrors = 0;
       this.currentInterval = this.pollInterval;
       this.quietInterval = this.pollInterval;
+      if (this.position.token === undefined) this.reachedStart = false;
     }
     this._active = true;
     this._paused = false;
@@ -312,15 +319,16 @@ export class EventPoller {
       // Adapters honour fromVersion only on the first request, so account and
       // handle walks, which start below it, are bounded here on every page.
       const floor = this.floor;
-      if (floor !== undefined && !this.reachedStart) {
-        this.reachedStart =
-          (page.throughVersion !== undefined && page.throughVersion >= floor) ||
-          page.events.some((e) => e.version >= floor);
-      }
+      const reached =
+        floor === undefined ||
+        this.reachedStart ||
+        (!page.hasMore && this.relativeStart) ||
+        (page.throughVersion !== undefined && page.throughVersion >= floor) ||
+        page.events.some((e) => e.version >= floor);
       const bounded =
         floor === undefined ? page : { ...page, events: page.events.filter((e) => e.version >= floor) };
 
-      const delivery = this.processPage(bounded, gen, viewer, run);
+      const delivery = this.processPage(bounded, gen, viewer, run, reached);
       // A failed page is this poll's error alone; later polls must not inherit it.
       this.delivering = delivery.catch(() => {});
       this.handlers = this.delivering;
@@ -406,92 +414,239 @@ export class EventPoller {
     gen: number,
     adapter: EventAdapter,
     run: AbortSignal,
+    reached: boolean,
   ): Promise<void> {
     const batch: StreamdEvent[] = [];
     const batched: StreamdEvent[] = [];
     // Dedups the batch's events until they are marked seen on delivery.
     const pending = new CursorManager(undefined, this.dedupWindow);
-    // A rejected predicate or failed view is the source's: it fails this poll
-    // with the event unmarked, so a network failure's retry delivers it rather
-    // than losing it.
+    const prefetched = this.prefetchPage(page.events);
+    // A rejected predicate, view or name lookup is the source's: it fails this
+    // poll with the event unmarked, so a retry delivers it rather than losing it.
     let failure: unknown;
     for (const raw of page.events) {
       // The callback itself may have unsubscribed.
       if (!this.isCurrent(gen)) return;
       if (this.position.hasSeen(raw) || pending.hasSeen(raw)) continue;
-      let prepared = this.prepare(raw);
-      if (prepared !== undefined && "verdict" in prepared) {
-        let matched: unknown;
-        try {
-          // Raced against the run, so a hung predicate never holds a restart.
-          matched = await raceAbort(Promise.resolve(prepared.verdict), run);
-        } catch (err) {
-          failure = err;
-          break;
-        }
-        if (!this.isCurrent(gen)) return;
-        prepared = this.admit(raw, prepared.event, matched);
+      const step = this.deliverRaw(raw, gen, adapter, run, prefetched);
+      const outcome = isThenable(step) ? await step : step;
+      if (outcome === undefined) return;
+      if ("failure" in outcome) {
+        failure = outcome.failure;
+        break;
       }
-      if (prepared === undefined) {
-        if (!this.isCurrent(gen)) return;
-        continue;
-      }
-      let event = prepared.event;
-      if (prepared.request !== undefined) {
-        try {
-          event = await readState(adapter, this.descriptor, event, prepared.request);
-        } catch (err) {
-          failure = err;
-          break;
-        }
-        if (!this.isCurrent(gen)) return;
-      }
-      if (this.nameTtl !== undefined) {
-        try {
-          event = await this.names!.attach(event, this.nameTtl, run);
-        } catch (err) {
-          failure = err;
-          break;
-        }
-        if (!this.isCurrent(gen)) return;
-      }
-      if (this.callback === undefined) {
-        // Marked seen only once handed over, so a batch a pause abandons is redelivered.
-        batch.push(event);
-        batched.push(raw);
-        pending.mark(raw);
-        continue;
-      }
-      this.see(raw);
-      try {
-        // Awaited one event at a time, so a slow handler holds back the rest
-        // of the page and the next poll rather than piling up work.
-        const result: unknown = this.callback!(event);
-        if (isThenable(result)) await result;
-      } catch (err) {
-        this.reportHandlerError(callbackError(event, err));
-        if (!this.isCurrent(gen)) return;
-      }
+      if (outcome.event === undefined) continue;
+      // Start batch lookups as each event is admitted so the whole batch settles together.
+      if (prefetched !== undefined) this.names!.prefetch([outcome.event], this.nameTtl!, prefetched);
+      // Marked seen only once handed over, so a batch a pause abandons is redelivered.
+      batch.push(outcome.event);
+      batched.push(raw);
+      pending.mark(raw);
     }
+    if (!this.isCurrent(gen)) return;
+    if (prefetched !== undefined && this.callback === undefined && batch.length > 0 && (this.onPage === undefined || failure === undefined)) {
+      const attached = await this.attachBatchNames(batch, batched, gen, run, prefetched);
+      if (!attached.current) return;
+      if ("failure" in attached) failure = attached.failure;
+    }
+    const finished = this.finishPage(page, batch, batched, gen, reached, failure);
+    if (isThenable(finished)) await finished;
+  }
 
-    if (this.onPage !== undefined) {
-      await this.handOver(batch, batched, page, gen, failure);
-    } else if (batch.length > 0 && this.isCurrent(gen)) {
-      // Delivered even when the page failed: these events are marked seen, so a
-      // retried page would skip them.
-      for (const raw of batched) this.see(raw);
-      try {
-        const result: unknown = this.onBatch!(batch);
-        if (isThenable(result)) await result;
-      } catch (err) {
-        this.reportHandlerError(batchError(batch, err));
-      }
+  private prefetchPage(events: readonly StreamdEvent[]): Map<string, Promise<string | null>> | undefined {
+    if (this.nameTtl === undefined) return undefined;
+    if (this.where !== undefined) return new Map();
+    return this.names!.prefetch(
+      events.filter((raw) => !this.position.hasSeen(raw) && this.canDecode(raw)),
+      this.nameTtl,
+    );
+  }
+
+  private canDecode(raw: StreamdEvent): boolean {
+    if (this.decode === undefined) return true;
+    try {
+      this.decode(raw);
+      return true;
+    } catch {
+      return false;
     }
+  }
+
+  /**
+   * Synchronous fast path when no async predicate, view or name lookup applies,
+   * so synchronous callbacks advance `position.token` before queued microtasks run.
+   */
+  private deliverRaw(
+    raw: StreamdEvent,
+    gen: number,
+    adapter: EventAdapter,
+    run: AbortSignal,
+    prefetched: Map<string, Promise<string | null>> | undefined,
+  ):
+    | { event?: StreamdEvent }
+    | { failure: unknown }
+    | undefined
+    | Promise<{ event?: StreamdEvent } | { failure: unknown } | undefined> {
+    const prepared = this.prepare(raw);
+    if (prepared !== undefined && "verdict" in prepared) {
+      return this.deliverSlow(raw, prepared, gen, adapter, run, prefetched);
+    }
+    if (prepared === undefined) return this.isCurrent(gen) ? {} : undefined;
+    if (prepared.request !== undefined || (this.callback !== undefined && this.nameTtl !== undefined)) {
+      return this.deliverSlow(raw, prepared, gen, adapter, run, prefetched);
+    }
+    if (this.callback === undefined) return { event: prepared.event };
+    return this.invokeCallback(raw, prepared.event, gen);
+  }
+
+  private async deliverSlow(
+    raw: StreamdEvent,
+    prepared: Prepared | { event: StreamdEvent; verdict: PromiseLike<boolean> },
+    gen: number,
+    adapter: EventAdapter,
+    run: AbortSignal,
+    prefetched: Map<string, Promise<string | null>> | undefined,
+  ): Promise<{ event?: StreamdEvent } | { failure: unknown } | undefined> {
+    let resolved: Prepared | undefined;
+    if ("verdict" in prepared) {
+      let matched: unknown;
+      try {
+        // Raced against the run, so a hung predicate never holds a restart.
+        matched = await raceAbort(Promise.resolve(prepared.verdict), run);
+      } catch (err) {
+        return { failure: err };
+      }
+      if (!this.isCurrent(gen)) return undefined;
+      resolved = this.admit(raw, prepared.event, matched);
+      if (resolved === undefined) return this.isCurrent(gen) ? {} : undefined;
+    } else {
+      resolved = prepared;
+    }
+    let event = resolved.event;
+    if (resolved.request !== undefined) {
+      try {
+        event = await readState(adapter, this.descriptor, event, resolved.request);
+      } catch (err) {
+        return { failure: err };
+      }
+      if (!this.isCurrent(gen)) return undefined;
+    }
+    if (this.callback === undefined) return { event };
+    if (this.nameTtl !== undefined) {
+      try {
+        event = await this.names!.attach(event, this.nameTtl, run, prefetched);
+      } catch (err) {
+        return { failure: err };
+      }
+      if (!this.isCurrent(gen)) return undefined;
+    }
+    return this.invokeCallback(raw, event, gen);
+  }
+
+  private invokeCallback(
+    raw: StreamdEvent,
+    event: StreamdEvent,
+    gen: number,
+  ): {} | undefined | Promise<{} | undefined> {
+    this.see(raw);
+    try {
+      // Awaited one event at a time, so a slow handler holds back the rest
+      // of the page and the next poll rather than piling up work.
+      const result: unknown = this.callback!(event);
+      if (isThenable(result)) {
+        return Promise.resolve(result).then(
+          () => (this.isCurrent(gen) ? {} : undefined),
+          (err) => {
+            this.reportHandlerError(callbackError(event, err));
+            return this.isCurrent(gen) ? {} : undefined;
+          },
+        );
+      }
+    } catch (err) {
+      this.reportHandlerError(callbackError(event, err));
+    }
+    return this.isCurrent(gen) ? {} : undefined;
+  }
+
+  private async attachBatchNames(
+    batch: StreamdEvent[],
+    batched: StreamdEvent[],
+    gen: number,
+    run: AbortSignal,
+    prefetched: Map<string, Promise<string | null>>,
+  ): Promise<{ current: true } | { current: false } | { current: true; failure: unknown }> {
+    for (let i = 0; i < batch.length; i++) {
+      try {
+        batch[i] = await this.names!.attach(batch[i]!, this.nameTtl!, run, prefetched);
+      } catch (err) {
+        batch.length = i;
+        batched.length = i;
+        return this.isCurrent(gen) ? { current: true, failure: err } : { current: false };
+      }
+      if (!this.isCurrent(gen)) return { current: false };
+    }
+    return { current: true };
+  }
+
+  private finishPage(
+    page: EventPage,
+    batch: StreamdEvent[],
+    batched: StreamdEvent[],
+    gen: number,
+    reached: boolean,
+    failure: unknown,
+  ): void | Promise<void> {
+    const step = this.handOverPage(page, batch, batched, gen, reached, failure);
+    if (isThenable(step)) {
+      return Promise.resolve(step).then(() => this.advancePage(page, gen, reached, failure));
+    }
+    this.advancePage(page, gen, reached, failure);
+  }
+
+  private handOverPage(
+    page: EventPage,
+    batch: StreamdEvent[],
+    batched: StreamdEvent[],
+    gen: number,
+    reached: boolean,
+    failure: unknown,
+  ): void | Promise<void> {
+    if (this.onPage !== undefined) {
+      return this.handOver(
+        batch,
+        batched,
+        reached ? page : { ...page, nextCursor: undefined },
+        gen,
+        failure,
+      );
+    }
+    if (batch.length === 0 || !this.isCurrent(gen)) return;
+    // Delivered even when the page failed: these events are marked seen, so a
+    // retried page would skip them.
+    for (const raw of batched) this.see(raw);
+    try {
+      const result: unknown = this.onBatch!(batch);
+      if (isThenable(result)) {
+        return Promise.resolve(result).then(
+          () => {},
+          (err) => this.reportHandlerError(batchError(batch, err)),
+        );
+      }
+    } catch (err) {
+      this.reportHandlerError(batchError(batch, err));
+    }
+  }
+
+  private advancePage(page: EventPage, gen: number, reached: boolean, failure: unknown): void {
     if (failure !== undefined) throw failure;
 
     // A run stopped while a handler was pending must not move the cursor past
     // a page it did not finish: resuming from it delivers the page again.
     if (!this.isCurrent(gen)) return;
+
+    // A walk reaches its start in step with advancing the cursor past that page,
+    // so interrupting delivery before it finishes keeps pre-start cursors hidden.
+    if (reached) this.reachedStart = true;
 
     // Advance even on an empty page — the adapter reports how far it scanned,
     // not where the last match was. Without this, an event type sparser than

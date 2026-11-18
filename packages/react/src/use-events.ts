@@ -1,8 +1,8 @@
 import {
   StreamdError,
   type EventDescriptor,
-  type EventOf,
   type StreamdClient,
+  type StreamdEvent,
   type SubscriptionOptions,
 } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
@@ -28,11 +28,11 @@ export interface UseEventsOptions extends Omit<SubscriptionOptions, "signal"> {
 type Listener = Omit<UseEventsOptions, "client" | "maxEvents" | "history">;
 
 /** Reads the newest `limit` matches of the window, delivers them oldest first, then follows from the read's end. */
-function withHistory<TData>(
+function withHistory<TData, TEvent = StreamdEvent<TData>>(
   client: StreamdClient,
-  descriptor: EventDescriptor<TData>,
+  descriptor: EventDescriptor<TData, TEvent>,
   limit: number,
-  deliver: (events: EventOf<TData>[]) => void,
+  deliver: (events: TEvent[]) => void,
   options: Listener,
 ): Following {
   const { fromVersion, fromTime, ...following } = options;
@@ -41,7 +41,7 @@ function withHistory<TData>(
   return readThenFollow(
     "useEvents",
     (signal) =>
-      client.getEvents<TData>(descriptor, {
+      client.getEvents<TData, TEvent>(descriptor, {
         ...(fromVersion !== undefined && { fromVersion }),
         ...(fromTime !== undefined && { fromTime }),
         ...(where !== undefined && { where }),
@@ -55,7 +55,7 @@ function withHistory<TData>(
       }).then((events) => events.reverse()),
     () => {
       if (cursor === undefined) throw new StreamdError("The history read gave no cursor to follow from");
-      return client.onBatch<TData>(descriptor, deliver, { ...following, cursor });
+      return client.onBatch<TData, TEvent>(descriptor, deliver, { ...following, cursor });
     },
     deliver,
     onError,
@@ -68,10 +68,10 @@ function withHistory<TData>(
  * options change by value. Errors leave the events in place and the client's
  * backoff in charge; `options.onError` still runs, the client's does not.
  */
-export function useEvents<TData = unknown>(
-  descriptor: EventDescriptor<TData> | null | undefined,
+export function useEvents<TData = unknown, TEvent = StreamdEvent<TData>>(
+  descriptor: EventDescriptor<TData, TEvent> | null | undefined,
   options: UseEventsOptions = {},
-): UseEventsResult<TData> {
+): UseEventsResult<TData, TEvent> {
   const { client: explicit, maxEvents = DEFAULT_MAX_EVENTS, history, ...listener } = options;
   if (history !== undefined) {
     if (!Number.isSafeInteger(history) || history < 1) {
@@ -82,7 +82,7 @@ export function useEvents<TData = unknown>(
     }
   }
   const client = useStreamdClient(explicit);
-  return useFollowing<EventOf<TData>, typeof listener>(
+  return useFollowing<TEvent, typeof listener>(
     descriptor != null,
     valueKey([descriptor, listener, history ?? null]),
     client,
@@ -90,7 +90,7 @@ export function useEvents<TData = unknown>(
     maxEvents,
     (deliver, opts) =>
       history === undefined
-        ? client.onBatch<TData>(descriptor!, deliver, opts)
+        ? client.onBatch<TData, TEvent>(descriptor!, deliver, opts)
         : withHistory(client, descriptor!, history, deliver, opts),
     history === undefined ? "live" : "loading",
   );

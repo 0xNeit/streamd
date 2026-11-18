@@ -1,7 +1,7 @@
 import type {
   CloseOptions,
   DescriptorData,
-  EventOf,
+  DescriptorEvent,
   BatchCallback,
   EventAdapter,
   EventCallback,
@@ -72,6 +72,21 @@ async function settlesWithin(work: Promise<unknown>, ms: number): Promise<boolea
   } finally {
     clearTimeout(timer);
   }
+}
+
+function guardedWhere(
+  where: ListenerOptions["where"],
+  onThrow: () => void,
+): ListenerOptions["where"] {
+  if (where === undefined) return undefined;
+  return (event) => {
+    try {
+      return where(event);
+    } catch (err) {
+      onThrow();
+      throw err;
+    }
+  };
 }
 
 /** A `timeout` option checked, or the error to throw for it. */
@@ -222,10 +237,21 @@ export class StreamdClient {
   private readonly ended: SubscriptionInfo[] = [];
   /** Open streams, so destroy() can end their loops rather than strand them. */
   private readonly streams = new Set<() => void>();
+  /** In-flight handler promises that outlived their subscription's removal or belong to replay(). */
+  private readonly inflight = new Set<Promise<void>>();
   /** What `reduce()` needs, built once. */
   protected readonly reduceHost: ReduceHost;
   /** What `onTransaction()` needs, built once. */
   private readonly transactionHost: TransactionHost;
+
+  private trackHandler(work: Promise<unknown>): void {
+    const settled = Promise.resolve(work).then(
+      () => {},
+      () => {},
+    );
+    this.inflight.add(settled);
+    void settled.finally(() => this.inflight.delete(settled));
+  }
 
   constructor(config: StreamdConfig) {
     this.defaults = resolveDefaults(config);
@@ -249,6 +275,7 @@ export class StreamdClient {
         return adapter.getHeadVersion(d);
       },
       track: (stop) => (this.streams.add(stop), () => void this.streams.delete(stop)),
+      trackHandler: (work) => this.trackHandler(work),
     };
     this.transactionHost = {
       defaults: this.defaults,
@@ -256,6 +283,7 @@ export class StreamdClient {
       unshared: this.shared.view(0),
       subscribe: (d, delivery, options, id, wrap) =>
         this.subscribe(d, delivery, options, undefined, id, wrap),
+      track: (stop) => (this.streams.add(stop), () => void this.streams.delete(stop)),
     };
   }
 
@@ -272,19 +300,19 @@ export class StreamdClient {
    * `eventType`s on one `module` descriptor to serve several Move types from a
    * single scan.
    */
-  on<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
-    callback: EventCallback<TData>,
+  on<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent>,
+    callback: EventCallback<TData, TEvent>,
     options?: SubscriptionOptions,
   ): Subscription;
-  on<const TList extends readonly EventDescriptor<any>[]>(
+  on<const TList extends readonly EventDescriptor<any, any>[]>(
     descriptors: TList,
-    callback: EventCallback<DescriptorData<TList[number]>>,
+    callback: EventCallback<DescriptorData<TList[number]>, DescriptorEvent<TList[number]>>,
     options?: SubscriptionOptions,
   ): Subscription;
   on(
     descriptor: EventDescriptor | readonly EventDescriptor[],
-    callback: EventCallback<any>,
+    callback: EventCallback<any, any>,
     options?: SubscriptionOptions,
   ): Subscription {
     return this.follow(descriptor, callback as EventCallback, options, callback, options?.id);
@@ -294,19 +322,19 @@ export class StreamdClient {
    * Like `on()`, but each poll's new events arrive together in one
    * `callback(events)` call, at most `batchSize` of them.
    */
-  onBatch<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
-    callback: BatchCallback<TData>,
+  onBatch<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent>,
+    callback: BatchCallback<TData, TEvent>,
     options?: SubscriptionOptions,
   ): Subscription;
-  onBatch<const TList extends readonly EventDescriptor<any>[]>(
+  onBatch<const TList extends readonly EventDescriptor<any, any>[]>(
     descriptors: TList,
-    callback: BatchCallback<DescriptorData<TList[number]>>,
+    callback: BatchCallback<DescriptorData<TList[number]>, DescriptorEvent<TList[number]>>,
     options?: SubscriptionOptions,
   ): Subscription;
   onBatch(
     descriptor: EventDescriptor | readonly EventDescriptor[],
-    callback: BatchCallback<any>,
+    callback: BatchCallback<any, any>,
     options?: SubscriptionOptions,
   ): Subscription {
     const merged = mergeable(descriptor);
@@ -341,14 +369,14 @@ export class StreamdClient {
    * past pages that left nothing held. Like `reduce()`, it is not a listener
    * for `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
    */
-  onTransaction<TData = unknown>(
-    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
-    callback: TransactionCallback<TData>,
+  onTransaction<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
+    callback: TransactionCallback<TData, TEvent>,
     options?: SubscriptionOptions,
   ): Subscription {
     return startTransactions(
       this.transactionHost,
-      descriptor,
+      descriptor as EventDescriptor | readonly EventDescriptor[],
       callback as TransactionCallback,
       options,
     );
@@ -358,7 +386,8 @@ export class StreamdClient {
    * Follow many addresses at once: one `account` walk per address, each event
    * delivered as `callback(event, address)`. What a walk sees is what the
    * adapter yields for an `account` descriptor: on `FullnodeScanAdapter`,
-   * transactions the address sent; on `IndexerAccountAdapter`, every one
+   * sequence-numbered transactions the address sent (omitting orderless
+   * transactions and received transfers); on `IndexerAccountAdapter`, every one
    * touching it. `add()` and `remove()` change the list at runtime; a walk that
    * gives up drops its address and the rest carry on. Like `onTransaction()`,
    * it is not a listener for `off()` or `listenerCount()`; `unsubscribe()` or
@@ -424,6 +453,7 @@ export class StreamdClient {
     const reached = latch();
     const forget = () => {
       reached.reject(new StreamdError("Subscription ended before catching up"));
+      this.trackHandler(poller.handling);
       // A later subscription may hold this id by now; leave its entries alone.
       const running = this.subscriptions.get(id);
       if (running?.poller === poller) {
@@ -535,58 +565,52 @@ export class StreamdClient {
    * for `on()`. A throwing `onCaughtUp`, an event that fails `decode` or a
    * throwing `withState` builder goes to `onError` and is skipped, as for `on()`.
    */
-  once<TData = unknown>(descriptor: EventDescriptor<TData>, options?: OnceOptions): Promise<EventOf<TData>>;
-  once<const TList extends readonly EventDescriptor<any>[]>(
+  once<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent>,
+    options?: OnceOptions,
+  ): Promise<TEvent>;
+  once<const TList extends readonly EventDescriptor<any, any>[]>(
     descriptors: TList,
     options?: OnceOptions,
-  ): Promise<EventOf<DescriptorData<TList[number]>>>;
-  once<TData = unknown>(
+  ): Promise<DescriptorEvent<TList[number]>>;
+  once(
     descriptor: EventDescriptor | readonly EventDescriptor[],
     options?: OnceOptions,
-  ): Promise<EventOf<TData>> {
+  ): Promise<any> {
     const badTimeout = checkTimeout(options?.timeout);
     if (badTimeout !== undefined) return Promise.reject(badTimeout);
     if (options?.signal?.aborted) return Promise.reject(options.signal.reason);
 
-    return new Promise<EventOf<TData>>((resolve, reject) => {
+    return new Promise<any>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
       let detach = () => {};
+      let sub: Subscription | undefined;
+      let closed = false;
       const close = () => {
+        if (closed) return;
+        closed = true;
         if (timer !== undefined) clearTimeout(timer);
         detach();
-        sub.unsubscribe();
+        sub?.unsubscribe();
       };
       const fail = (reason: unknown) => (close(), reject(reason));
-      // A throwing predicate would skip every event and leave the promise
-      // pending; other handler errors are per event, so waiting can still match.
       // Only a synchronous throw counts: a rejection fails the poll and is retried.
       let whereThrew = false;
-      const where = options?.where;
-      const sub = this.follow(
+      sub = this.follow(
         descriptor,
-        ((event: EventOf<TData>) => (close(), resolve(event))) as unknown as EventCallback,
+        ((event: unknown) => (close(), resolve(event))) as unknown as EventCallback,
         {
           ...options,
-          where:
-            where === undefined
-              ? undefined
-              : (event) => {
-                  try {
-                    return where(event);
-                  } catch (err) {
-                    whereThrew = true;
-                    throw err;
-                  }
-                },
+          where: guardedWhere(options?.where, () => (whereThrew = true)),
           signal: undefined,
           onError: (err) => {
-            // Settle before the caller's handler runs, so a throw from it
-            // cannot leave the promise pending.
-            if (!sub.active || whereThrew) fail(err);
+            // Settle before the caller's handler runs, so a throw cannot strand the promise.
+            if (sub === undefined || !sub.active || whereThrew) fail(err);
             (options?.onError ?? this.onError)?.(err);
           },
         },
       );
+      if (closed) return sub.unsubscribe();
       detach = onAbort(options?.signal, () => fail(options!.signal!.reason));
       if (options?.timeout !== undefined) {
         const ms = options.timeout;
@@ -606,18 +630,21 @@ export class StreamdClient {
    * aborts. Other errors go to `options.onError`. Save `cursor` to resume
    * later, as for `on()`.
    */
-  stream<TData = unknown>(descriptor: EventDescriptor<TData>, options?: ListenerOptions): EventStream<TData>;
-  stream<const TList extends readonly EventDescriptor<any>[]>(
+  stream<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent>,
+    options?: ListenerOptions,
+  ): EventStream<TData, TEvent>;
+  stream<const TList extends readonly EventDescriptor<any, any>[]>(
     descriptors: TList,
     options?: ListenerOptions,
-  ): EventStream<DescriptorData<TList[number]>>;
-  stream<TData = unknown>(
+  ): EventStream<DescriptorData<TList[number]>, DescriptorEvent<TList[number]>>;
+  stream(
     descriptor: EventDescriptor | readonly EventDescriptor[],
     options?: ListenerOptions,
-  ): EventStream<TData> {
+  ): EventStream<any, any> {
     // Registered only once the stream subscribes, so an unused stream costs nothing.
     const close = () => void stream.return?.();
-    const stream = eventStream<TData>(
+    const stream = eventStream<any, any>(
       (callback, onError) => {
         const sub = this.follow(descriptor, callback as EventCallback, {
           ...options,
@@ -646,25 +673,25 @@ export class StreamdClient {
    * past a lost event would leave `value` wrong. Like `once()` and `stream()`,
    * it is not a listener for `off()` or `listenerCount()`; `destroy()` ends it.
    */
-  reduce<S, TData = unknown>(
-    descriptor: EventDescriptor<TData>,
-    reducer: Reducer<S, TData>,
+  reduce<S, TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent>,
+    reducer: Reducer<S, TData, NoInfer<TEvent>>,
     initial: S,
-    options?: ReduceOptions<S, TData>,
+    options?: ReduceOptions<S, TData, NoInfer<TEvent>>,
   ): Reduction<S>;
-  reduce<S, const TList extends readonly EventDescriptor<any>[]>(
+  reduce<S, const TList extends readonly EventDescriptor<any, any>[]>(
     descriptors: TList,
-    reducer: Reducer<S, DescriptorData<TList[number]>>,
+    reducer: Reducer<S, DescriptorData<TList[number]>, NoInfer<DescriptorEvent<TList[number]>>>,
     initial: S,
-    options?: ReduceOptions<S, DescriptorData<TList[number]>>,
+    options?: ReduceOptions<S, DescriptorData<TList[number]>, NoInfer<DescriptorEvent<TList[number]>>>,
   ): Reduction<S>;
   reduce<S>(
     descriptor: EventDescriptor | readonly EventDescriptor[],
-    reducer: Reducer<S, any>,
+    reducer: Reducer<S, any, any>,
     initial: S,
-    options?: ReduceOptions<S, any>,
+    options?: ReduceOptions<S, any, any>,
   ): Reduction<S> {
-    return startReduction(this.reduceHost, descriptor, reducer, initial, options);
+    return startReduction<S, any, any>(this.reduceHost, descriptor, reducer, initial, options);
   }
 
   /**
@@ -676,12 +703,12 @@ export class StreamdClient {
    * settles when the range is exhausted or a query fails. Like `reduce()`, it
    * is not a listener for `off()` or `listenerCount()`; `destroy()` ends it.
    */
-  replay<TData = unknown>(
-    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
-    callback: EventCallback<TData>,
+  replay<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
+    callback: EventCallback<TData, TEvent>,
     options?: ReplayOptions,
   ): Replay {
-    return startReplay(this.reduceHost, descriptor, callback, options);
+    return startReplay<any, any>(this.reduceHost, descriptor, callback, options);
   }
 
   /**
@@ -692,11 +719,11 @@ export class StreamdClient {
    * descriptor stay the cheaper single scan, and the one that works with
    * `onCursor`, which a merge rejects, as it does `offset`.
    */
-  async getEvents<TData = unknown>(
-    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+  async getEvents<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
     filter?: EventFilter,
-  ): Promise<EventOf<TData>[]> {
-    return this.query.getEvents<TData>(descriptor, filter) as unknown as Promise<EventOf<TData>[]>;
+  ): Promise<TEvent[]> {
+    return this.query.getEvents(descriptor as EventDescriptor | readonly EventDescriptor[], filter) as unknown as Promise<TEvent[]>;
   }
 
   /**
@@ -710,56 +737,59 @@ export class StreamdClient {
    * of descriptors is merged as `getEvents` merges it, each event once.
    * `maxPages` caps the work, so a group at the cap may lack events past it.
    */
-  async getTransactions<TData = unknown>(
-    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+  async getTransactions<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
     filter?: TransactionFilter,
-  ): Promise<TransactionGroup<TData>[]> {
-    return this.query.getTransactions<TData>(descriptor, filter);
+  ): Promise<TransactionGroup<TData, TEvent>[]> {
+    return this.query.getTransactions(descriptor as EventDescriptor | readonly EventDescriptor[], filter) as unknown as Promise<
+      TransactionGroup<TData, TEvent>[]
+    >;
   }
 
   /**
    * Async iterator for paginating through large historical result sets.
    */
-  getEventPages<TData = unknown>(
-    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+  getEventPages<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
     filter?: EventFilter,
     pageSize?: number,
-  ): AsyncGenerator<EventOf<TData>[], void, unknown> {
-    return this.query.getEventPages<TData>(descriptor, filter, pageSize) as unknown as AsyncGenerator<
-      EventOf<TData>[],
-      void,
-      unknown
-    >;
+  ): AsyncGenerator<TEvent[], void, unknown> {
+    return this.query.getEventPages(
+      descriptor as EventDescriptor | readonly EventDescriptor[],
+      filter,
+      pageSize,
+    ) as unknown as AsyncGenerator<TEvent[], void, unknown>;
   }
 
   /**
    * Historical events one at a time: `getEventPages` flattened, with the same
    * options. Leaving the loop early fetches nothing further.
    */
-  iterateEvents<TData = unknown>(
-    descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
+  iterateEvents<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
     filter?: EventFilter,
     pageSize?: number,
-  ): AsyncGenerator<EventOf<TData>, void, unknown> {
-    return this.query.iterateEvents<TData>(descriptor, filter, pageSize) as unknown as AsyncGenerator<
-      EventOf<TData>,
-      void,
-      unknown
-    >;
+  ): AsyncGenerator<TEvent, void, unknown> {
+    return this.query.iterateEvents(
+      descriptor as EventDescriptor | readonly EventDescriptor[],
+      filter,
+      pageSize,
+    ) as unknown as AsyncGenerator<TEvent, void, unknown>;
   }
 
   /**
    * Stop the earliest `on()`/`onBatch()` subscription on `descriptor` whose
    * callback is `callback`, or all of them on `descriptor` when it is omitted.
    */
-  off<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
-    callback?: EventCallback<TData> | BatchCallback<TData>,
+  off<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent>,
+    callback?: EventCallback<TData, TEvent> | BatchCallback<TData, TEvent>,
   ): this {
     // A missing descriptor must not fall through to removing everything.
-    if (descriptorKey(descriptor) === undefined) return this;
-    if (callback === undefined) return this.removeAllListeners(descriptor);
-    this.matching(descriptor).find((l) => l.callback === callback)?.stop();
+    const target = descriptor as EventDescriptor;
+    if (descriptorKey(target) === undefined) return this;
+    if (callback === undefined) return this.removeAllListeners(target);
+    this.matching(target).find((l) => l.callback === callback)?.stop();
     return this;
   }
 
@@ -820,16 +850,29 @@ export class StreamdClient {
   }
 
   /**
-   * `destroy()`, then waits for the handlers those subscriptions have running.
-   * Resolves `true` once they have finished, or `false` at `timeout`.
+   * `destroy()`, then waits for running handlers (including ended
+   * subscriptions and `replay()`), stopping any subscriptions started while
+   * draining. Resolves `true` once settled, or `false` at `timeout`.
    */
   async close(options: CloseOptions = {}): Promise<boolean> {
     const timeout = options.timeout ?? DEFAULT_CLOSE_TIMEOUT;
     const invalid = checkTimeout(timeout);
     if (invalid !== undefined) throw invalid;
-    const running = [...this.subscriptions.values()].map(({ poller }) => poller.handling);
-    this.destroy();
-    return settlesWithin(Promise.all(running), timeout);
+    const deadline = performance.now() + timeout;
+    for (;;) {
+      this.destroy();
+      const pending = [...this.inflight];
+      if (pending.length === 0) return true;
+      const remaining = Math.max(0, deadline - performance.now());
+      if (!(await settlesWithin(Promise.all(pending), remaining))) {
+        this.destroy();
+        return false;
+      }
+      for (const p of pending) this.inflight.delete(p);
+      if (this.subscriptions.size === 0 && this.streams.size === 0 && this.inflight.size === 0) {
+        return true;
+      }
+    }
   }
 
   /** `close()`, so `await using client = new StreamdClient(...)` drains at scope exit. */

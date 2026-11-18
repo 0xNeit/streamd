@@ -1,5 +1,5 @@
 import { SuiGrpcClient, type SuiGrpcClientOptions } from "@mysten/sui/grpc";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsOf, expectEvents, expectPreview, previewEvents, startBalances } from "@streamd/core";
+import { EventQuery, SharedFetches, StreamdClient, StreamdError, checkTimeout, eventsOf, expectEvents, expectPreview, lazyResolve, previewEvents, startBalances } from "@streamd/core";
 import type {
   BalanceReader,
   Balances,
@@ -8,9 +8,9 @@ import type {
   EventCallback,
   EventDescriptor,
   EventExpectation,
-  EventOf,
   EventsOfOptions,
   ExpectEventsOptions,
+  ModuleEventDescriptor,
   StreamdConfig,
   StreamdEvent,
   Subscription,
@@ -39,14 +39,8 @@ const SUI_BALANCES: BalanceReader = {
  */
 function accountOf(sui: SuiGrpcClient, account: string): () => Promise<string> {
   const address = addressOrName(account);
-  if (address !== undefined) return () => Promise.resolve(address);
-  nameService(sui);
-  let resolved: Promise<string> | undefined;
-  return () =>
-    (resolved ??= resolveName(sui, account).catch((err: unknown) => {
-      resolved = undefined;
-      throw err;
-    }));
+  if (address === undefined) nameService(sui);
+  return lazyResolve(address, () => resolveName(sui, account));
 }
 
 /** `asset` and `account` checked at the call, so a typo fails there rather than on the first page. */
@@ -74,6 +68,7 @@ export class SuiClient extends StreamdClient {
   protected readonly sui: SuiGrpcClient;
   /** Reads balances and balance changes, which no `EventAdapter` method carries: the client's adapter when it is a `SuiAdapter`. */
   private readonly ledger: SuiAdapter;
+  private readonly sharedTransfers: SharedFetches;
 
   constructor(config: SuiClientConfig) {
     const given: unknown = config?.sui;
@@ -87,7 +82,26 @@ export class SuiClient extends StreamdClient {
     super({ ...rest, adapter: config.adapter ?? new SuiAdapter(sui) });
     this.sui = sui;
     this.ledger = this.adapter instanceof SuiAdapter ? this.adapter : new SuiAdapter(sui);
+    this.sharedTransfers = new SharedFetches(
+      {
+        fetchEvents: (descriptor, options) => {
+          const [assetTag = "", accountTag = ""] = (descriptor as ModuleEventDescriptor).eventType as readonly string[];
+          const asset = assetTag.slice("0x0::asset::".length);
+          const account = accountTag.slice("0x0::account::".length);
+          return this.ledger.fetchTransfers(options, {
+            ...(asset !== "" && { asset }),
+            ...(account !== "" && { account }),
+          });
+        },
+      },
+      this.requestTimeout,
+    );
     this.names.serve((address) => primaryName(sui, address));
+  }
+
+  override destroy(): void {
+    this.sharedTransfers.clear();
+    super.destroy();
   }
 
   /**
@@ -115,8 +129,17 @@ export class SuiClient extends StreamdClient {
    */
   transfers(callback: EventCallback<Transfer>, options: SuiTransferListenerOptions = {}): Subscription {
     const { asset, account, withAssetInfo, ...rest } = options;
-    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo);
+    const shared = this.sharedTransfers.view(rest.pollInterval ?? this.defaults.pollInterval!);
+    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo, this.requestTimeout, shared);
     return this.subscribe(TRANSFER_DESCRIPTOR, callback as EventCallback, rest, undefined, rest.id, () => source);
+  }
+
+  private transferQuery(
+    filter: SuiTransferFilter = {},
+  ): [EventQuery, Omit<SuiTransferFilter, "asset" | "account" | "withAssetInfo">] {
+    const { asset, account, withAssetInfo, ...rest } = filter;
+    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo, this.requestTimeout);
+    return [new EventQuery(source, this.limiter, this.names), rest];
   }
 
   /**
@@ -124,9 +147,17 @@ export class SuiClient extends StreamdClient {
    * options `getEvents` takes; `where` and `limit` apply to the records.
    */
   async getTransfers(filter: SuiTransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
-    const { asset, account, withAssetInfo, ...rest } = filter;
-    const source = transferSource(this.ledger, transferFilter(this.sui, { asset, account }), withAssetInfo);
-    return new EventQuery(source, this.limiter, this.names).getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
+    const [query, rest] = this.transferQuery(filter);
+    return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
+  }
+
+  /**
+   * Past transfers one at a time, built as `getTransfers()` builds them;
+   * leaving the loop early fetches nothing further.
+   */
+  async *iterateTransfers(filter: SuiTransferFilter = {}): AsyncGenerator<StreamdEvent<Transfer>, void, unknown> {
+    const [query, rest] = this.transferQuery(filter);
+    yield* query.iterateEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
   /**
@@ -166,20 +197,22 @@ export class SuiClient extends StreamdClient {
    *
    * Rejects with `StreamdTransactionError` (carrying the execution error as
    * `vmStatus`) when the transaction failed; with `StreamdTimeoutError` when
-   * it is not checkpointed within `timeout`; with `signal.reason` on abort;
-   * and at once with any lookup error.
+   * it is not checkpointed within `timeout` (after retrying `429` and `5xx`
+   * lookup errors and honouring `Retry-After`, naming the last error in its
+   * message and `cause`); with `signal.reason` on abort; and at once with any
+   * other lookup error.
    */
-  async eventsOf<TData = unknown>(
+  async eventsOf<TData = unknown, TEvent = StreamdEvent<TData>>(
     digest: string,
-    descriptor?: EventDescriptor<TData>,
+    descriptor?: EventDescriptor<TData, TEvent>,
     options: EventsOfOptions = {},
-  ): Promise<EventOf<TData>[]> {
+  ): Promise<TEvent[]> {
     requireDigest(digest);
     const badTimeout = checkTimeout(options.timeout);
     if (badTimeout !== undefined) throw badTimeout;
-    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor);
+    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor as EventDescriptor);
     const events = await eventsOf(this.adapter, this.limiter, this.defaults.pollInterval!, digest, normal, options);
-    return events as unknown as EventOf<TData>[];
+    return events as unknown as TEvent[];
   }
 
   /**
@@ -197,7 +230,8 @@ export class SuiClient extends StreamdClient {
     if (badTimeout !== undefined) throw badTimeout;
     const inner = expectEvents(this.adapter, this.limiter, this.defaults.pollInterval!, digest, options);
     return {
-      toEmit: async (descriptor, where) => inner.toEmit(suiDescriptor(descriptor) as typeof descriptor, where),
+      toEmit: async (descriptor, where) =>
+        inner.toEmit(suiDescriptor(descriptor as EventDescriptor) as typeof descriptor, where),
       notToEmit: async (descriptor, where) => inner.notToEmit(suiDescriptor(descriptor), where),
     };
   }
@@ -212,15 +246,15 @@ export class SuiClient extends StreamdClient {
    * Rejects with `StreamdTransactionError` (carrying the execution error as
    * `vmStatus`) when the simulation fails, and with any simulation error as it is.
    */
-  async previewEvents<TData = unknown>(
+  async previewEvents<TData = unknown, TEvent = StreamdEvent<TData>>(
     bytes: Uint8Array,
-    descriptor?: EventDescriptor<TData>,
+    descriptor?: EventDescriptor<TData, TEvent>,
     options: Pick<EventsOfOptions, "decode" | "where"> = {},
-  ): Promise<EventOf<TData>[]> {
+  ): Promise<TEvent[]> {
     const transaction = requireTransactionBytes(bytes);
-    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor);
+    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor as EventDescriptor);
     const events = await previewEvents(this.adapter, this.limiter, { transaction }, normal, options);
-    return events as unknown as EventOf<TData>[];
+    return events as unknown as TEvent[];
   }
 
   /**
@@ -234,7 +268,8 @@ export class SuiClient extends StreamdClient {
   expectPreview(bytes: Uint8Array, options: Pick<ExpectEventsOptions, "decode"> = {}): EventExpectation {
     const inner = expectPreview(this.adapter, this.limiter, { transaction: requireTransactionBytes(bytes) }, options);
     return {
-      toEmit: async (descriptor, where) => inner.toEmit(suiDescriptor(descriptor) as typeof descriptor, where),
+      toEmit: async (descriptor, where) =>
+        inner.toEmit(suiDescriptor(descriptor as EventDescriptor) as typeof descriptor, where),
       notToEmit: async (descriptor, where) => inner.notToEmit(suiDescriptor(descriptor), where),
     };
   }

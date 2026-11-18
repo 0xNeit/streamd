@@ -11,12 +11,12 @@ import type {
   TransactionCallback,
   TransactionGroup,
 } from "./types.js";
-import type { Delivery } from "./poller.js";
+import { DEFAULT_BATCH_SIZE, type Delivery } from "./poller.js";
 import { StreamdError } from "./errors.js";
 import { sameValue } from "./compare.js";
 import { CursorManager } from "./cursor.js";
 import { isThenable } from "./filter.js";
-import { ASYNC_DISPOSE } from "./utils.js";
+import { ASYNC_DISPOSE, onAbort } from "./utils.js";
 
 /** What `onTransaction()` needs from its client. */
 export interface TransactionHost {
@@ -31,6 +31,7 @@ export interface TransactionHost {
     id: string | undefined,
     wrap: ((source: EventAdapter) => EventAdapter) | undefined,
   ): Subscription;
+  track: (stop: () => void) => () => void;
 }
 
 function highestOf(page: EventPage): bigint | undefined {
@@ -60,6 +61,22 @@ function boundOf(
   const highest = highestOf(page);
   if (!page.hasMore) return max(max(previous, highest), known) ?? -1n;
   return highest === undefined ? previous : highest - 1n;
+}
+
+/** Insert `version` into sorted ascending `versions` if not already present at a fast tail check. */
+function insertVersion(versions: bigint[], version: bigint): void {
+  if (versions.length === 0 || version > versions[versions.length - 1]!) {
+    versions.push(version);
+    return;
+  }
+  let lo = 0;
+  let hi = versions.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (versions[mid]! < version) lo = mid + 1;
+    else hi = mid;
+  }
+  if (versions[lo] !== version) versions.splice(lo, 0, version);
 }
 
 /** The lowest of the walks' bounds, or `undefined` while any walk has none. */
@@ -137,7 +154,9 @@ export function startTransactions(
     throw new StreamdError("cursor cannot resume several descriptors; pass one descriptor");
   }
 
+  const maxBuffered = (options.batchSize ?? host.defaults.batchSize ?? DEFAULT_BATCH_SIZE) * 4;
   const buffer = new Map<bigint, Map<number, StreamdEvent>>();
+  const versions: bigint[] = [];
   const released = new CursorManager(undefined, options.dedupWindow ?? host.defaults.dedupWindow);
   const bounds: (bigint | undefined)[] = descriptors.map(() => undefined);
   // The highest version any walk has reached, and its value as each walk's fetch started.
@@ -147,6 +166,9 @@ export function startTransactions(
   const walks: Subscription[] = [];
   let checkpoint = options.cursor;
   let releasing = Promise.resolve();
+  let waiters: (() => void)[] = [];
+  let untrack = () => {};
+  let detachAbort = () => {};
 
   const report = (error: Error) => {
     try {
@@ -158,8 +180,23 @@ export function startTransactions(
     }
   };
   const live = () => walks.length === descriptors.length && walks.every((w) => w.active);
+  const wake = () => {
+    if (waiters.length === 0) return;
+    const list = waiters;
+    waiters = [];
+    for (const resolve of list) resolve();
+  };
+  const waitDrain = () => new Promise<void>((resolve) => waiters.push(resolve));
+  const ahead = (walk: number) => {
+    const mine = bounds[walk];
+    if (mine === undefined) return false;
+    return bounds.some((b) => b === undefined || b < mine);
+  };
   const end = () => {
+    untrack();
+    detachAbort();
     for (const w of walks) w.unsubscribe();
+    wake();
   };
 
   const deliver = async (groups: TransactionGroup[]) => {
@@ -174,41 +211,57 @@ export function startTransactions(
 
   // Serialised through `releasing`, so walks never deliver alongside each other.
   const release = async (nextCursor: string | undefined) => {
-    const limit = lowest(bounds);
-    if (limit === undefined) return;
-    const ready = [...buffer.keys()]
-      .filter((v) => v <= limit)
-      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
-    const take = (version: bigint) => {
-      const events = [...buffer.get(version)!.values()].sort((a, b) => a.eventIndex - b.eventIndex);
-      buffer.delete(version);
-      for (const e of events) released.mark(e);
-      return groupOf(version, events);
-    };
-    if (typeof callback !== "function") {
-      // A batch takes everything released at once.
-      if (ready.length > 0 && live()) await deliver(ready.map(take));
-    } else {
-      for (const version of ready) {
-        // A pause or stop between groups leaves the rest buffered.
-        if (!live()) return;
-        await deliver([take(version)]);
+    try {
+      const limit = lowest(bounds);
+      if (limit === undefined) return;
+      const ready: bigint[] = [];
+      for (const v of versions) {
+        if (v > limit) break;
+        ready.push(v);
       }
+      const take = (version: bigint) => {
+        const events = [...buffer.get(version)!.values()].sort((a, b) => a.eventIndex - b.eventIndex);
+        buffer.delete(version);
+        const idx = versions.indexOf(version);
+        if (idx !== -1) versions.splice(idx, 1);
+        for (const e of events) released.mark(e);
+        return groupOf(version, events);
+      };
+      if (typeof callback !== "function") {
+        // A batch takes everything released at once.
+        if (ready.length > 0 && live()) await deliver(ready.map(take));
+      } else {
+        for (const version of ready) {
+          // A pause or stop between groups leaves the rest buffered.
+          if (!live()) return;
+          await deliver([take(version)]);
+        }
+      }
+      if (single && buffer.size === 0 && live() && nextCursor !== undefined) checkpoint = nextCursor;
+    } finally {
+      wake();
     }
-    if (single && buffer.size === 0 && live() && nextCursor !== undefined) checkpoint = nextCursor;
   };
 
-  const ingest = (walk: number, events: StreamdEvent[], page: EventPage) => {
+  const ingest = async (walk: number, events: StreamdEvent[], page: EventPage) => {
     for (const e of events) {
       if (released.hasSeen(e)) continue;
       let tx = buffer.get(e.version);
-      if (tx === undefined) buffer.set(e.version, (tx = new Map()));
+      if (tx === undefined) {
+        buffer.set(e.version, (tx = new Map()));
+        insertVersion(versions, e.version);
+      }
       tx.set(e.eventIndex, e);
     }
     bounds[walk] = boundOf(page, bounds[walk], known[walk]);
     seen = max(seen, highestOf(page));
-    releasing = releasing.then(() => release(page.nextCursor));
-    return releasing;
+    const done = releasing.then(() => release(page.nextCursor));
+    releasing = done;
+    await done;
+    // Wait outside `releasing` so slower walks can release and drain the buffer.
+    while (!single && live() && !walks.some((w) => w.paused) && buffer.size > maxBuffered && ahead(walk)) {
+      await waitDrain();
+    }
   };
 
   descriptors.forEach((d, walk) => {
@@ -234,6 +287,11 @@ export function startTransactions(
     walks.push(sub);
   });
 
+  if (live()) {
+    untrack = host.track(end);
+    detachAbort = onAbort(options.signal, end);
+  }
+
   const allCaughtUp = Promise.all(walks.map((w) => w.caughtUp)).then(() => {});
   allCaughtUp.catch(() => {});
 
@@ -252,7 +310,10 @@ export function startTransactions(
       return single ? { ...walks[0]!.status, cursor: checkpoint } : combinedStatus(walks, live());
     },
     caughtUp: allCaughtUp,
-    pause: () => walks.forEach((w) => w.pause()),
+    pause: () => {
+      walks.forEach((w) => w.pause());
+      wake();
+    },
     resume: () => walks.forEach((w) => w.resume()),
     unsubscribe: end,
     [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: end,

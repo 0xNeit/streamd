@@ -348,6 +348,48 @@ describe("proposals", () => {
     client.destroy();
   });
 
+  it("filters forged creations and resolutions on the live module walk", async () => {
+    const forgedCreate = {
+      ...votingCreate(50, "1"),
+      data: {
+        ...(votingCreate(50, "1").data as object),
+        expiration_secs: "5",
+        metadata: { data: [{ key: "metadata_location", value: hex("https://evil.example") }] },
+      },
+    };
+    const { adapter, memories, views } = walks([...LEGACY, [votingCreate(40, "1"), governanceCreate(40, "1")]], []);
+    const client = testClient({ adapter });
+    const changes: [bigint, bigint, bigint][] = [];
+    const errors: Error[] = [];
+    const tracker = client.proposals({
+      pollInterval: 1,
+      onError: (e) => errors.push(e),
+      onChange: (p, e) => changes.push([p.id, p.yesVotes, e.version]),
+    });
+    await tracker.ready;
+    expect(changes).toEqual([]);
+    memories[4]!.push(
+      forgedCreate,
+      resolve(60, "1", "0", "9"),
+      resolve(65, "5000", "1", "0"),
+      vote(70, "1", "0xd", "3", true),
+    );
+    await until(() => changes.length > 0);
+    await settle();
+    expect(changes).toEqual([[1n, 3n, 70n]]);
+    expect(tracker.get(1n)).toMatchObject({
+      expirationSecs: 1000n,
+      metadata: { metadata_location: "https://example.com/p.json" },
+      yesVotes: 3n,
+    });
+    expect(tracker.get(1n)!.resolution).toBeUndefined();
+    expect(views).toContain("0x1::voting::next_proposal_id:undefined");
+    expect(views.some((v) => v.endsWith(":5000"))).toBe(false);
+    expect(errors).toEqual([]);
+    tracker.unsubscribe();
+    client.destroy();
+  });
+
   it("resolves an empty map when there are no governance events", async () => {
     const client = testClient({ adapter: walks().adapter });
     expect((await client.proposals().ready).size).toBe(0);

@@ -1,11 +1,10 @@
 import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, requireAddress, eventsAt, expectEvents, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
+import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, lazyResolve, requireAddress, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
   EventDescriptor,
   EventFilter,
-  EventOf,
   StreamdConfig,
   StreamdEvent,
   Subscription,
@@ -309,7 +308,7 @@ export class AptosClient extends StreamdClient {
    * which trails the fullnode by hundreds of versions, so the live head is
    * its processed version; each is read through the adapter's
    * `getTransactionEventsByVersion`, one at a time and outside
-   * `maxConcurrentRequests`, within the page's `requestTimeout`. Under
+   * `maxConcurrentRequests`, with `requestTimeout` bounding each read. Under
    * `withNames`, `names` holds the sender's and every action address's
    * primary name. Like `activity()`, it is not a listener for `off()` or
    * `listenerCount()`.
@@ -343,17 +342,26 @@ export class AptosClient extends StreamdClient {
     }
     const ttl = this.names.ttl(withNames);
     const name = ttl === undefined ? undefined : (a: string) => this.names.nameWithinSlot(a, ttl);
-    const source = provenanceSource(indexer ?? new IndexerAccountAdapter(this.aptos), this.adapter, address, name);
+    const source = provenanceSource(
+      indexer ?? new IndexerAccountAdapter(this.aptos),
+      this.adapter,
+      address,
+      name,
+      this.requestTimeout,
+    );
     return [provenanceDescriptor(address), source] as const;
   }
 
   /**
    * Keep one wallet's balances current, by reading each at the head every
-   * `pollInterval`, so it cannot drift or fall behind. `asset` names what to
-   * follow, one or a list, since no view lists a wallet's assets; without
-   * it, APT is followed. `address` may be an Aptos name. Like `reduce()`, it
-   * is not a listener for `off()`
-   * or `listenerCount()`; `destroy()` ends it.
+   * `pollInterval` (one head read plus one view per followed asset per poll;
+   * default 1000ms), so it cannot drift or fall behind. Even one asset at the
+   * default interval makes 2 requests per second and needs an API key or a
+   * higher `pollInterval` (such as 5000ms) on the anonymous fullnode. `asset`
+   * names what to follow, one or a list, since no view lists a wallet's assets;
+   * without it, APT is followed. `address` may be an Aptos name. Like
+   * `reduce()`, it is not a listener for `off()` or `listenerCount()`;
+   * `destroy()` ends it.
    */
   balances(address: string, options?: BalancesOptions): Balances {
     if (address === undefined) throw new StreamdError("balances needs an address or Aptos name");
@@ -438,22 +446,12 @@ export class AptosClient extends StreamdClient {
    */
   private accountOf(account: string | undefined): (() => Promise<string>) | undefined {
     if (account === undefined) return undefined;
-    const address = addressOrName(account);
-    if (address !== undefined) return () => Promise.resolve(address);
-    const aptos = this.aptos;
-    let resolved: Promise<string> | undefined;
-    return () =>
-      (resolved ??= resolveName(aptos, account).catch((err: unknown) => {
-        resolved = undefined;
-        throw err;
-      }));
+    return lazyResolve(addressOrName(account), () => resolveName(this.aptos, account));
   }
 
-  /**
-   * Past transfers, built as `transfers()` builds them, over the range and
-   * options `getEvents` takes; `where` and `limit` apply to the records.
-   */
-  async getTransfers(filter: TransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
+  private transferQuery(
+    filter: TransferFilter = {},
+  ): [EventQuery, Omit<TransferFilter, "asset" | "account" | "withAssetInfo">] {
     const { asset, account, withAssetInfo, ...rest } = filter;
     const source = transferSource(
       this.adapter,
@@ -462,8 +460,25 @@ export class AptosClient extends StreamdClient {
       withAssetInfo,
       this.requestTimeout,
     );
-    const query = new EventQuery(source, this.limiter, this.names);
+    return [new EventQuery(source, this.limiter, this.names), rest];
+  }
+
+  /**
+   * Past transfers, built as `transfers()` builds them, over the range and
+   * options `getEvents` takes; `where` and `limit` apply to the records.
+   */
+  async getTransfers(filter: TransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
+    const [query, rest] = this.transferQuery(filter);
     return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
+  }
+
+  /**
+   * Past transfers one at a time, built as `getTransfers()` builds them;
+   * leaving the loop early fetches nothing further.
+   */
+  async *iterateTransfers(filter: TransferFilter = {}): AsyncGenerator<StreamdEvent<Transfer>, void, unknown> {
+    const [query, rest] = this.transferQuery(filter);
+    yield* query.iterateEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
   /**
@@ -476,14 +491,16 @@ export class AptosClient extends StreamdClient {
    *
    * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
    * transaction failed, as its events were discarded on chain; with
-   * `StreamdTimeoutError` when it is not committed within `timeout`; with
-   * `signal.reason` on abort; and at once with any lookup error.
+   * `StreamdTimeoutError` when it is not committed within `timeout` (after
+   * retrying `429` and `5xx` lookup errors and honouring `Retry-After`, naming
+   * the last error in its message and `cause`); with `signal.reason` on abort;
+   * and at once with any other lookup error.
    */
-  async eventsOf<TData = unknown>(
+  async eventsOf<TData = unknown, TEvent = StreamdEvent<TData>>(
     transactionHash: string,
-    descriptor?: EventDescriptor<TData>,
+    descriptor?: EventDescriptor<TData, TEvent>,
     options: EventsOfOptions = {},
-  ): Promise<EventOf<TData>[]> {
+  ): Promise<TEvent[]> {
     const badTimeout = checkTimeout(options.timeout);
     if (badTimeout !== undefined) throw badTimeout;
     const events = await eventsOf(
@@ -491,10 +508,10 @@ export class AptosClient extends StreamdClient {
       this.limiter,
       this.defaults.pollInterval!,
       transactionHash,
-      descriptor,
+      descriptor as EventDescriptor | undefined,
       options,
     );
-    return events as unknown as EventOf<TData>[];
+    return events as unknown as TEvent[];
   }
 
   /**
@@ -510,13 +527,19 @@ export class AptosClient extends StreamdClient {
    * answers it from an archive); with `signal.reason` on abort; and at once
    * with any lookup error. Bad input is refused before the lookup.
    */
-  async eventsAt<TData = unknown>(
+  async eventsAt<TData = unknown, TEvent = StreamdEvent<TData>>(
     version: bigint,
-    descriptor?: EventDescriptor<TData>,
+    descriptor?: EventDescriptor<TData, TEvent>,
     options: EventsAtOptions = {},
-  ): Promise<EventOf<TData>[]> {
-    const events = await eventsAt(this.adapter, this.limiter, version, descriptor, options);
-    return events as unknown as EventOf<TData>[];
+  ): Promise<TEvent[]> {
+    const events = await eventsAt(
+      this.adapter,
+      this.limiter,
+      version,
+      descriptor as EventDescriptor | undefined,
+      options,
+    );
+    return events as unknown as TEvent[];
   }
 
   /**
@@ -552,13 +575,19 @@ export class AptosClient extends StreamdClient {
    * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
    * simulation fails, and with any simulation error as it is.
    */
-  async previewEvents<TData = unknown>(
+  async previewEvents<TData = unknown, TEvent = StreamdEvent<TData>>(
     transaction: SimpleTransaction | MultiAgentTransaction,
-    descriptor?: EventDescriptor<TData>,
+    descriptor?: EventDescriptor<TData, TEvent>,
     options: PreviewEventsOptions = {},
-  ): Promise<EventOf<TData>[]> {
-    const events = await previewEvents(this.adapter, this.limiter, transaction, descriptor, options);
-    return events as unknown as EventOf<TData>[];
+  ): Promise<TEvent[]> {
+    const events = await previewEvents(
+      this.adapter,
+      this.limiter,
+      transaction,
+      descriptor as EventDescriptor | undefined,
+      options,
+    );
+    return events as unknown as TEvent[];
   }
 
   /**

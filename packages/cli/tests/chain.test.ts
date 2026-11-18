@@ -1,7 +1,10 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "bun:test";
 import { AptosClient, FullnodeScanAdapter } from "@streamd/aptos";
 import { SuiAdapter, SuiClient } from "@streamd/sui";
-import { ArchiveFallbackAdapter, PoolAdapter, StreamdNetworkError } from "@streamd/core";
+import { ArchiveFallbackAdapter, PoolAdapter, StreamdNetworkError, StreamdTimeoutError } from "@streamd/core";
 import type { EventPage } from "@streamd/core";
 import { chainFor, readThrough, sendOnce } from "../src/chain.js";
 import { isMissingModule } from "../src/sui.js";
@@ -22,12 +25,45 @@ async function reached(adapter: { getHeadVersion(): Promise<bigint> }): Promise<
   return urls;
 }
 
+/** The fullnode URL behind an Aptos adapter, or behind each node of a pool, read from their configs. */
+type Node = { nodes?: Node[]; primary?: Node; archive?: Node; aptos?: { config: { fullnode?: string; clientConfig?: { API_KEY?: string } } } };
+const nodesOf = (adapter: unknown): Node[] => {
+  const { nodes, primary, archive } = adapter as Node;
+  if (primary !== undefined) return [...nodesOf(primary), ...nodesOf(archive)];
+  return nodes ?? [adapter as Node];
+};
+const fullnodes = (adapter: unknown) => nodesOf(adapter).map((n) => n.aptos?.config.fullnode);
+const keys = (adapter: unknown) => nodesOf(adapter).map((n) => n.aptos?.config.clientConfig?.API_KEY);
+
 describe("chainFor", () => {
   it("gives an Aptos client and fullnode adapters by default", async () => {
     const chain = await chainFor({ network: "mainnet" });
     expect(chain.client()).toBeInstanceOf(AptosClient);
     expect(chain.adapter()).toBeInstanceOf(FullnodeScanAdapter);
     expect(chain.adapter("https://b.example/v1")).toBeInstanceOf(FullnodeScanAdapter);
+  });
+
+  it("routes Aptos adapters to the named nodes and sends the API key to the first node only", async () => {
+    const chain = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1", apiKey: "k" });
+    const primary = chain.adapter();
+    const against = chain.adapter("https://b.example/v1");
+    expect(fullnodes(primary)).toEqual(["https://a.example/v1"]);
+    expect(keys(primary)).toEqual(["k"]);
+    expect(fullnodes(against)).toEqual(["https://b.example/v1"]);
+    expect(keys(against)).toEqual([undefined]);
+
+    const seen: { url: string; auth: string | null }[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      seen.push({ url: String(input), auth: new Headers(init?.headers).get("authorization") });
+      return Response.json({ ledger_version: "42", oldest_ledger_version: "0", block_height: "7", oldest_block_height: "0" });
+    }) as unknown as typeof fetch;
+
+    await primary.getHeadVersion();
+    await against.getHeadVersion();
+    expect(seen).toEqual([
+      { url: "https://a.example/v1", auth: "Bearer k" },
+      { url: "https://b.example/v1", auth: null },
+    ]);
   });
 
   it("gives a SuiClient and SuiAdapters on the preset, a --node-url and an --against URL", async () => {
@@ -53,16 +89,6 @@ function fakeNode(name: string) {
     getHeadVersion: async () => 1n,
   };
 }
-
-/** The fullnode URL behind an Aptos adapter, or behind each node of a pool, read from their configs. */
-type Node = { nodes?: Node[]; primary?: Node; archive?: Node; aptos?: { config: { fullnode?: string; clientConfig?: { API_KEY?: string } } } };
-const nodesOf = (adapter: unknown): Node[] => {
-  const { nodes, primary, archive } = adapter as Node;
-  if (primary !== undefined) return [...nodesOf(primary), ...nodesOf(archive)];
-  return nodes ?? [adapter as Node];
-};
-const fullnodes = (adapter: unknown) => nodesOf(adapter).map((n) => n.aptos?.config.fullnode);
-const keys = (adapter: unknown) => nodesOf(adapter).map((n) => n.aptos?.config.clientConfig?.API_KEY);
 
 const TYPE = { kind: "module", eventType: "0x1::coin::DepositEvent" } as const;
 
@@ -195,6 +221,56 @@ describe("chainFor nodes", () => {
     expect(await a!.getBlockHeights!(TYPE)).toEqual({ oldest: 0n, newest: 7n });
   });
 
+  it("lets client().eventsOf honour timeout on 429 Retry-After: 120 without stalling in SDK retries", async () => {
+    const HASH = `0x${"ab".repeat(32)}`;
+    const client = (await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1" })).client();
+    let calls = 0;
+    globalThis.fetch = (async () => {
+      calls++;
+      return new Response(JSON.stringify({ message: "rate limited" }), {
+        status: 429,
+        headers: { "retry-after": "120" },
+      });
+    }) as unknown as typeof fetch;
+
+    const started = performance.now();
+    const err = await client.eventsOf(HASH, undefined, { timeout: 60 }).catch((e: unknown) => e);
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(calls).toBe(1);
+    expect(err).toBeInstanceOf(StreamdTimeoutError);
+    expect((err as StreamdTimeoutError).message).toContain("last error:");
+    expect((err as StreamdTimeoutError).cause).toMatchObject({ statusCode: 429, retryAfter: 120_000 });
+
+    let attempt = 0;
+    globalThis.fetch = (async () => {
+      attempt++;
+      if (attempt === 1) {
+        return new Response("slow down", { status: 429, headers: { "retry-after": "0" } });
+      }
+      return Response.json({
+        type: "user_transaction",
+        version: "9",
+        hash: HASH,
+        sender: "0x1",
+        timestamp: "1700000000000000",
+        success: true,
+        vm_status: "Executed successfully",
+        events: [
+          {
+            type: "0x1::coin::DepositEvent",
+            data: { amount: "1" },
+            sequence_number: "0",
+            guid: { creation_number: "0", account_address: "0x0" },
+          },
+        ],
+      });
+    }) as unknown as typeof fetch;
+
+    const events = await client.eventsOf(HASH, undefined, { timeout: 2000 });
+    expect(attempt).toBe(2);
+    expect(events).toHaveLength(1);
+  });
+
   it("encodes params, drops unset headers, falls back to text, and abandons a request after the timeout", async () => {
     const requests: Request[] = [];
     globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
@@ -245,5 +321,78 @@ describe("isMissingModule", () => {
     expect(isMissingModule(Object.assign(new Error("x"), { code: "ERR_MODULE_NOT_FOUND" }))).toBe(true);
     expect(isMissingModule(new Error("Cannot find package '@mysten/sui' from '/x/cli.js'"))).toBe(true);
     expect(isMissingModule(new SyntaxError("Unexpected token"))).toBe(false);
+  });
+});
+
+describe("package manifests and tarballs", () => {
+  const root = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
+
+  it("keeps @streamd/sui as an optional CLI peer and guards publishing with Bun", () => {
+    const cli = JSON.parse(readFileSync(resolve(root, "packages/cli/package.json"), "utf8")) as {
+      dependencies: Record<string, string>;
+      devDependencies: Record<string, string>;
+      peerDependencies: Record<string, string>;
+      peerDependenciesMeta: Record<string, { optional?: boolean }>;
+    };
+    expect(cli.dependencies["@streamd/sui"]).toBeUndefined();
+    expect(cli.devDependencies["@streamd/sui"]).toBe("workspace:*");
+    expect(cli.peerDependencies["@streamd/sui"]).toBe("^0.1.0");
+    expect(cli.peerDependenciesMeta["@streamd/sui"]).toEqual({ optional: true });
+    const cleanEnv = Object.fromEntries(
+      Object.entries(process.env).filter(([k]) => !k.startsWith("npm_")),
+    );
+    for (const dir of ["packages/core", "packages/cli"]) {
+      const cwd = resolve(root, dir);
+      const ok = Bun.spawnSync(["bun", "run", "prepublishOnly"], {
+        cwd,
+        env: cleanEnv,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(ok.exitCode).toBe(0);
+
+      const cleanNpm = Bun.spawnSync(["npm", "run", "prepublishOnly"], {
+        cwd,
+        env: cleanEnv,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(cleanNpm.exitCode).toBe(1);
+      expect(new TextDecoder().decode(cleanNpm.stderr)).toContain("bun publish");
+
+      const nestedNpm = Bun.spawnSync(["npm", "run", "prepublishOnly"], {
+        cwd,
+        env: { ...cleanEnv, npm_config_user_agent: "bun/1.3.10 npm/? node/v24.3.0" },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(nestedNpm.exitCode).toBe(1);
+      expect(new TextDecoder().decode(nestedNpm.stderr)).toContain("bun publish");
+
+      const winBun = Bun.spawnSync(["bun", "run", "prepublishOnly"], {
+        cwd,
+        env: {
+          ...cleanEnv,
+          npm_config_user_agent: "bun/1.4.3 npm/? node/v24.3.0 win32 x64",
+          npm_execpath: "C:\\Users\\runner\\.bun\\bin\\bun.exe",
+        },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      expect(winBun.exitCode).toBe(0);
+    }
+  });
+
+  it("includes README.md and LICENSE in @streamd/core and @streamd/cli tarballs", () => {
+    for (const pkg of ["packages/core", "packages/cli"]) {
+      const dir = resolve(root, pkg);
+      expect(existsSync(resolve(dir, "README.md"))).toBe(true);
+      expect(existsSync(resolve(dir, "LICENSE"))).toBe(true);
+      const pack = Bun.spawnSync(["bun", "pm", "pack", "--dry-run"], { cwd: dir });
+      expect(pack.exitCode).toBe(0);
+      const output = pack.stdout.toString() + pack.stderr.toString();
+      expect(output).toContain("README.md");
+      expect(output).toContain("LICENSE");
+    }
   });
 });

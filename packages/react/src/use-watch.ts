@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { requireAddress, type EventOf, type StreamdClient, type Watch, type WatchOptions } from "@streamd/core";
+import { requireAddress, type StreamdClient, type StreamdEvent, type Watch, type WatchOptions } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
 import { DEFAULT_MAX_EVENTS, useFollowing, type UseEventsStatus } from "./follow.js";
 import { valueKey } from "./key.js";
@@ -13,14 +13,14 @@ export interface UseWatchOptions extends Omit<WatchOptions, "signal"> {
 }
 
 /** One delivered event and the watched address whose walk delivered it, as the list first gave it. */
-export interface WatchedEvent<TData> {
-  event: EventOf<TData>;
+export interface WatchedEvent<TData, TEvent = StreamdEvent<TData>> {
+  event: TEvent;
   address: string;
 }
 
-export interface UseWatchResult<TData> {
+export interface UseWatchResult<TData, TEvent = StreamdEvent<TData>> {
   /** The most recent `maxEvents` deliveries, oldest first. */
-  data: WatchedEvent<TData>[];
+  data: WatchedEvent<TData, TEvent>[];
   /** The last polling or handler error, cleared when an event next arrives. */
   error: Error | undefined;
   /** `idle` with no list or before mount, else `live`: a watch never stops on its own. */

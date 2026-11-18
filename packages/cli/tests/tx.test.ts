@@ -53,17 +53,35 @@ describe("runTx", () => {
     expect(errors).toEqual(["streamd: transaction failed at version 9: Move abort in 0x1::coin: EINSUFFICIENT_BALANCE"]);
   });
 
-  it("exits 1 when it is not found in time, or the node fails", async () => {
+  it("exits 1 when it is not found in time, includes last rate-limit error, or recovers when retried", async () => {
     const late = await run(async () => {
       throw new StreamdTimeoutError("not committed within 500ms", 500);
     });
     expect(late.code).toBe(1);
     expect(late.errors[0]).toContain("not committed");
+    const throttled = await run(async () => {
+      throw new StreamdTimeoutError(
+        `Transaction ${HASH} not found after 500ms (last error: Fullnode request for transaction by hash failed: 429)`,
+        500,
+        new StreamdNetworkError("429", 429, undefined, 120_000),
+      );
+    });
+    expect(throttled.code).toBe(1);
+    expect(throttled.errors[0]).toContain("last error:");
     const down = await run(async () => {
       throw new StreamdNetworkError("fullnode down", 503);
     });
     expect(down.code).toBe(1);
     expect(down.errors).toEqual(["streamd: fullnode down"]);
+
+    let attempts = 0;
+    const recovered = await run(async () => {
+      attempts++;
+      return [ev(0)];
+    });
+    expect(recovered.code).toBe(0);
+    expect(attempts).toBe(1);
+    expect(recovered.lines).toHaveLength(1);
   });
 
   it("exits 130, quietly, when interrupted while waiting", async () => {

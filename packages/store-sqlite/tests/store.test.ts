@@ -301,4 +301,15 @@ describe("SqliteEventStore transfers", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it("recreates streamd_transfers when a caller rolls back the first writeTransfers", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    db.exec("BEGIN");
+    store.writeTransfers([tr(1n, 0)]);
+    db.exec("ROLLBACK");
+    store.writeTransfers([tr(2n, 0)], { name: "t", cursor: "c1" });
+    expect(transferRows(db).map((r) => r.version)).toEqual([versionKey(2n)]);
+    expect(store.readCursor("t")).toBe("c1");
+  });
 });

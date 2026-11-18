@@ -1,5 +1,22 @@
-import { DEFAULT_LIMIT, StreamdError, StreamdNetworkError, normalizeAddress, parseCursor } from "@streamd/core";
-import type { EventAdapter, EventPage, ResourceChange, ResourceDescriptor, StreamdEvent, TransactionEvents } from "@streamd/core";
+import {
+  DEFAULT_LIMIT,
+  RequestLimiter,
+  StreamdError,
+  StreamdNetworkError,
+  markDescending,
+  markSelfTimed,
+  normalizeAddress,
+  parseCursor,
+} from "@streamd/core";
+import type {
+  EventAdapter,
+  EventPage,
+  FetchOptions,
+  ResourceChange,
+  ResourceDescriptor,
+  StreamdEvent,
+  TransactionEvents,
+} from "@streamd/core";
 import { addr, malformed, object, type Fields } from "./records.js";
 import type { Provenance, ProvenanceAction, TokenProperty, TransactionLister } from "./types.js";
 
@@ -168,69 +185,128 @@ async function withNames(
   return { ...record, data: { ...record.data, names: Object.fromEntries(names) } };
 }
 
-/** Refuses a listing that is not ascending bigints in `[start, end]`, at most `limit` long, so the cursor only moves forward. */
-function requireListing(versions: unknown, start: bigint, end: bigint, limit: number): asserts versions is bigint[] {
-  let last = start - 1n;
+/** Refuses a listing that is not strictly ordered bigints in `[start, end]`, at most `limit` long, so the cursor only advances. */
+function requireListing(
+  versions: unknown,
+  start: bigint,
+  end: bigint,
+  limit: number,
+  desc: boolean,
+): asserts versions is bigint[] {
+  let prev = desc ? end + 1n : start - 1n;
   const ok =
     Array.isArray(versions) &&
     versions.length <= limit &&
-    versions.every((v) => typeof v === "bigint" && v > last && v <= end && ((last = v), true));
+    versions.every(
+      (v) =>
+        typeof v === "bigint" &&
+        (desc ? v < prev && v >= start : v > prev && v <= end) &&
+        ((prev = v), true),
+    );
   if (!ok) throw new StreamdError("indexer returned a malformed transaction listing");
+}
+
+async function readRecords(
+  versions: readonly bigint[],
+  descriptor: ResourceDescriptor,
+  object: string,
+  call: <T>(work: () => Promise<T>) => Promise<T>,
+  adapter: EventAdapter,
+  name: ((address: string) => Promise<string | null>) | undefined,
+  signal: AbortSignal,
+): Promise<StreamdEvent<Provenance>[]> {
+  const lookup = name === undefined ? undefined : (a: string) => call(() => name(a));
+  const events: StreamdEvent<Provenance>[] = [];
+  for (const version of versions) {
+    signal.throwIfAborted();
+    const found = await call(() => adapter.getTransactionEventsByVersion!(version, descriptor));
+    // The Indexer listed it, so a node without it is behind and will catch up.
+    if (found === undefined) throw new StreamdNetworkError(`Transaction ${version} is not on the node yet`);
+    const record = toProvenance(object, found);
+    events.push(lookup === undefined ? record : await withNames(record, lookup));
+  }
+  return events;
+}
+
+async function fetchProvenancePage(
+  lister: TransactionLister,
+  adapter: EventAdapter,
+  descriptor: ResourceDescriptor,
+  object: string,
+  options: FetchOptions,
+  name: ((address: string) => Promise<string | null>) | undefined,
+  call: <T>(work: () => Promise<T>) => Promise<T>,
+  signal: AbortSignal,
+): Promise<EventPage> {
+  if (options.offset !== undefined) throw new StreamdError("provenance takes no offset; start at fromVersion or a cursor");
+  if (options.orderBy !== undefined && options.orderBy !== "asc" && options.orderBy !== "desc") {
+    throw new StreamdError('orderBy must be "asc" or "desc"');
+  }
+  const wanted = options.limit ?? DEFAULT_LIMIT;
+  if (!(wanted > 0)) return { events: [], hasMore: false };
+  const head = await call(() => lister.getHeadVersion());
+  if (typeof head !== "bigint" || head < 0n) throw new StreamdError("indexer reported a malformed processed version");
+  const ceiling = options.toVersion !== undefined && options.toVersion < head ? options.toVersion : head;
+  const desc = options.orderBy === "desc";
+  const start = desc ? (options.fromVersion ?? 0n) : options.cursor !== undefined ? parseCursor(options.cursor) : (options.fromVersion ?? head);
+  const end = desc ? (options.cursor !== undefined ? parseCursor(options.cursor) : ceiling) : ceiling;
+  if (start > end) {
+    return desc
+      ? { events: [], nextCursor: (ceiling + 1n).toString(), hasMore: false, throughVersion: ceiling }
+      : { events: [], nextCursor: start.toString(), hasMore: false };
+  }
+  const limit = Math.min(wanted, LISTING);
+  const versions = await call(() =>
+    desc
+      ? lister.listTransactionVersions(object, start, end, limit, "desc")
+      : lister.listTransactionVersions(object, start, end, limit),
+  );
+  requireListing(versions, start, end, limit, desc);
+  const events = await readRecords(versions, descriptor, object, call, adapter, name, signal);
+  if (desc) {
+    const last = versions[versions.length - 1];
+    const hasMore = versions.length === limit && last !== undefined && last > start;
+    const nextCursor = hasMore ? (last - 1n).toString() : (ceiling + 1n).toString();
+    return { events, nextCursor, hasMore, throughVersion: ceiling };
+  }
+  const next = versions.length < limit ? ceiling + 1n : versions[versions.length - 1]! + 1n;
+  return { events, nextCursor: next.toString(), hasMore: next <= ceiling, throughVersion: next - 1n };
 }
 
 /**
  * Pages of provenance records for `object` (long form): each page lists up
- * to `limit` versions from `lister`, from the cursor, `fromVersion` or its
- * processed version, through `toVersion` or that version, and reads each
- * one through `adapter.getTransactionEventsByVersion`, one at a time, so an
- * archive behind it answers pruned ones. The page fetch holds the client's
- * slot, whose `requestTimeout` bounds the whole page; the reads themselves
- * go straight to `adapter`. The cursor is the next version to list.
+ * to `limit` versions from `lister` (ascending from `fromVersion`/head or
+ * descending from `toVersion`/head for `orderBy: "desc"`) and reads each one
+ * through `adapter.getTransactionEventsByVersion`, one at a time, so an archive
+ * behind it answers pruned ones. The page fetch holds one slot of the client's
+ * limiter while each internal read is bounded individually by `requestTimeout`.
  */
 export function provenanceSource(
   lister: TransactionLister,
   adapter: EventAdapter,
   object: string,
   name?: (address: string) => Promise<string | null>,
+  requestTimeout?: number,
 ): EventAdapter {
   if (typeof adapter.getTransactionEventsByVersion !== "function") {
     throw new StreamdError("provenance needs an adapter that implements getTransactionEventsByVersion");
   }
   const descriptor = provenanceDescriptor(object);
+  const limiter = new RequestLimiter(Infinity, Infinity, requestTimeout);
+  const bound = <T>(work: () => Promise<T>, signal?: AbortSignal) => limiter.run(work, signal, signal);
   // Pages are read one at a time, so one still reading when the next starts
   // was given up on (timed out or aborted), and it reads no more.
   let page = new AbortController();
   const source: EventAdapter = {
-    fetchEvents: async (_descriptor, options): Promise<EventPage> => {
+    fetchEvents: (_descriptor, options) => {
       // A network error, so a caller still holding the page retries rather than stops.
       page.abort(new StreamdNetworkError("Superseded by a later page"));
       const { signal } = (page = new AbortController());
-      if (options.offset !== undefined) throw new StreamdError("provenance takes no offset; start at fromVersion or a cursor");
-      const wanted = options.limit ?? DEFAULT_LIMIT;
-      if (!(wanted > 0)) return { events: [], hasMore: false };
-      const head = await lister.getHeadVersion();
-      if (typeof head !== "bigint" || head < 0n) throw new StreamdError("indexer reported a malformed processed version");
-      const start = options.cursor !== undefined ? parseCursor(options.cursor) : (options.fromVersion ?? head);
-      const end = options.toVersion !== undefined && options.toVersion < head ? options.toVersion : head;
-      if (start > end) return { events: [], nextCursor: start.toString(), hasMore: false };
-      const limit = Math.min(wanted, LISTING);
-      const versions = await lister.listTransactionVersions(object, start, end, limit);
-      requireListing(versions, start, end, limit);
-      const events: StreamdEvent<Provenance>[] = [];
-      for (const version of versions) {
-        signal.throwIfAborted();
-        const found = await adapter.getTransactionEventsByVersion!(version, descriptor);
-        // The Indexer listed it, so a node without it is behind and will catch up.
-        if (found === undefined) throw new StreamdNetworkError(`Transaction ${version} is not on the node yet`);
-        const record = toProvenance(object, found);
-        events.push(name === undefined ? record : await withNames(record, name));
-      }
-      const next = versions.length < limit ? end + 1n : versions[versions.length - 1]! + 1n;
-      return { events, nextCursor: next.toString(), hasMore: next <= end, throughVersion: next - 1n };
+      return fetchProvenancePage(lister, adapter, descriptor, object, options, name, (w) => bound(w, signal), signal);
     },
-    getHeadVersion: () => lister.getHeadVersion(),
+    getHeadVersion: () => bound(() => lister.getHeadVersion()),
   };
-  if (adapter.getBlock !== undefined) source.getBlock = (_d, height) => adapter.getBlock!(descriptor, height);
-  if (adapter.getBlockHeights !== undefined) source.getBlockHeights = () => adapter.getBlockHeights!(descriptor);
-  return source;
+  if (adapter.getBlock !== undefined) source.getBlock = (_d, height) => bound(() => adapter.getBlock!(descriptor, height));
+  if (adapter.getBlockHeights !== undefined) source.getBlockHeights = () => bound(() => adapter.getBlockHeights!(descriptor));
+  return markSelfTimed(markDescending(source));
 }

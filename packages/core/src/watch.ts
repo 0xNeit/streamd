@@ -71,12 +71,19 @@ export function startWatch(
   const { fromVersion, fromTime, signal, onCaughtUp, positions, ...live } = options;
 
   const reached = latch();
+  let someCaughtUp = false;
   const arrived = () => {
     reached.resolve();
     onCaughtUp?.();
   };
+  const settlePending = (key: string) => {
+    if (!pending.delete(key) || pending.size > 0) return;
+    if (someCaughtUp) arrived();
+    else reached.reject(new StreamdError("Watch ended before catching up"));
+  };
   const caughtUp = (key: string) => {
-    if (pending.delete(key) && pending.size === 0) arrived();
+    if (pending.has(key)) someCaughtUp = true;
+    settlePending(key);
   };
 
   const retain = (key: string, sub: Subscription) => {
@@ -110,7 +117,7 @@ export function startWatch(
 
   const drop = (key: string) => {
     walks.delete(key);
-    caughtUp(key);
+    settlePending(key);
   };
 
   const end = () => {

@@ -11,11 +11,13 @@ const ANS_NETWORKS: readonly string[] = [Network.MAINNET, Network.TESTNET, Netwo
 
 /**
  * The long-form address of `value` when it is one, `undefined` when it is a
- * well-formed Aptos name; anything else throws. `0x` always means an address,
- * so a mistyped one is refused rather than looked up as a name.
+ * well-formed Aptos name; anything else throws. `0x` means an address unless
+ * it ends in `.apt`, so a mistyped address is refused rather than looked up as a name.
  */
 export function addressOrName(value: string): string | undefined {
-  if (typeof value === "string" && value.startsWith("0x")) return requireAddress(value);
+  if (typeof value === "string" && value.startsWith("0x") && !value.endsWith(".apt")) {
+    return requireAddress(value);
+  }
   if (typeof value !== "string" || !ANS_NAME.test(value)) {
     throw new StreamdError(`Not a valid Aptos address or name: ${String(value).slice(0, 80)}`);
   }

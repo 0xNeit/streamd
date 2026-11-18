@@ -199,3 +199,36 @@ export async function graphqlEffects(url: string, digest: string): Promise<Graph
   }
   return effects;
 }
+
+const KEPT_STATES = 1024;
+export type StateLookup = (ids: readonly string[]) => unknown[];
+
+/** Bounded LRU memo of transaction state lookups by digest, evicting failed reads. */
+export class StateMemo {
+  private readonly entries = new Map<string, Promise<StateLookup>>();
+
+  remember(digest: string, txn: StateTransaction): void {
+    this.set(digest, Promise.resolve((ids) => objectStatesOf(txn, ids, digest)));
+  }
+
+  read(digest: string, load: () => Promise<StateLookup>, ids: readonly string[]): Promise<unknown[]> {
+    let pending = this.entries.get(digest);
+    if (pending !== undefined) {
+      this.entries.delete(digest);
+      this.entries.set(digest, pending);
+    } else {
+      pending = load();
+      pending.catch(() => {
+        if (this.entries.get(digest) === pending) this.entries.delete(digest);
+      });
+      this.set(digest, pending);
+    }
+    return pending.then((lookup) => lookup(ids));
+  }
+
+  private set(digest: string, pending: Promise<StateLookup>): void {
+    this.entries.delete(digest);
+    this.entries.set(digest, pending);
+    if (this.entries.size > KEPT_STATES) this.entries.delete(this.entries.keys().next().value!);
+  }
+}

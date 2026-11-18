@@ -3305,6 +3305,146 @@ describe("close and async disposal", () => {
     await leaving;
     expect(finished).toEqual(["handler"]);
   });
+
+  it("drains handlers of subscriptions already ended via unsubscribe, removeAllListeners, or abort", async () => {
+    for (const endEarly of [
+      (c: StreamdClient, s: Subscription) => void (s.unsubscribe(), c),
+      (c: StreamdClient) => void c.removeAllListeners(),
+      (_c: StreamdClient, _s: Subscription, abort: AbortController) => abort.abort(),
+    ]) {
+      const gate = deferred();
+      const entered = deferred();
+      let doneHandler = false;
+      const controller = new AbortController();
+      const client = new StreamdClient({ adapter: adapterOf([twoEvents]) });
+      const sub = client.on(
+        desc,
+        async () => {
+          entered.resolve();
+          await gate.promise;
+          doneHandler = true;
+        },
+        { pollInterval: 1, signal: controller.signal },
+      );
+      await entered.promise;
+      endEarly(client, sub, controller);
+      expect(sub.active).toBe(false);
+
+      const closing = client.close();
+      const closed = settled(closing);
+      await sleep(10);
+      expect(closed()).toBe(false);
+      expect(doneHandler).toBe(false);
+      gate.resolve();
+      expect(await closing).toBe(true);
+      expect(doneHandler).toBe(true);
+    }
+  });
+
+  it("stops a running replay and waits for its in-flight handler before resolving close()", async () => {
+    const gate = deferred();
+    const entered = deferred();
+    const seen: bigint[] = [];
+    const client = new StreamdClient({ adapter: new MemoryAdapter([makeEvent(1), makeEvent(2)]) });
+    const replay = client.replay(
+      desc,
+      async (event) => {
+        seen.push(event.version);
+        entered.resolve();
+        await gate.promise;
+      },
+      { batchSize: 10 },
+    );
+    await entered.promise;
+
+    const closing = client.close();
+    const closed = settled(closing);
+    await sleep(10);
+    expect(closed()).toBe(false);
+    expect(replay.active).toBe(false);
+
+    gate.resolve();
+    expect(await closing).toBe(true);
+    await sleep(5);
+    expect(seen).toEqual([1n]);
+  });
+
+  it("stops and drains new subscriptions started by a handler while close() waits", async () => {
+    // Case 1: handler starts a new subscription right before returning.
+    {
+      const gate = deferred();
+      const entered = deferred();
+      let late: Subscription | undefined;
+      let lateEvents = 0;
+      const client = new StreamdClient({ adapter: new MemoryAdapter([makeEvent(1), makeEvent(2)]) });
+      client.on(
+        desc,
+        async () => {
+          entered.resolve();
+          await gate.promise;
+          late = client.on(desc, () => void lateEvents++, { pollInterval: 1 });
+        },
+        { pollInterval: 1 },
+      );
+      await entered.promise;
+
+      const closing = client.close();
+      await sleep(5);
+      gate.resolve();
+      expect(await closing).toBe(true);
+      await sleep(15);
+      expect(late?.active).toBe(false);
+      expect(client.listSubscriptions()).toEqual([]);
+      expect(lateEvents).toBe(0);
+    }
+
+    // Case 2: new subscription enters an in-flight handler before the first finishes.
+    {
+      const firstGate = deferred();
+      const secondGate = deferred();
+      const enteredFirst = deferred();
+      const enteredSecond = deferred();
+      let secondSub: Subscription | undefined;
+      let secondDone = false;
+      const client = new StreamdClient({ adapter: new MemoryAdapter([makeEvent(1), makeEvent(2)]) });
+      client.on(
+        desc,
+        async () => {
+          enteredFirst.resolve();
+          await firstGate.promise;
+          secondSub = client.on(
+            desc,
+            async () => {
+              enteredSecond.resolve();
+              await secondGate.promise;
+              secondDone = true;
+            },
+            { pollInterval: 1 },
+          );
+          await enteredSecond.promise;
+        },
+        { pollInterval: 1 },
+      );
+      await enteredFirst.promise;
+
+      const closing = client.close();
+      const closed = settled(closing);
+      await sleep(5);
+      expect(closed()).toBe(false);
+
+      firstGate.resolve();
+      await enteredSecond.promise;
+      await sleep(10);
+      expect(closed()).toBe(false);
+      expect(secondDone).toBe(false);
+
+      secondGate.resolve();
+      expect(await closing).toBe(true);
+      expect(secondDone).toBe(true);
+      expect(secondSub?.active).toBe(false);
+      expect(client.listSubscriptions()).toEqual([]);
+    }
+  });
 });
 
 describe("caughtUp", () => {
@@ -3537,5 +3677,59 @@ describe("caughtUp", () => {
       controller.abort(reason);
       expect(await rejection(aborted.caughtUp)).toBe(reason);
     });
+  });
+});
+
+describe("once() synchronous settlement cleanup", () => {
+  it("unsubscribes and registers no abort listener or timer when onError settles synchronously", async () => {
+    const adapter: EventAdapter = { fetchEvents: () => new Promise(() => {}) };
+    const client = new StreamdClient({ adapter });
+    let unsubscribed = false;
+    (client as unknown as { follow: StreamdClient["on"] }).follow = ((
+      _d: EventDescriptor,
+      _cb: Parameters<StreamdClient["on"]>[1],
+      opts?: Parameters<StreamdClient["on"]>[2],
+    ) => {
+      opts?.onError?.(new StreamdError("sync setup failure"));
+      return {
+        id: "sync",
+        active: false,
+        paused: false,
+        cursor: undefined,
+        status: {} as ReturnType<StreamdClient["on"]>["status"],
+        caughtUp: Promise.resolve(),
+        pause() {},
+        resume() {},
+        unsubscribe() {
+          unsubscribed = true;
+        },
+        [Symbol.dispose]() {},
+        async [Symbol.asyncDispose]() {},
+      };
+    }) as StreamdClient["on"];
+
+    const ac = new AbortController();
+    let listeners = 0;
+    const origAdd = ac.signal.addEventListener.bind(ac.signal);
+    ac.signal.addEventListener = ((...args: Parameters<typeof origAdd>) => {
+      listeners++;
+      return origAdd(...args);
+    }) as typeof ac.signal.addEventListener;
+
+    let timers = 0;
+    const origSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = ((...args: Parameters<typeof origSetTimeout>) => {
+      timers++;
+      return origSetTimeout(...args);
+    }) as typeof globalThis.setTimeout;
+    const desc: EventDescriptor = { kind: "module", eventType: "0x1::test::Event" };
+    try {
+      await expect(client.once(desc, { signal: ac.signal, timeout: 100 })).rejects.toThrow("sync setup failure");
+    } finally {
+      globalThis.setTimeout = origSetTimeout;
+    }
+    expect(unsubscribed).toBe(true);
+    expect(listeners).toBe(0);
+    expect(timers).toBe(0);
   });
 });

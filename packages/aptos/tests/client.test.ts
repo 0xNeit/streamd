@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { AccountAddress, Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { MemoryAdapter, StreamdError, StreamdNetworkError } from "@streamd/core";
-import type { EventAdapter, StreamdEvent } from "@streamd/core";
+import { AccountAddress, Aptos, AptosConfig, Network, type SimpleTransaction } from "@aptos-labs/ts-sdk";
+import { defineEvent, defineEvents, MemoryAdapter, StreamdError, StreamdNetworkError } from "@streamd/core";
+import type { EventAdapter, EventDescriptor, StreamdEvent } from "@streamd/core";
 import { AptosClient } from "../src/index.js";
 import type { AptosClientConfig, Transfer } from "../src/index.js";
 import { testClient } from "./helpers.js";
@@ -194,7 +194,7 @@ describe("withNames", () => {
     const { client, reads } = named(Network.MAINNET);
     const events = await client.getEvents({ kind: "module", eventType: TYPE }, { withNames: true });
     expect(events.map((e) => e.senderName)).toEqual(["alice.apt", null, undefined, "alice.apt"]);
-    expect(reads).toEqual([`primary ${ALICE}`, "target alice.apt", `primary ${BOB}`]);
+    expect(reads).toEqual([`primary ${ALICE}`, `primary ${BOB}`, "target alice.apt"]);
   });
 
   it("names a live subscription's events", async () => {
@@ -217,3 +217,30 @@ describe("withNames", () => {
     }
   });
 });
+
+// Compiled by typecheck: AptosClient methods work with defineEvents and generic EventDescriptor<T>.
+export async function aptosClientTypeChecks<T>(
+  client: AptosClient,
+  descriptor: EventDescriptor<T>,
+  tx: SimpleTransaction,
+): Promise<void> {
+  const a: StreamdEvent<T>[] = await client.eventsOf("0x1", descriptor);
+  const b: StreamdEvent<T>[] = await client.eventsAt(1n, descriptor);
+  const c: StreamdEvent<T>[] = await client.previewEvents(tx, descriptor);
+  const d: StreamdEvent<T>[] = await client.expectEvents("0x1").toEmit(descriptor);
+  const e: StreamdEvent<T>[] = await client.expectPreview(tx).toEmit(descriptor);
+  const both = defineEvents({
+    "0x1::a::A": defineEvent<{ a: string }>("0x1::a::A"),
+    "0x1::b::B": defineEvent<{ b: number }>("0x1::b::B"),
+  });
+  for (const ev of await client.eventsOf("0x1", both)) {
+    if (ev.type === "0x1::a::A") void (ev.data.a satisfies string);
+  }
+  for (const ev of await client.expectPreview(tx).toEmit(both)) {
+    if (ev.type === "0x1::b::B") void (ev.data.b satisfies number);
+  }
+  const single = defineEvent<{ a: string }>("0x1::a::A");
+  // @ts-expect-error explicit TEvent contradicts descriptor
+  void client.eventsOf<{ a: string }, { bogus: number }>("0x1", single);
+  void [a, b, c, d, e];
+}

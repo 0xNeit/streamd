@@ -294,11 +294,14 @@ export class RoutingAdapter implements EventAdapter {
     ledgerVersion: bigint,
     descriptor?: EventDescriptor,
   ): Promise<unknown[]> {
-    return this.optional(descriptor, "view", "run a view", "run views").view!(
-      request,
-      ledgerVersion,
-      descriptor,
-    );
+    let adapter: EventAdapter;
+    try {
+      adapter = this.optional(descriptor, "view", "run a view", "run views");
+    } catch (err) {
+      if (err instanceof StreamdError) Object.assign(err, { aborted: false });
+      throw err;
+    }
+    return adapter.view!(request, ledgerVersion, descriptor);
   }
 
   private reader(descriptor?: EventDescriptor): EventAdapter {

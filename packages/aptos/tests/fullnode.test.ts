@@ -14,6 +14,7 @@ const OTHER = "0x1::test::Pong";
 
 interface Reply {
   status?: number;
+  headers?: Record<string, string>;
   data: unknown;
 }
 
@@ -48,7 +49,12 @@ function fakeNode(
       calls.push({ method: req.method, body: req.body, path, params, headers: { ...(req.headers ?? {}) } });
       const reply = route(path, params);
       const status = reply.status ?? 200;
-      return { status, statusText: status === 200 ? "OK" : "Error", data: reply.data, headers: {} };
+      return {
+        status,
+        statusText: status === 200 ? "OK" : "Error",
+        data: reply.data,
+        headers: reply.headers ?? {},
+      };
     },
   };
   const aptos = new Aptos(
@@ -413,6 +419,23 @@ describe("FullnodeScanAdapter handle events", () => {
     expect(page.hasMore).toBe(true);
   });
 
+  it("stops paginating handle events once a full page passes toVersion", async () => {
+    const events = [handleEvent(0, 3), handleEvent(1, 5), handleEvent(2, 9), handleEvent(3, 12)];
+    const { aptos } = fakeNode(handle(events));
+    const adapter = new FullnodeScanAdapter(aptos);
+
+    const past = await adapter.fetchEvents(handleDesc, { offset: 0, limit: 3, toVersion: 8n });
+    expect(past.events.map((e) => e.version)).toEqual([3n, 5n]);
+    expect(past.nextCursor).toBe("3");
+    expect(past.hasMore).toBe(false);
+    expect(past.final).toBe(true);
+
+    // Equal to toVersion keeps hasMore true in case another event shares that version.
+    const exact = await adapter.fetchEvents(handleDesc, { offset: 0, limit: 2, toVersion: 5n });
+    expect(exact.events.map((e) => e.version)).toEqual([3n, 5n]);
+    expect(exact.hasMore).toBe(true);
+  });
+
   it("gives an event the same index whichever page it arrives on", async () => {
     const events = [handleEvent(0, 3), handleEvent(1, 3), handleEvent(2, 4)];
     const { aptos } = fakeNode(handle(events));
@@ -488,6 +511,34 @@ describe("FullnodeScanAdapter handle events", () => {
       expect(calls.at(-1)?.params.start).toBe("0");
       expect(page.events.map((e) => e.version)).toEqual([3n]);
     }
+  });
+
+  it("seeks via oldest_ledger_version when only version - 1 is pruned", async () => {
+    const events = [handleEvent(0, 1), handleEvent(1, 2), handleEvent(2, 3), handleEvent(3, 5)];
+    const { aptos, calls } = fakeNode((path, params) => {
+      if (path === HANDLE_RESOURCE_PATH && params.ledger_version === "1") {
+        return { status: 410, data: { message: "pruned", error_code: "version_pruned", oldest_ledger_version: "2" } };
+      }
+      return handle(events)(path, params);
+    });
+    const page = await new FullnodeScanAdapter(aptos).fetchEvents(handleDesc, { fromVersion: 2n, limit: 10 });
+    expect(calls.map((c) => [c.path, c.params.ledger_version ?? c.params.start])).toEqual([
+      [HANDLE_RESOURCE_PATH, "1"],
+      [HANDLE_RESOURCE_PATH, "2"],
+      [HANDLE_PATH, "2"],
+    ]);
+    expect(page.events.map((e) => e.version)).toEqual([3n, 5n]);
+    expect(page.nextCursor).toBe("4");
+
+    // When oldest_ledger_version equals the requested version, no redundant second read is sent.
+    const sameOldest = fakeNode((path, params) =>
+      path === HANDLE_RESOURCE_PATH
+        ? { status: 410, data: { message: "pruned", error_code: "version_pruned", oldest_ledger_version: "1" } }
+        : handle(events)(path, params),
+    );
+    await new FullnodeScanAdapter(sameOldest.aptos).fetchEvents(handleDesc, { fromVersion: 2n });
+    expect(sameOldest.calls.filter((c) => c.path === HANDLE_RESOURCE_PATH)).toHaveLength(1);
+    expect(sameOldest.calls.at(-1)?.params.start).toBe("0");
   });
 
   it("rethrows a 410 for a start below the oldest version, so an archive fallback can answer it", async () => {
@@ -1070,6 +1121,16 @@ describe("FullnodeScanAdapter transaction lookup", () => {
     expect(err).toBeInstanceOf(StreamdNetworkError);
     expect((err as StreamdNetworkError).statusCode).toBe(500);
 
+    const limited = fakeNode(() => ({
+      status: 429,
+      headers: { "retry-after": "7" },
+      data: { message: "too many requests" },
+    }));
+    const rateErr = await new FullnodeScanAdapter(limited.aptos).getTransactionEvents(HASH).catch((e: unknown) => e);
+    expect(rateErr).toBeInstanceOf(StreamdNetworkError);
+    expect((rateErr as StreamdNetworkError).statusCode).toBe(429);
+    expect((rateErr as StreamdNetworkError).retryAfter).toBe(7000);
+
     for (const reply of [
       { ...committed, success: "yes" },
       { ...committed, version: "abc" },
@@ -1440,6 +1501,7 @@ describe("FullnodeScanAdapter view", () => {
       const err = await adapter.view(request as never, version as never).catch((e: unknown) => e);
       expect(err).toBeInstanceOf(StreamdError);
       expect(err).not.toBeInstanceOf(StreamdNetworkError);
+      expect((err as { aborted?: boolean }).aborted).toBe(false);
     }
     expect(calls).toHaveLength(0);
   });
@@ -1455,15 +1517,49 @@ describe("FullnodeScanAdapter view", () => {
     expect((args as Error).message).not.toContain("secret-arg");
   });
 
-  it("refuses an aborting view as invalid input, with no cause", async () => {
+  it("refuses an aborting view as invalid input, and marks non-abort 400s aborted: false", async () => {
     const { aptos } = fakeNode(() => ({ status: 400, data: { message: "nope" } }));
     const err = await new FullnodeScanAdapter(aptos)
       .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as { aborted?: boolean }).aborted).toBeUndefined();
     expect((err as StreamdError).cause).toBeUndefined();
     expect((err as Error).message).toContain(`${BALANCE} at version 5`);
+
+    const moveAbort = fakeNode(() => ({
+      status: 400,
+      data: { message: "Move abort in 0x1::object::owner", error_code: "web_framework_error", vm_error_code: 4016 },
+    }));
+    const abortErr = await new FullnodeScanAdapter(moveAbort.aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(abortErr).toBeInstanceOf(StreamdError);
+    expect(abortErr).not.toBeInstanceOf(StreamdNetworkError);
+    expect((abortErr as { aborted?: boolean }).aborted).toBeUndefined();
+
+    const invalid = fakeNode(() => ({ status: 400, data: { message: "bad args", error_code: "invalid_input" } }));
+    const rejected = await new FullnodeScanAdapter(invalid.aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(rejected).toBeInstanceOf(StreamdError);
+    expect(rejected).not.toBeInstanceOf(StreamdNetworkError);
+    expect((rejected as { aborted?: boolean }).aborted).toBe(false);
+
+    const noCodeAbort = fakeNode(() => ({ status: 400, data: { message: "bad request", error_code: "web_framework_error" } }));
+    const nonAbortFramework = await new FullnodeScanAdapter(noCodeAbort.aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(nonAbortFramework).toBeInstanceOf(StreamdError);
+    expect((nonAbortFramework as { aborted?: boolean }).aborted).toBe(false);
+
+    const otherVm = fakeNode(() => ({ status: 400, data: { message: "out of gas", error_code: "vm_error", vm_error_code: 4002 } }));
+    const nonAbortVm = await new FullnodeScanAdapter(otherVm.aptos)
+      .view({ function: BALANCE, functionArguments: ["0xa"] }, 5n)
+      .catch((e: unknown) => e);
+    expect(nonAbortVm).toBeInstanceOf(StreamdError);
+    expect((nonAbortVm as { aborted?: boolean }).aborted).toBe(false);
   });
 
   it("rejects a pruned version and other node errors as network errors with status and no cause", async () => {
@@ -1502,6 +1598,7 @@ describe("FullnodeScanAdapter view", () => {
     const err = await adapter.view({ function: BALANCE, functionArguments: circular }, 1n).catch((e: Error) => e);
     expect(err).toBeInstanceOf(StreamdError);
     expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect((err as { aborted?: boolean }).aborted).toBe(false);
     expect((err as Error).message).toContain("JSON-serialisable");
     expect(calls).toHaveLength(1);
   });

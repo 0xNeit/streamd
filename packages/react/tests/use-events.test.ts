@@ -7,13 +7,23 @@ import { defineEvent, defineEvents,
   StreamdError,
   StreamdNetworkError,
   StreamdPollingError,
+  type EventDescriptor,
   type MoveEventType,
+  type StreamdEvent,
 } from "@streamd/core";
 import {
   StreamdProvider,
+  useEventPages,
   useEvents,
+  useLogs,
+  useReduction,
+  useSubmitTransaction,
+  useTransactionEvents,
+  useTransactions,
+  useWatch,
   type UseEventsOptions,
   type UseEventsResult,
+  type WatchedEvent,
 } from "../src/index.js";
 import { OTHER, TYPE, TestAdapter, ev } from "./fixtures.js";
 import { render, rerender, unmount, waitFor } from "./render.js";
@@ -163,6 +173,67 @@ export function narrowsOnType(): void {
     if (event.type === "0x1::a::A") void (event.data.a satisfies string);
     else void (event.data.b satisfies number);
   }
+  for (const event of useLogs(both).data ?? []) {
+    if (event.type === "0x1::a::A") void (event.data.a satisfies string);
+  }
+  for (const page of useEventPages(both).pages) {
+    for (const event of page) {
+      if (event.type === "0x1::a::A") void (event.data.a satisfies string);
+    }
+  }
+  useReduction(
+    both,
+    (acc, event) => acc + (event.type === "0x1::a::A" ? event.data.a.length : event.data.b),
+    0,
+  );
+  for (const event of useTransactionEvents("0x1", { descriptor: both }).data ?? []) {
+    if (event.type === "0x1::b::B") void (event.data.b satisfies number);
+  }
+  const sub = useSubmitTransaction({ descriptor: both, signAndSubmit: async (tx: string) => tx });
+  for (const event of sub.preview ?? sub.events ?? []) {
+    if (event.type === "0x1::a::A") void (event.data.a satisfies string);
+  }
+  for (const group of useTransactions(both).data) {
+    for (const event of group.events) {
+      if (event.type === "0x1::b::B") void (event.data.b satisfies number);
+    }
+  }
+  const plainA = defineEvent<{ a: string }>("0x1::a::A");
+  // @ts-expect-error reducer payload contradicts descriptor
+  useReduction(plainA, (acc: number, event: StreamdEvent<{ bogus: number }>) => acc + event.data.bogus, 0);
+  // @ts-expect-error explicit TEvent contradicts descriptor
+  void useEvents<{ a: string }, { bogus: number }>(plainA);
+}
+
+// Compiled by the typecheck and never run: callers generic over T use StreamdEvent<T> without EventOf<T>.
+export function genericHooksResolveStreamdEvent<T>(descriptor: EventDescriptor<T>): void {
+  const live: StreamdEvent<T>[] = useEvents(descriptor).events;
+  const logs: StreamdEvent<T>[] | undefined = useLogs(descriptor).data;
+  const pages: StreamdEvent<T>[][] = useEventPages(descriptor).pages;
+  const reduced = useReduction(descriptor, (acc: StreamdEvent<T>[], e: StreamdEvent<T>) => [...acc, e], []).value;
+  const txEvents: StreamdEvent<T>[] | undefined = useTransactionEvents("0x1", { descriptor }).data;
+  const submitted = useSubmitTransaction<string, T>({ descriptor, signAndSubmit: async (tx) => tx });
+  const preview: StreamdEvent<T>[] | undefined = submitted.preview;
+  const txs = useTransactions(descriptor).data[0]?.events;
+  const typedTxs: StreamdEvent<T>[] | undefined = txs;
+  const watched: WatchedEvent<T>[] = useWatch<T>(["0x1"]).data;
+  const watchedEvent: StreamdEvent<T> | undefined = watched[0]?.event;
+  void [live, logs, pages, reduced, txEvents, preview, typedTxs, watchedEvent];
+}
+
+// Compiled by the typecheck and never run: README 2-parameter generic wrapper across hooks.
+export function genericHooksTwoParam<T, TEvent = StreamdEvent<T>>(
+  descriptor: EventDescriptor<T, TEvent>,
+): void {
+  const live: TEvent[] = useEvents(descriptor).events;
+  const logs: TEvent[] | undefined = useLogs(descriptor).data;
+  const pages: TEvent[][] = useEventPages(descriptor).pages;
+  const reduced: TEvent[] = useReduction(descriptor, (acc: TEvent[], e: TEvent) => [...acc, e], []).value;
+  const txEvents: TEvent[] | undefined = useTransactionEvents("0x1", { descriptor }).data;
+  const submitted = useSubmitTransaction<string, T, TEvent>({ descriptor, signAndSubmit: async (tx) => tx });
+  const preview: TEvent[] | undefined = submitted.preview;
+  const txs: TEvent[] | undefined = useTransactions(descriptor).data[0]?.events;
+  void [live, logs, pages, reduced, txEvents, preview, txs];
 }
 
 describe("useEvents history", () => {

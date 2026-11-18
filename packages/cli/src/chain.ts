@@ -3,14 +3,18 @@ import type { Client, ClientRequest, ClientResponse } from "@aptos-labs/ts-sdk";
 import { AptosClient, FullnodeScanAdapter, checkDescriptor, networks, primaryName, resolveName } from "@streamd/aptos";
 import { ArchiveFallbackAdapter, CachingAdapter, PoolAdapter, StreamdError, StreamdNetworkError, toStreamdError } from "@streamd/core";
 import type { CachingAdapterOptions, EventAdapter, ModuleEventDescriptor, StreamdClient } from "@streamd/core";
+import { parseModuleAbi } from "./abi.js";
+import type { ModuleAbi } from "./abi.js";
 import type { Endpoint } from "./args.js";
 import type { TypeChecks } from "./check.js";
+import type { ListModules, LoadModule } from "./codegen.js";
+import { message } from "./format.js";
 import type { RequestStats } from "./stats.js";
 import { suiChain } from "./sui.js";
 
 /** What the commands read through, so each is written once for both chains. */
 export interface Chain {
-  client(): StreamdClient & Pick<AptosClient, "eventsOf" | "transfers" | "getTransfers" | "balances">;
+  client(): StreamdClient & Pick<AptosClient, "eventsOf" | "transfers" | "getTransfers" | "iterateTransfers" | "balances">;
   /** An adapter over the endpoint's nodes, or over `nodeUrl` alone, which gets no API key. */
   adapter(nodeUrl?: string): HeadAdapter;
   /**
@@ -148,14 +152,15 @@ export function resourceReader(
 }
 
 function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: RequestStats): Chain {
-  const config = aptosConfig(endpoint);
-  const node = (nodeUrl: string, client?: Client) =>
+  const one = sendOnce();
+  const config = aptosConfig(endpoint, one);
+  const node = (nodeUrl: string, client: Client = one) =>
     new FullnodeScanAdapter(new Aptos(aptosConfig({ network: endpoint.network, nodeUrl }, client)));
   const archive = () => {
     const at = archiveEndpoint(endpoint);
-    return at === undefined ? undefined : new FullnodeScanAdapter(new Aptos(aptosConfig(at)));
+    return at === undefined ? undefined : new FullnodeScanAdapter(new Aptos(aptosConfig(at, one)));
   };
-  const nodes = (client?: Client) => [
+  const nodes = (client: Client = one) => [
     new FullnodeScanAdapter(new Aptos(aptosConfig(endpoint, client))),
     ...(endpoint.extraNodeUrls?.map((url) => node(url, client)) ?? []),
   ];
@@ -176,6 +181,62 @@ function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: R
     check: (descriptor) => checkDescriptor(new Aptos(config), descriptor),
     resolveName: (value) => resolveName(new Aptos(config), value),
     primaryName: (address) => primaryName(new Aptos(config), address),
+  };
+}
+
+export interface AptosCodegenLoader {
+  load: LoadModule;
+  list: ListModules;
+}
+
+/**
+ * Fetches and parses Move module ABIs for Aptos codegen through `fetchFn`.
+ * Separated from `main.ts` so 404 mapping, error wrapping, paths, and pagination
+ * can be unit-tested without hitting a live fullnode.
+ */
+export function aptosCodegenLoader(
+  config: AptosConfig,
+  fetchFn: typeof getAptosFullNode = getAptosFullNode,
+): AptosCodegenLoader {
+  return {
+    load: async (address: string, module: string): Promise<ModuleAbi> => {
+      let data: object;
+      try {
+        ({ data } = await fetchFn<{}, object>({
+          aptosConfig: config,
+          originMethod: "codegen",
+          path: `accounts/${address}/module/${module}`,
+        }));
+      } catch (err) {
+        if ((err as { status?: unknown } | null)?.status === 404) {
+          throw new StreamdError(`Module ${address}::${module} not found`);
+        }
+        throw new StreamdError(`Fullnode request for module ${address}::${module} failed: ${message(err)}`);
+      }
+      return parseModuleAbi(data);
+    },
+    list: async (address: string): Promise<ModuleAbi[]> => {
+      const abis: ModuleAbi[] = [];
+      let start: string | undefined;
+      do {
+        let response: { data: unknown[]; headers: Record<string, unknown> };
+        try {
+          response = await fetchFn<{}, unknown[]>({
+            aptosConfig: config,
+            originMethod: "codegen",
+            path: `accounts/${address}/modules`,
+            params: { limit: 100, ...(start === undefined ? {} : { start }) },
+          });
+        } catch (err) {
+          throw new StreamdError(`Fullnode request for the modules of ${address} failed: ${message(err)}`);
+        }
+        if (!Array.isArray(response.data)) throw new StreamdError(`Malformed module list for ${address}`);
+        abis.push(...response.data.map(parseModuleAbi));
+        const next = response.headers["x-aptos-cursor"];
+        start = typeof next === "string" && next !== "" && next !== start ? next : undefined;
+      } while (start !== undefined);
+      return abis;
+    },
   };
 }
 

@@ -173,4 +173,16 @@ describe("storeTables", () => {
     expect(() => storeTables(client, store, TABLES, { name: "" })).toThrow(/needs a name/);
     expect(() => storeTables(client, store, [], { name: "x" })).toThrow(/Invalid event tables/);
   });
+
+  it("recreates event tables when a caller rolls back the first writeTables", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    db.exec("BEGIN");
+    store.writeTables(TABLES, [swap(1n)]);
+    db.exec("ROLLBACK");
+    store.writeTables(TABLES, [swap(2n), deposit(2n, "9")], { name: "t", cursor: "c1" });
+    expect(rows(db, "dex_swap").map((r) => (r as { version: number }).version)).toEqual([2]);
+    expect(rows(db, "fungible_asset_deposit").map((r) => (r as { amount: string }).amount)).toEqual(["9"]);
+    expect(store.readCursor("t")).toBe("c1");
+  });
 });

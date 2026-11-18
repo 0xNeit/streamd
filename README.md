@@ -35,7 +35,7 @@ bun install
 bun run build
 ```
 
-The repository is a Turborepo monorepo on Bun workspaces. Every package ships ESM, CommonJS and
+The repository is a Turborepo monorepo on Bun workspaces. Workspace packages declare internal links as `workspace:*`, so publishing uses `bun publish` to rewrite those ranges (`@streamd/core` and `@streamd/cli` guard this with `prepublishOnly`). Every package ships ESM, CommonJS and
 TypeScript types:
 
 - `@streamd/core` (`packages/core`) - the client engine: subscriptions, queries, merges,
@@ -690,8 +690,11 @@ field holding it (`listEventHandles` reports each guid).
 
 A transaction that failed rejects with `StreamdTransactionError`, whose `vmStatus` says
 why: the chain discards a failed transaction's events, so there is nothing to return. One
-not committed within `timeout` (default 20 seconds) rejects with `StreamdTimeoutError`, an
-abort with `signal.reason`, and a failed lookup at once with its error. The adapter is not
+not committed within `timeout` (default 20 seconds) rejects with `StreamdTimeoutError`
+(carrying the last `429` or `5xx` error in its message and `cause` when retries
+exhausted the wait), an abort with `signal.reason`, and any other failed lookup
+at once with its error (`429` and `5xx` responses retry until `timeout`,
+honouring `Retry-After` hints). The adapter is not
 told about a timeout or abort, so a lookup already in flight runs to completion and holds
 its `maxConcurrentRequests` slot until then, or until the client's `requestTimeout`. The hash must be
 `0x` and 64 hex digits. It needs an adapter with `getTransactionEvents`, which
@@ -1078,8 +1081,9 @@ Adapter calls start at least `1000 / maxRequestsPerSecond` ms apart, with no bur
 every subscription and query on the client. A fraction is allowed: `0.5` is one call every two
 seconds. It counts what `maxConcurrentRequests` counts, shares its queue, and combines with
 it. The unit is one adapter call, so a module-event scan may make several HTTP requests per
-call and needs a lower number. `ownedBy` predicates read through the SDK directly and are
-not counted.
+call and needs a lower number. `ownedBy` predicates read through the SDK directly, and the
+internal `view` reads inside `transfers()` / `getTransfers()` (up to 4 concurrent per call) and
+`balances()` run inside their page fetch, so none of those are spaced by `maxRequestsPerSecond`.
 
 ### Limit concurrent requests
 
@@ -1358,9 +1362,14 @@ Each type gets one status:
 | `missing-module` | No such module is published at that address. |
 | `missing-struct` | The module exists but declares no such struct. |
 
-`ok` is true when every type is `event` or `legacy`. A generic type is checked
-by its outer struct only; its type arguments are not looked up. It makes one
-request per distinct module.
+`ok` is true when every type is `event` or `legacy`. It makes one request per
+distinct module, at the normalized address. A generic type is checked by its
+outer struct only; neither its `<...>` type-argument count (`generic_type_params`)
+nor the type arguments themselves are checked. Module scans (`on`, `getEvents`,
+`streamd tail`, `streamd forward`) match an unparameterized `address::module::Struct`
+against any `<...>`, but require an exact string match whenever `<...>` is written
+and do not normalize addresses, so wrong type-argument arity or an address not in
+the fullnode's reported form still passes here while matching nothing in a scan.
 
 `handle` and `resource` descriptors get one entry in `types`, whose `eventType`
 is the resource type, or for a handle by creation number that number as a string:
@@ -1423,8 +1432,9 @@ one that did not match would make the types lie. It works with the catalog's des
 `@streamd/aptos/framework` too. Every method that hands you an event infers the narrowing type,
 which you can name as `EventOf<T>`. At runtime it is a `module` descriptor with a list of types.
 
-A function of your own that is generic over the payload should take and return `EventOf<T>`
-rather than `StreamdEvent<T>`, since TypeScript cannot resolve which one applies until `T` is known.
+A function of your own that is generic over the payload can take an `EventDescriptor<T>` and
+use `StreamdEvent<T>` as before. To accept `defineEvents` descriptors generically as well,
+parameterize over the event type with `EventDescriptor<T, TEvent>` and `TEvent = StreamdEvent<T>`.
 
 ### Framework events
 
@@ -1853,8 +1863,8 @@ for (const e of deposits) console.log(e.senderName ?? e.sender);
 ## Asset transfers
 
 `transfers(callback, options?)` follows coin, fungible-asset and token movements as
-`{ from, to, asset, amount }`, and `getTransfers(filter?)` returns them for a
-past range. Each arrives as an event whose `data` is a `Transfer`:
+`{ from, to, asset, amount }`, `getTransfers(filter?)` returns them for a past range, and
+`iterateTransfers(filter?)` yields them one at a time. Each arrives as an event whose `data` is a `Transfer`:
 
 ```ts
 const sub = streamd.transfers(
@@ -2039,8 +2049,9 @@ const path = tracePath(graph, "0x1234...", "0x9abc...");
   add one more node is left out and the walk ends. `maxRequests` (default 1000) caps adapter
   calls, the head read, page reads and the views that resolve fungible stores alike, though
   one page read on `IndexerAccountAdapter` is several HTTP requests (a listing, then one
-  fullnode read per transaction). The node being read when it runs out, in a page or in one
-  of its views, keeps `expanded: false` and its partial read is dropped.
+  fullnode read per transaction). Each node's pages fold into the graph as they arrive: when
+  `maxRequests` runs out on a page or one of its views, that unfinished page is dropped,
+  earlier finished pages stay in the graph, and the node keeps `expanded: false`.
   `target` ends the walk as soon as that address joins. Whichever ended it is `stoppedBy`
   (`"nodes"`, `"requests"` or `"target"`), absent when the walk ran to its end (stop-listed
   nodes are never read either way), and
@@ -2055,9 +2066,9 @@ const path = tracePath(graph, "0x1234...", "0x9abc...");
   only transactions an account signed. The head and page reads take the client's
   `maxConcurrentRequests` slots and `maxRequestsPerSecond` pacing; the store views run beside
   them, up to 4 at a time and not paced, as for `transfers()`, and store metadata is read once
-  per trace. Each node's read costs calls in proportion to the transactions it made, so an
-  exchange or router left off `stop` can spend the whole budget and, as its partial read is
-  dropped, add nothing.
+  per trace. Each node's read costs calls in proportion to the transactions it made, so put
+  exchanges and routers in `stop` or a busy node can still spend the rest of the budget
+  across its pages.
 - **Aptos only.** Over `getTransfers({ account })` every node would scan every transaction
   in the range, so the walk stays on the account path. There is no `SuiClient.trace`.
 
@@ -2458,15 +2469,15 @@ for (const { version, data } of await streamd.getProvenance(token, { withNames: 
   `fromBlock` says otherwise, and ends at the Indexer's processed version, which trails the
   fullnode by a few hundred versions; `provenance()` starts there and follows it. `limit`,
   `where`, `toVersion` and the cursor work as for `getEvents`. `fromVersion: "earliest"` is
-  refused, since an archive behind the adapter serves every version. `orderBy: "desc"` walks the
-  whole range forward and keeps the tail, as for any adapter, so it reads every transaction in
-  the range however small `limit` is.
+  refused, since an archive behind the adapter serves every version. `orderBy: "desc"` lists
+  newest-first from the Indexer and reads only the pages needed (and only up to `limit`, unless
+  `where` skips matches).
 - **Reads.** Each page is one Indexer listing of as many versions as the page size (the
   query's or the subscription's `batchSize`, at most 100), then one fullnode read per version,
-  one at a time and outside `maxConcurrentRequests`. `requestTimeout` bounds the whole page, so
-  set it well above a page's worth of reads, archive reads included, or a page that cannot
-  finish in time is retried forever. A page given up on stops reading once the next page
-  starts. The anonymous Indexer and archive budgets are small, so an object with a long
+  one at a time and outside `maxConcurrentRequests`. `requestTimeout` bounds each Indexer,
+  fullnode or name read individually rather than the whole page; a page given up on stops reading
+  once the next page starts. The anonymous Indexer and archive budgets are small, so an object
+  with a long
   history wants an API key on both. A version the node does not have yet fails the page as a
   network error, which retries; a listing out of order or out of range fails it as invalid.
 - **Names.** Under `withNames`, `names` holds the primary name (`null` for none) of the sender
@@ -2510,9 +2521,14 @@ wallet.unsubscribe();
   `get` takes any form.
 - **Tokens** have no balance here: a legacy token id is refused at the call, and a
   token object rejects `ready`.
-- **Cost.** One head read and one view per followed asset every `pollInterval`
-  (default 1 second), so raise it for a long list on the anonymous rate limit.
-  `onChange` sees each poll's result, not every transaction in between.
+- **Cost.** One head read plus one view per followed asset every `pollInterval`
+  (default 1 second): even a single asset makes 2 requests per second and exceeds the
+  anonymous Aptos fullnode rate limit over a few minutes, logging HTTP 429s and
+  updating with gaps. Pass an API key or raise `pollInterval` (for example to `5000`)
+  on the anonymous endpoint, and raise it further for longer asset lists.
+  `onChange` sees each poll's combined balances atomically rather than every transaction
+  in between. The inner asset views run inside the poll fetch (when fetching through a
+  `streamd` client with `maxRequestsPerSecond`, they are not spaced separately).
 - **Failures.** `ready` rejects if the first read fails. A later failed read retries
   with backoff, and `maxErrors` stops it; a view that aborts stops it at once. A balances handle is not a listener for
   `off()` or `listenerCount()`.
@@ -2604,17 +2620,21 @@ By default streamd reads from a fullnode with `FullnodeScanAdapter`:
 - **Handle events** use the dedicated fullnode endpoint. Exact and cheap. The endpoint pages
   by sequence number and cannot seek by version, so a walk given `fromVersion` and no cursor
   first reads the handle's resource at the version before it and starts at its `counter`, the
-  first event at or after `fromVersion`. A creation-number handle has no resource to read and
-  starts at sequence 0, as does a walk with no start at all, and one starting at the node's
-  oldest version (where `"earliest"` and an old `fromTime` resolve), whose predecessor it has
-  pruned. A `fromVersion` below the oldest version rejects with the node's 410. An
+  first event at or after `fromVersion`. A walk with no `fromVersion`, `fromTime`, `cursor`, or
+  `offset` reads from sequence `0` (so pass one on a pruning fullnode), as does a creation-number
+  handle (which has no resource to read). When `fromVersion` is the node's oldest version (as
+  with `"earliest"` or an old `fromTime`), whose predecessor is pruned, the seek falls back from
+  that `410` to read the handle's counter at `oldest_ledger_version` itself (starting after any
+  events in that version, or at sequence `0` if absent or also pruned). A `fromVersion` below the
+  oldest version rejects with the node's 410. An
   `ArchiveFallbackAdapter` answers that first page from the archive, but not the pages after
   it, which the fullnode answers empty: route `handle` to the archive with `RoutingAdapter` to
   walk pruned handle history, and pass `cursor` (a sequence number) rather than `fromVersion`
   to start a busy handle's walk at a known point.
 - **Account events** walk that account's own transaction history. Cheap even
-  far back, but only transactions the account sent; `IndexerAccountAdapter`
-  (below) adds the ones it received.
+  far back, but only sequence-numbered transactions the account sent (omitting
+  orderless replay-protection nonce transactions); `IndexerAccountAdapter`
+  (below) sees orderless transactions and the ones it received.
 - **Module events** have no by-type endpoint on Aptos, so the adapter scans
   transactions and keeps the matches. That's fine for following the chain
   head, but not for deep history: fullnodes prune old data, and a rare event
@@ -2944,8 +2964,8 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   tx.moveCall({ target: "0x3::sui_system::request_add_stake", arguments: [tx.object("0x5"), stake, tx.pure.address(validator)] });
   const events = await sui.previewEvents(await tx.build({ client: grpc }));
   ```
-- **Transfers:** `sui.transfers(callback, { asset?, account?, withAssetInfo? })` and
-  `sui.getTransfers(filter)` deliver `Transfer { from, to, asset, amount }` records, as on Aptos.
+- **Transfers:** `sui.transfers(callback, { asset?, account?, withAssetInfo? })`,
+  `sui.getTransfers(filter)` and `sui.iterateTransfers(filter)` deliver `Transfer { from, to, asset, amount }` records, as on Aptos.
   Sui has no transfer events, so they are built from each transaction's balance changes (each
   address's net change per coin type), walked with `ListTransactions`. The gas fee is taken out of
   the payer's SUI change first, so a fee is never a transfer and a failed transaction yields
@@ -3102,7 +3122,10 @@ await streamd.getEvents(NewBlockEvent, { fromVersion: 1000n, limit: 10 }); // se
   version) and `withState` views
   go to the archive when the fullnode answers `410`; a rate limit or an outage is rethrown, so
   backoff and `maxErrors` work as usual. Each call starts at the fullnode, so a walk returns to
-  it once it passes the pruned edge.
+  it once it passes the pruned edge. Because Aptos fullnodes answer pruned `handle` sequence
+  numbers with empty `200 []` rather than `410`, only the initial pruned resource or page
+  reaches the archive; route `handle` directly to the archive via `RoutingAdapter` for
+  multi-page historical handle walks.
 - **Bounds:** the head and simulations come from the fullnode, which the archive trails by a
   few dozen versions; `fromVersion: "earliest"` and `fromTime` see the archive's full range.
 - **Rate.** Anonymously the archive allowed about 43 requests per five minutes in a 2026-11
@@ -3130,12 +3153,18 @@ const streamd = new StreamdClient({
 
 - **Indexer lag.** Reads stop at the version the Indexer has processed, usually about a
   second behind the chain; `getHeadVersion` reports it, and a subscription with no start
-  begins there.
+  begins there. A bounded `toVersion` above the processed version pages through what is
+  indexed with `hasMore: true`, then rejects with `StreamdNetworkError` once the cursor
+  passes it until the Indexer catches up.
 - **Pruning.** The Indexer lists history the fullnode has pruned, so `fromVersion` is
   raised to the fullnode's oldest version (`getEarliestVersion`). A cursor older than that
   fails with status 410 rather than skipping history.
 - **Rate limits.** Anonymous Indexer access is rate limited per IP; a limit hit rejects as a
   `StreamdNetworkError` with status 429. Pass `apiKey` (sent as a bearer token) for more.
+- **Storing.** `StoreAdapter` and `PostgresStoreAdapter` index `account` descriptors by
+  stored `sender` only and refuse `received: true`. Received transactions stored from
+  `IndexerAccountAdapter` through `storeEvents` are kept in the store, so read them back
+  with `module`, `handle`, `eventsOf`, or `eventsAt` rather than an `account` descriptor.
 - **Options.** `indexerUrl` (default: the `Aptos` network's Indexer), `apiKey`, `fetch`, and
   `maxScan`, the most transactions read per call (default 100). `offset` is refused, and
   pages are never `final`, so `CachingAdapter` passes them through.
@@ -3569,9 +3598,10 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
 - **No gaps, no duplicates.** Rows are keyed on `(version, eventIndex)` and a repeated write
   replaces its row. Each batch is written with the cursor from before it, then the cursor
   after it is saved, so a restart in between reads the batch again and the upsert absorbs it.
-  The cursor is also saved when the subscription first catches up, which pins a relative or
-  head start; until then a restart re-resolves it, so pass an absolute `fromVersion` to leave
-  no window at all.
+  The cursor is also saved when the subscription first catches up (which pins a relative or
+  head start), every 5 seconds while scanning empty pages, and when unsubscribing cleanly or
+  stopping `streamd store` (even if no events matched yet); until then a restart re-resolves
+  a relative start, so pass an absolute `fromVersion` to leave no window at all.
   A failed write reaches `onError` and ends the subscription before its cursor moves on;
   start it again to retry. Give each descriptor its own `name`, and set `PRAGMA busy_timeout`
   when another connection writes the same file, since a busy database is a failed write.
@@ -3582,8 +3612,10 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   so a `bigint` inside `data` comes back as a decimal string: query with `decode` to restore it.
   `entryFunction` is kept in that stored JSON, with no column of its own, so it comes back on
   reads but filtering on it happens in `where`, not in SQL.
-- **What `StoreAdapter` matches.** `module` by event type; `account` by the stored `sender`,
-  so events stored without one (from `handle` descriptors) never match; `handle` by
+- **What `StoreAdapter` matches.** `module` by event type; `account` by the stored `sender`
+  only (refusing `received: true` with a `StreamdError`, so received transactions stored from
+  `IndexerAccountAdapter` only match `module`, `handle`, or transaction lookups), so events
+  stored without a `sender` (from `handle` descriptors) never match `account`; `handle` by
   `creationNumber` against the stored `guid` (`listEventHandles` returns it), and a struct
   and field handle is refused with a `StreamdError`; `resource` by the stored address and the
   resource type, exactly as the fullnode writes it (see Resource changes below). It sees only
@@ -3828,7 +3860,9 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   `await store.writeTransfers(records, checkpoint)` work as on the SQLite store, each record and
   its cursor one statement. `streamd_transfers` holds `version` (`numeric`), `event_index`,
   `asset`, `amount` (`numeric(78, 0)`, exact for every u256, so `SUM(amount)` is too),
-  `from_address`, `to_address`, `symbol`, `decimals` and the record as JSON text in `transfer`.
+  `from_address`, `to_address`, `symbol`, `decimals` and the record as JSON text in `transfer`
+  (`asset`, `from_address` and `to_address` are capped at 2,048 UTF-8 bytes so oversized values
+  stay within Postgres's btree index limit, while `transfer` keeps the full strings).
   It is created on the first transfer write or prune, apart from the event tables, and `prune`
   deletes transfers below the edge in its one statement.
 - **Saved cursors.** `await store.cursors()` and `await store.deleteCursor(name)` work as they
@@ -4157,10 +4191,12 @@ UTC time, type without its address, shortened sender, and the payload clipped to
 Control characters in on-chain text print as `?`. Handle events have no time or sender, so those
 columns show `-`.
 
-To pick up where a run stopped, pass `--cursor-file <path>`: `tail` saves its position there and
-resumes from it, and a saved position beats `--from-version` and `--from-time`. It is at least
-once, since stdout has no acknowledgement: a restart can reprint part of the last page. By hand,
-pass the last printed `version` plus one as `--from-version`.
+To pick up where a run stopped, pass `--cursor-file <path>`: `tail` checkpoints its position
+after each printed line and resumes past it on restart (a saved position beats
+`--from-version` and `--from-time`, so even `--limit` or a mid-page stop makes progress). It is
+at least once, since stdout has no acknowledgement: a crash between writing a line and saving
+the cursor file can repeat that line. By hand, pass the last printed `version` plus one as
+`--from-version`.
 
 Polling errors are reported on stderr and tailing continues until the subscription gives
 up. Exit codes: `0` when the limit is reached, on Ctrl-C or `SIGTERM`, or when stdout closes
@@ -4217,8 +4253,8 @@ streamd check --chain sui 0x3::validator::StakingRequestEvent
   a `defined-elsewhere` line adds the package id events name the type by.
 - `store`'s default cursor name starts `sui:`, as `sui:mainnet:<descriptor>`, so one database
   can hold both chains without either resuming from the other's cursor.
-- `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`; without `@mysten/sui`
-  installed, it exits 1 with `--chain sui needs @mysten/sui installed`.
+- `@streamd/sui` and `@mysten/sui` are optional peer dependencies imported only for `--chain sui`;
+  without them installed, `--chain sui` exits 1 with `--chain sui needs @mysten/sui installed`.
 
 ### Filter events
 
@@ -4251,7 +4287,7 @@ the field and value are ignored, so quote the expression. An integer value compa
 at full precision (`whereCompare`), whether the field is a decimal string or a number; a field
 that is missing or not an integer never matches, under `!=` too. Any other value is matched as
 text under `==` or `!=` (`whereField`), addresses in long form, with `true` and `false` also
-matching a JSON boolean; `!=` there also matches events without the field. A malformed
+matching a JSON boolean; a missing field never matches, under `!=` too. A malformed
 expression, an unknown operator, or a text value under `<`, `<=`, `>` or `>=` exits `2`, naming
 the flag.
 
@@ -4872,8 +4908,9 @@ base units as a decimal string and `from` or `to` left out when that side is unk
 | `--batch-size <n>` | following: transactions per page (default `25`) |
 
 Without `--to-version` it follows from the head, `--from-version` or `--from-time`, as `tail`
-does, with `--poll-interval` and the same at-least-once `--cursor-file`. With it, the whole range
-is read before anything is printed, since `getTransfers` returns it at once, and failed pages are
+does, with `--poll-interval` and the same at-least-once `--cursor-file`. With it, ascending reads
+stream each page as it arrives through `iterateTransfers` (while `--order desc` without `--limit`
+buffers the range to reverse it), and failed pages are
 retried; `--cursor-file`, `--poll-interval` and `--batch-size` are refused there, and `--order`
 is refused without it. On Aptos each fungible-asset store in the range costs view reads, so
 a range without `--asset` is slow, about a minute per thousand mainnet versions with `--asset`
@@ -5077,7 +5114,10 @@ streamd check 0x1::fungible_asset::Deposit 0x1::coin::Depositt
 The statuses are `event`, `legacy` (no `#[event]`, but a legacy `EventHandle` can emit it),
 `not-event`, `missing-module` and `missing-struct`. It exits 0 when every type is `event` or
 `legacy`, 1 when one is not or the fullnode fails, and 2 for bad usage. It takes event types
-only, not `--account` or `--handle`.
+only, not `--account` or `--handle`. Like `checkDescriptor`, it checks only the outer struct
+at the normalized address (not `<...>` type-argument arity or the type arguments themselves),
+whereas `tail` and `forward` compare `event.type` without normalizing addresses and require an
+exact match whenever `<...>` is given.
 
 ### Record a session for tests
 
@@ -5493,7 +5533,7 @@ streamd codegen --chain sui --out src/protocol.ts 0x<package id>
 - No view or handle builders: Sui has neither. `--validators` works, against the JSON below.
 - `--network` takes `mainnet`, `testnet` or `devnet`, and `--node-url` a Sui gRPC URL.
   `--api-key` is refused and `APTOS_API_KEY` is never read: public Sui nodes take no key.
-- `@streamd/sui` and `@mysten/sui` are imported only for `--chain sui`. `@mysten/sui` is an optional peer of `@streamd/cli`, but `@streamd/sui`, a dependency, still declares it as a peer, so package managers may install or ask for it.
+- `@streamd/sui` and `@mysten/sui` are optional peers of `@streamd/cli` and are imported only for `--chain sui`.
 
 Each type describes the JSON a Sui node returns, as `SuiAdapter` delivers it:
 

@@ -121,7 +121,7 @@ export interface QueryOptions extends Endpoint {
   cache?: string;
 }
 
-/** Bounded when `toVersion` is set, through `getTransfers`; otherwise followed, through `transfers`. */
+/** Bounded when `toVersion` is set, through `iterateTransfers` or `getTransfers`; otherwise followed, through `transfers`. */
 export interface TransfersOptions extends Endpoint {
   /** An asset as the chain's client takes it; validated there. */
   asset?: string;
@@ -671,7 +671,8 @@ Options:
                          head, read the range instead of following (needs a start)
   --batch-size <n>       forward: most events per POST (default: 25); transfers (following):
                          transactions per page (default: 25)
-  --order <asc|desc>     query, transfers with --to-version: oldest or newest first (default: asc)
+  --order <asc|desc>     query, transfers with --to-version: oldest or newest first (default: asc;
+                         desc without --limit buffers the range to reverse it)
   --out <file>           codegen, record: write to this file instead of stdout
   --cache <file>         query, record: keep settled pages in this SQLite file and read them
                          from it on the next run of the same range (Aptos only)

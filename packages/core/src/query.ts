@@ -3,13 +3,14 @@ import type {
   EventAdapter,
   EventDescriptor,
   EventFilter,
+  EventPage,
   StateRequestBuilder,
   StreamdEvent,
   TransactionFilter,
   TransactionGroup,
 } from "./types.js";
 import { isAbsoluteVersion, raceAbort, resolveFromVersion, sleep } from "./utils.js";
-import { RequestLimiter } from "./limiter.js";
+import { RequestLimiter, supportsDescending } from "./limiter.js";
 import { fieldDecoder } from "./decode.js";
 import { resolveFromTime, validateFromTime } from "./time.js";
 import { StreamdError, StreamdNetworkError, retryAfterHint } from "./errors.js";
@@ -199,17 +200,22 @@ export class EventQuery {
     }
   }
 
-  /** `events` with `senderName` looked up for each in order, through the client's name cache. */
+  /** `events` with `senderName` looked up concurrently per page and delivered in order. */
   private async attachNames(
     events: readonly StreamdEvent[],
     ttl: number,
     retries: number,
     signal: AbortSignal | undefined,
+    prefetched?: Map<string, Promise<string | null>>,
   ): Promise<StreamdEvent[]> {
+    if (signal?.aborted) throw signal.reason;
+    const started = prefetched ?? this.names!.prefetch(events, ttl);
     const named: StreamdEvent[] = [];
     for (const event of events) {
       if (signal?.aborted) throw signal.reason;
-      named.push(await withRetries(() => this.names!.attach(event, ttl, signal), retries, signal));
+      named.push(
+        await withRetries(() => this.names!.attach(event, ttl, signal, started), retries, signal),
+      );
     }
     return named;
   }
@@ -286,14 +292,37 @@ export class EventQuery {
     if (desc) groups = (limit === undefined ? groups : groups.slice(-limit)).reverse();
     if (withState !== undefined || ttl !== undefined) {
       const { retries = 0, signal } = rest;
+      await this.enrichGroups(descriptor, groups, withState, ttl, retries, signal);
+    }
+    return groups as TransactionGroup<TData>[];
+  }
+
+  /** Attach state and/or sender names across collected transaction groups, prefetching all names together. */
+  private async enrichGroups(
+    descriptor: Descriptors,
+    groups: TransactionGroup[],
+    withState: StateRequestBuilder | undefined,
+    ttl: number | undefined,
+    retries: number,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    if (withState !== undefined) {
       for (const [i, group] of groups.entries()) {
-        let events: StreamdEvent[] = group.events;
-        if (withState !== undefined) events = await this.attachState(descriptor, events, withState, retries, signal);
-        if (ttl !== undefined) events = await this.attachNames(events, ttl, retries, signal);
+        const events = await this.attachState(descriptor, group.events, withState, retries, signal);
         groups[i] = groupOf(group.version, events);
       }
     }
-    return groups as TransactionGroup<TData>[];
+    if (ttl !== undefined) {
+      if (signal?.aborted) throw signal.reason;
+      const prefetched = this.names!.prefetch(
+        groups.flatMap((g) => g.events),
+        ttl,
+      );
+      for (const [i, group] of groups.entries()) {
+        const events = await this.attachNames(group.events, ttl, retries, signal, prefetched);
+        groups[i] = groupOf(group.version, events);
+      }
+    }
   }
 
   private async *pages<TData>(
@@ -312,9 +341,14 @@ export class EventQuery {
     const ascending = (f: EventFilter) =>
       merged !== undefined
         ? this.mergedPages<TData>(merged, f, pageSize)
-        : this.ascendingPages<TData>(descriptor as EventDescriptor, f, pageSize);
+        : this.walkPages<TData>(descriptor as EventDescriptor, f, pageSize, "asc");
     if (orderBy !== "desc") {
       const end = yield* ascending(rest);
+      onCursor?.(end);
+      return;
+    }
+    if (merged === undefined && supportsDescending(this.source)) {
+      const end = yield* this.walkPages<TData>(descriptor as EventDescriptor, rest, pageSize, "desc");
       onCursor?.(end);
       return;
     }
@@ -369,7 +403,7 @@ export class EventQuery {
   ): AsyncGenerator<StreamdEvent<TData>[], undefined, unknown> {
     if (filter.limit !== undefined && filter.limit <= 0) return undefined;
     const shared = await this.sharedBounds(descriptors[0]!, filter);
-    const walks = descriptors.map((d) => this.ascendingPages<TData>(d, shared, pageSize));
+    const walks = descriptors.map((d) => this.walkPages<TData>(d, shared, pageSize, "asc"));
     let page: StreamdEvent<TData>[] = [];
     for await (const event of mergeEvents(walks, filter.limit)) {
       page.push(event);
@@ -413,115 +447,115 @@ export class EventQuery {
     };
   }
 
-  private async *ascendingPages<TData>(
+  private async *walkPages<TData>(
     descriptor: EventDescriptor,
     filter: EventFilter,
     pageSize: number,
+    orderBy: "asc" | "desc",
   ): AsyncGenerator<StreamdEvent<TData>[], string | undefined, unknown> {
-    const {
-      where,
-      decode: fields,
-      maxPages,
-      retries = 0,
-      signal,
-      fromBlock,
-      toBlock,
-      fromTime,
-      ...adapterFilter
-    } = filter;
+    const { where, decode: fields, maxPages, retries = 0, signal, fromBlock, toBlock, fromTime, ...adapterFilter } = filter;
     const decode = fieldDecoder(fields);
     const adapter = this.limiter.wrap(this.source, signal);
     const limit = filter.limit;
     let cursor: string | undefined;
-    let fromVersion = isAbsoluteVersion(filter.fromVersion)
-      ? filter.fromVersion
-      : undefined;
+    let fromVersion = isAbsoluteVersion(filter.fromVersion) ? filter.fromVersion : undefined;
     let toVersion = filter.toVersion === "head" ? undefined : filter.toVersion;
-    let resolved =
-      isAbsoluteVersion(filter.fromVersion) &&
-      filter.toVersion !== "head" &&
-      fromBlock === undefined &&
-      toBlock === undefined &&
-      fromTime === undefined;
+    let resolved = isAbsoluteVersion(filter.fromVersion) && filter.toVersion !== "head" && fromBlock === undefined && toBlock === undefined && fromTime === undefined;
     let fetched = 0;
     let pages = 0;
-    // The cursor after the last page read in full; see `EventFilter.onCursor`.
     let end: string | undefined;
-
+    let firstThrough: bigint | undefined;
     while (true) {
       if (signal?.aborted) throw signal.reason;
       if (maxPages !== undefined && pages >= maxPages) break;
       pages++;
-
-      const batchLimit =
-        limit !== undefined ? Math.min(pageSize, limit - fetched) : pageSize;
+      const batchLimit = limit !== undefined ? Math.min(pageSize, limit - fetched) : pageSize;
       if (batchLimit <= 0) break;
-
-      // Only a relative, earliest, head, time or block bound awaits, so an
-      // absolute range fetches synchronously.
-      if (!resolved) {
-        ({ fromVersion, toVersion } = await resolveBounds(adapter, descriptor, filter));
-        resolved = true;
-      }
-
-      const page = await withRetries(
-        () =>
-          adapter.fetchEvents(descriptor, {
-          ...adapterFilter,
-          // The cursor carries position after the first page; fromVersion and
-          // offset only seed the initial request.
-          fromVersion: cursor === undefined ? fromVersion : undefined,
-          toVersion,
-          offset: cursor === undefined ? filter.offset : undefined,
-          cursor,
-          limit: batchLimit,
-          orderBy: "asc",
-        }),
-        retries,
-        signal,
-      );
-
-      // `where` runs here rather than in the adapter: predicates are functions
-      // and cannot be pushed down to a remote source. `limit` counts what
-      // survives it, so a restrictive predicate keeps paging rather than
-      // returning short. Only an async predicate's result is awaited.
-      // Adapters honour fromVersion only on the first request, so account and
-      // handle walks, which start below it, are bounded here on every page.
-      const start = fromVersion;
-      const inRange = start === undefined ? page.events : page.events.filter((e) => e.version >= start);
-      const decoded = decode === undefined ? inRange : inRange.map(decode);
-      const filtered = where === undefined ? decoded : filterEvents(decoded, where);
-      const matched = Array.isArray(filtered) ? filtered : await raceAbort(filtered, signal);
-
-      // Adapters may overshoot `limit` — a single transaction can emit several
-      // matching events, and the scan adapter keeps them rather than dropping
-      // events its cursor has already moved past. Clamp here so the caller's
-      // limit is exact.
-      const events =
-        limit !== undefined && matched.length > limit - fetched
-          ? matched.slice(0, limit - fetched)
-          : matched;
-
-      // A clamped page has unread events behind its cursor, and a version
-      // bound lets adapters move the cursor past events beyond it.
-      end =
-        events.length < matched.length || toVersion !== undefined
-          ? undefined
-          : page.nextCursor;
-
+      if (!resolved) ({ fromVersion, toVersion } = await resolveBounds(adapter, descriptor, filter)), (resolved = true);
+      const page = await this.fetchWalkPage(adapter, descriptor, adapterFilter, cursor, fromVersion, toVersion, filter.offset, batchLimit, orderBy, retries, signal);
+      if (pages === 1) firstThrough = page.throughVersion;
+      const { events, clamped } = await admitPage(page.events, fromVersion, orderBy === "desc" ? toVersion : undefined, decode, where, limit, fetched, signal);
+      end = walkEnd(orderBy, clamped, toVersion, page.nextCursor, firstThrough);
       if (events.length > 0) {
         fetched += events.length;
         yield events as StreamdEvent<TData>[];
       }
-
       if (limit !== undefined && fetched >= limit) break;
-
-      // Stop only when the adapter says there is nothing further. An empty
-      // page is not a terminator — it just means this window held no matches.
-      if (!page.hasMore || page.nextCursor === undefined) break;
-      if (page.nextCursor === cursor) break; // adapter made no progress
+      if (!page.hasMore || page.nextCursor === undefined || page.nextCursor === cursor) break;
       cursor = page.nextCursor;
     }
     return end;
   }
+
+  private fetchWalkPage(
+    adapter: EventAdapter,
+    descriptor: EventDescriptor,
+    adapterFilter: Omit<
+      EventFilter,
+      "where" | "decode" | "maxPages" | "retries" | "signal" | "fromBlock" | "toBlock" | "fromTime" | "orderBy" | "onCursor"
+    >,
+    cursor: string | undefined,
+    fromVersion: bigint | undefined,
+    toVersion: bigint | undefined,
+    offset: number | undefined,
+    limit: number,
+    orderBy: "asc" | "desc",
+    retries: number,
+    signal: AbortSignal | undefined,
+  ): Promise<EventPage> {
+    return withRetries(
+      () =>
+        adapter.fetchEvents(descriptor, {
+          ...adapterFilter,
+          // Ascending keeps fromVersion on page 1 only; descending carries it as the lower bound.
+          fromVersion: orderBy === "desc" || cursor === undefined ? fromVersion : undefined,
+          // Descending carries cursor as its moving ceiling after page 1.
+          toVersion: orderBy === "desc" && cursor !== undefined ? undefined : toVersion,
+          offset: cursor === undefined ? offset : undefined,
+          cursor,
+          limit,
+          orderBy,
+        }),
+      retries,
+      signal,
+    );
+  }
+}
+
+async function admitPage(
+  raw: StreamdEvent[],
+  fromVersion: bigint | undefined,
+  toVersion: bigint | undefined,
+  decode: ((event: StreamdEvent) => StreamdEvent) | undefined,
+  where: EventFilter["where"],
+  limit: number | undefined,
+  fetched: number,
+  signal: AbortSignal | undefined,
+): Promise<{ events: StreamdEvent[]; clamped: boolean }> {
+  // Adapters honour version bounds only approximately across pages, so filter here.
+  const inRange =
+    fromVersion === undefined && toVersion === undefined
+      ? raw
+      : raw.filter(
+          (e) =>
+            (fromVersion === undefined || e.version >= fromVersion) &&
+            (toVersion === undefined || e.version <= toVersion),
+        );
+  const decoded = decode === undefined ? inRange : inRange.map(decode);
+  const filtered = where === undefined ? decoded : filterEvents(decoded, where);
+  const matched = Array.isArray(filtered) ? filtered : await raceAbort(filtered, signal);
+  const clamped = limit !== undefined && matched.length > limit - fetched;
+  return { events: clamped ? matched.slice(0, limit - fetched) : matched, clamped };
+}
+
+function walkEnd(
+  orderBy: "asc" | "desc",
+  clamped: boolean,
+  toVersion: bigint | undefined,
+  nextCursor: string | undefined,
+  firstThrough: bigint | undefined,
+): string | undefined {
+  if (clamped || toVersion !== undefined) return undefined;
+  if (orderBy === "desc") return firstThrough === undefined ? undefined : (firstThrough + 1n).toString();
+  return nextCursor;
 }

@@ -143,6 +143,44 @@ describe("onTransaction, one descriptor", () => {
     client.destroy();
   });
 
+  it("holds sub.cursor undefined below fromVersion and exposes a relative catch-up cursor", async () => {
+    const adapter = scripted([
+      { events: [ev(10, 0)], nextCursor: "a", hasMore: true, throughVersion: 20n },
+      { events: [ev(50, 0)], nextCursor: "b", hasMore: false, throughVersion: 60n },
+    ]);
+    const client = new StreamdClient({ adapter });
+    const log: bigint[] = [];
+    const sub = client.onTransaction(descriptor, (g) => void log.push(g.version), {
+      fromVersion: 40n,
+      pollInterval: 100,
+    });
+    await advanceTimersByTimeAsync(0);
+    expect(log).toEqual([]);
+    expect(sub.cursor).toBeUndefined();
+    expect(sub.status.cursor).toBeUndefined();
+    await advanceTimersByTimeAsync(1);
+    expect(log).toEqual([50n]);
+    expect(mockedCursor(adapter, 1)).toBe("a");
+    expect(sub.cursor).toBe("b");
+    client.destroy();
+
+    let caughtCursor: string | undefined;
+    const relAdapter: EventAdapter = {
+      fetchEvents: vi.fn(async () => ({ events: [], nextCursor: "head-1", hasMore: false })),
+      getHeadVersion: async () => 200n,
+    };
+    const relClient = new StreamdClient({ adapter: relAdapter });
+    const relSub = relClient.onTransaction(descriptor, () => {}, {
+      fromVersion: -10n,
+      onCaughtUp: () => {
+        caughtCursor = relSub.cursor;
+      },
+    });
+    await advanceTimersByTimeAsync(0);
+    relClient.destroy();
+    expect(caughtCursor).toBe("head-1");
+  });
+
   it("filters with where before grouping, skipping a transaction with no match", async () => {
     const client = new StreamdClient({ adapter: new MemoryAdapter(backlog) });
     const log: string[] = [];
@@ -262,10 +300,10 @@ describe("onTransaction, one descriptor", () => {
   });
 });
 
-function mockedCursor(adapter: EventAdapter): string | undefined {
+function mockedCursor(adapter: EventAdapter, call = 0): string | undefined {
   const calls = (adapter.fetchEvents as unknown as { mock: { calls: [unknown, { cursor?: string }][] } })
     .mock.calls;
-  return calls[0]?.[1].cursor;
+  return calls[call]?.[1].cursor;
 }
 
 describe("onTransaction, several descriptors", () => {
@@ -507,5 +545,151 @@ describe("onTransaction, several descriptors", () => {
   it("refuses the cursor option", () => {
     const client = new StreamdClient({ adapter: new MemoryAdapter() });
     expect(() => client.onTransaction([onA, onB], () => {}, { cursor: "1" })).toThrow(StreamdError);
+  });
+
+  it("applies back-pressure to a fast walk while a slower walk lags, then drains once caught up", async () => {
+    let callsA = 0;
+    let releaseB: (() => void) | undefined;
+    let stageB = 0;
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async (d: EventDescriptor) => {
+        if (typeOf(d) === A) {
+          callsA++;
+          if (callsA <= 20) {
+            return {
+              events: [ev(callsA, 0, A)],
+              nextCursor: `a${callsA}`,
+              hasMore: callsA < 20,
+              throughVersion: BigInt(callsA),
+            };
+          }
+          return { events: [], nextCursor: "a-end", hasMore: false, throughVersion: 25n };
+        }
+        stageB++;
+        if (stageB === 1) {
+          await new Promise<void>((r) => {
+            releaseB = r;
+          });
+          return { events: [ev(2, 0, B)], nextCursor: "b1", hasMore: true, throughVersion: 15n };
+        }
+        return { events: [], nextCursor: "b-end", hasMore: false, throughVersion: 25n };
+      }),
+    };
+    const client = new StreamdClient({ adapter });
+    const log: bigint[] = [];
+    client.onTransaction([onA, onB], (g) => void log.push(g.version), {
+      batchSize: 2,
+      pollInterval: 5,
+    });
+
+    await advanceTimersByTimeAsync(100);
+    // Walk A fetches only until `maxBuffered` (8) versions sit buffered ahead of Walk B.
+    expect(callsA).toBe(9);
+    expect(log).toEqual([]);
+
+    releaseB!();
+    await advanceTimersByTimeAsync(100);
+    expect(callsA).toBeGreaterThanOrEqual(20);
+    expect(log).toHaveLength(20);
+    expect(log[0]).toBe(1n);
+    expect(log.at(-1)).toBe(20n);
+    client.destroy();
+  });
+
+  it("wakes a back-pressured walk on pause and on signal abort", async () => {
+    let callsA = 0;
+    let callsC = 0;
+    let bReleased = false;
+    let releaseB: (() => void) | undefined;
+    const adapter: EventAdapter = {
+      fetchEvents: vi.fn(async (d: EventDescriptor) => {
+        if (typeOf(d) === A) {
+          callsA++;
+          return { events: [ev(callsA, 0, A)], nextCursor: `a${callsA}`, hasMore: true, throughVersion: BigInt(callsA) };
+        }
+        if (bReleased) {
+          return { events: [], nextCursor: "b-end", hasMore: false, throughVersion: 20n };
+        }
+        return new Promise<EventPage>((r) => {
+          releaseB = () => {
+            bReleased = true;
+            r({ events: [], nextCursor: "b-end", hasMore: false, throughVersion: 20n });
+          };
+        });
+      }),
+    };
+    const client = new StreamdClient({ adapter });
+    const log: bigint[] = [];
+    const sub = client.onTransaction([onA, onB], (g) => void log.push(g.version), {
+      batchSize: 1,
+      pollInterval: 5,
+    });
+    await advanceTimersByTimeAsync(50);
+    expect(callsA).toBe(5);
+
+    sub.pause();
+    expect(sub.paused).toBe(true);
+    sub.resume();
+    releaseB!();
+    await advanceTimersByTimeAsync(20);
+    expect(log).toContain(5n);
+    client.destroy();
+
+    const abortAdapter: EventAdapter = {
+      fetchEvents: vi.fn(async (d: EventDescriptor) => {
+        if (typeOf(d) === A) {
+          callsC++;
+          return { events: [ev(callsC, 0, A)], nextCursor: `c${callsC}`, hasMore: true, throughVersion: BigInt(callsC) };
+        }
+        return new Promise<EventPage>(() => {});
+      }),
+    };
+    const controller = new AbortController();
+    const client2 = new StreamdClient({ adapter: abortAdapter });
+    const sub2 = client2.onTransaction([onA, onB], () => {}, {
+      batchSize: 1,
+      pollInterval: 5,
+      signal: controller.signal,
+    });
+    await advanceTimersByTimeAsync(50);
+    expect(callsC).toBe(5);
+    controller.abort();
+    await (sub2 as unknown as { [Symbol.asyncDispose]?: () => Promise<void> })[Symbol.asyncDispose]?.();
+    expect(sub2.active).toBe(false);
+    client2.destroy();
+  });
+
+  it("wakes a back-pressured walk on unsubscribe and resolves client.close() without waiting for timeout", async () => {
+    const startSlowBackpressure = () => {
+      let callsA = 0;
+      const adapter: EventAdapter = {
+        fetchEvents: vi.fn(async (d: EventDescriptor) => {
+          if (typeOf(d) === A) {
+            callsA++;
+            return { events: [ev(callsA, 0, A)], nextCursor: `a${callsA}`, hasMore: true, throughVersion: BigInt(callsA) };
+          }
+          return new Promise<EventPage>(() => {});
+        }),
+      };
+      const client = new StreamdClient({ adapter });
+      const sub = client.onTransaction([onA, onB], () => {}, {
+        batchSize: 1,
+        pollInterval: 5,
+      });
+      return { client, sub, getCallsA: () => callsA };
+    };
+
+    const unsubCase = startSlowBackpressure();
+    await advanceTimersByTimeAsync(50);
+    expect(unsubCase.getCallsA()).toBe(5);
+    unsubCase.sub.unsubscribe();
+    expect(unsubCase.sub.active).toBe(false);
+    await expect(unsubCase.client.close({ timeout: 50 })).resolves.toBe(true);
+
+    const closeCase = startSlowBackpressure();
+    await advanceTimersByTimeAsync(50);
+    expect(closeCase.getCallsA()).toBe(5);
+    await expect(closeCase.client.close({ timeout: 50 })).resolves.toBe(true);
+    expect(closeCase.sub.active).toBe(false);
   });
 });
