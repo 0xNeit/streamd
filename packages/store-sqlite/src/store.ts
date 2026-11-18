@@ -215,7 +215,9 @@ export class SqliteEventStore {
    */
   writeTransfers(records: readonly StreamdEvent<Transfer>[], checkpoint?: StoreCheckpoint): void {
     const rows = records.map(transferRowOf);
-    if (this.upsertTransfer === undefined) this.db.exec(TRANSFER_SCHEMA);
+    // Checked on every write: a caller rolling back its own transaction around
+    // the first writeTransfers removes the table while keeping the statement.
+    this.db.exec(TRANSFER_SCHEMA);
     this.upsertTransfer ??= this.db.prepare(
       `INSERT INTO streamd_transfers
          (version, event_index, asset, amount, from_address, to_address, symbol, decimals, transfer)

@@ -138,3 +138,8 @@ export function ensureSchema(client: PostgresClient, schema: readonly string[] =
   }
   return pending;
 }
+
+/** Forget a cached schema run so the next `ensureSchema` runs it again (e.g. after a rolled-back DDL). */
+export function forgetSchema(client: PostgresClient, schema: readonly string[] = SCHEMA): void {
+  ready.get(schema)?.delete(client);
+}

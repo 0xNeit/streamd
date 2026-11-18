@@ -9,7 +9,7 @@ import {
   serializeEvent,
 } from "@streamd/core";
 import type { EventTable, StreamdEvent, Transfer } from "@streamd/core";
-import { EDGE, PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, hashKey, versionParam } from "./schema.js";
+import { EDGE, PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, forgetSchema, hashKey, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 import { eventTableSchema, eventTablesWrite } from "./tables.js";
 
@@ -76,6 +76,12 @@ function wantsByType(options: StoreStatsOptions | undefined): boolean {
     throw new StreamdError(`Not a valid byType: ${String(byType)} (expected a boolean)`);
   }
   return byType === true;
+}
+
+function isMissingTable(err: unknown): boolean {
+  if ((err as { code?: unknown } | null)?.code === "42P01") return true;
+  const message = (err as { message?: unknown } | null)?.message;
+  return typeof message === "string" && /relation "streamd_\w+" does not exist/i.test(message);
 }
 
 type Row = [string, number, string, string | null, string | null, string | null, string, string | null, string | null];
@@ -275,9 +281,20 @@ export class PostgresEventStore {
     table?: readonly string[],
   ): Promise<void> {
     const [name, cursor] = checkpointParams(checkpoint);
-    await ensureSchema(this.client);
-    if (table !== undefined) await ensureSchema(this.client, table);
-    await this.client.query(statement, [JSON.stringify(rows), name, cursor]);
+    const prepare = async () => {
+      await ensureSchema(this.client);
+      if (table !== undefined) await ensureSchema(this.client, table);
+    };
+    await prepare();
+    try {
+      await this.client.query(statement, [JSON.stringify(rows), name, cursor]);
+    } catch (err) {
+      if (!isMissingTable(err)) throw err;
+      forgetSchema(this.client);
+      if (table !== undefined) forgetSchema(this.client, table);
+      await prepare();
+      await this.client.query(statement, [JSON.stringify(rows), name, cursor]);
+    }
   }
 
   /**
