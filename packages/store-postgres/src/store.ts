@@ -9,7 +9,7 @@ import {
   serializeEvent,
 } from "@streamd/core";
 import type { EventTable, StreamdEvent, Transfer } from "@streamd/core";
-import { EDGE, PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, hashKey, versionParam } from "./schema.js";
+import { EDGE, PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, forgetSchema, hashKey, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 import { eventTableSchema, eventTablesWrite } from "./tables.js";
 
@@ -78,6 +78,12 @@ function wantsByType(options: StoreStatsOptions | undefined): boolean {
   return byType === true;
 }
 
+function isMissingTable(err: unknown): boolean {
+  if ((err as { code?: unknown } | null)?.code === "42P01") return true;
+  const message = (err as { message?: unknown } | null)?.message;
+  return typeof message === "string" && /relation "streamd_\w+" does not exist/i.test(message);
+}
+
 type Row = [string, number, string, string | null, string | null, string | null, string, string | null, string | null];
 
 function rowOf(event: StreamdEvent, accountAddress: string | null = null): Row {
@@ -105,6 +111,11 @@ function rowOf(event: StreamdEvent, accountAddress: string | null = null): Row {
 type TransferRow = [string, number, string, string, string | null, string | null, string | null, number | null, string];
 
 const U256_MAX = 2n ** 256n - 1n;
+// Postgres btree entries fail above ~2704 bytes; keep indexed transfer columns within 2048 UTF-8 bytes
+// while preserving the full strings inside the `transfer` JSON text.
+const MAX_INDEXED_BYTES = 2048;
+const UTF8_ENCODE = new TextEncoder();
+const UTF8_DECODE = new TextDecoder("utf-8");
 
 // `text` cannot hold NUL, which an asset's symbol may carry; the record JSON
 // keeps the exact value, so the column takes a replacement character instead
@@ -113,14 +124,24 @@ function columnText(value: string): string {
   return value.replaceAll("\0", "\uFFFD");
 }
 
+function indexText(value: string): string {
+  const clean = columnText(value);
+  const encoded = UTF8_ENCODE.encode(clean);
+  if (encoded.byteLength <= MAX_INDEXED_BYTES) return clean;
+  let end = MAX_INDEXED_BYTES;
+  // Back off any incomplete UTF-8 multi-byte sequence at the byte cap.
+  while (end > 0 && (encoded[end]! & 0xc0) === 0x80) end--;
+  return UTF8_DECODE.decode(encoded.subarray(0, end));
+}
+
 // Nor can `jsonb` parse a lone surrogate, which a JavaScript string from a custom adapter may hold.
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 const tableText = (value: string) => columnText(value).replace(LONE_SURROGATE, "\uFFFD");
 
-function optionalText(value: unknown, field: string): string | null {
+function optionalText(value: unknown, field: string, cap = false): string | null {
   if (value === undefined) return null;
   if (typeof value !== "string") throw new StreamdError(`Not a valid transfer ${field}: ${String(value)}`);
-  return columnText(value);
+  return cap ? indexText(value) : columnText(value);
 }
 
 function transferRowOf(record: StreamdEvent<Transfer>): TransferRow {
@@ -138,10 +159,10 @@ function transferRowOf(record: StreamdEvent<Transfer>): TransferRow {
   return [
     version,
     eventIndex,
-    columnText(asset),
+    indexText(asset),
     amount.toString(),
-    optionalText(data.from, "from"),
-    optionalText(data.to, "to"),
+    optionalText(data.from, "from", true),
+    optionalText(data.to, "to", true),
     optionalText(data.symbol, "symbol"),
     decimals ?? null,
     json,
@@ -275,9 +296,20 @@ export class PostgresEventStore {
     table?: readonly string[],
   ): Promise<void> {
     const [name, cursor] = checkpointParams(checkpoint);
-    await ensureSchema(this.client);
-    if (table !== undefined) await ensureSchema(this.client, table);
-    await this.client.query(statement, [JSON.stringify(rows), name, cursor]);
+    const prepare = async () => {
+      await ensureSchema(this.client);
+      if (table !== undefined) await ensureSchema(this.client, table);
+    };
+    await prepare();
+    try {
+      await this.client.query(statement, [JSON.stringify(rows), name, cursor]);
+    } catch (err) {
+      if (!isMissingTable(err)) throw err;
+      forgetSchema(this.client);
+      if (table !== undefined) forgetSchema(this.client, table);
+      await prepare();
+      await this.client.query(statement, [JSON.stringify(rows), name, cursor]);
+    }
   }
 
   /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { PGlite } from "@electric-sql/pglite";
+import { PGlite } from "./helpers.js";
 import { StreamdError, parseEvent } from "@streamd/core";
 import type { StreamdEvent, Transfer } from "@streamd/core";
 import { PostgresEventStore } from "../src/index.js";
@@ -349,5 +349,29 @@ describe("PostgresEventStore transfers", () => {
     }
     await expect(store.writeTransfers([{ ...tr(1n, 0), data: null as unknown as Transfer }])).rejects.toThrow(StreamdError);
     expect(queries).toEqual([]);
+  });
+
+  it("recovers schema after a caller rolls back a transaction around the first writeTransfers", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await db.exec("BEGIN");
+    await store.writeTransfers([tr(1n, 0)]);
+    await db.exec("ROLLBACK");
+    await store.writeTransfers([tr(2n, 0)], { name: "t", cursor: "c1" });
+    expect((await transferRows(db)).map((r) => r.version)).toEqual(["2"]);
+    expect(await store.readCursor("t")).toBe("c1");
+  });
+
+  it("caps indexed transfer columns within btree limits while keeping full JSON values", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    const hugeAsset = `0x1::m::${"A".repeat(1_000_000)}`;
+    const utf8Addr = "é".repeat(1500);
+    await store.writeTransfers([tr(1n, 0, { asset: hugeAsset, from: utf8Addr, to: "0xt" })]);
+    const [row] = await transferRows(db);
+    expect((row!.asset as string).length).toBe(2048);
+    expect(Buffer.byteLength(row!.from_address as string, "utf8")).toBe(2048);
+    expect(row!.from_address as string).not.toContain("\uFFFD");
+    expect(parseEvent(row!.transfer as string).data).toMatchObject({ asset: hugeAsset, from: utf8Addr });
   });
 });

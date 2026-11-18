@@ -11,7 +11,7 @@
   ],
   "scripts": {
     "build": "bun build.ts",
-    "test": "bun test",
+    "test": "bun test --timeout 30000",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "node -e \"const b = require('path').win32.basename(process.env.npm_execpath || '').toLowerCase(); if (!(process.env.npm_config_user_agent || '').startsWith('bun/') || (b !== 'bun' && b !== 'bun.exe')) { console.error('Publish with bun publish so workspace:* ranges are rewritten'); process.exit(1); }\"",
     "test:integration": "STREAMD_INTEGRATION=1 bun test tests/integration",

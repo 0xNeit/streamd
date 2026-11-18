@@ -6,7 +6,7 @@ import {
   requireEventType,
   requireResourceType,
 } from "@streamd/core";
-import type { EventAdapter, EventDescriptor, EventPage, FetchOptions, TransactionEvents } from "@streamd/core";
+import type { EventAdapter, EventDescriptor, EventPage, FetchOptions, ModuleEventDescriptor, TransactionEvents } from "@streamd/core";
 import { EDGE, ensureSchema, hashKey, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 
@@ -22,37 +22,70 @@ interface Position {
 type Where = (bind: (value: unknown) => string) => string;
 
 function types(list: readonly string[]): Where {
+  if (list.length === 0) return () => "false";
   const checked = list.map(requireEventType);
-  // One JSON parameter, since drivers disagree on how to send arrays.
-  return (bind) => `type IN (SELECT jsonb_array_elements_text(${bind(JSON.stringify(checked))}::text::jsonb))`;
+  return (bind) => `type IN (${checked.map((t) => bind(t)).join(", ")})`;
 }
 
 /**
- * A `module` descriptor's types: each exactly, and one written without type
- * arguments also with any, as a byte-ordered range [`T<`, `T=`) under the C
- * collation, so it holds whatever the column's collation is.
+ * A `module` read over `streamd_events_type_c` (`type COLLATE "C", version,
+ * event_index WHERE account_address IS NULL`): finds any distinct generic
+ * instantiations `[T<, T=)` for bare types with a skip scan, then pulls one
+ * indexed top-N arm per matched type.
  */
-function moduleTypes(list: readonly string[]): Where {
-  const exact = types(list);
-  const bare = list.filter((t) => !t.includes("<"));
-  if (bare.length === 0) return exact;
-  return (bind) => {
-    const ranges = bare.map(
-      (t) => ` OR (type COLLATE "C" >= ${bind(`${t}<`)} AND type COLLATE "C" < ${bind(`${t}=`)})`,
-    );
-    return `(${exact(bind)}${ranges.join("")})`;
-  };
+function moduleRead(
+  descriptor: ModuleEventDescriptor,
+  bind: (value: unknown) => string,
+  after: string,
+  toVersion: bigint | undefined,
+  limit: number,
+  offset: number,
+): string {
+  const { eventType } = descriptor;
+  if (Array.isArray(eventType) && eventType.length === 0) {
+    throw new StreamdError("Module descriptor requires at least one eventType");
+  }
+  const unique = [...new Set((Array.isArray(eventType) ? eventType : [eventType as string]).map(requireEventType))];
+  const exactSql = unique.map((t) => bind(t)).join(", ");
+  const bare = unique.filter((t) => !t.includes("<"));
+  const base = bare
+    .map((t) => {
+      const lo = bind(`${t}<`);
+      const hi = bind(`${t}=`);
+      return `SELECT (SELECT type COLLATE "C" FROM streamd_events WHERE type COLLATE "C" >= ${lo}::text COLLATE "C" AND type COLLATE "C" < ${hi}::text COLLATE "C" AND account_address IS NULL ORDER BY type COLLATE "C" LIMIT 1), ${hi}::text`;
+    })
+    .join(" UNION ALL ");
+  const cte =
+    bare.length === 0
+      ? `WITH wanted(t) AS (SELECT unnest(ARRAY[${exactSql}]::text[]))`
+      : `WITH RECURSIVE generic(t, hi) AS (
+          ${base}
+          UNION ALL
+          SELECT (
+            SELECT type COLLATE "C" FROM streamd_events
+            WHERE type COLLATE "C" > g.t COLLATE "C" AND type COLLATE "C" < g.hi COLLATE "C" AND account_address IS NULL
+            ORDER BY type COLLATE "C" LIMIT 1
+          ), g.hi
+          FROM generic g WHERE g.t IS NOT NULL
+        ), wanted(t) AS (
+          SELECT unnest(ARRAY[${exactSql}]::text[])
+          UNION
+          SELECT t FROM generic WHERE t IS NOT NULL
+        )`;
+  const until = toVersion === undefined ? "" : ` AND version <= ${bind(versionParam(toVersion))}::numeric`;
+  const armLimit = bind(limit + 1 + offset);
+  return `${cte}
+    SELECT matched.version, matched.event_index, matched.event
+    FROM wanted CROSS JOIN LATERAL (
+      SELECT version, event_index, event FROM streamd_events
+      WHERE type COLLATE "C" = wanted.t COLLATE "C" AND account_address IS NULL AND (version, event_index) > ${after}${until}
+      ORDER BY type COLLATE "C", version, event_index LIMIT ${armLimit}
+    ) matched
+    ORDER BY matched.version, matched.event_index LIMIT ${bind(limit + 1)} OFFSET ${bind(offset)}`;
 }
 
 function descriptorWhere(descriptor: EventDescriptor): Where {
   switch (descriptor?.kind) {
-    case "module": {
-      const { eventType } = descriptor;
-      if (Array.isArray(eventType) && eventType.length === 0) {
-        throw new StreamdError("Module descriptor requires at least one eventType");
-      }
-      return moduleTypes(Array.isArray(eventType) ? eventType : [eventType as string]);
-    }
     case "account": {
       if (descriptor.received === true) {
         throw new StreamdError("PostgresStoreAdapter keys account events by sender, so it cannot serve received ones");
@@ -149,9 +182,6 @@ export class PostgresStoreAdapter implements EventAdapter {
   }
 
   async fetchEvents(descriptor: EventDescriptor, options: FetchOptions = {}): Promise<EventPage> {
-    const matches = descriptorWhere(descriptor);
-    const where: Where =
-      descriptor.kind === "resource" ? matches : (bind) => `${matches(bind)} AND account_address IS NULL`;
     const cursor = options.cursor === undefined ? undefined : parseCursor(options.cursor);
     const limit = count(options.limit, "limit", DEFAULT_LIMIT);
     const offset = cursor === undefined ? count(options.offset, "offset", 0) : 0;
@@ -161,11 +191,19 @@ export class PostgresStoreAdapter implements EventAdapter {
     const bind = (value: unknown) => "$" + params.push(value);
     const from = bind(fromVersion === undefined ? null : versionParam(fromVersion));
     const after = `(coalesce(${from}::numeric, edge.v), ${bind(cursor?.eventIndex ?? -1)}::integer)`;
-    let read = `SELECT version, event_index, event FROM streamd_events
-      WHERE ${where(bind)} AND (version, event_index) > ${after}`;
-    if (options.toVersion !== undefined) read += ` AND version <= ${bind(versionParam(options.toVersion))}::numeric`;
-    // One row past the page says whether another is waiting.
-    read += ` ORDER BY version, event_index LIMIT ${bind(limit + 1)} OFFSET ${bind(offset)}`;
+    let read: string;
+    if (descriptor?.kind === "module") {
+      read = moduleRead(descriptor, bind, after, options.toVersion, limit, offset);
+    } else {
+      const matches = descriptorWhere(descriptor);
+      const where: Where =
+        descriptor.kind === "resource" ? matches : (nextBind) => `${matches(nextBind)} AND account_address IS NULL`;
+      read = `SELECT version, event_index, event FROM streamd_events
+        WHERE ${where(bind)} AND (version, event_index) > ${after}`;
+      if (options.toVersion !== undefined) read += ` AND version <= ${bind(versionParam(options.toVersion))}::numeric`;
+      // One row past the page says whether another is waiting.
+      read += ` ORDER BY version, event_index LIMIT ${bind(limit + 1)} OFFSET ${bind(offset)}`;
+    }
     // The edge is read in the same statement as the page, so a prune on another
     // connection cannot land between the check and the read.
     const sql = `WITH edge AS (SELECT ${EDGE} AS v)

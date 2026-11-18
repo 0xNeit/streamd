@@ -1,4 +1,4 @@
-import { PGlite } from "@electric-sql/pglite";
+import { PGlite } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
 import {
   RequestLimiter,

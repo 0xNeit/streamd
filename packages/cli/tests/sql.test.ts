@@ -273,19 +273,23 @@ describe("generated tables, filled", () => {
   it("land random payloads in Postgres with every column equal to the payload's value", async () => {
     await withGenerated("postgres", async (mod) => {
       const db = new PGlite();
-      for (const statement of mod.streamdSchema) await db.query(statement);
-      const store = new PostgresEventStore(db);
-      const events = payloads(mod);
-      await store.writeTables(mod.streamdTables, events, { name: "t", cursor: "c" });
-      const read = async (t: EventTable) => {
-        const names = ["version", "sender", ...(t.generic ? ["type_arguments"] : []), ...t.columns.map((c) => c.name)];
-        const { rows } = await db.query(`SELECT ${names.map((n) => `"${n}"::text AS "${n}"`).join(", ")} FROM "${t.table}" AS src ORDER BY src.version`);
-        return rows as Record<string, unknown>[];
-      };
-      const all = new Map<EventTable, Record<string, unknown>[]>();
-      for (const t of mod.streamdTables as EventTable[]) all.set(t, await read(t));
-      const checked = compare(mod.streamdTables, events, (t) => all.get(t)!, "postgres");
-      expect(checked).toBeGreaterThan(RUNS * 20);
+      try {
+        for (const statement of mod.streamdSchema) await db.query(statement);
+        const store = new PostgresEventStore(db);
+        const events = payloads(mod);
+        await store.writeTables(mod.streamdTables, events, { name: "t", cursor: "c" });
+        const read = async (t: EventTable) => {
+          const names = ["version", "sender", ...(t.generic ? ["type_arguments"] : []), ...t.columns.map((c) => c.name)];
+          const { rows } = await db.query(`SELECT ${names.map((n) => `"${n}"::text AS "${n}"`).join(", ")} FROM "${t.table}" AS src ORDER BY src.version`);
+          return rows as Record<string, unknown>[];
+        };
+        const all = new Map<EventTable, Record<string, unknown>[]>();
+        for (const t of mod.streamdTables as EventTable[]) all.set(t, await read(t));
+        const checked = compare(mod.streamdTables, events, (t) => all.get(t)!, "postgres");
+        expect(checked).toBeGreaterThan(RUNS * 20);
+      } finally {
+        await db.close();
+      }
     });
   }, 60_000);
 

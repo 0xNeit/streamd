@@ -71,6 +71,7 @@ const SCHEMA = [
   END $$`,
   addedIndex("streamd_events_resource", "(account_address, type, version, event_index) WHERE account_address IS NOT NULL"),
   addedIndex("streamd_events_transaction", "(transaction_hash, version, event_index) WHERE transaction_hash IS NOT NULL"),
+  addedIndex("streamd_events_type_c", '(type COLLATE "C", version, event_index) WHERE account_address IS NULL'),
 ];
 
 // Its own schema, created only by what writes or prunes transfers, so the
@@ -137,4 +138,9 @@ export function ensureSchema(client: PostgresClient, schema: readonly string[] =
     clients.set(client, pending);
   }
   return pending;
+}
+
+/** Forget a cached schema run so the next `ensureSchema` runs it again (e.g. after a rolled-back DDL). */
+export function forgetSchema(client: PostgresClient, schema: readonly string[] = SCHEMA): void {
+  ready.get(schema)?.delete(client);
 }

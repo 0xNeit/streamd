@@ -1,6 +1,6 @@
 import { PGlite } from "@electric-sql/pglite";
 import { Database } from "bun:sqlite";
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import { MemoryAdapter, StreamdClient, StreamdNetworkError } from "@streamd/core";
 import type { EventAdapter, StreamdEvent } from "@streamd/core";
 import type { StoreOptions } from "../src/args.js";
@@ -233,8 +233,15 @@ const pgOptions = (extra: Partial<StoreOptions> = {}): StoreOptions => {
   return { ...rest, postgres: URL_WITH_PASSWORD };
 };
 
+const openedPg: PGlite[] = [];
+
+afterEach(async () => {
+  await Promise.all(openedPg.splice(0).map((pg) => pg.close().catch(() => {})));
+});
+
 /** A PGlite database as the connection, counting closes and leaving it open for read-back. */
 function pglite(pg = new PGlite()) {
+  openedPg.push(pg);
   const connection = { query: (text: string, params?: unknown[]) => pg.query<Record<string, unknown>>(text, params), closed: 0, close: () => void connection.closed++ };
   return { pg, connection };
 }
