@@ -2467,15 +2467,15 @@ for (const { version, data } of await streamd.getProvenance(token, { withNames: 
   `fromBlock` says otherwise, and ends at the Indexer's processed version, which trails the
   fullnode by a few hundred versions; `provenance()` starts there and follows it. `limit`,
   `where`, `toVersion` and the cursor work as for `getEvents`. `fromVersion: "earliest"` is
-  refused, since an archive behind the adapter serves every version. `orderBy: "desc"` walks the
-  whole range forward and keeps the tail, as for any adapter, so it reads every transaction in
-  the range however small `limit` is.
+  refused, since an archive behind the adapter serves every version. `orderBy: "desc"` lists
+  newest-first from the Indexer and reads only the pages needed (and only up to `limit`, unless
+  `where` skips matches).
 - **Reads.** Each page is one Indexer listing of as many versions as the page size (the
   query's or the subscription's `batchSize`, at most 100), then one fullnode read per version,
-  one at a time and outside `maxConcurrentRequests`. `requestTimeout` bounds the whole page, so
-  set it well above a page's worth of reads, archive reads included, or a page that cannot
-  finish in time is retried forever. A page given up on stops reading once the next page
-  starts. The anonymous Indexer and archive budgets are small, so an object with a long
+  one at a time and outside `maxConcurrentRequests`. `requestTimeout` bounds each Indexer,
+  fullnode or name read individually rather than the whole page; a page given up on stops reading
+  once the next page starts. The anonymous Indexer and archive budgets are small, so an object
+  with a long
   history wants an API key on both. A version the node does not have yet fails the page as a
   network error, which retries; a listing out of order or out of range fails it as invalid.
 - **Names.** Under `withNames`, `names` holds the primary name (`null` for none) of the sender
