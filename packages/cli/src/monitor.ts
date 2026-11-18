@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import type { Server } from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 import { StreamdNetworkError, adapterMetrics, compareAdapters, toPrometheus } from "@streamd/core";
-import type { AdapterComparison, AdapterMetrics, EventAdapter } from "@streamd/core";
+import type { AdapterComparison, AdapterMetrics, EventAdapter, EventPage } from "@streamd/core";
 import type { MonitorOptions } from "./args.js";
 
 export interface MonitorIO {
@@ -132,6 +132,21 @@ function comparison(compare: Reading["compare"]) {
   };
 }
 
+function memoizeFetches(adapter: EventAdapter): EventAdapter {
+  const seen = new Map<string, Promise<EventPage>>();
+  return {
+    fetchEvents(descriptor, options) {
+      const key = `${options.fromVersion ?? ""}:${options.toVersion ?? ""}:${options.cursor ?? ""}:${options.limit ?? ""}`;
+      let page = seen.get(key);
+      if (page === undefined) {
+        page = adapter.fetchEvents(descriptor, options);
+        seen.set(key, page);
+      }
+      return page;
+    },
+  };
+}
+
 class Monitor {
   private readonly nodes: Node[];
   private readonly now: () => number;
@@ -187,12 +202,13 @@ class Monitor {
     const reference = readings[0]!.head;
     if (reference === undefined) return;
     const { descriptor, range } = this.options;
+    const base = memoizeFetches(this.nodes[0]!.metrics.adapter);
     await Promise.all(readings.map(async (reading, i) => {
       if (i === 0 || reading.head === undefined) return;
       const toVersion = reading.head < reference ? reading.head : reference;
       const start = toVersion - BigInt(range) + 1n;
       const fromVersion = start > 0n ? start : 0n;
-      const report = await compareAdapters(this.nodes[0]!.metrics.adapter, this.nodes[i]!.metrics.adapter, descriptor, {
+      const report = await compareAdapters(base, this.nodes[i]!.metrics.adapter, descriptor, {
         fromVersion,
         toVersion,
         limit: COMPARE_PAGE,
@@ -304,7 +320,7 @@ function gauge(name: string, help: string, samples: string[]): string {
  */
 export function serveMetrics(listen: { host: string; port: number }, latest: () => string): Promise<Server> {
   const server = createServer((request, response) => {
-    if (new URL(request.url ?? "/", "http://localhost").pathname !== "/metrics") {
+    if (request.url?.split("?")[0] !== "/metrics") {
       response.writeHead(404).end();
       return;
     }
