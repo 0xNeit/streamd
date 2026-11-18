@@ -25,12 +25,45 @@ async function reached(adapter: { getHeadVersion(): Promise<bigint> }): Promise<
   return urls;
 }
 
+/** The fullnode URL behind an Aptos adapter, or behind each node of a pool, read from their configs. */
+type Node = { nodes?: Node[]; primary?: Node; archive?: Node; aptos?: { config: { fullnode?: string; clientConfig?: { API_KEY?: string } } } };
+const nodesOf = (adapter: unknown): Node[] => {
+  const { nodes, primary, archive } = adapter as Node;
+  if (primary !== undefined) return [...nodesOf(primary), ...nodesOf(archive)];
+  return nodes ?? [adapter as Node];
+};
+const fullnodes = (adapter: unknown) => nodesOf(adapter).map((n) => n.aptos?.config.fullnode);
+const keys = (adapter: unknown) => nodesOf(adapter).map((n) => n.aptos?.config.clientConfig?.API_KEY);
+
 describe("chainFor", () => {
   it("gives an Aptos client and fullnode adapters by default", async () => {
     const chain = await chainFor({ network: "mainnet" });
     expect(chain.client()).toBeInstanceOf(AptosClient);
     expect(chain.adapter()).toBeInstanceOf(FullnodeScanAdapter);
     expect(chain.adapter("https://b.example/v1")).toBeInstanceOf(FullnodeScanAdapter);
+  });
+
+  it("routes Aptos adapters to the named nodes and sends the API key to the first node only", async () => {
+    const chain = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1", apiKey: "k" });
+    const primary = chain.adapter();
+    const against = chain.adapter("https://b.example/v1");
+    expect(fullnodes(primary)).toEqual(["https://a.example/v1"]);
+    expect(keys(primary)).toEqual(["k"]);
+    expect(fullnodes(against)).toEqual(["https://b.example/v1"]);
+    expect(keys(against)).toEqual([undefined]);
+
+    const seen: { url: string; auth: string | null }[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      seen.push({ url: String(input), auth: new Headers(init?.headers).get("authorization") });
+      return Response.json({ ledger_version: "42", oldest_ledger_version: "0", block_height: "7", oldest_block_height: "0" });
+    }) as unknown as typeof fetch;
+
+    await primary.getHeadVersion();
+    await against.getHeadVersion();
+    expect(seen).toEqual([
+      { url: "https://a.example/v1", auth: "Bearer k" },
+      { url: "https://b.example/v1", auth: null },
+    ]);
   });
 
   it("gives a SuiClient and SuiAdapters on the preset, a --node-url and an --against URL", async () => {
@@ -56,16 +89,6 @@ function fakeNode(name: string) {
     getHeadVersion: async () => 1n,
   };
 }
-
-/** The fullnode URL behind an Aptos adapter, or behind each node of a pool, read from their configs. */
-type Node = { nodes?: Node[]; primary?: Node; archive?: Node; aptos?: { config: { fullnode?: string; clientConfig?: { API_KEY?: string } } } };
-const nodesOf = (adapter: unknown): Node[] => {
-  const { nodes, primary, archive } = adapter as Node;
-  if (primary !== undefined) return [...nodesOf(primary), ...nodesOf(archive)];
-  return nodes ?? [adapter as Node];
-};
-const fullnodes = (adapter: unknown) => nodesOf(adapter).map((n) => n.aptos?.config.fullnode);
-const keys = (adapter: unknown) => nodesOf(adapter).map((n) => n.aptos?.config.clientConfig?.API_KEY);
 
 const TYPE = { kind: "module", eventType: "0x1::coin::DepositEvent" } as const;
 
