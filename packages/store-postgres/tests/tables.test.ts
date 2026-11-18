@@ -196,4 +196,35 @@ describe("storeTables", () => {
     await expect(storeTables(client, store, TABLES, { name: "" })).rejects.toThrow(/needs a name/);
     await expect(storeTables(client, store, [], { name: "x" })).rejects.toThrow(/Invalid event tables/);
   });
+
+  it("recovers schema after a caller rolls back a transaction around the first writeTables", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await db.exec("BEGIN");
+    await store.writeTables(TABLES, [swap(1n)]);
+    await db.exec("ROLLBACK");
+    await store.writeTables(TABLES, [swap(2n), deposit(2n, "9")], { name: "t", cursor: "c1" });
+    expect((await rows(db, "dex_swap")).map((r) => r.version)).toEqual([2]);
+    expect((await rows(db, "fungible_asset_deposit")).map((r) => r.amount)).toEqual([9]);
+    expect(await store.readCursor("t")).toBe("c1");
+  });
+
+  it("recovers custom tables when the driver reports a missing relation message without SQLSTATE code", async () => {
+    const db = new PGlite();
+    let dropOnce = true;
+    const client: PostgresClient = {
+      async query<T = Record<string, unknown>>(sql: string, params?: unknown[]) {
+        if (dropOnce && sql.includes('INSERT INTO "dex_swap"')) {
+          dropOnce = false;
+          await db.query('DROP TABLE "dex_swap"');
+          throw new Error('relation "dex_swap" does not exist');
+        }
+        return db.query<T>(sql, params);
+      },
+    };
+    const store = new PostgresEventStore(client);
+    await store.writeTables(TABLES, [swap(3n)], { name: "t", cursor: "c2" });
+    expect((await rows(db, "dex_swap")).map((r) => r.version)).toEqual([3]);
+    expect(await store.readCursor("t")).toBe("c2");
+  });
 });
