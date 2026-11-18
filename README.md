@@ -2048,8 +2048,9 @@ const path = tracePath(graph, "0x1234...", "0x9abc...");
   add one more node is left out and the walk ends. `maxRequests` (default 1000) caps adapter
   calls, the head read, page reads and the views that resolve fungible stores alike, though
   one page read on `IndexerAccountAdapter` is several HTTP requests (a listing, then one
-  fullnode read per transaction). The node being read when it runs out, in a page or in one
-  of its views, keeps `expanded: false` and its partial read is dropped.
+  fullnode read per transaction). Each node's pages fold into the graph as they arrive: when
+  `maxRequests` runs out on a page or one of its views, that unfinished page is dropped,
+  earlier finished pages stay in the graph, and the node keeps `expanded: false`.
   `target` ends the walk as soon as that address joins. Whichever ended it is `stoppedBy`
   (`"nodes"`, `"requests"` or `"target"`), absent when the walk ran to its end (stop-listed
   nodes are never read either way), and
@@ -2064,9 +2065,9 @@ const path = tracePath(graph, "0x1234...", "0x9abc...");
   only transactions an account signed. The head and page reads take the client's
   `maxConcurrentRequests` slots and `maxRequestsPerSecond` pacing; the store views run beside
   them, up to 4 at a time and not paced, as for `transfers()`, and store metadata is read once
-  per trace. Each node's read costs calls in proportion to the transactions it made, so an
-  exchange or router left off `stop` can spend the whole budget and, as its partial read is
-  dropped, add nothing.
+  per trace. Each node's read costs calls in proportion to the transactions it made, so put
+  exchanges and routers in `stop` or a busy node can still spend the rest of the budget
+  across its pages.
 - **Aptos only.** Over `getTransfers({ account })` every node would scan every transaction
   in the range, so the walk stays on the account path. There is no `SuiClient.trace`.
 

@@ -125,6 +125,47 @@ describe("walkTransfers", () => {
     expect(graph.stoppedBy).toBe("requests");
     await expect(walkTransfers(async () => Promise.reject(new StreamdError("boom")), A, defaults)).rejects.toThrow("boom");
   });
+
+  it("folds AsyncIterable batches as they arrive, keeping earlier batches when budget runs out", async () => {
+    const read = async function* (address: string): AsyncGenerator<TracedTransaction[], void, unknown> {
+      if (address === A) {
+        yield [{ version: 1n, transfers: [t(A, B, 100n)] }];
+        return;
+      }
+      yield [{ version: 2n, transfers: [t(B, C, 60n)] }];
+      throw new TraceBudgetError("spent");
+    };
+    const graph = await walkTransfers(read, A, { ...defaults, hops: 2 });
+    expect(shape(graph)).toEqual({
+      nodes: [[A, 0, true], [B, 1, false], [C, 2, false]],
+      edges: [[A, B, 100n, 1], [B, C, 60n, 1]],
+      stoppedBy: "requests",
+    });
+  });
+
+  it("stops early on target or maxNodes without pulling later batches of the node", async () => {
+    let pulledPage2 = false;
+    const read = async function* (address: string): AsyncGenerator<TracedTransaction[], void, unknown> {
+      if (address !== A) return;
+      yield [{ version: 1n, transfers: [t(A, B, 50n)] }, { version: 2n, transfers: [t(A, C, 25n)] }];
+      pulledPage2 = true;
+      yield [{ version: 3n, transfers: [t(A, D, 10n)] }];
+    };
+    const hitTarget = await walkTransfers(read, A, { ...defaults, target: C });
+    expect(pulledPage2).toBe(false);
+    expect(shape(hitTarget)).toEqual({
+      nodes: [[A, 0, true], [B, 1, false], [C, 1, false]],
+      edges: [[A, B, 50n, 1], [A, C, 25n, 1]],
+      stoppedBy: "target",
+    });
+    const hitNodes = await walkTransfers(read, A, { ...defaults, maxNodes: 2 });
+    expect(pulledPage2).toBe(false);
+    expect(shape(hitNodes)).toEqual({
+      nodes: [[A, 0, true], [B, 1, false]],
+      edges: [[A, B, 50n, 1]],
+      stoppedBy: "nodes",
+    });
+  });
 });
 
 describe("tracePath", () => {
@@ -229,6 +270,80 @@ describe("AptosClient.trace", () => {
       const cut = await testClient({ adapter: base }).trace(A, { maxRequests: max });
       expect([cut.stoppedBy, cut.edges, cut.nodes[0]!.expanded, cut.requests]).toEqual(["requests", [], false, max]);
     }
+  });
+
+  it("keeps folded pages of a multi-page hub node on budget exhaustion and stops before later pages on target", async () => {
+    const STORES: Record<string, string> = { [long("51")]: B, [long("52")]: D };
+    const fa = (v: number, i: number, side: string, store: string): StreamdEvent => ({
+      type: `0x1::fungible_asset::${side}`,
+      data: { store, amount: "70" },
+      version: BigInt(v),
+      sequenceNumber: 0n,
+      eventIndex: i,
+      sender: B,
+    });
+    const events: StreamdEvent[] = [
+      ...coin(1, A, B, "100"),
+      ...Array.from({ length: 25 }, (_, i) => coin(i + 2, B, C, "1")).flat(),
+      fa(27, 0, "Withdraw", long("51")),
+      fa(27, 1, "Deposit", long("52")),
+    ];
+    const paged = (): EventAdapter & { reads: string[] } => {
+      const reads: string[] = [];
+      return {
+        reads,
+        fetchEvents: async (d, o) => {
+          const who = (d as AccountEventDescriptor).accountAddress;
+          reads.push(who);
+          const versions = new Set(
+            events
+              .filter((e) => {
+                const p = e.data as { account?: string; store?: string };
+                return p.account === who || STORES[p.store ?? ""] === who;
+              })
+              .map((e) => e.version),
+          );
+          const txns = [...versions].sort((x, y) => (x < y ? -1 : 1));
+          const start = o.cursor !== undefined ? BigInt(o.cursor) : o.fromVersion ?? 0n;
+          const end = o.toVersion ?? (txns.at(-1) ?? 0n);
+          const slice = txns.filter((v) => v >= start && v <= end).slice(0, o.limit ?? 25);
+          const inSlice = new Set(slice);
+          const last = slice.at(-1);
+          const hasMore = last !== undefined && txns.some((v) => v > last && v <= end);
+          return {
+            events: events.filter((e) => inSlice.has(e.version)),
+            ...(last !== undefined && { nextCursor: (last + 1n).toString(), throughVersion: last }),
+            hasMore,
+          };
+        },
+        getHeadVersion: async () => 30n,
+        view: async (request) => {
+          const store = String(request.functionArguments![0]);
+          return request.function === "0x1::object::owner" ? [STORES[store]] : [{ inner: APT }];
+        },
+      };
+    };
+
+    const page2Fetch = await testClient({ adapter: paged() }).trace(A, { hops: 2, maxRequests: 3 });
+    expect([page2Fetch.stoppedBy, page2Fetch.requests]).toEqual(["requests", 3]);
+    expect(page2Fetch.nodes.map((n) => [n.address, n.expanded])).toEqual([[A, true], [B, false], [C, false]]);
+    expect(page2Fetch.edges.map((e) => [e.from, e.to, e.amount, e.transfers])).toEqual([[A, B, 100n, 1], [B, C, 24n, 24]]);
+
+    const page2View = await testClient({ adapter: paged() }).trace(A, { hops: 2, maxRequests: 4 });
+    expect([page2View.stoppedBy, page2View.requests]).toEqual(["requests", 4]);
+    expect(page2View.nodes.map((n) => [n.address, n.expanded])).toEqual([[A, true], [B, false], [C, false]]);
+    expect(page2View.edges.map((e) => [e.from, e.to, e.amount, e.transfers])).toEqual([[A, B, 100n, 1], [B, C, 24n, 24]]);
+
+    const onTarget = paged();
+    const targetHit = await testClient({ adapter: onTarget }).trace(A, { hops: 2, target: C });
+    expect(targetHit.stoppedBy).toBe("target");
+    expect(onTarget.reads).toEqual([A, B]);
+    expect(targetHit.requests).toBe(3);
+
+    const onNodes = paged();
+    const nodeHit = await testClient({ adapter: onNodes }).trace(B, { hops: 1, maxNodes: 2 });
+    expect(nodeHit.stoppedBy).toBe("nodes");
+    expect(onNodes.reads).toEqual([B]);
   });
 
   it("retries the head read and passes signal on", async () => {
