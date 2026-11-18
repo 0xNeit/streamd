@@ -1,4 +1,4 @@
-import { every, fieldDecoder, fromFunction, fromSender, normalizeAddress, not, some, whereCompare, whereField } from "@streamd/core";
+import { every, fieldDecoder, fromFunction, fromSender, normalizeAddress, some, whereCompare, whereField } from "@streamd/core";
 import type { CompareOp, EventPredicate } from "@streamd/core";
 
 export interface WhereClause {
@@ -34,6 +34,24 @@ export const FILTER_OPTIONS = {
 // Longest operators first, so `<=` is not read as `<` followed by `=5`.
 const EXPRESSION = /^([^=!<>]*)(==|!=|<=|>=|=|<|>)(.*)$/;
 const INTEGER = /^-?\d+$/;
+const ARRAY_INDEX = /^(0|[1-9]\d*)$/;
+
+function hasField(data: unknown, segments: readonly string[]): boolean {
+  let current: unknown = data;
+  for (const seg of segments) {
+    if (Array.isArray(current)) {
+      const index = ARRAY_INDEX.test(seg) ? Number(seg) : -1;
+      if (!Number.isSafeInteger(index) || index < 0 || index >= current.length) return false;
+      current = current[index];
+    } else if (typeof current === "object" && current !== null) {
+      if (!Object.hasOwn(current, seg)) return false;
+      current = (current as Record<string, unknown>)[seg];
+    } else {
+      return false;
+    }
+  }
+  return current !== undefined;
+}
 
 function clause(raw: string): WhereClause {
   const match = EXPRESSION.exec(raw);
@@ -55,7 +73,9 @@ function wherePredicate({ path, op, value }: WhereClause): EventPredicate {
   if (INTEGER.test(value)) return whereCompare(path, op, value);
   if (op !== "==" && op !== "!=") throw new Error(`${op} needs an integer value`);
   const equal = value === "true" || value === "false" ? some(whereField(path, value === "true"), whereField(path, value)) : whereField(path, value);
-  return op === "==" ? equal : not(equal);
+  if (op === "==") return equal;
+  const segments = path.split(".");
+  return (event) => hasField(event.data, segments) && !equal(event);
 }
 
 /** The filter the flags describe, or undefined when none is set; throws a message naming the flag. */

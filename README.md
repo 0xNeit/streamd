@@ -4286,7 +4286,7 @@ the field and value are ignored, so quote the expression. An integer value compa
 at full precision (`whereCompare`), whether the field is a decimal string or a number; a field
 that is missing or not an integer never matches, under `!=` too. Any other value is matched as
 text under `==` or `!=` (`whereField`), addresses in long form, with `true` and `false` also
-matching a JSON boolean; `!=` there also matches events without the field. A malformed
+matching a JSON boolean; a missing field never matches, under `!=` too. A malformed
 expression, an unknown operator, or a text value under `<`, `<=`, `>` or `>=` exits `2`, naming
 the flag.
 
