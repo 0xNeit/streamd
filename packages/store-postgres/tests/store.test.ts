@@ -361,4 +361,17 @@ describe("PostgresEventStore transfers", () => {
     expect((await transferRows(db)).map((r) => r.version)).toEqual(["2"]);
     expect(await store.readCursor("t")).toBe("c1");
   });
+
+  it("caps indexed transfer columns within btree limits while keeping full JSON values", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    const hugeAsset = `0x1::m::${"A".repeat(1_000_000)}`;
+    const utf8Addr = "é".repeat(1500);
+    await store.writeTransfers([tr(1n, 0, { asset: hugeAsset, from: utf8Addr, to: "0xt" })]);
+    const [row] = await transferRows(db);
+    expect((row!.asset as string).length).toBe(2048);
+    expect(Buffer.byteLength(row!.from_address as string, "utf8")).toBe(2048);
+    expect(row!.from_address as string).not.toContain("\uFFFD");
+    expect(parseEvent(row!.transfer as string).data).toMatchObject({ asset: hugeAsset, from: utf8Addr });
+  });
 });

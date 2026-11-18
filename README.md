@@ -3859,7 +3859,9 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   `await store.writeTransfers(records, checkpoint)` work as on the SQLite store, each record and
   its cursor one statement. `streamd_transfers` holds `version` (`numeric`), `event_index`,
   `asset`, `amount` (`numeric(78, 0)`, exact for every u256, so `SUM(amount)` is too),
-  `from_address`, `to_address`, `symbol`, `decimals` and the record as JSON text in `transfer`.
+  `from_address`, `to_address`, `symbol`, `decimals` and the record as JSON text in `transfer`
+  (`asset`, `from_address` and `to_address` are capped at 2,048 UTF-8 bytes so oversized values
+  stay within Postgres's btree index limit, while `transfer` keeps the full strings).
   It is created on the first transfer write or prune, apart from the event tables, and `prune`
   deletes transfers below the edge in its one statement.
 - **Saved cursors.** `await store.cursors()` and `await store.deleteCursor(name)` work as they
