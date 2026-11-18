@@ -1,6 +1,11 @@
 import { StreamdError } from "./errors.js";
 import { requireEventType } from "./adapters/validate.js";
-import type { ModuleEventDescriptor, MoveEventType, TaggedEvent } from "./types.js";
+import type {
+  ModuleEventDescriptor,
+  MoveEventType,
+  TaggedEvent,
+  TaggedModuleEventDescriptor,
+} from "./types.js";
 
 /**
  * A `module` descriptor typed with its payload, so `on`, `once`, `stream` and
@@ -14,7 +19,7 @@ export function defineEvent<TData = unknown>(
   return { kind: "module", eventType };
 }
 
-type PayloadOf<TDescriptor> = TDescriptor extends ModuleEventDescriptor<infer TData> ? TData : never;
+type PayloadOf<TDescriptor> = TDescriptor extends ModuleEventDescriptor<infer TData, any> ? TData : never;
 
 /** The tagged union `defineEvents` carries: one member per Move type. */
 export type TaggedEvents<TEvents> = {
@@ -27,9 +32,9 @@ export type TaggedEvents<TEvents> = {
  * so the literal types are inferred. As with `defineEvent`, payload types are
  * the caller's claim and nothing checks them at runtime.
  */
-export function defineEvents<TEvents extends Record<string, ModuleEventDescriptor<any>>>(
+export function defineEvents<TEvents extends Record<string, ModuleEventDescriptor<any, any>>>(
   events: TEvents,
-): ModuleEventDescriptor<TaggedEvents<TEvents>> {
+): TaggedModuleEventDescriptor<TaggedEvents<TEvents>> {
   const entries = Object.entries(events ?? {});
   if (entries.length === 0) throw new StreamdError("defineEvents needs at least one event type");
   for (const [type, descriptor] of entries) {
@@ -38,5 +43,8 @@ export function defineEvents<TEvents extends Record<string, ModuleEventDescripto
       throw new StreamdError(`defineEvents: "${type}" must map to the descriptor for that one type`);
     }
   }
-  return { kind: "module", eventType: entries.map(([type]) => type as MoveEventType) };
+  return {
+    kind: "module",
+    eventType: entries.map(([type]) => type as MoveEventType),
+  };
 }

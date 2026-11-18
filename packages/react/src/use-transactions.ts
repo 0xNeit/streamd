@@ -3,10 +3,12 @@ import {
   resolveFromVersion,
   StreamdError,
   type DescriptorData,
+  type DescriptorEvent,
   type EventAdapter,
   type EventDescriptor,
   type RequestLimiter,
   type StreamdClient,
+  type StreamdEvent,
   type SubscriptionOptions,
   type TransactionGroup,
 } from "@streamd/core";
@@ -28,9 +30,9 @@ export interface UseTransactionsOptions extends Omit<SubscriptionOptions, "signa
   history?: number;
 }
 
-export interface UseTransactionsResult<TData> {
+export interface UseTransactionsResult<TData, TEvent = StreamdEvent<TData>> {
   /** The most recent `maxTransactions` delivered transactions, oldest first. */
-  data: TransactionGroup<TData>[];
+  data: TransactionGroup<TData, TEvent>[];
   /** The last polling or handler error, cleared when a transaction next arrives. */
   error: Error | undefined;
   status: UseEventsStatus;
@@ -114,14 +116,14 @@ function withHistory(
  * transactions in place and the client's backoff in charge; `options.onError`
  * still runs, the client's does not.
  */
-export function useTransactions<TData = unknown>(
-  descriptor: EventDescriptor<TData> | null | undefined,
+export function useTransactions<TData = unknown, TEvent = StreamdEvent<TData>>(
+  descriptor: EventDescriptor<TData, TEvent> | null | undefined,
   options?: UseTransactionsOptions,
-): UseTransactionsResult<TData>;
-export function useTransactions<const TList extends readonly EventDescriptor<any>[]>(
+): UseTransactionsResult<TData, TEvent>;
+export function useTransactions<const TList extends readonly EventDescriptor<any, any>[]>(
   descriptors: TList | null | undefined,
   options?: UseTransactionsOptions,
-): UseTransactionsResult<DescriptorData<TList[number]>>;
+): UseTransactionsResult<DescriptorData<TList[number]>, DescriptorEvent<TList[number]>>;
 export function useTransactions(
   descriptor: Descriptors | null | undefined,
   options: UseTransactionsOptions = {},

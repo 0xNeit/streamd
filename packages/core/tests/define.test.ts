@@ -3,7 +3,16 @@ import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdClient } from "../src/client.js";
 import { defineEvent, defineEvents } from "../src/define.js";
 import { StreamdError } from "../src/errors.js";
-import type { EventDescriptor, EventOf, EventStream, StreamdEvent } from "../src/types.js";
+import { latest } from "../src/reducers.js";
+import type {
+  EventDescriptor,
+  EventExpectation,
+  EventOf,
+  EventStream,
+  ModuleEventDescriptor,
+  StreamdEvent,
+  TransactionGroup,
+} from "../src/types.js";
 
 type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
@@ -193,8 +202,22 @@ describe("defineEvents", () => {
 
     read(await client.once(both, { pollInterval: 1 }));
     (await client.getEvents(both)).forEach(read);
+    (await client.getTransactions(both)).forEach((g) => g.events.forEach(read));
     for await (const page of client.getEventPages(both)) page.forEach(read);
     for await (const event of client.iterateEvents(both)) read(event);
+
+    await new Promise<void>((resolve) => {
+      const sub = client.onTransaction(both, (group) => (group.events.forEach(read), sub.unsubscribe(), resolve()), {
+        pollInterval: 1,
+      });
+    });
+
+    const replayed = client.replay(both, read, {});
+    await replayed.done;
+
+    const noopBoth = (e: Both) => void e;
+    client.on(both, noopBoth, { pollInterval: 100 });
+    client.off(both, noopBoth);
 
     const stream = client.stream(both, { pollInterval: 1 });
     read((await stream.next()).value!);
@@ -212,7 +235,7 @@ describe("defineEvents", () => {
 
     client.destroy();
     expect(amounts.every((a) => a === "5")).toBe(true);
-    expect(amounts.length).toBeGreaterThanOrEqual(6);
+    expect(amounts.length).toBeGreaterThanOrEqual(8);
     expect(targets.every((t) => t === "0xb")).toBe(true);
   });
 
@@ -236,3 +259,69 @@ describe("defineEvents", () => {
     expect(check({ type: "0x1::b::B", data: { b: 7 }, version: 1n, sequenceNumber: 0n, eventIndex: 0 })).toBe(7);
   });
 });
+
+// Compiled by typecheck: callers generic over T can use StreamdEvent<T> directly without EventOf<T>.
+export async function genericCallerResolvesStreamdEvent<T>(
+  client: StreamdClient,
+  descriptor: EventDescriptor<T>,
+  moduleDescriptor: ModuleEventDescriptor<T>,
+  expectation: EventExpectation,
+): Promise<void> {
+  const onSub = client.on(descriptor, (e: StreamdEvent<T>) => void e.data);
+  const onBatchSub = client.onBatch(descriptor, (events: StreamdEvent<T>[]) => void events);
+  const onTxSub = client.onTransaction(descriptor, (group: TransactionGroup<T>) => void group.events);
+  const single: StreamdEvent<T> = await client.once(descriptor);
+  const stream: EventStream<T> = client.stream(descriptor);
+  const listStream: EventStream<T> = client.stream([moduleDescriptor]);
+  const reduction = client.reduce(descriptor, (acc: StreamdEvent<T>[], e: StreamdEvent<T>) => [...acc, e], []);
+  const latestReduction = client.reduce(descriptor, latest(), undefined);
+  const latestEvent: StreamdEvent<T> | undefined = latestReduction.value;
+  const replay = client.replay(descriptor, (e: StreamdEvent<T>) => void e.data);
+  const events: StreamdEvent<T>[] = await client.getEvents(descriptor);
+  const txs: TransactionGroup<T>[] = await client.getTransactions(descriptor);
+  const expected: StreamdEvent<T>[] = await expectation.toEmit(descriptor);
+  void [onSub, onBatchSub, onTxSub, single, stream, listStream, reduction, latestEvent, replay, events, txs, expected];
+  for await (const page of client.getEventPages(descriptor)) {
+    const typed: StreamdEvent<T>[] = page;
+    void typed;
+  }
+  for await (const item of client.iterateEvents(descriptor)) {
+    const typed: StreamdEvent<T> = item;
+    void typed;
+  }
+  client.off(descriptor, (e: StreamdEvent<T>) => void e.data);
+}
+
+// Compiled by typecheck: 2-parameter generic helpers work with both defineEvent and defineEvents.
+export async function genericTwoParamCaller<T, TEvent = StreamdEvent<T>>(
+  client: StreamdClient,
+  descriptor: EventDescriptor<T, TEvent>,
+  callback: (event: TEvent) => void,
+): Promise<TEvent[]> {
+  client.on(descriptor, callback).unsubscribe();
+  return client.getEvents(descriptor);
+}
+
+export function rejectsMismatchedEventTypes(client: StreamdClient, expectation: EventExpectation): void {
+  const dep = defineEvent<Deposit>("0x1::coin::DepositEvent");
+  const pair = defineEvents({
+    "0x1::coin::DepositEvent": dep,
+    "0x1::coin::WithdrawEvent": defineEvent<{ to: string }>("0x1::coin::WithdrawEvent"),
+  });
+  void genericTwoParamCaller(client, dep, (e) => void e.data.amount);
+  void genericTwoParamCaller(client, pair, (e) => {
+    if (e.type === "0x1::coin::DepositEvent") void e.data.amount;
+  });
+  // @ts-expect-error callback payload contradicts descriptor
+  client.on(dep, (e: StreamdEvent<{ other: number }>) => void e.data.other);
+  // @ts-expect-error callback shape is not a StreamdEvent
+  client.on(dep, (e: { fake: boolean }) => void e.fake);
+  // @ts-expect-error callback payload contradicts defineEvents descriptor
+  client.on(pair, (e: StreamdEvent<{ other: number }>) => void e.data.other);
+  // @ts-expect-error reducer payload contradicts descriptor
+  client.reduce(dep, (acc: number, e: StreamdEvent<{ other: number }>) => acc + e.data.other, 0);
+  // @ts-expect-error explicit TEvent contradicts descriptor
+  void client.getEvents<Deposit, { bogus: number }>(dep);
+  // @ts-expect-error explicit TEvent contradicts expectation descriptor
+  void expectation.toEmit<Deposit, { bogus: number }>(dep);
+}

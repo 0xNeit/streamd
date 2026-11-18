@@ -1,5 +1,4 @@
 import type {
-  EventOf,
   EventCallback,
   EventDescriptor,
   EventFilter,
@@ -58,10 +57,10 @@ function checkOptions(options: ReplayOptions): number {
 }
 
 /** `client.replay()`: past events through an `on()` callback, in order. */
-export function startReplay<TData>(
+export function startReplay<TData, TEvent = StreamdEvent<TData>>(
   host: ReplayHost,
-  descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
-  callback: EventCallback<TData>,
+  descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
+  callback: EventCallback<TData, TEvent>,
   options: ReplayOptions = {},
 ): Replay {
   const speed = checkOptions(options);
@@ -119,7 +118,7 @@ export function startReplay<TData>(
 
   const deliver = async (event: StreamdEvent) => {
     try {
-      const result: unknown = callback(event as unknown as EventOf<TData>);
+      const result: unknown = callback(event as unknown as TEvent);
       if (isThenable(result)) {
         const pending = Promise.resolve(result).then(
           () => {},
@@ -143,7 +142,11 @@ export function startReplay<TData>(
     filter.signal = controller.signal;
     const pageSize = options.batchSize ?? host.defaults.batchSize;
     try {
-      for await (const event of host.query.iterateEvents(descriptor, filter, pageSize)) {
+      for await (const event of host.query.iterateEvents(
+        descriptor as EventDescriptor | readonly EventDescriptor[],
+        filter,
+        pageSize,
+      )) {
         await pace(event);
         while (paused) await new Promise<void>((resolve) => (release = resolve));
         if (stopped) break;

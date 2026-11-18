@@ -8,7 +8,6 @@ import type {
   EventCallback,
   EventDescriptor,
   EventExpectation,
-  EventOf,
   EventsOfOptions,
   ExpectEventsOptions,
   ModuleEventDescriptor,
@@ -203,17 +202,17 @@ export class SuiClient extends StreamdClient {
    * message and `cause`); with `signal.reason` on abort; and at once with any
    * other lookup error.
    */
-  async eventsOf<TData = unknown>(
+  async eventsOf<TData = unknown, TEvent = StreamdEvent<TData>>(
     digest: string,
-    descriptor?: EventDescriptor<TData>,
+    descriptor?: EventDescriptor<TData, TEvent>,
     options: EventsOfOptions = {},
-  ): Promise<EventOf<TData>[]> {
+  ): Promise<TEvent[]> {
     requireDigest(digest);
     const badTimeout = checkTimeout(options.timeout);
     if (badTimeout !== undefined) throw badTimeout;
-    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor);
+    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor as EventDescriptor);
     const events = await eventsOf(this.adapter, this.limiter, this.defaults.pollInterval!, digest, normal, options);
-    return events as unknown as EventOf<TData>[];
+    return events as unknown as TEvent[];
   }
 
   /**
@@ -231,7 +230,8 @@ export class SuiClient extends StreamdClient {
     if (badTimeout !== undefined) throw badTimeout;
     const inner = expectEvents(this.adapter, this.limiter, this.defaults.pollInterval!, digest, options);
     return {
-      toEmit: async (descriptor, where) => inner.toEmit(suiDescriptor(descriptor) as typeof descriptor, where),
+      toEmit: async (descriptor, where) =>
+        inner.toEmit(suiDescriptor(descriptor as EventDescriptor) as typeof descriptor, where),
       notToEmit: async (descriptor, where) => inner.notToEmit(suiDescriptor(descriptor), where),
     };
   }
@@ -246,15 +246,15 @@ export class SuiClient extends StreamdClient {
    * Rejects with `StreamdTransactionError` (carrying the execution error as
    * `vmStatus`) when the simulation fails, and with any simulation error as it is.
    */
-  async previewEvents<TData = unknown>(
+  async previewEvents<TData = unknown, TEvent = StreamdEvent<TData>>(
     bytes: Uint8Array,
-    descriptor?: EventDescriptor<TData>,
+    descriptor?: EventDescriptor<TData, TEvent>,
     options: Pick<EventsOfOptions, "decode" | "where"> = {},
-  ): Promise<EventOf<TData>[]> {
+  ): Promise<TEvent[]> {
     const transaction = requireTransactionBytes(bytes);
-    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor);
+    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor as EventDescriptor);
     const events = await previewEvents(this.adapter, this.limiter, { transaction }, normal, options);
-    return events as unknown as EventOf<TData>[];
+    return events as unknown as TEvent[];
   }
 
   /**
@@ -268,7 +268,8 @@ export class SuiClient extends StreamdClient {
   expectPreview(bytes: Uint8Array, options: Pick<ExpectEventsOptions, "decode"> = {}): EventExpectation {
     const inner = expectPreview(this.adapter, this.limiter, { transaction: requireTransactionBytes(bytes) }, options);
     return {
-      toEmit: async (descriptor, where) => inner.toEmit(suiDescriptor(descriptor) as typeof descriptor, where),
+      toEmit: async (descriptor, where) =>
+        inner.toEmit(suiDescriptor(descriptor as EventDescriptor) as typeof descriptor, where),
       notToEmit: async (descriptor, where) => inner.notToEmit(suiDescriptor(descriptor), where),
     };
   }

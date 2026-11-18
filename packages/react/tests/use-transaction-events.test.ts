@@ -235,10 +235,10 @@ describe("useTransactionEvents", () => {
 
     let release!: () => void;
     const orig = t.client.eventsOf.bind(t.client);
-    t.client.eventsOf = ((h: string, d: EventDescriptor<never> | undefined, o: EventsOfOptions) =>
+    t.client.eventsOf = ((_h: string, d: EventDescriptor | undefined, o: EventsOfOptions) =>
       new Promise((resolve) => {
         release = () => resolve(orig(A, d, o));
-      })) as typeof t.client.eventsOf;
+      })) as unknown as typeof t.client.eventsOf;
 
     const beforeRetry = t.results.length;
     await rerender(root, t.el(THROWS));

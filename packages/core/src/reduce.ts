@@ -1,5 +1,4 @@
 import type {
-  EventOf,
   EventCallback,
   EventDescriptor,
   EventFilter,
@@ -114,12 +113,12 @@ function parseFields(text: string): [string | null, string | null, number | null
 }
 
 /** `client.reduce()`: fold the history, then follow live from where it ended. */
-export function startReduction<S, TData>(
+export function startReduction<S, TData, TEvent = StreamdEvent<TData>>(
   host: ReduceHost,
-  descriptors: EventDescriptor<TData> | readonly EventDescriptor<TData>[],
-  reducer: Reducer<S, TData>,
+  descriptors: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
+  reducer: Reducer<S, TData, TEvent>,
   initial: S,
-  options: ReduceOptions<S, TData> = {},
+  options: ReduceOptions<S, TData, TEvent> = {},
 ): Reduction<S> {
   const refused = Object.keys(options).find((k) => !ALLOWED.includes(k));
   if (refused !== undefined) {
@@ -162,7 +161,7 @@ export function startReduction<S, TData>(
   /** Folds `event`, or stops and reports when the reducer throws. */
   const fold = (event: StreamdEvent): boolean => {
     try {
-      state = reducer(state, event as unknown as EventOf<TData>);
+      state = reducer(state, event as unknown as TEvent);
     } catch (err) {
       const error = new StreamdError(`Reducer threw for ${eventId(event)}`, err);
       stop(error);
@@ -181,7 +180,7 @@ export function startReduction<S, TData>(
       descriptor,
       (event) => {
         if (last !== undefined && !isAfter(event, last)) return;
-        if (fold(event)) options.onChange?.(state, event as unknown as EventOf<TData>);
+        if (fold(event)) options.onChange?.(state, event as unknown as TEvent);
       },
       {
         ...pick(options, LIVE_KEYS),
