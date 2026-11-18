@@ -180,4 +180,34 @@ describe("SuiClient transfers sharing and coinInfo timeout", () => {
     expect(abandoned.getCoinCalls()).toBe(2);
     expect(await first).toBeInstanceOf(StreamdNetworkError);
   });
+
+  it("iterateTransfers streams across pages, stops on early break, and rejects bad options on iteration", async () => {
+    const listed: FakeListed[] = Array.from({ length: 30 }, (_, i) => ({
+      cp: 1n,
+      ti: BigInt(i),
+      changes: [[ALICE, SUI, -BigInt(i + 1)], [BOB, SUI, BigInt(i + 1)]],
+    }));
+    const sizes = [1, 35];
+    const wired = withTransfers(fakeLedger(sizes, []).client, sizes, listed);
+    const sui = new SuiClient({ sui: wired.client as unknown as SuiGrpcClient });
+    const all: bigint[] = [];
+    for await (const record of sui.iterateTransfers({ fromVersion: 0n })) all.push(record.data.amount);
+    expect(all).toHaveLength(30);
+    expect(wired.calls.list.length).toBeGreaterThanOrEqual(2);
+
+    const earlyWired = withTransfers(fakeLedger(sizes, []).client, sizes, listed);
+    const earlySui = new SuiClient({ sui: earlyWired.client as unknown as SuiGrpcClient });
+    const firstOnly: bigint[] = [];
+    for await (const record of earlySui.iterateTransfers({ fromVersion: 0n })) {
+      firstOnly.push(record.data.amount);
+      break;
+    }
+    expect(firstOnly).toEqual([1n]);
+    expect(earlyWired.calls.list).toHaveLength(1);
+
+    const bad = sui.iterateTransfers({ asset: "not-a-coin" });
+    await expect(bad.next()).rejects.toThrow(StreamdError);
+    sui.destroy();
+    earlySui.destroy();
+  });
 });

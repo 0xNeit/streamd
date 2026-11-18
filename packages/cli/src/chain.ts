@@ -14,7 +14,7 @@ import { suiChain } from "./sui.js";
 
 /** What the commands read through, so each is written once for both chains. */
 export interface Chain {
-  client(): StreamdClient & Pick<AptosClient, "eventsOf" | "transfers" | "getTransfers" | "balances">;
+  client(): StreamdClient & Pick<AptosClient, "eventsOf" | "transfers" | "getTransfers" | "iterateTransfers" | "balances">;
   /** An adapter over the endpoint's nodes, or over `nodeUrl` alone, which gets no API key. */
   adapter(nodeUrl?: string): HeadAdapter;
   /**

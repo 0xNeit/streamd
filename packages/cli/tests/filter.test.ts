@@ -67,10 +67,19 @@ describe("filterPredicate", () => {
     expect(matches({ where: ["kind==burn"] }, ev({ kind: "burn" }))).toBe(true);
     expect(matches({ where: ["kind!=burn"] }, ev({ kind: "mint" }))).toBe(true);
     expect(matches({ where: ["kind!=burn"] }, ev({ kind: "burn" }))).toBe(false);
+    expect(matches({ where: ["kind!=burn"] }, ev({}))).toBe(false);
+    expect(matches({ where: ["kind!=burn"] }, ev({ kind: undefined }))).toBe(false);
+    expect(matches({ where: ["a.b!=burn"] }, ev({ a: {} }))).toBe(false);
+    expect(matches({ where: ["legs.length!=burn"] }, ev({ legs: ["a"] }))).toBe(false);
     expect(matches({ where: [`owner==0x1`] }, ev({ owner: LONG_ONE }))).toBe(true);
     expect(matches({ where: ["ok==true"] }, ev({ ok: true }))).toBe(true);
     expect(matches({ where: ["ok==true"] }, ev({ ok: "true" }))).toBe(true);
     expect(matches({ where: ["ok==false"] }, ev({ ok: true }))).toBe(false);
+    expect(matches({ where: ["ok!=true"] }, ev({}))).toBe(false);
+    expect(matches({ where: ["ok!=false"] }, ev({}))).toBe(false);
+    expect(matches({ where: ["ok!=true"] }, ev({ ok: false }))).toBe(true);
+    expect(matches({ where: ["ok!=true"] }, ev({ ok: "false" }))).toBe(true);
+    expect(matches({ where: ["ok!=true"] }, ev({ ok: true }))).toBe(false);
   });
 
   it("ANDs clauses and flag kinds, and ORs repeated senders and functions", () => {

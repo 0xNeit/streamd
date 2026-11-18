@@ -37,6 +37,8 @@ function harness(adapter: EventAdapter, signal = new AbortController().signal, m
       inner.on(DESCRIPTOR, callback as never, strip(options)),
     getTransfers: async (filter: Record<string, unknown> = {}) =>
       inner.getEvents(DESCRIPTOR, strip(filter)) as Promise<StreamdEvent<Transfer>[]>,
+    iterateTransfers: (filter: Record<string, unknown> = {}) =>
+      inner.iterateEvents(DESCRIPTOR, strip(filter)) as AsyncGenerator<StreamdEvent<Transfer>, void, unknown>,
   } as unknown as TransfersIO["client"];
   const io: TransfersIO = { client, write: (l) => void lines.push(l), error: (m) => errors.push(m), signal };
   const run = async (options: Partial<TransfersOptions>) => {
@@ -153,13 +155,55 @@ describe("runTransfers over a range", () => {
     expect(h.seen[0]!.orderBy).toBe("asc");
   });
 
+  it("streams page 1 records before fetching page 2", async () => {
+    let fetches = 0;
+    const writesAtFetch: number[] = [];
+    const lines: string[] = [];
+    const paged: EventAdapter = {
+      fetchEvents: async (_d, options) => {
+        fetches++;
+        writesAtFetch.push(lines.length);
+        if (options.cursor === undefined) {
+          return { events: [record(1), record(2)], nextCursor: "p2", hasMore: true };
+        }
+        return { events: [record(3)], hasMore: false };
+      },
+      getHeadVersion: async () => 3n,
+    };
+    const h = harness(paged);
+    h.io.write = (line) => void lines.push(line);
+    expect(await h.run({ fromVersion: 1n, toVersion: 3n })).toBe(0);
+    expect(fetches).toBe(2);
+    expect(writesAtFetch).toEqual([0, 2]);
+    expect(lines).toHaveLength(3);
+  });
+
   it("exits 1 when the query fails, and 0 when it was interrupted", async () => {
     const h = harness(new MemoryAdapter(events));
-    h.io.client.getTransfers = async () => {
+    h.io.client.iterateTransfers = async function* () {
       throw new StreamdError("Unregistered name: nobody.apt");
     };
     expect(await h.run({ fromVersion: 1n, toVersion: "head" })).toBe(1);
     expect(h.errors).toEqual(["streamd: Unregistered name: nobody.apt"]);
+
+    const fallback = harness(new MemoryAdapter(events));
+    fallback.io.client.iterateTransfers = undefined;
+    expect(await fallback.run({ fromVersion: 1n, toVersion: 2n })).toBe(0);
+    expect(fallback.versions()).toEqual(["1", "2"]);
+
+    const abortedMid = harness(new MemoryAdapter(events));
+    const midController = new AbortController();
+    abortedMid.io.signal = midController.signal;
+    const origIter = abortedMid.io.client.iterateTransfers!;
+    abortedMid.io.client.iterateTransfers = async function* (filter) {
+      for await (const r of origIter(filter)) {
+        yield r;
+        midController.abort();
+      }
+    };
+    expect(await runTransfers({ network: "mainnet", fromVersion: 1n, toVersion: 4n }, abortedMid.io)).toBe(0);
+    expect(abortedMid.errors).toEqual([]);
+
     const controller = new AbortController();
     controller.abort();
     const aborted = harness(new MemoryAdapter(events), controller.signal);

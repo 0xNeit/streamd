@@ -6,7 +6,7 @@ import { formatEvent, message } from "./format.js";
 
 export interface TransfersIO {
   /** An `AptosClient` or a `SuiClient`, which take the same options here. */
-  client: Pick<AptosClient, "transfers" | "getTransfers">;
+  client: Pick<AptosClient, "transfers" | "getTransfers"> & Partial<Pick<AptosClient, "iterateTransfers">>;
   /** Writes one output line; a returned promise is awaited, for backpressure. */
   write(line: string): void | Promise<void>;
   /** Reports one diagnostic message, without a trailing newline. */
@@ -40,16 +40,20 @@ function narrowing({ asset, account, withAssetInfo, fromVersion, fromTime }: Tra
 }
 
 async function range(options: TransfersOptions, toVersion: bigint | "head", io: TransfersIO): Promise<number> {
+  const filter = {
+    ...narrowing(options),
+    ...(options.limit !== undefined && { limit: options.limit }),
+    toVersion,
+    orderBy: options.order ?? "asc",
+    retries: RETRIES,
+    signal: io.signal,
+  };
   try {
-    const records = await io.client.getTransfers({
-      ...narrowing(options),
-      ...(options.limit !== undefined && { limit: options.limit }),
-      toVersion,
-      orderBy: options.order ?? "asc",
-      retries: RETRIES,
-      signal: io.signal,
-    });
-    for (const record of records) await io.write(`${formatEvent(record)}\n`);
+    if (io.client.iterateTransfers !== undefined) {
+      for await (const record of io.client.iterateTransfers(filter)) await io.write(`${formatEvent(record)}\n`);
+    } else {
+      for (const record of await io.client.getTransfers(filter)) await io.write(`${formatEvent(record)}\n`);
+    }
     return 0;
   } catch (err) {
     if (io.signal.aborted) return 0;

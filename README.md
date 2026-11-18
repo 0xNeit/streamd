@@ -1862,8 +1862,8 @@ for (const e of deposits) console.log(e.senderName ?? e.sender);
 ## Asset transfers
 
 `transfers(callback, options?)` follows coin, fungible-asset and token movements as
-`{ from, to, asset, amount }`, and `getTransfers(filter?)` returns them for a
-past range. Each arrives as an event whose `data` is a `Transfer`:
+`{ from, to, asset, amount }`, `getTransfers(filter?)` returns them for a past range, and
+`iterateTransfers(filter?)` yields them one at a time. Each arrives as an event whose `data` is a `Transfer`:
 
 ```ts
 const sub = streamd.transfers(
@@ -2963,8 +2963,8 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   tx.moveCall({ target: "0x3::sui_system::request_add_stake", arguments: [tx.object("0x5"), stake, tx.pure.address(validator)] });
   const events = await sui.previewEvents(await tx.build({ client: grpc }));
   ```
-- **Transfers:** `sui.transfers(callback, { asset?, account?, withAssetInfo? })` and
-  `sui.getTransfers(filter)` deliver `Transfer { from, to, asset, amount }` records, as on Aptos.
+- **Transfers:** `sui.transfers(callback, { asset?, account?, withAssetInfo? })`,
+  `sui.getTransfers(filter)` and `sui.iterateTransfers(filter)` deliver `Transfer { from, to, asset, amount }` records, as on Aptos.
   Sui has no transfer events, so they are built from each transaction's balance changes (each
   address's net change per coin type), walked with `ListTransactions`. The gas fee is taken out of
   the payer's SUI change first, so a fee is never a transfer and a failed transaction yields
@@ -4286,7 +4286,7 @@ the field and value are ignored, so quote the expression. An integer value compa
 at full precision (`whereCompare`), whether the field is a decimal string or a number; a field
 that is missing or not an integer never matches, under `!=` too. Any other value is matched as
 text under `==` or `!=` (`whereField`), addresses in long form, with `true` and `false` also
-matching a JSON boolean; `!=` there also matches events without the field. A malformed
+matching a JSON boolean; a missing field never matches, under `!=` too. A malformed
 expression, an unknown operator, or a text value under `<`, `<=`, `>` or `>=` exits `2`, naming
 the flag.
 
@@ -4907,8 +4907,9 @@ base units as a decimal string and `from` or `to` left out when that side is unk
 | `--batch-size <n>` | following: transactions per page (default `25`) |
 
 Without `--to-version` it follows from the head, `--from-version` or `--from-time`, as `tail`
-does, with `--poll-interval` and the same at-least-once `--cursor-file`. With it, the whole range
-is read before anything is printed, since `getTransfers` returns it at once, and failed pages are
+does, with `--poll-interval` and the same at-least-once `--cursor-file`. With it, ascending reads
+stream each page as it arrives through `iterateTransfers` (while `--order desc` without `--limit`
+buffers the range to reverse it), and failed pages are
 retried; `--cursor-file`, `--poll-interval` and `--batch-size` are refused there, and `--order`
 is refused without it. On Aptos each fungible-asset store in the range costs view reads, so
 a range without `--asset` is slow, about a minute per thousand mainnet versions with `--asset`

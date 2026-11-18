@@ -115,6 +115,32 @@ export interface CoverageIO {
   signal: AbortSignal;
 }
 
+function testEnv(localnet: Localnet, address: string, account: Ed25519Account): Record<string, string> {
+  return {
+    STREAMD_NODE_URL: localnet.nodeUrl,
+    STREAMD_FAUCET_URL: localnet.faucetUrl ?? "",
+    STREAMD_PACKAGE_ADDRESS: address,
+    // fundedAccount generates an Ed25519 account; the key is a throwaway on this localnet.
+    STREAMD_PUBLISHER_KEY: account.privateKey.toString(),
+  };
+}
+
+async function readCoverage(
+  localnet: Localnet,
+  address: string,
+  fromVersion: bigint,
+  signal: AbortSignal,
+): Promise<CoverageEntry[]> {
+  const modules = await localnet.aptos.getAccountModules({ accountAddress: address });
+  if (signal.aborted) throw signal.reason;
+  const types = eventStructTypes(modules.map(parseModuleAbi));
+  const events = types.length === 0
+    ? []
+    : await localnet.client.getEvents({ kind: "module", eventType: types }, { fromVersion, toVersion: "head", signal });
+  if (signal.aborted) throw signal.reason;
+  return coverageReport(types, events);
+}
+
 /**
  * Publishes the package to a fresh localnet from a funded account, runs the
  * test command against it, then prints one line per `#[event]` struct the
@@ -131,6 +157,7 @@ export async function runCoverage(options: CoverageOptions, io: CoverageIO): Pro
     io.error(`streamd: cannot read ${manifest}: ${message(err)}`);
     return 1;
   }
+  if (io.signal.aborted) return interrupted(io);
   let localnet: Localnet;
   try {
     localnet = await io.start();
@@ -140,28 +167,23 @@ export async function runCoverage(options: CoverageOptions, io: CoverageIO): Pro
     return 1;
   }
   try {
+    if (io.signal.aborted) return interrupted(io);
     const account = await localnet.fundedAccount();
+    if (io.signal.aborted) return interrupted(io);
     const address = account.accountAddress.toStringLong();
     const namedAddresses = Object.fromEntries(unboundAddresses(toml).map((name) => [name, address]));
     const published = await localnet.publish(options.packageDir, { account, namedAddresses });
     if (io.signal.aborted) return interrupted(io);
-    const code = await io.run(options.command, {
-      STREAMD_NODE_URL: localnet.nodeUrl,
-      STREAMD_FAUCET_URL: localnet.faucetUrl ?? "",
-      STREAMD_PACKAGE_ADDRESS: address,
-      // fundedAccount generates an Ed25519 account; the key is a throwaway on this localnet.
-      STREAMD_PUBLISHER_KEY: (account as Ed25519Account).privateKey.toString(),
-    });
+    const code = await io.run(options.command, testEnv(localnet, address, account as Ed25519Account));
     // Ctrl-C reaches the node as well, so after one there is nothing left to read.
     if (io.signal.aborted) return interrupted(io);
-    const modules = await localnet.aptos.getAccountModules({ accountAddress: address });
-    const types = eventStructTypes(modules.map(parseModuleAbi));
-    const events = types.length === 0
-      ? []
-      : await localnet.client.getEvents({ kind: "module", eventType: types }, { fromVersion: published.version, toVersion: "head" });
-    const report = coverageReport(types, events);
+    const report = await readCoverage(localnet, address, published.version, io.signal);
     const line = options.format === "pretty" ? prettyCoverageLine : coverageLine;
-    for (const entry of report) await io.write(line(entry));
+    for (const entry of report) {
+      if (io.signal.aborted) return interrupted(io);
+      await io.write(line(entry));
+    }
+    if (io.signal.aborted) return interrupted(io);
     const emitted = report.filter((entry) => entry.count > 0).length;
     io.error(`streamd: ${emitted} of ${report.length} event structs emitted${code === 0 ? "" : `; the test command exited ${code}`}`);
     return code === 0 ? 0 : 1;

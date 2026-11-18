@@ -450,11 +450,9 @@ export class AptosClient extends StreamdClient {
     return lazyResolve(addressOrName(account), () => resolveName(this.aptos, account));
   }
 
-  /**
-   * Past transfers, built as `transfers()` builds them, over the range and
-   * options `getEvents` takes; `where` and `limit` apply to the records.
-   */
-  async getTransfers(filter: TransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
+  private transferQuery(
+    filter: TransferFilter = {},
+  ): [EventQuery, Omit<TransferFilter, "asset" | "account" | "withAssetInfo">] {
     const { asset, account, withAssetInfo, ...rest } = filter;
     const source = transferSource(
       this.adapter,
@@ -463,8 +461,25 @@ export class AptosClient extends StreamdClient {
       withAssetInfo,
       this.requestTimeout,
     );
-    const query = new EventQuery(source, this.limiter, this.names);
+    return [new EventQuery(source, this.limiter, this.names), rest];
+  }
+
+  /**
+   * Past transfers, built as `transfers()` builds them, over the range and
+   * options `getEvents` takes; `where` and `limit` apply to the records.
+   */
+  async getTransfers(filter: TransferFilter = {}): Promise<StreamdEvent<Transfer>[]> {
+    const [query, rest] = this.transferQuery(filter);
     return query.getEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
+  }
+
+  /**
+   * Past transfers one at a time, built as `getTransfers()` builds them;
+   * leaving the loop early fetches nothing further.
+   */
+  async *iterateTransfers(filter: TransferFilter = {}): AsyncGenerator<StreamdEvent<Transfer>, void, unknown> {
+    const [query, rest] = this.transferQuery(filter);
+    yield* query.iterateEvents<Transfer>(TRANSFER_DESCRIPTOR, rest);
   }
 
   /**
