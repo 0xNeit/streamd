@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
-import type { EventDescriptor, ReduceOptions, Reducer, Reduction, StreamdClient } from "@streamd/core";
+import type { EventDescriptor, ReduceOptions, Reducer, Reduction, StreamdClient, StreamdEvent } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
 import { toError, valueKey, withLatestFunctions } from "./key.js";
 
 /** `reduce` options, minus `signal`: the reduction ends on unmount and on input change. */
-export interface UseReductionOptions<S, TData> extends Omit<ReduceOptions<S, TData>, "signal"> {
+export interface UseReductionOptions<S, TData, TEvent = StreamdEvent<TData>>
+  extends Omit<ReduceOptions<S, TData, TEvent>, "signal"> {
   /** Use this client instead of the nearest `StreamdProvider`'s. */
   client?: StreamdClient;
 }
@@ -20,19 +21,24 @@ export interface UseReductionResult<S> {
   status: UseReductionStatus;
 }
 
-function startHookReduction<S, TData>(
+function startHookReduction<S, TData, TEvent = StreamdEvent<TData>>(
   client: StreamdClient,
-  descriptor: EventDescriptor<TData>,
+  descriptor: EventDescriptor<TData, TEvent>,
   initial: S,
-  reduce: Omit<UseReductionOptions<S, TData>, "client">,
-  latest: { current: { reducer: Reducer<S, TData>; reduce: Omit<UseReductionOptions<S, TData>, "client"> } },
+  reduce: Omit<UseReductionOptions<S, TData, TEvent>, "client">,
+  latest: {
+    current: {
+      reducer: Reducer<S, TData, TEvent>;
+      reduce: Omit<UseReductionOptions<S, TData, TEvent>, "client">;
+    };
+  },
   isCurrent: () => boolean,
   setState: Dispatch<SetStateAction<UseReductionResult<S>>>,
 ): Reduction<S> | undefined {
   let reduction: Reduction<S> | undefined;
   const opts = withLatestFunctions(reduce, () => latest.current.reduce);
   try {
-    reduction = client.reduce<S, TData>(descriptor, (s, e) => latest.current.reducer(s, e), initial, {
+    reduction = client.reduce<S, TData, TEvent>(descriptor, (s, e) => latest.current.reducer(s, e), initial, {
       ...opts,
       onChange: (value, event) => {
         if (isCurrent()) setState({ value, error: undefined, status: "live" });
@@ -58,11 +64,11 @@ function startHookReduction<S, TData>(
  * or `initial` change by value, and calls the latest `reducer` without
  * restarting. A `null` or `undefined` descriptor waits.
  */
-export function useReduction<S, TData = unknown>(
-  descriptor: EventDescriptor<TData> | null | undefined,
-  reducer: Reducer<S, TData>,
+export function useReduction<S, TData = unknown, TEvent = StreamdEvent<TData>>(
+  descriptor: EventDescriptor<TData, TEvent> | null | undefined,
+  reducer: Reducer<S, TData, TEvent>,
   initial: S,
-  options: UseReductionOptions<S, TData> = {},
+  options: UseReductionOptions<S, TData, TEvent> = {},
 ): UseReductionResult<S> {
   const { client: explicit, ...reduce } = options;
   const client = useStreamdClient(explicit);

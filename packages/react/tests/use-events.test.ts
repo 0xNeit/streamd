@@ -7,11 +7,19 @@ import { defineEvent, defineEvents,
   StreamdError,
   StreamdNetworkError,
   StreamdPollingError,
+  type EventDescriptor,
   type MoveEventType,
+  type StreamdEvent,
 } from "@streamd/core";
 import {
   StreamdProvider,
+  useEventPages,
   useEvents,
+  useLogs,
+  useReduction,
+  useSubmitTransaction,
+  useTransactionEvents,
+  useTransactions,
   type UseEventsOptions,
   type UseEventsResult,
 } from "../src/index.js";
@@ -163,6 +171,28 @@ export function narrowsOnType(): void {
     if (event.type === "0x1::a::A") void (event.data.a satisfies string);
     else void (event.data.b satisfies number);
   }
+  for (const event of useLogs(both).data ?? []) {
+    if (event.type === "0x1::a::A") void (event.data.a satisfies string);
+  }
+  for (const group of useTransactions(both).data) {
+    for (const event of group.events) {
+      if (event.type === "0x1::b::B") void (event.data.b satisfies number);
+    }
+  }
+}
+
+// Compiled by the typecheck and never run: callers generic over T use StreamdEvent<T> without EventOf<T>.
+export function genericHooksResolveStreamdEvent<T>(descriptor: EventDescriptor<T>): void {
+  const live: StreamdEvent<T>[] = useEvents(descriptor).events;
+  const logs: StreamdEvent<T>[] | undefined = useLogs(descriptor).data;
+  const pages: StreamdEvent<T>[][] = useEventPages(descriptor).pages;
+  const reduced = useReduction(descriptor, (acc: StreamdEvent<T>[], e: StreamdEvent<T>) => [...acc, e], []).value;
+  const txEvents: StreamdEvent<T>[] | undefined = useTransactionEvents("0x1", { descriptor }).data;
+  const submitted = useSubmitTransaction<string, T>({ descriptor, signAndSubmit: async (tx) => tx });
+  const preview: StreamdEvent<T>[] | undefined = submitted.preview;
+  const txs = useTransactions(descriptor).data[0]?.events;
+  const typedTxs: StreamdEvent<T>[] | undefined = txs;
+  void [live, logs, pages, reduced, txEvents, preview, typedTxs];
 }
 
 describe("useEvents history", () => {

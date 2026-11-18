@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   StreamdError,
-  type EventOf,
+  type StreamdEvent,
   type Subscription,
   type SubscriptionOptions,
 } from "@streamd/core";
@@ -18,9 +18,9 @@ export type UseEventsStatus = "idle" | "loading" | "live" | "stopped";
 /** What the hook needs of a running subscription. */
 export type Following = Pick<Subscription, "unsubscribe" | "active" | "paused">;
 
-export interface UseEventsResult<TData> {
+export interface UseEventsResult<TData, TEvent = StreamdEvent<TData>> {
   /** The most recent `maxEvents` delivered events, oldest first. */
-  events: EventOf<TData>[];
+  events: TEvent[];
   /** The last polling or handler error, cleared when events next arrive. */
   error: Error | undefined;
   status: UseEventsStatus;

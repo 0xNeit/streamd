@@ -1,13 +1,13 @@
-import type { EventCallback, EventOf, EventStream, Subscription } from "./types.js";
+import type { EventCallback, EventStream, StreamdEvent, Subscription } from "./types.js";
 import { onAbort } from "./utils.js";
 
-type Subscribe<TData> = (
-  callback: EventCallback<TData>,
+type Subscribe<TData, TEvent = StreamdEvent<TData>> = (
+  callback: EventCallback<TData, TEvent>,
   onError: (error: Error) => void,
 ) => Subscription;
 
-interface Waiter<TData> {
-  resolve(result: IteratorResult<EventOf<TData>>): void;
+interface Waiter<TEvent> {
+  resolve(result: IteratorResult<TEvent>): void;
   reject(error: unknown): void;
 }
 
@@ -27,20 +27,20 @@ const DONE = { value: undefined, done: true } as const;
  * microtask. An `AbortSignal` is the one exception: it can fire while the loop
  * body is running, so its reason is held for the next `next()`.
  */
-export function eventStream<TData>(
-  subscribe: Subscribe<TData>,
+export function eventStream<TData, TEvent = StreamdEvent<TData>>(
+  subscribe: Subscribe<TData, TEvent>,
   onClose: () => void = () => {},
   signal?: AbortSignal,
   startCursor?: string,
-): EventStream<TData> {
+): EventStream<TData, TEvent> {
   let sub: Subscription | undefined;
-  let waiter: Waiter<TData> | undefined;
+  let waiter: Waiter<TEvent> | undefined;
   let release: (() => void) | undefined;
   let failure: { reason: unknown } | undefined;
   let detach = () => {};
   let closed = false;
 
-  const take = (): Waiter<TData> => {
+  const take = (): Waiter<TEvent> => {
     const w = waiter!;
     waiter = undefined;
     return w;

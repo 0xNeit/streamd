@@ -1,15 +1,20 @@
 import { StreamdError } from "./errors.js";
 import { MISSING, parseFieldPath, readField, toInteger, type FieldPath } from "./filter.js";
-import type { EventOf, Reducer } from "./types.js";
+import type { Reducer, StreamdEvent } from "./types.js";
 
 /**
  * A reducer carrying the value it starts from. Pass both to `reduce()` or
  * `useReduction()` as `reduce(d, fold, fold.initial)`; the `initial` slot stays
  * the caller's, since that is where a saved value goes on resume.
  */
-export type Fold<S, TData = unknown> = Reducer<S, TData> & { readonly initial: S };
+export type Fold<S, TData = unknown, TEvent = StreamdEvent<TData>> = Reducer<S, TData, TEvent> & {
+  readonly initial: S;
+};
 
-function fold<S, TData>(reducer: Reducer<S, TData>, initial: S): Fold<S, TData> {
+function fold<S, TData, TEvent = StreamdEvent<TData>>(
+  reducer: Reducer<S, TData, TEvent>,
+  initial: S,
+): Fold<S, TData, TEvent> {
   return Object.assign(reducer, { initial });
 }
 
@@ -36,8 +41,12 @@ export function sum(path: FieldPath): Fold<bigint> {
 }
 
 /** The most recently folded event, or `undefined` before the first. */
-export function latest<TData = unknown>(): Fold<EventOf<TData> | undefined, TData> {
-  return fold<EventOf<TData> | undefined, TData>((_, event) => event, undefined);
+export function latest<TData = unknown, TEvent = StreamdEvent<TData>>(): Fold<
+  TEvent | undefined,
+  TData,
+  TEvent
+> {
+  return fold<TEvent | undefined, TData, TEvent>((_, event) => event, undefined);
 }
 
 /**
@@ -45,12 +54,12 @@ export function latest<TData = unknown>(): Fold<EventOf<TData> | undefined, TDat
  * (as reported: addresses are not padded, so `0x0a` and `0x000a` stay apart).
  * A missing or `null` field skips the event; an object or array throws.
  */
-export function groupBy<S, TData = unknown>(
+export function groupBy<S, TData = unknown, TEvent = StreamdEvent<TData>>(
   path: FieldPath,
-  inner: Fold<S, TData>,
-): Fold<Map<string, S>, TData> {
+  inner: Fold<S, TData, TEvent>,
+): Fold<Map<string, S>, TData, TEvent> {
   const segments = parseFieldPath(path);
-  return fold<Map<string, S>, TData>((groups, event) => {
+  return fold<Map<string, S>, any, any>((groups, event) => {
     const value = readField(event.data, segments);
     if (value === MISSING || value == null) return groups;
     if (typeof value === "object") {

@@ -3,8 +3,8 @@ import {
   StreamdError,
   StreamdTransactionError,
   type EventDescriptor,
-  type EventOf,
   type EventsOfOptions,
+  type StreamdEvent,
 } from "@streamd/core";
 import { useClientWith } from "./context.js";
 import { toError } from "./key.js";
@@ -12,17 +12,17 @@ import type { TransactionEventsClient } from "./use-transaction-events.js";
 
 /** A client that simulates and waits for transactions: an `AptosClient`, a `SuiClient`, or one shaped like them. */
 export interface SubmitTransactionClient<TTransaction> extends TransactionEventsClient {
-  previewEvents<TData = unknown>(
+  previewEvents<TData = unknown, TEvent = StreamdEvent<TData>>(
     transaction: TTransaction,
-    descriptor?: EventDescriptor<TData>,
+    descriptor?: EventDescriptor<TData, TEvent>,
     options?: Pick<EventsOfOptions, "decode" | "where">,
-  ): Promise<EventOf<TData>[]>;
+  ): Promise<TEvent[]>;
 }
 
 /** What `signAndSubmit` may resolve with: a hash, or an object carrying it as `hash` (Aptos) or `digest` (Sui). */
 export type SubmittedTransaction = string | { hash: string } | { digest: string };
 
-export interface UseSubmitTransactionOptions<TTransaction, TData = unknown>
+export interface UseSubmitTransactionOptions<TTransaction, TData = unknown, TEvent = StreamdEvent<TData>>
   extends Pick<EventsOfOptions, "decode" | "where" | "timeout"> {
   /**
    * Signs and submits `transaction`, through a wallet or a local signer. The
@@ -31,7 +31,7 @@ export interface UseSubmitTransactionOptions<TTransaction, TData = unknown>
    */
   signAndSubmit: (transaction: TTransaction, context: { signal: AbortSignal }) => Promise<SubmittedTransaction>;
   /** Keep only the events this descriptor matches, in the preview and the result. */
-  descriptor?: EventDescriptor<TData>;
+  descriptor?: EventDescriptor<TData, TEvent>;
   /** `false` skips the simulation and signs at once. Default `true`. */
   preview?: boolean;
   /**
@@ -46,35 +46,36 @@ export interface UseSubmitTransactionOptions<TTransaction, TData = unknown>
 
 export type UseSubmitTransactionStatus = "idle" | "previewing" | "signing" | "confirming" | "confirmed" | "failed";
 
-export interface SubmitTransactionState<TData> {
+export interface SubmitTransactionState<TData, TEvent = StreamdEvent<TData>> {
   status: UseSubmitTransactionStatus;
   /** The events the simulation says the transaction will emit. */
-  preview: EventOf<TData>[] | undefined;
+  preview: TEvent[] | undefined;
   /** Why the simulation failed. */
   previewError: Error | undefined;
   /** The submitted transaction's hash (a Sui digest on Sui), once `signAndSubmit` resolves. */
   hash: string | undefined;
   /** The committed transaction's matching events, once `confirmed`. */
-  events: EventOf<TData>[] | undefined;
+  events: TEvent[] | undefined;
   /** Why the run `failed`: the preview, the signature, the transaction, or the wait. */
   error: Error | undefined;
   /** The chain's status for a transaction that committed and failed, or for the failed simulation that stopped the run. */
   vmStatus: string | undefined;
 }
 
-export interface UseSubmitTransactionResult<TTransaction, TData> extends SubmitTransactionState<TData> {
+export interface UseSubmitTransactionResult<TTransaction, TData, TEvent = StreamdEvent<TData>>
+  extends SubmitTransactionState<TData, TEvent> {
   /**
    * Preview, sign and confirm `transaction`. Resolves with the run's final
    * state (for a run cut short, `idle`, or `failed` with its hash once one was
    * submitted) and never rejects; while a run is going, returns its promise and
    * starts nothing, so a `signAndSubmit` must not await it.
    */
-  submit: (transaction: TTransaction) => Promise<SubmitTransactionState<TData>>;
+  submit: (transaction: TTransaction) => Promise<SubmitTransactionState<TData, TEvent>>;
   /** Abandon any run and return to `idle`. A transaction already submitted stays submitted. */
   reset: () => void;
 }
 
-function idle<TData>(): SubmitTransactionState<TData> {
+function idle<TData, TEvent = StreamdEvent<TData>>(): SubmitTransactionState<TData, TEvent> {
   return {
     status: "idle",
     preview: undefined,
@@ -93,17 +94,20 @@ function idle<TData>(): SubmitTransactionState<TData> {
  * a throw; a client without the methods it needs throws during render.
  * Options are read when `submit` is called.
  */
-export function useSubmitTransaction<TTransaction, TData = unknown>(
-  options: UseSubmitTransactionOptions<TTransaction, TData>,
-): UseSubmitTransactionResult<TTransaction, TData> {
+export function useSubmitTransaction<TTransaction, TData = unknown, TEvent = StreamdEvent<TData>>(
+  options: UseSubmitTransactionOptions<TTransaction, TData, TEvent>,
+): UseSubmitTransactionResult<TTransaction, TData, TEvent> {
   const client = useClientWith<SubmitTransactionClient<TTransaction>>("eventsOf", options.client);
   if (options.preview !== false && typeof client.previewEvents !== "function") {
     throw new StreamdError("useSubmitTransaction needs a client with previewEvents, or preview: false");
   }
   const latest = useRef({ options, client });
   latest.current = { options, client };
-  const [state, setState] = useState(idle<TData>);
-  const running = useRef<{ controller: AbortController; promise: Promise<SubmitTransactionState<TData>> }>(undefined);
+  const [state, setState] = useState(idle<TData, TEvent>);
+  const running = useRef<{
+    controller: AbortController;
+    promise: Promise<SubmitTransactionState<TData, TEvent>>;
+  }>(undefined);
   // The run whose state is shown: the latest one submitted, until reset() lets go of it.
   const shown = useRef<AbortController>(undefined);
 
@@ -111,7 +115,7 @@ export function useSubmitTransaction<TTransaction, TData = unknown>(
     if (running.current) return running.current.promise;
     const controller = new AbortController();
     const { options, client } = latest.current;
-    const publish = (state: SubmitTransactionState<TData>) => {
+    const publish = (state: SubmitTransactionState<TData, TEvent>) => {
       if (shown.current === controller) setState(state);
     };
     // Started a tick later, so a signAndSubmit that calls submit synchronously already finds this run.
@@ -136,14 +140,14 @@ export function useSubmitTransaction<TTransaction, TData = unknown>(
   const reset = useCallback(() => {
     abandon();
     shown.current = undefined;
-    setState(idle<TData>());
+    setState(idle<TData, TEvent>());
   }, [abandon]);
 
   // Also runs when <Activity> hides the component, keeping its state: a run cut short there
   // must not stay shown as in progress, nor hide a hash already submitted or still to come.
   useEffect(
     () => () => {
-      if (abandon(HIDDEN)) setState(cutShort<TData>);
+      if (abandon(HIDDEN)) setState(cutShort<TData, TEvent>);
     },
     [abandon],
   );
@@ -151,29 +155,29 @@ export function useSubmitTransaction<TTransaction, TData = unknown>(
   return { ...state, submit, reset };
 }
 
-async function run<TTransaction, TData>(
+async function run<TTransaction, TData, TEvent>(
   transaction: TTransaction,
   client: SubmitTransactionClient<TTransaction>,
-  options: UseSubmitTransactionOptions<TTransaction, TData>,
+  options: UseSubmitTransactionOptions<TTransaction, TData, TEvent>,
   signal: AbortSignal,
-  publish: (state: SubmitTransactionState<TData>) => void,
-): Promise<SubmitTransactionState<TData>> {
+  publish: (state: SubmitTransactionState<TData, TEvent>) => void,
+): Promise<SubmitTransactionState<TData, TEvent>> {
   const { descriptor, decode, where, timeout } = options;
-  let state = idle<TData>();
+  let state = idle<TData, TEvent>();
   if (signal.aborted) return state;
-  const step = (patch: Partial<SubmitTransactionState<TData>>) => {
+  const step = (patch: Partial<SubmitTransactionState<TData, TEvent>>) => {
     state = { ...state, ...patch };
     if (!signal.aborted) publish(state);
     else if (patch.hash !== undefined && signal.reason === HIDDEN) publish((state = cutShort(state)));
     return state;
   };
-  const fail = (err: unknown, patch: Partial<SubmitTransactionState<TData>> = {}) =>
+  const fail = (err: unknown, patch: Partial<SubmitTransactionState<TData, TEvent>> = {}) =>
     step({ status: "failed", error: toError(err), vmStatus: vmStatusOf(err), ...patch });
   try {
     if (options.preview !== false) {
       step({ status: "previewing" });
       try {
-        step({ preview: await client.previewEvents(transaction, descriptor, { decode, where }) });
+        step({ preview: await client.previewEvents<TData, TEvent>(transaction, descriptor, { decode, where }) });
       } catch (err) {
         if (signal.aborted) return state;
         if (!options.submitOnPreviewFailure) return fail(err, { previewError: toError(err) });
@@ -186,7 +190,7 @@ async function run<TTransaction, TData>(
     const hash = hashOf(await options.signAndSubmit(transaction, { signal }));
     step({ status: "confirming", hash });
     if (signal.aborted) return state;
-    const events = await client.eventsOf<TData>(hash, descriptor, { decode, where, timeout, signal });
+    const events = await client.eventsOf<TData, TEvent>(hash, descriptor, { decode, where, timeout, signal });
     return signal.aborted ? state : step({ status: "confirmed", events });
   } catch (err) {
     return signal.aborted ? state : fail(err);
@@ -197,8 +201,8 @@ async function run<TTransaction, TData>(
 const HIDDEN = Symbol("hidden");
 
 /** A run cut short: `idle`, or `failed` keeping the hash once one was submitted. */
-function cutShort<TData>(state: SubmitTransactionState<TData>): SubmitTransactionState<TData> {
-  if (state.hash === undefined) return idle<TData>();
+function cutShort<TData, TEvent>(state: SubmitTransactionState<TData, TEvent>): SubmitTransactionState<TData, TEvent> {
+  if (state.hash === undefined) return idle<TData, TEvent>();
   if (state.status !== "signing" && state.status !== "confirming") return state;
   return { ...state, status: "failed", error: new StreamdError("Stopped waiting for the transaction") };
 }

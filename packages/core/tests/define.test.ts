@@ -3,7 +3,16 @@ import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdClient } from "../src/client.js";
 import { defineEvent, defineEvents } from "../src/define.js";
 import { StreamdError } from "../src/errors.js";
-import type { EventDescriptor, EventOf, EventStream, StreamdEvent } from "../src/types.js";
+import { latest } from "../src/reducers.js";
+import type {
+  EventDescriptor,
+  EventExpectation,
+  EventOf,
+  EventStream,
+  ModuleEventDescriptor,
+  StreamdEvent,
+  TransactionGroup,
+} from "../src/types.js";
 
 type Equals<A, B> =
   (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
@@ -236,3 +245,35 @@ describe("defineEvents", () => {
     expect(check({ type: "0x1::b::B", data: { b: 7 }, version: 1n, sequenceNumber: 0n, eventIndex: 0 })).toBe(7);
   });
 });
+
+// Compiled by typecheck: callers generic over T can use StreamdEvent<T> directly without EventOf<T>.
+export async function genericCallerResolvesStreamdEvent<T>(
+  client: StreamdClient,
+  descriptor: EventDescriptor<T>,
+  moduleDescriptor: ModuleEventDescriptor<T>,
+  expectation: EventExpectation,
+): Promise<void> {
+  const onSub = client.on(descriptor, (e: StreamdEvent<T>) => void e.data);
+  const onBatchSub = client.onBatch(descriptor, (events: StreamdEvent<T>[]) => void events);
+  const onTxSub = client.onTransaction(descriptor, (group: TransactionGroup<T>) => void group.events);
+  const single: StreamdEvent<T> = await client.once(descriptor);
+  const stream: EventStream<T> = client.stream(descriptor);
+  const listStream: EventStream<T> = client.stream([moduleDescriptor]);
+  const reduction = client.reduce(descriptor, (acc: StreamdEvent<T>[], e: StreamdEvent<T>) => [...acc, e], []);
+  const latestReduction = client.reduce(descriptor, latest(), undefined);
+  const latestEvent: StreamdEvent<T> | undefined = latestReduction.value;
+  const replay = client.replay(descriptor, (e: StreamdEvent<T>) => void e.data);
+  const events: StreamdEvent<T>[] = await client.getEvents(descriptor);
+  const txs: TransactionGroup<T>[] = await client.getTransactions(descriptor);
+  const expected: StreamdEvent<T>[] = await expectation.toEmit(descriptor);
+  void [onSub, onBatchSub, onTxSub, single, stream, listStream, reduction, latestEvent, replay, events, txs, expected];
+  for await (const page of client.getEventPages(descriptor)) {
+    const typed: StreamdEvent<T>[] = page;
+    void typed;
+  }
+  for await (const item of client.iterateEvents(descriptor)) {
+    const typed: StreamdEvent<T> = item;
+    void typed;
+  }
+  client.off(descriptor, (e: StreamdEvent<T>) => void e.data);
+}

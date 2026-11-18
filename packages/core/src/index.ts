@@ -184,6 +184,7 @@ export type {
   CloseOptions,
   EventOf,
   DescriptorData,
+  DescriptorEvent,
   TaggedEvent,
   StreamdConfig,
   StreamdEvent,

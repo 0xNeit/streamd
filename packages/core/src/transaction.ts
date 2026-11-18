@@ -2,7 +2,6 @@ import type {
   EventAdapter,
   EventDescriptor,
   EventExpectation,
-  EventOf,
   EventPredicate,
   EventsAtOptions,
   EventsOfOptions,
@@ -293,9 +292,9 @@ export function transactionExpectation(
     return { all, matched: await raceAbort(Promise.resolve(narrow(all)), options.signal), what };
   };
   return {
-    async toEmit<TData>(descriptor: EventDescriptor<TData>, where?: EventPredicate) {
+    async toEmit(descriptor: EventDescriptor, where?: EventPredicate): Promise<any[]> {
       const { all, matched, what } = await match(descriptor, where);
-      if (matched.length > 0) return matched as unknown as EventOf<TData>[];
+      if (matched.length > 0) return matched;
       throw new StreamdAssertionError(`Expected ${subject} to emit ${what}, but ${listing(all)}`, transactionHash, all);
     },
     async notToEmit(descriptor: EventDescriptor, where?: EventPredicate) {

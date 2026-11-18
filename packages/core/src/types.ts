@@ -8,13 +8,21 @@
 export type MoveEventType = `${string}::${string}::${string}`;
 
 declare const eventData: unique symbol;
+declare const eventShape: unique symbol;
+
+// Ensures descriptors carrying custom event unions (like `defineEvents`) remain
+// assignable to `EventDescriptor<TData>` while still letting generic methods infer `TEvent`.
+type EventCarrier<TEvent> = ((event: TEvent) => void) & ((event: any) => void);
 
 /**
  * Modern module event: one `${address}::${module}::${struct}` or a list of
  * them. `TData` is the payload type `defineEvent` attaches, so client methods
  * infer `event.data` from the descriptor.
  */
-export interface ModuleEventDescriptor<TData = unknown> {
+export interface ModuleEventDescriptor<
+  TData = unknown,
+  TEvent = StreamdEvent<NoInfer<TData>>,
+> {
   kind: "module";
   /**
    * Type-only carrier for `TData`; never present at runtime. A method
@@ -22,6 +30,8 @@ export interface ModuleEventDescriptor<TData = unknown> {
    * accepts an explicit type argument, while unrelated payload types clash.
    */
   [eventData]?(data: TData): void;
+  /** Type-only carrier for the delivered event shape (`StreamdEvent<TData>` or a `defineEvents` union). */
+  [eventShape]?: EventCarrier<TEvent>;
   /**
    * One Move event type or a non-empty list of them (e.g.
    * `"0x1::coin::WithdrawEvent"` or
@@ -65,10 +75,15 @@ type TaggedMember<TData> =
  * Queries with `cursor`, `offset`, `fromVersion`, and `fromTime` all omitted
  * start at sequence 0; pass a start option on a pruning fullnode.
  */
-export interface HandleEventDescriptor<TData = unknown> {
+export interface HandleEventDescriptor<
+  TData = unknown,
+  TEvent = StreamdEvent<NoInfer<TData>>,
+> {
   kind: "handle";
   /** Type-only payload carrier, as on `ModuleEventDescriptor`; codegen's handle builders set it. */
   [eventData]?(data: TData): void;
+  /** Type-only event carrier, matching `ModuleEventDescriptor`. */
+  [eventShape]?: EventCarrier<TEvent>;
   accountAddress: string;
   eventHandleStruct: string;
   fieldName: string;
@@ -151,15 +166,34 @@ export interface ObjectDescriptor {
  * union of descriptors, the union of their payloads. What a list of
  * descriptors given to `on`, `onBatch`, `once` or `stream` delivers.
  */
-export type DescriptorData<TDescriptor> = TDescriptor extends ModuleEventDescriptor<infer TData>
-  ? TData
-  : TDescriptor extends HandleEventDescriptor<infer TData>
+export type DescriptorData<TDescriptor> =
+  TDescriptor extends ModuleEventDescriptor<infer TData, any>
     ? TData
-    : unknown;
+    : TDescriptor extends HandleEventDescriptor<infer TData, any>
+      ? TData
+      : unknown;
 
-export type EventDescriptor<TData = unknown> =
-  | ModuleEventDescriptor<TData>
-  | HandleEventDescriptor<TData>
+/**
+ * The delivered event type a descriptor carries (`StreamdEvent<TData>` or a
+ * `defineEvents` discriminated union).
+ */
+export type DescriptorEvent<TDescriptor> =
+  TDescriptor extends ModuleEventDescriptor<infer TData, infer TEvent>
+    ? unknown extends TEvent
+      ? StreamdEvent<TData>
+      : TEvent
+    : TDescriptor extends HandleEventDescriptor<infer TData, infer TEvent>
+      ? unknown extends TEvent
+        ? StreamdEvent<TData>
+        : TEvent
+      : StreamdEvent<unknown>;
+
+export type EventDescriptor<
+  TData = unknown,
+  TEvent = StreamdEvent<NoInfer<TData>>,
+> =
+  | ModuleEventDescriptor<TData, TEvent>
+  | HandleEventDescriptor<TData, TEvent>
   | CreationNumberEventDescriptor
   | AccountEventDescriptor
   | ResourceDescriptor
@@ -633,7 +667,7 @@ export interface OnceOptions extends ListenerOptions {
 }
 
 /** Folds one event into the state; synchronous, and should not mutate `state`. */
-export type Reducer<S, TData = unknown> = (state: S, event: EventOf<TData>) => S;
+export type Reducer<S, TData = unknown, TEvent = StreamdEvent<TData>> = (state: S, event: TEvent) => S;
 
 /**
  * Options for `reduce()`. History options shape the backfill, live options
@@ -642,7 +676,7 @@ export type Reducer<S, TData = unknown> = (state: S, event: EventOf<TData>) => S
  * `offset`, `toVersion`, `toBlock`, `orderBy`, `onCursor`, `cursor`) is
  * refused.
  */
-export interface ReduceOptions<S = unknown, TData = unknown>
+export interface ReduceOptions<S = unknown, TData = unknown, TEvent = StreamdEvent<TData>>
   extends Pick<EventFilter, "fromBlock" | "maxPages" | "retries">,
     Pick<
       ListenerOptions,
@@ -672,7 +706,7 @@ export interface ReduceOptions<S = unknown, TData = unknown>
    * during the backfill, whose result `ready` resolves with. A throw goes to
    * `onError` and does not stop the reduction.
    */
-  onChange?: (state: S, event: EventOf<TData>) => void;
+  onChange?: (state: S, event: TEvent) => void;
 }
 
 /** A running `reduce()`: the reduced value, kept current as events arrive. */
@@ -928,7 +962,7 @@ export interface SubscriptionInfo extends SubscriptionStatus {
 }
 
 /** What `stream()` returns: its live events, and where to resume them. */
-export interface EventStream<TData = unknown> extends AsyncIterableIterator<EventOf<TData>> {
+export interface EventStream<TData = unknown, TEvent = StreamdEvent<TData>> extends AsyncIterableIterator<TEvent> {
   /**
    * As `Subscription.cursor`, moving past a page only once the loop has asked
    * past its last event; the `cursor` option until the loop first asks.
@@ -950,8 +984,8 @@ export interface EventStream<TData = unknown> extends AsyncIterableIterator<Even
  * async functions and also expression bodies such as `(e) => list.push(e)`,
  * which the union would reject.
  */
-export type EventCallback<TData = unknown> = (
-  event: EventOf<TData>,
+export type EventCallback<TData = unknown, TEvent = StreamdEvent<TData>> = (
+  event: TEvent,
 ) => void;
 
 /**
@@ -960,8 +994,8 @@ export type EventCallback<TData = unknown> = (
  * promise is awaited before the cursor moves past the page, and a throw or
  * rejection goes to `onError` without counting toward `maxErrors`.
  */
-export type BatchCallback<TData = unknown> = (
-  events: EventOf<TData>[],
+export type BatchCallback<TData = unknown, TEvent = StreamdEvent<TData>> = (
+  events: TEvent[],
 ) => void;
 
 /**
@@ -970,7 +1004,7 @@ export type BatchCallback<TData = unknown> = (
  * taken from the first event carrying it, and `entryFunction` only when every
  * event carrying one carries the same.
  */
-export interface TransactionGroup<TData = unknown> {
+export interface TransactionGroup<TData = unknown, TEvent = StreamdEvent<TData>> {
   /** The transaction's version, shared by every event in `events`. */
   version: bigint;
   transactionHash?: string;
@@ -979,7 +1013,7 @@ export interface TransactionGroup<TData = unknown> {
   senderName?: string | null;
   timestamp?: bigint;
   entryFunction?: EntryFunctionCall;
-  events: EventOf<TData>[];
+  events: TEvent[];
 }
 
 /**
@@ -988,8 +1022,8 @@ export interface TransactionGroup<TData = unknown> {
  * transaction, and a throw or rejection goes to `onError` without counting
  * toward `maxErrors`.
  */
-export type TransactionCallback<TData = unknown> = (
-  group: TransactionGroup<TData>,
+export type TransactionCallback<TData = unknown, TEvent = StreamdEvent<TData>> = (
+  group: TransactionGroup<TData, TEvent>,
 ) => void;
 
 /**
@@ -1004,8 +1038,8 @@ export type TransactionFilter = Omit<EventFilter, "onCursor" | "offset">;
  * Called once per event a watched address's walk delivers, with that address
  * as the caller passed it. Otherwise as `EventCallback`.
  */
-export type WatchCallback<TData = unknown> = (
-  event: EventOf<TData>,
+export type WatchCallback<TData = unknown, TEvent = StreamdEvent<TData>> = (
+  event: TEvent,
   address: string,
 ) => void;
 
@@ -1208,10 +1242,10 @@ export type ExpectEventsOptions = Pick<EventsOfOptions, "decode" | "timeout" | "
  */
 export interface EventExpectation {
   /** Resolves with the matching events, in transaction order; rejects when there are none. */
-  toEmit<TData = unknown>(
-    descriptor: EventDescriptor<TData>,
+  toEmit<TData = unknown, TEvent = StreamdEvent<TData>>(
+    descriptor: EventDescriptor<TData, TEvent>,
     where?: EventPredicate,
-  ): Promise<EventOf<TData>[]>;
+  ): Promise<TEvent[]>;
   /** Resolves when no event matches; rejects naming the ones that do. */
   notToEmit(descriptor: EventDescriptor, where?: EventPredicate): Promise<void>;
 }

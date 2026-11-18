@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { eventId, type EventDescriptor, type EventFilter, type EventOf, type StreamdClient } from "@streamd/core";
+import { eventId, type EventDescriptor, type EventFilter, type StreamdClient, type StreamdEvent } from "@streamd/core";
 import { useStreamdClient } from "./context.js";
 import { toError, valueKey, withLatestFunctions } from "./key.js";
 
@@ -11,9 +11,9 @@ export interface UseEventPagesOptions extends Omit<EventFilter, "signal"> {
   pageSize?: number;
 }
 
-export interface UseEventPagesResult<TData> {
+export interface UseEventPagesResult<TData, TEvent = StreamdEvent<TData>> {
   /** Every page loaded so far, as `getEventPages` yielded them, in walk order. */
-  pages: EventOf<TData>[][];
+  pages: TEvent[][];
   /**
    * False once a fetch found the walk finished. The last page cannot tell it
    * is the last, so the `loadMore()` after it is the one that turns this off.
@@ -32,13 +32,17 @@ export interface UseEventPagesResult<TData> {
   loadMore: () => Promise<void>;
 }
 
-interface PagesState<TData> extends Omit<UseEventPagesResult<TData>, "loadMore"> {
+interface PagesState<TData, TEvent = StreamdEvent<TData>> extends Omit<UseEventPagesResult<TData, TEvent>, "loadMore"> {
   /** The client and key these pages belong to, so a changed input renders empty at once. */
   client: StreamdClient;
   key: string;
 }
 
-function fresh<TData>(client: StreamdClient, key: string, active: boolean): PagesState<TData> {
+function fresh<TData, TEvent = StreamdEvent<TData>>(
+  client: StreamdClient,
+  key: string,
+  active: boolean,
+): PagesState<TData, TEvent> {
   return { client, key, pages: [], hasMore: active, error: undefined, loading: active };
 }
 
@@ -65,10 +69,10 @@ function resumeFilter(filter: EventFilter, held: readonly { version: bigint }[])
  * pages, aborting the page in flight. After a failure the next `loadMore()`
  * retries the same page. A `null` or `undefined` descriptor fetches nothing.
  */
-export function useEventPages<TData = unknown>(
-  descriptor: EventDescriptor<TData> | readonly EventDescriptor<TData>[] | null | undefined,
+export function useEventPages<TData = unknown, TEvent extends StreamdEvent<any> = StreamdEvent<TData>>(
+  descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[] | null | undefined,
   options: UseEventPagesOptions = {},
-): UseEventPagesResult<TData> {
+): UseEventPagesResult<TData, TEvent> {
   const { client: explicit, pageSize, ...filter } = options;
   const client = useStreamdClient(explicit);
   const latest = useRef(filter);
@@ -76,17 +80,17 @@ export function useEventPages<TData = unknown>(
   const more = useRef<(() => Promise<void>) | undefined>(undefined);
   const key = valueKey([descriptor, filter, pageSize ?? null]);
   const active = descriptor != null;
-  const [state, setState] = useState(() => fresh<TData>(client, key, active));
-  const current = state.client === client && state.key === key ? state : fresh<TData>(client, key, active);
+  const [state, setState] = useState(() => fresh<TData, TEvent>(client, key, active));
+  const current = state.client === client && state.key === key ? state : fresh<TData, TEvent>(client, key, active);
 
   useEffect(() => {
     setState((s) => (s.client === client && s.key === key ? s : fresh(client, key, descriptor != null)));
     if (descriptor == null) return;
     const controller = new AbortController();
     const live = { ...withLatestFunctions(filter, () => latest.current), signal: controller.signal };
-    const held: EventOf<TData>[] = [];
+    const held: TEvent[] = [];
     const seen = new Set<string>();
-    let walk: AsyncGenerator<EventOf<TData>[], void> | undefined;
+    let walk: AsyncGenerator<TEvent[], void> | undefined;
     let busy = false;
     let done = false;
     const next = async () => {
@@ -94,8 +98,8 @@ export function useEventPages<TData = unknown>(
       busy = true;
       setState((s) => (s.loading ? s : { ...s, loading: true }));
       try {
-        walk ??= client.getEventPages<TData>(descriptor, resumeFilter(live, held), pageSize);
-        let page: EventOf<TData>[] = [];
+        walk ??= client.getEventPages<TData, TEvent>(descriptor, resumeFilter(live, held), pageSize);
+        let page: TEvent[] = [];
         while (page.length === 0) {
           const step = await walk.next();
           if (step.done) break;

@@ -5,7 +5,6 @@ import type {
   EventCallback,
   EventDescriptor,
   EventFilter,
-  EventOf,
   StreamdConfig,
   StreamdEvent,
   Subscription,
@@ -497,11 +496,11 @@ export class AptosClient extends StreamdClient {
    * the last error in its message and `cause`); with `signal.reason` on abort;
    * and at once with any other lookup error.
    */
-  async eventsOf<TData = unknown>(
+  async eventsOf<TData = unknown, TEvent = StreamdEvent<TData>>(
     transactionHash: string,
-    descriptor?: EventDescriptor<TData>,
+    descriptor?: EventDescriptor<TData, TEvent>,
     options: EventsOfOptions = {},
-  ): Promise<EventOf<TData>[]> {
+  ): Promise<TEvent[]> {
     const badTimeout = checkTimeout(options.timeout);
     if (badTimeout !== undefined) throw badTimeout;
     const events = await eventsOf(
@@ -512,7 +511,7 @@ export class AptosClient extends StreamdClient {
       descriptor,
       options,
     );
-    return events as unknown as EventOf<TData>[];
+    return events as unknown as TEvent[];
   }
 
   /**
@@ -528,13 +527,13 @@ export class AptosClient extends StreamdClient {
    * answers it from an archive); with `signal.reason` on abort; and at once
    * with any lookup error. Bad input is refused before the lookup.
    */
-  async eventsAt<TData = unknown>(
+  async eventsAt<TData = unknown, TEvent = StreamdEvent<TData>>(
     version: bigint,
-    descriptor?: EventDescriptor<TData>,
+    descriptor?: EventDescriptor<TData, TEvent>,
     options: EventsAtOptions = {},
-  ): Promise<EventOf<TData>[]> {
+  ): Promise<TEvent[]> {
     const events = await eventsAt(this.adapter, this.limiter, version, descriptor, options);
-    return events as unknown as EventOf<TData>[];
+    return events as unknown as TEvent[];
   }
 
   /**
@@ -570,13 +569,13 @@ export class AptosClient extends StreamdClient {
    * Rejects with `StreamdTransactionError` (carrying `vmStatus`) when the
    * simulation fails, and with any simulation error as it is.
    */
-  async previewEvents<TData = unknown>(
+  async previewEvents<TData = unknown, TEvent = StreamdEvent<TData>>(
     transaction: SimpleTransaction | MultiAgentTransaction,
-    descriptor?: EventDescriptor<TData>,
+    descriptor?: EventDescriptor<TData, TEvent>,
     options: PreviewEventsOptions = {},
-  ): Promise<EventOf<TData>[]> {
+  ): Promise<TEvent[]> {
     const events = await previewEvents(this.adapter, this.limiter, transaction, descriptor, options);
-    return events as unknown as EventOf<TData>[];
+    return events as unknown as TEvent[];
   }
 
   /**
