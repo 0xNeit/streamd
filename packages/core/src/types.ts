@@ -10,10 +10,6 @@ export type MoveEventType = `${string}::${string}::${string}`;
 declare const eventData: unique symbol;
 declare const eventShape: unique symbol;
 
-// Ensures descriptors carrying custom event unions (like `defineEvents`) remain
-// assignable to `EventDescriptor<TData>` while still letting generic methods infer `TEvent`.
-type EventCarrier<TEvent> = ((event: TEvent) => void) & ((event: any) => void);
-
 /**
  * Modern module event: one `${address}::${module}::${struct}` or a list of
  * them. `TData` is the payload type `defineEvent` attaches, so client methods
@@ -31,7 +27,7 @@ export interface ModuleEventDescriptor<
    */
   [eventData]?(data: TData): void;
   /** Type-only carrier for the delivered event shape (`StreamdEvent<TData>` or a `defineEvents` union). */
-  [eventShape]?: EventCarrier<TEvent>;
+  [eventShape]?(event: TEvent): void;
   /**
    * One Move event type or a non-empty list of them (e.g.
    * `"0x1::coin::WithdrawEvent"` or
@@ -50,6 +46,16 @@ declare const taggedEvent: unique symbol;
 export interface TaggedEvent<TType extends string, TData> {
   readonly [taggedEvent]: [TType, TData];
 }
+
+/**
+ * Descriptor returned by `defineEvents`: delivers `EventOf<TTagged>` while remaining
+ * structurally compatible with `EventDescriptor<TTagged>`.
+ */
+export type TaggedModuleEventDescriptor<
+  TTagged extends TaggedEvent<string, unknown> = TaggedEvent<string, unknown>,
+> = {
+  [eventShape]?(event: StreamdEvent<TTagged>): void;
+} & ModuleEventDescriptor<TTagged, EventOf<TTagged>>;
 
 /**
  * The event a caller receives for a descriptor's `TData`: `StreamdEvent<TData>`,
@@ -83,7 +89,7 @@ export interface HandleEventDescriptor<
   /** Type-only payload carrier, as on `ModuleEventDescriptor`; codegen's handle builders set it. */
   [eventData]?(data: TData): void;
   /** Type-only event carrier, matching `ModuleEventDescriptor`. */
-  [eventShape]?: EventCarrier<TEvent>;
+  [eventShape]?(event: TEvent): void;
   accountAddress: string;
   eventHandleStruct: string;
   fieldName: string;
@@ -706,7 +712,7 @@ export interface ReduceOptions<S = unknown, TData = unknown, TEvent = StreamdEve
    * during the backfill, whose result `ready` resolves with. A throw goes to
    * `onError` and does not stop the reduction.
    */
-  onChange?: (state: S, event: TEvent) => void;
+  onChange?: (state: S, event: NoInfer<TEvent>) => void;
 }
 
 /** A running `reduce()`: the reduced value, kept current as events arrive. */
@@ -985,7 +991,7 @@ export interface EventStream<TData = unknown, TEvent = StreamdEvent<TData>> exte
  * which the union would reject.
  */
 export type EventCallback<TData = unknown, TEvent = StreamdEvent<TData>> = (
-  event: TEvent,
+  event: NoInfer<TEvent>,
 ) => void;
 
 /**
@@ -995,7 +1001,7 @@ export type EventCallback<TData = unknown, TEvent = StreamdEvent<TData>> = (
  * rejection goes to `onError` without counting toward `maxErrors`.
  */
 export type BatchCallback<TData = unknown, TEvent = StreamdEvent<TData>> = (
-  events: TEvent[],
+  events: NoInfer<TEvent>[],
 ) => void;
 
 /**
@@ -1023,7 +1029,7 @@ export interface TransactionGroup<TData = unknown, TEvent = StreamdEvent<TData>>
  * toward `maxErrors`.
  */
 export type TransactionCallback<TData = unknown, TEvent = StreamdEvent<TData>> = (
-  group: TransactionGroup<TData, TEvent>,
+  group: TransactionGroup<NoInfer<TData>, NoInfer<TEvent>>,
 ) => void;
 
 /**
@@ -1039,7 +1045,7 @@ export type TransactionFilter = Omit<EventFilter, "onCursor" | "offset">;
  * as the caller passed it. Otherwise as `EventCallback`.
  */
 export type WatchCallback<TData = unknown, TEvent = StreamdEvent<TData>> = (
-  event: TEvent,
+  event: NoInfer<TEvent>,
   address: string,
 ) => void;
 

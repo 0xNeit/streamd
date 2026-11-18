@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { MemoryAdapter, fromFunction, parseEvent, serializeEvent, StreamdAssertionError, StreamdError, StreamdTimeoutError, StreamdTransactionError } from "@streamd/core";
-import type { MoveEventType } from "@streamd/core";
+import { defineEvent, defineEvents, MemoryAdapter, fromFunction, parseEvent, serializeEvent, StreamdAssertionError, StreamdError, StreamdTimeoutError, StreamdTransactionError } from "@streamd/core";
+import type { EventDescriptor, MoveEventType, StreamdEvent } from "@streamd/core";
 import type { SuiGrpcClient } from "@mysten/sui/grpc";
 import { SuiAdapter, SuiClient, networks } from "../src/index.js";
 import type { SuiClientConfig } from "../src/index.js";
@@ -385,3 +385,29 @@ describe("SuiClient object state", () => {
     ).rejects.toThrow("withState needs an adapter that implements view");
   });
 });
+
+// Compiled by typecheck: SuiClient methods work with defineEvents and generic EventDescriptor<T>.
+export async function suiClientTypeChecks<T>(
+  client: SuiClient,
+  descriptor: EventDescriptor<T>,
+  tx: Uint8Array,
+): Promise<void> {
+  const a: StreamdEvent<T>[] = await client.eventsOf("11111111111111111111111111111111", descriptor);
+  const b: StreamdEvent<T>[] = await client.previewEvents(tx, descriptor);
+  const c: StreamdEvent<T>[] = await client.expectEvents("11111111111111111111111111111111").toEmit(descriptor);
+  const d: StreamdEvent<T>[] = await client.expectPreview(tx).toEmit(descriptor);
+  const both = defineEvents({
+    "0x1::a::A": defineEvent<{ a: string }>("0x1::a::A"),
+    "0x1::b::B": defineEvent<{ b: number }>("0x1::b::B"),
+  });
+  for (const ev of await client.eventsOf("11111111111111111111111111111111", both)) {
+    if (ev.type === "0x1::a::A") void (ev.data.a satisfies string);
+  }
+  for (const ev of await client.expectPreview(tx).toEmit(both)) {
+    if (ev.type === "0x1::b::B") void (ev.data.b satisfies number);
+  }
+  const single = defineEvent<{ a: string }>("0x1::a::A");
+  // @ts-expect-error explicit TEvent contradicts descriptor
+  void client.eventsOf<{ a: string }, { bogus: number }>("11111111111111111111111111111111", single);
+  void [a, b, c, d];
+}

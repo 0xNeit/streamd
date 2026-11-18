@@ -1,6 +1,11 @@
 import { StreamdError } from "./errors.js";
 import { requireEventType } from "./adapters/validate.js";
-import type { EventOf, ModuleEventDescriptor, MoveEventType, TaggedEvent } from "./types.js";
+import type {
+  ModuleEventDescriptor,
+  MoveEventType,
+  TaggedEvent,
+  TaggedModuleEventDescriptor,
+} from "./types.js";
 
 /**
  * A `module` descriptor typed with its payload, so `on`, `once`, `stream` and
@@ -29,7 +34,7 @@ export type TaggedEvents<TEvents> = {
  */
 export function defineEvents<TEvents extends Record<string, ModuleEventDescriptor<any, any>>>(
   events: TEvents,
-): ModuleEventDescriptor<TaggedEvents<TEvents>, EventOf<TaggedEvents<TEvents>>> {
+): TaggedModuleEventDescriptor<TaggedEvents<TEvents>> {
   const entries = Object.entries(events ?? {});
   if (entries.length === 0) throw new StreamdError("defineEvents needs at least one event type");
   for (const [type, descriptor] of entries) {

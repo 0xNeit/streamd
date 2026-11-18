@@ -292,8 +292,8 @@ export function transactionExpectation(
     return { all, matched: await raceAbort(Promise.resolve(narrow(all)), options.signal), what };
   };
   return {
-    async toEmit(descriptor: EventDescriptor, where?: EventPredicate): Promise<any[]> {
-      const { all, matched, what } = await match(descriptor, where);
+    async toEmit(descriptor: EventDescriptor<any, any>, where?: EventPredicate): Promise<any[]> {
+      const { all, matched, what } = await match(descriptor as EventDescriptor, where);
       if (matched.length > 0) return matched;
       throw new StreamdAssertionError(`Expected ${subject} to emit ${what}, but ${listing(all)}`, transactionHash, all);
     },

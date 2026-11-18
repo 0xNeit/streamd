@@ -186,6 +186,7 @@ export type {
   DescriptorData,
   DescriptorEvent,
   TaggedEvent,
+  TaggedModuleEventDescriptor,
   StreamdConfig,
   StreamdEvent,
   Subscription,

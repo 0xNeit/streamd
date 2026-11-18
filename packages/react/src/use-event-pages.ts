@@ -69,7 +69,7 @@ function resumeFilter(filter: EventFilter, held: readonly { version: bigint }[])
  * pages, aborting the page in flight. After a failure the next `loadMore()`
  * retries the same page. A `null` or `undefined` descriptor fetches nothing.
  */
-export function useEventPages<TData = unknown, TEvent extends StreamdEvent<any> = StreamdEvent<TData>>(
+export function useEventPages<TData = unknown, TEvent = StreamdEvent<TData>>(
   descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[] | null | undefined,
   options: UseEventPagesOptions = {},
 ): UseEventPagesResult<TData, TEvent> {
@@ -98,16 +98,16 @@ export function useEventPages<TData = unknown, TEvent extends StreamdEvent<any> 
       busy = true;
       setState((s) => (s.loading ? s : { ...s, loading: true }));
       try {
-        walk ??= client.getEventPages<TData, TEvent>(descriptor, resumeFilter(live, held), pageSize);
+        walk ??= client.getEventPages<TData, TEvent>(descriptor, resumeFilter(live, held as unknown as readonly StreamdEvent[]), pageSize);
         let page: TEvent[] = [];
         while (page.length === 0) {
           const step = await walk.next();
           if (step.done) break;
-          page = step.value.filter((e) => !seen.has(eventId(e)));
+          page = step.value.filter((e) => !seen.has(eventId(e as unknown as StreamdEvent)));
         }
         if (controller.signal.aborted) return;
         done = page.length === 0;
-        for (const e of page) seen.add(eventId(e));
+        for (const e of page) seen.add(eventId(e as unknown as StreamdEvent));
         held.push(...page);
         setState((s) => ({
           ...s,

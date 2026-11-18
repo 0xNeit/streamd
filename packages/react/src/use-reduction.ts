@@ -66,9 +66,9 @@ function startHookReduction<S, TData, TEvent = StreamdEvent<TData>>(
  */
 export function useReduction<S, TData = unknown, TEvent = StreamdEvent<TData>>(
   descriptor: EventDescriptor<TData, TEvent> | null | undefined,
-  reducer: Reducer<S, TData, TEvent>,
+  reducer: Reducer<S, TData, NoInfer<TEvent>>,
   initial: S,
-  options: UseReductionOptions<S, TData, TEvent> = {},
+  options: UseReductionOptions<S, TData, NoInfer<TEvent>> = {},
 ): UseReductionResult<S> {
   const { client: explicit, ...reduce } = options;
   const client = useStreamdClient(explicit);

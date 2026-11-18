@@ -142,7 +142,11 @@ export function startReplay<TData, TEvent = StreamdEvent<TData>>(
     filter.signal = controller.signal;
     const pageSize = options.batchSize ?? host.defaults.batchSize;
     try {
-      for await (const event of host.query.iterateEvents(descriptor, filter, pageSize)) {
+      for await (const event of host.query.iterateEvents(
+        descriptor as EventDescriptor | readonly EventDescriptor[],
+        filter,
+        pageSize,
+      )) {
         await pace(event);
         while (paused) await new Promise<void>((resolve) => (release = resolve));
         if (stopped) break;

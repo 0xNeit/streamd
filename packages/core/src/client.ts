@@ -376,7 +376,7 @@ export class StreamdClient {
   ): Subscription {
     return startTransactions(
       this.transactionHost,
-      descriptor,
+      descriptor as EventDescriptor | readonly EventDescriptor[],
       callback as TransactionCallback,
       options,
     );
@@ -675,15 +675,15 @@ export class StreamdClient {
    */
   reduce<S, TData = unknown, TEvent = StreamdEvent<TData>>(
     descriptor: EventDescriptor<TData, TEvent>,
-    reducer: Reducer<S, TData, TEvent>,
+    reducer: Reducer<S, TData, NoInfer<TEvent>>,
     initial: S,
-    options?: ReduceOptions<S, TData, TEvent>,
+    options?: ReduceOptions<S, TData, NoInfer<TEvent>>,
   ): Reduction<S>;
   reduce<S, const TList extends readonly EventDescriptor<any, any>[]>(
     descriptors: TList,
-    reducer: Reducer<S, DescriptorData<TList[number]>, DescriptorEvent<TList[number]>>,
+    reducer: Reducer<S, DescriptorData<TList[number]>, NoInfer<DescriptorEvent<TList[number]>>>,
     initial: S,
-    options?: ReduceOptions<S, DescriptorData<TList[number]>, DescriptorEvent<TList[number]>>,
+    options?: ReduceOptions<S, DescriptorData<TList[number]>, NoInfer<DescriptorEvent<TList[number]>>>,
   ): Reduction<S>;
   reduce<S>(
     descriptor: EventDescriptor | readonly EventDescriptor[],
@@ -723,7 +723,7 @@ export class StreamdClient {
     descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
     filter?: EventFilter,
   ): Promise<TEvent[]> {
-    return this.query.getEvents(descriptor, filter) as unknown as Promise<TEvent[]>;
+    return this.query.getEvents(descriptor as EventDescriptor | readonly EventDescriptor[], filter) as unknown as Promise<TEvent[]>;
   }
 
   /**
@@ -741,7 +741,7 @@ export class StreamdClient {
     descriptor: EventDescriptor<TData, TEvent> | readonly EventDescriptor<TData, TEvent>[],
     filter?: TransactionFilter,
   ): Promise<TransactionGroup<TData, TEvent>[]> {
-    return this.query.getTransactions(descriptor, filter) as unknown as Promise<
+    return this.query.getTransactions(descriptor as EventDescriptor | readonly EventDescriptor[], filter) as unknown as Promise<
       TransactionGroup<TData, TEvent>[]
     >;
   }
@@ -754,11 +754,11 @@ export class StreamdClient {
     filter?: EventFilter,
     pageSize?: number,
   ): AsyncGenerator<TEvent[], void, unknown> {
-    return this.query.getEventPages(descriptor, filter, pageSize) as unknown as AsyncGenerator<
-      TEvent[],
-      void,
-      unknown
-    >;
+    return this.query.getEventPages(
+      descriptor as EventDescriptor | readonly EventDescriptor[],
+      filter,
+      pageSize,
+    ) as unknown as AsyncGenerator<TEvent[], void, unknown>;
   }
 
   /**
@@ -770,11 +770,11 @@ export class StreamdClient {
     filter?: EventFilter,
     pageSize?: number,
   ): AsyncGenerator<TEvent, void, unknown> {
-    return this.query.iterateEvents(descriptor, filter, pageSize) as unknown as AsyncGenerator<
-      TEvent,
-      void,
-      unknown
-    >;
+    return this.query.iterateEvents(
+      descriptor as EventDescriptor | readonly EventDescriptor[],
+      filter,
+      pageSize,
+    ) as unknown as AsyncGenerator<TEvent, void, unknown>;
   }
 
   /**
@@ -786,9 +786,10 @@ export class StreamdClient {
     callback?: EventCallback<TData, TEvent> | BatchCallback<TData, TEvent>,
   ): this {
     // A missing descriptor must not fall through to removing everything.
-    if (descriptorKey(descriptor) === undefined) return this;
-    if (callback === undefined) return this.removeAllListeners(descriptor);
-    this.matching(descriptor).find((l) => l.callback === callback)?.stop();
+    const target = descriptor as EventDescriptor;
+    if (descriptorKey(target) === undefined) return this;
+    if (callback === undefined) return this.removeAllListeners(target);
+    this.matching(target).find((l) => l.callback === callback)?.stop();
     return this;
   }
 

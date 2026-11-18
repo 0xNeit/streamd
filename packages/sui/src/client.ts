@@ -210,7 +210,7 @@ export class SuiClient extends StreamdClient {
     requireDigest(digest);
     const badTimeout = checkTimeout(options.timeout);
     if (badTimeout !== undefined) throw badTimeout;
-    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor);
+    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor as EventDescriptor);
     const events = await eventsOf(this.adapter, this.limiter, this.defaults.pollInterval!, digest, normal, options);
     return events as unknown as TEvent[];
   }
@@ -230,7 +230,8 @@ export class SuiClient extends StreamdClient {
     if (badTimeout !== undefined) throw badTimeout;
     const inner = expectEvents(this.adapter, this.limiter, this.defaults.pollInterval!, digest, options);
     return {
-      toEmit: async (descriptor, where) => inner.toEmit(suiDescriptor(descriptor) as typeof descriptor, where),
+      toEmit: async (descriptor, where) =>
+        inner.toEmit(suiDescriptor(descriptor as EventDescriptor) as typeof descriptor, where),
       notToEmit: async (descriptor, where) => inner.notToEmit(suiDescriptor(descriptor), where),
     };
   }
@@ -251,7 +252,7 @@ export class SuiClient extends StreamdClient {
     options: Pick<EventsOfOptions, "decode" | "where"> = {},
   ): Promise<TEvent[]> {
     const transaction = requireTransactionBytes(bytes);
-    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor);
+    const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor as EventDescriptor);
     const events = await previewEvents(this.adapter, this.limiter, { transaction }, normal, options);
     return events as unknown as TEvent[];
   }
@@ -267,7 +268,8 @@ export class SuiClient extends StreamdClient {
   expectPreview(bytes: Uint8Array, options: Pick<ExpectEventsOptions, "decode"> = {}): EventExpectation {
     const inner = expectPreview(this.adapter, this.limiter, { transaction: requireTransactionBytes(bytes) }, options);
     return {
-      toEmit: async (descriptor, where) => inner.toEmit(suiDescriptor(descriptor) as typeof descriptor, where),
+      toEmit: async (descriptor, where) =>
+        inner.toEmit(suiDescriptor(descriptor as EventDescriptor) as typeof descriptor, where),
       notToEmit: async (descriptor, where) => inner.notToEmit(suiDescriptor(descriptor), where),
     };
   }

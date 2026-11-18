@@ -508,7 +508,7 @@ export class AptosClient extends StreamdClient {
       this.limiter,
       this.defaults.pollInterval!,
       transactionHash,
-      descriptor,
+      descriptor as EventDescriptor | undefined,
       options,
     );
     return events as unknown as TEvent[];
@@ -532,7 +532,13 @@ export class AptosClient extends StreamdClient {
     descriptor?: EventDescriptor<TData, TEvent>,
     options: EventsAtOptions = {},
   ): Promise<TEvent[]> {
-    const events = await eventsAt(this.adapter, this.limiter, version, descriptor, options);
+    const events = await eventsAt(
+      this.adapter,
+      this.limiter,
+      version,
+      descriptor as EventDescriptor | undefined,
+      options,
+    );
     return events as unknown as TEvent[];
   }
 
@@ -574,7 +580,13 @@ export class AptosClient extends StreamdClient {
     descriptor?: EventDescriptor<TData, TEvent>,
     options: PreviewEventsOptions = {},
   ): Promise<TEvent[]> {
-    const events = await previewEvents(this.adapter, this.limiter, transaction, descriptor, options);
+    const events = await previewEvents(
+      this.adapter,
+      this.limiter,
+      transaction,
+      descriptor as EventDescriptor | undefined,
+      options,
+    );
     return events as unknown as TEvent[];
   }
 

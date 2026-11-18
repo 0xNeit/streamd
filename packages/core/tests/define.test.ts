@@ -202,8 +202,22 @@ describe("defineEvents", () => {
 
     read(await client.once(both, { pollInterval: 1 }));
     (await client.getEvents(both)).forEach(read);
+    (await client.getTransactions(both)).forEach((g) => g.events.forEach(read));
     for await (const page of client.getEventPages(both)) page.forEach(read);
     for await (const event of client.iterateEvents(both)) read(event);
+
+    await new Promise<void>((resolve) => {
+      const sub = client.onTransaction(both, (group) => (group.events.forEach(read), sub.unsubscribe(), resolve()), {
+        pollInterval: 1,
+      });
+    });
+
+    const replayed = client.replay(both, read, {});
+    await replayed.done;
+
+    const noopBoth = (e: Both) => void e;
+    client.on(both, noopBoth, { pollInterval: 100 });
+    client.off(both, noopBoth);
 
     const stream = client.stream(both, { pollInterval: 1 });
     read((await stream.next()).value!);
@@ -221,7 +235,7 @@ describe("defineEvents", () => {
 
     client.destroy();
     expect(amounts.every((a) => a === "5")).toBe(true);
-    expect(amounts.length).toBeGreaterThanOrEqual(6);
+    expect(amounts.length).toBeGreaterThanOrEqual(8);
     expect(targets.every((t) => t === "0xb")).toBe(true);
   });
 
@@ -276,4 +290,38 @@ export async function genericCallerResolvesStreamdEvent<T>(
     void typed;
   }
   client.off(descriptor, (e: StreamdEvent<T>) => void e.data);
+}
+
+// Compiled by typecheck: 2-parameter generic helpers work with both defineEvent and defineEvents.
+export async function genericTwoParamCaller<T, TEvent = StreamdEvent<T>>(
+  client: StreamdClient,
+  descriptor: EventDescriptor<T, TEvent>,
+  callback: (event: TEvent) => void,
+): Promise<TEvent[]> {
+  client.on(descriptor, callback).unsubscribe();
+  return client.getEvents(descriptor);
+}
+
+export function rejectsMismatchedEventTypes(client: StreamdClient, expectation: EventExpectation): void {
+  const dep = defineEvent<Deposit>("0x1::coin::DepositEvent");
+  const pair = defineEvents({
+    "0x1::coin::DepositEvent": dep,
+    "0x1::coin::WithdrawEvent": defineEvent<{ to: string }>("0x1::coin::WithdrawEvent"),
+  });
+  void genericTwoParamCaller(client, dep, (e) => void e.data.amount);
+  void genericTwoParamCaller(client, pair, (e) => {
+    if (e.type === "0x1::coin::DepositEvent") void e.data.amount;
+  });
+  // @ts-expect-error callback payload contradicts descriptor
+  client.on(dep, (e: StreamdEvent<{ other: number }>) => void e.data.other);
+  // @ts-expect-error callback shape is not a StreamdEvent
+  client.on(dep, (e: { fake: boolean }) => void e.fake);
+  // @ts-expect-error callback payload contradicts defineEvents descriptor
+  client.on(pair, (e: StreamdEvent<{ other: number }>) => void e.data.other);
+  // @ts-expect-error reducer payload contradicts descriptor
+  client.reduce(dep, (acc: number, e: StreamdEvent<{ other: number }>) => acc + e.data.other, 0);
+  // @ts-expect-error explicit TEvent contradicts descriptor
+  void client.getEvents<Deposit, { bogus: number }>(dep);
+  // @ts-expect-error explicit TEvent contradicts expectation descriptor
+  void expectation.toEmit<Deposit, { bogus: number }>(dep);
 }

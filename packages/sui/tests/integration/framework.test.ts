@@ -63,15 +63,18 @@ interface LoadedModuleAbi {
   structs: LoadedStructAbi[];
 }
 
+type SuiCodegen = ReturnType<CliSuiAbiModule["suiCodegen"]>;
+
 async function loadValidators(
   grpc: SuiGrpcClient,
   targets: Array<{ address: string; module?: string }>,
+  cg?: SuiCodegen,
 ): Promise<LoadedValidators> {
   const { generateEventTypes } = (await import(new URL("../../../cli/src/codegen.js", import.meta.url).href)) as CliCodegenModule;
   const { suiCodegen, SUI_DIALECT } = (await import(new URL("../../../cli/src/sui-abi.js", import.meta.url).href)) as CliSuiAbiModule;
-  const cg = suiCodegen(grpc.movePackageService);
-  const resolved = await cg.targets(targets);
-  const source = await generateEventTypes(resolved, cg.load, { validators: true, dialect: SUI_DIALECT });
+  const codegen = cg ?? suiCodegen(grpc.movePackageService);
+  const resolved = await codegen.targets(targets);
+  const source = await generateEventTypes(resolved, codegen.load, { validators: true, dialect: SUI_DIALECT });
   const dir = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".validators-"));
   try {
     const file = join(dir, "events.ts");
@@ -90,6 +93,9 @@ const isOptionField = (t: AbiMoveType): boolean =>
 const isBytesField = (t: AbiMoveType): boolean =>
   t.kind === "vector" && t.of?.kind === "primitive" && t.of.name === "u8";
 
+const findGuard = (mod: Record<string, (value: unknown) => boolean>, structName: string) =>
+  mod[`is${structName}`] ?? Object.entries(mod).find(([k]) => k.startsWith("is") && k.endsWith(`_${structName}`))?.[1];
+
 interface MatchedLiveEvent {
   digest: string;
   address: string;
@@ -101,9 +107,8 @@ interface MatchedLiveEvent {
 
 async function findRecentLiveEvents(
   grpc: SuiGrpcClient,
+  cg: SuiCodegen,
 ): Promise<{ option?: MatchedLiveEvent; bytes?: MatchedLiveEvent }> {
-  const { suiCodegen } = (await import(new URL("../../../cli/src/sui-abi.js", import.meta.url).href)) as CliSuiAbiModule;
-  const cg = suiCodegen(grpc.movePackageService);
   const modules = new Map<string, Promise<LoadedModuleAbi | undefined>>();
   const loadMod = (address: string, module: string) => {
     const k = `${address}::${module}`;
@@ -114,7 +119,7 @@ async function findRecentLiveEvents(
   let seq = info.checkpointHeight ?? 0n;
   let option: MatchedLiveEvent | undefined;
   let bytes: MatchedLiveEvent | undefined;
-  for (let i = 0; i < 40 && seq > 0n && (!option || !bytes); i++, seq--) {
+  for (let i = 0; i < 80 && seq > 0n; i++, seq--) {
     const { response } = await grpc.ledgerService.getCheckpoint({
       checkpointId: { oneofKind: "sequenceNumber", sequenceNumber: seq },
       readMask: { paths: ["transactions.digest", "transactions.events.events.event_type"] },
@@ -124,19 +129,17 @@ async function findRecentLiveEvents(
       if (!digest) continue;
       for (const ev of tx.events?.events ?? []) {
         const rawType = ev.eventType;
-        if (!rawType) continue;
-        const base = rawType.split("<", 1)[0]!;
-        const [address, module, structName, ...rest] = base.split("::");
+        if (!rawType || rawType.includes("<")) continue;
+        const [address, module, structName, ...rest] = rawType.split("::");
         if (!address || !module || !structName || rest.length > 0) continue;
-        const abi = await loadMod(address, module);
-        const s = abi?.structs.find((x) => x.name === structName && x.isEvent && x.typeParams === 0);
+        const s = (await loadMod(address, module))?.structs.find((x) => x.name === structName && x.isEvent && x.typeParams === 0);
         if (!s) continue;
+        const eventType = rawType as `${string}::${string}::${string}`;
         const optField = !option ? s.fields.find((f) => isOptionField(f.type)) : undefined;
         const bytesField = !bytes ? s.fields.find((f) => isBytesField(f.type)) : undefined;
-        const eventType = base as `${string}::${string}::${string}`;
         if (optField) option = { digest, address, module, structName, eventType, field: optField.name };
         if (bytesField) bytes = { digest, address, module, structName, eventType, field: bytesField.name };
-        if (option && bytes) break;
+        if (option && bytes) return { option, bytes };
       }
     }
   }
@@ -189,7 +192,9 @@ describe.skipIf(!enabled)("@streamd/sui/framework (mainnet)", () => {
 
   it("validates live mainnet Option and vector<u8> events through generated validators", async () => {
     using sui = new SuiClient({ sui: grpc });
-    const found = await findRecentLiveEvents(grpc);
+    const { suiCodegen } = (await import(new URL("../../../cli/src/sui-abi.js", import.meta.url).href)) as CliSuiAbiModule;
+    const cg = suiCodegen(grpc.movePackageService);
+    const found = await findRecentLiveEvents(grpc, cg);
     expect(found.option).toBeDefined();
     expect(found.bytes).toBeDefined();
     const cases: Array<{ hit: MatchedLiveEvent; invalidValue: unknown }> = [
@@ -199,9 +204,9 @@ describe.skipIf(!enabled)("@streamd/sui/framework (mainnet)", () => {
     for (const { hit, invalidValue } of cases) {
       const events = await sui.eventsOf(hit.digest, defineEvent<Record<string, unknown>>(hit.eventType));
       expect(events.length).toBeGreaterThan(0);
-      const { mod, cleanup } = await loadValidators(grpc, [{ address: hit.address, module: hit.module }]);
+      const { mod, cleanup } = await loadValidators(grpc, [{ address: hit.address, module: hit.module }], cg);
       try {
-        const guard = mod[`is${hit.structName}`];
+        const guard = findGuard(mod, hit.structName);
         expect(guard).toBeTypeOf("function");
         for (const ev of events) {
           expect(guard!(ev.data)).toBe(true);
