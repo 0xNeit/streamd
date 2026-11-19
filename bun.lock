@@ -94,6 +94,13 @@
         "@streamd/core": "workspace:*",
       },
     },
+    "packages/store-indexeddb": {
+      "name": "@streamd/store-indexeddb",
+      "version": "0.1.0",
+      "dependencies": {
+        "@streamd/core": "workspace:*",
+      },
+    },
     "packages/store-postgres": {
       "name": "@streamd/store-postgres",
       "version": "0.1.0",
@@ -207,6 +214,8 @@
     "@streamd/react": ["@streamd/react@workspace:packages/react"],
 
     "@streamd/receiver": ["@streamd/receiver@workspace:packages/receiver"],
+
+    "@streamd/store-indexeddb": ["@streamd/store-indexeddb@workspace:packages/store-indexeddb"],
 
     "@streamd/store-postgres": ["@streamd/store-postgres@workspace:packages/store-postgres"],
 

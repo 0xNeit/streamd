@@ -57,6 +57,9 @@ TypeScript types:
 - `@streamd/testing` (`packages/testing`) - start or attach to an Aptos localnet, publish Move
   packages to it and assert their events. Needs the `aptos` CLI. See
   [Test against a localnet](#test-against-a-localnet).
+- `@streamd/store-indexeddb` (`packages/store-indexeddb`) - `IndexedDbPageStore`, which keeps
+  `CachingAdapter`'s settled pages in the browser's IndexedDB. See
+  [History the fullnode has pruned](#history-the-fullnode-has-pruned).
 - `@streamd/receiver` (`packages/receiver`) - receive `streamd forward` webhooks: the signature
   checked, the events parsed and repeats dropped. See
   [Forward events to a webhook](#forward-events-to-a-webhook).
@@ -3701,6 +3704,29 @@ import { SqlitePageStore } from "@streamd/store-sqlite";
 const store = new SqlitePageStore(new Database("pages.db"), { namespace: "mainnet" });
 const adapter = new CachingAdapter(new FullnodeScanAdapter(aptos), { store });
 ```
+
+In the browser, `@streamd/store-indexeddb` keeps them in IndexedDB, so a reload reads settled
+history without the source:
+
+```ts
+import { IndexedDbPageStore } from "@streamd/store-indexeddb";
+
+const store = new IndexedDbPageStore({ namespace: "aptos-mainnet", maxEntries: 5_000 });
+const adapter = new CachingAdapter(new FullnodeScanAdapter(aptos), { store });
+```
+
+It writes one database, `streamd-pages`, shared by every tab and every app of the origin, and
+a write lands only when its transaction commits. `maxEntries` counts the whole database, so
+give every store on the origin the same limit, and when the source is configurable put it in
+the namespace (as `streamd query --cache` puts a hash of the node URLs in its own), so one
+node's pages never answer for another's. To forget everything stored, for example on sign-out,
+call `indexedDB.deleteDatabase("streamd-pages")`. A write the origin's storage quota refuses rejects with a
+`StreamdError` naming the quota, which reaches `onStoreError` while the page is still served,
+so set `maxEntries` to keep the store inside the quota. Where there is no IndexedDB (server
+rendering, a worker without it) every read is a miss. Over `TabSharedAdapter`, wrap it
+outside (`new CachingAdapter(new TabSharedAdapter(...), { store })`) so each tab answers
+settled pages from the shared database without asking the leader; every tab sharing the
+`TabSharedAdapter` name must then use the same source and namespace.
 
 Memory is checked first, then the store, then the source. A store that fails or
 holds an unreadable entry counts as a miss and reaches `onStoreError`, so a broken
