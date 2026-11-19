@@ -412,41 +412,44 @@ describe("explain withValue", () => {
   const USDC_QUOTE = "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b";
   const POOL = "0x925660b8618394809f89f8002e2926600c775221f43bf1919782b297a79400d8";
   // sqrt price 2^60: 1/256 USDC base units per octa.
+  const V = 3_000_000_000n;
+  const at = (version: bigint): TransactionEvents => ({ ...transfer, version, events: transfer.events.map((e) => ({ ...e, version })) });
   const worth = (amount: bigint): AssetValue => ({ quote: USDC_QUOTE, decimals: 6, amount, price: { numerator: 1n, denominator: 256n }, source: "pool", reference: POOL });
 
   it("values transfers and each account's delta at the transaction's version, a loss negative", async () => {
-    const { base, views } = adapter(transfer, undefined, 99n, (1n << 60n).toString());
+    const { base, views } = adapter(at(V + 10n), undefined, V + 99n, (1n << 60n).toString());
     const explanation = await testClient({ adapter: base }).explain(HASH, { withValue: true, withAssetInfo: false });
     expect(explanation.transfers[0]!.value).toEqual(worth(976562n));
     expect(explanation.balanceChanges.map((c) => [c.account, c.value])).toEqual([
       [ALICE, worth(-976562n)],
       [BOB, worth(976562n)],
     ]);
-    expect(views.filter(([f]) => f.endsWith("current_tick_and_price"))).toEqual([[`0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c::pool_v3::current_tick_and_price`, 10n]]);
+    expect(views.filter(([f]) => f.endsWith("current_tick_and_price"))).toEqual([[`0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c::pool_v3::current_tick_and_price`, V + 10n]]);
     const plain = await testClient({ adapter: base }).explain(HASH, { withAssetInfo: false });
     expect(plain.transfers[0]!.value).toBeUndefined();
     expect(plain.balanceChanges.some((c) => c.value !== undefined)).toBe(false);
   });
 
-  it("prices a simulation at the state its views read, by pool and by Pyth", async () => {
-    const sim = { ...transfer, version: 120n, events: transfer.events.map((e) => ({ ...e, version: 120n, transactionHash: undefined })) };
+  it("prices a simulation at the state its views read, by pool and, before the pools, by Pyth", async () => {
     const aptos = offline();
     const target = await simulation(aptos);
-    const asked: bigint[] = [];
-    for (const sqrt of [(1n << 60n).toString(), undefined]) {
-      const { base, views } = adapter(transfer, sim, 99n, sqrt);
+    for (const base of [V, 0n]) {
+      const sim = { ...at(base + 120n), events: at(base + 120n).events.map((e) => ({ ...e, transactionHash: undefined })) };
+      const { base: source, views } = adapter(transfer, sim, base + 99n, (1n << 60n).toString());
+      const asked: bigint[] = [];
       const host = {
-        adapter: base,
+        adapter: source,
         limiter: new RequestLimiter(),
         names: { ttl: () => undefined, name: async () => null },
         pollInterval: 1,
         pyth: async (_feed: string, version: bigint) => (asked.push(version), undefined),
       };
       const explanation = await explain(host, target, { withValue: true, withAssetInfo: false });
-      expect(views.filter(([f]) => f.endsWith("current_tick_and_price")).map(([, v]) => v)).toEqual([99n]);
-      expect(explanation.transfers[0]!.value?.amount).toBe(sqrt === undefined ? undefined : 976562n);
+      const pools = views.filter(([f]) => f.endsWith("current_tick_and_price")).map(([, v]) => v);
+      expect(pools).toEqual(base === V ? [V + 99n] : []);
+      expect(asked).toEqual(base === V ? [] : [99n]);
+      expect(explanation.transfers[0]!.value?.amount).toBe(base === V ? 976562n : undefined);
     }
-    expect(asked).toEqual([99n]);
   });
 
   it("renders values beside amounts", () => {

@@ -1,5 +1,5 @@
 import { AccountAddress, Aptos, Network, SimpleTransaction, generateRawTransaction, type AptosConfig, type MultiAgentTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, lazyResolve, requireAddress, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
+import { EventQuery, RequestLimiter, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, lazyResolve, requireAddress, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -30,7 +30,7 @@ import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
-import { assetPricer, valueOf, type Pricer } from "./values.js";
+import { assetPricer, toAssetValue, type Pricer } from "./values.js";
 import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, Multisig, MultisigOptions, MultisigPreviewOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
@@ -59,7 +59,9 @@ export class AptosClient extends StreamdClient {
     super({ ...rest, adapter: config.adapter ?? new FullnodeScanAdapter(aptos) });
     this.aptos = aptos;
     this.pythPrice = pythPriceReader(aptos, (task) => this.limiter.run(task));
-    this.pagePythPrice = pythPriceReader(aptos, (task) => task());
+    // Timed on its own, since its table read is shared by every later page.
+    const timed = new RequestLimiter(Infinity, Infinity, this.requestTimeout);
+    this.pagePythPrice = pythPriceReader(aptos, (task) => timed.run(task));
     // Testnet's ANS router is gone, and a localnet has none published at the
     // SDK's local router address, so only mainnet can answer.
     const network = aptos.config?.network;
@@ -449,7 +451,7 @@ export class AptosClient extends StreamdClient {
         ...APTOS_BALANCES,
         value: async (adapter, asset, amount, version) => {
           const quote = await this.pagePricer(adapter)(asset, version);
-          return quote === undefined ? undefined : valueOf(quote, amount);
+          return quote === undefined ? undefined : toAssetValue(quote, amount);
         },
       },
       options,

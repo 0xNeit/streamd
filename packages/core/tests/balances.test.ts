@@ -242,6 +242,21 @@ describe("startBalances withValue", () => {
     expect(valued).toEqual(["COIN=10@5", "GEM=1@5", "COIN=12@6", "GEM=2@6"]);
   });
 
+  it("drops a value once its asset is no longer priced", async () => {
+    const head = { value: 5n };
+    const ledger = new Map([["COIN", 10n]]);
+    let priceable = true;
+    const read = { ...reader(ledger), value: async (_a: EventAdapter, _asset: string, amount: bigint) => (priceable ? { quote: "USD", decimals: 0, amount, price: { numerator: 1n, denominator: 1n }, source: "par" as const } : undefined) };
+    using wallet = client(head).balances(read, { withValue: true, pollInterval: 5 });
+    await wallet.ready;
+    expect(wallet.values.has("COIN")).toBe(true);
+    priceable = false;
+    ledger.set("COIN", 11n);
+    head.value = 6n;
+    for (let i = 0; i < 100 && wallet.get("COIN") !== 11n; i++) await wait(5);
+    expect(wallet.values.has("COIN")).toBe(false);
+  });
+
   it("reads no values without withValue, and refuses it from a reader that prices nothing", async () => {
     const valued: string[] = [];
     using wallet = client({ value: 5n }).balances(priced(new Map([["COIN", 1n]]), valued), { pollInterval: 5 });

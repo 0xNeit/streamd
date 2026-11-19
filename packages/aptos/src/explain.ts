@@ -6,7 +6,8 @@ import { toSale } from "./sales.js";
 import { toSwap } from "./swaps.js";
 import { simulation } from "./transaction.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import { QUOTE, assetPricer, valueOf } from "./values.js";
+import { assetPricer, toAssetValue } from "./values.js";
+import type { Pricer } from "./values.js";
 import type { AccountBalanceChange, ExplainOptions, GasUsage, Price, TransactionExplanation } from "./types.js";
 
 const FEE_STATEMENT = "0x1::transaction_fee::FeeStatement";
@@ -53,7 +54,7 @@ function balanceChanges(transfers: Transfer[]): AccountBalanceChange[] {
       const info = transfers.find((t) => t.asset === asset && t.symbol !== undefined);
       const priced = transfers.find((t) => t.asset === asset && t.value !== undefined)?.value;
       const change: AccountBalanceChange = { account: account!, asset, delta, ...(info && { symbol: info.symbol, decimals: info.decimals }) };
-      if (priced !== undefined) change.value = valueOf(priced, delta);
+      if (priced !== undefined) change.value = toAssetValue(priced, delta);
       return change;
     }),
   );
@@ -73,9 +74,8 @@ async function transfersOf(
     fetchEvents: async () => page,
     view: (request, version, descriptor) => limited.view!(request, version - shift, descriptor),
   };
-  const pricer = options.withValue
-    ? assetPricer((request, version) => feed.view!(request, version, TRANSFER_DESCRIPTOR), (feedId, version) => host.pyth(feedId, version - shift))
-    : undefined;
+  const prices = assetPricer((request, version) => limited.view!(request, version, TRANSFER_DESCRIPTOR), host.pyth);
+  const pricer: Pricer | undefined = options.withValue ? (asset, version, run) => prices(asset, version - shift, run) : undefined;
   const source = transferSource(feed, undefined, undefined, options.withAssetInfo !== false, host.requestTimeout, pricer);
   return (await source.fetchEvents(TRANSFER_DESCRIPTOR, {})).events.map((e) => e.data as Transfer);
 }
@@ -199,11 +199,12 @@ export function formatExplanation(explanation: TransactionExplanation): string {
       details.set(t.asset, { symbol, decimals });
     }
   }
-  const amount = (value: bigint, asset: string, signed = false, worth?: AssetValue) => {
+  const amount = (value: bigint, asset: string, worth?: AssetValue, signed = false) => {
     const info = details.get(asset);
     let text = info === undefined ? `${value} ${clean(asset)}` : `${formatAmount(value, info.decimals)} ${clean(info.symbol)}`;
     if (signed && value > 0n) text = `+${text}`;
-    return worth === undefined ? text : `${text} (${formatAmount(worth.amount, worth.decimals)} ${worth.quote === QUOTE ? "USDC" : clean(worth.quote)})`;
+    // Every value is quoted in USDC; see values.ts.
+    return worth === undefined ? text : `${text} (${formatAmount(worth.amount, worth.decimals)} USDC)`;
   };
   const apt = (octas: bigint) => `${formatAmount(octas, APT_DECIMALS)} APT`;
 
@@ -227,10 +228,10 @@ export function formatExplanation(explanation: TransactionExplanation): string {
   section(
     "Transfers",
     e.transfers.map((t) =>
-      [amount(t.amount, t.asset, false, t.value), t.from === undefined ? "" : ` from ${who(t.from)}`, t.to === undefined ? "" : ` to ${who(t.to)}`].join(""),
+      [amount(t.amount, t.asset, t.value), t.from === undefined ? "" : ` from ${who(t.from)}`, t.to === undefined ? "" : ` to ${who(t.to)}`].join(""),
     ),
   );
-  section("Balance changes", e.balanceChanges.map((c) => `${who(c.account)}: ${amount(c.delta, c.asset, true, c.value)}`));
+  section("Balance changes", e.balanceChanges.map((c) => `${who(c.account)}: ${amount(c.delta, c.asset, c.value, true)}`));
   section(
     "Swaps",
     e.swaps.map((s) => `${s.protocol}: ${amount(s.amountIn, s.assetIn)} in, ${amount(s.amountOut, s.assetOut)} out, pool ${clean(s.poolId)}`),

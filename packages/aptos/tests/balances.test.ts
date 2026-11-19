@@ -347,6 +347,8 @@ describe("client.balances withValue", () => {
         return [0, (1n << 60n).toString()];
       },
     };
+    // After the pools were created; earlier heads would be priced by Pyth.
+    state.head = 3_000_000_050n;
     state.amounts.set(APT, "2560");
     const client = testClient({ adapter: priced });
     const changes: StreamdEvent<BalanceChange>[] = [];
@@ -354,13 +356,13 @@ describe("client.balances withValue", () => {
     await wallet.ready;
     expect([...wallet.values.keys()]).toEqual([APT]);
     expect(wallet.values.get(APT)).toMatchObject({ amount: 10n, source: "pool", decimals: 6 });
-    expect(pools).toEqual([50n]);
-    state.head = 70n;
+    expect(pools).toEqual([3_000_000_050n]);
+    state.head = 3_000_000_070n;
     state.amounts.set(APT, "5120");
     await until(() => changes.length === 1);
     expect(changes[0]!.data.value?.amount).toBe(20n);
     expect(wallet.values.get(APT)!.amount).toBe(20n);
-    expect(pools).toEqual([50n, 70n]);
+    expect(pools).toEqual([3_000_000_050n, 3_000_000_070n]);
     client.destroy();
   });
 });

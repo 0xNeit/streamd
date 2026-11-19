@@ -5,8 +5,8 @@ import { RequestLimiter } from "@streamd/core";
 import { requireAddress } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, StreamdEvent, ViewRequest } from "@streamd/core";
 import type { Transfer } from "@streamd/core";
-import { valueOf } from "./values.js";
-import type { Pricer, Quote } from "./values.js";
+import { priceKey, toAssetValue } from "./values.js";
+import type { PriceQuote, Pricer } from "./values.js";
 
 export { formatAmount } from "@streamd/core";
 
@@ -153,7 +153,7 @@ function memo<T>(keep: (value: T) => boolean, pending?: (drop: () => void) => vo
   };
 }
 
-export function isViewAbort(err: unknown): boolean {
+function isViewAbort(err: unknown): boolean {
   return (
     err instanceof StreamdError &&
     !(err instanceof StreamdNetworkError) &&
@@ -200,7 +200,8 @@ const byIdentity = (a: StreamdEvent, b: StreamdEvent) =>
  *
  * `account` resolves to the long-form address whose records to keep. It filters
  * finished records, since a deposit needs its withdraw to report `from`.
- * `pricer` values coin and fungible-asset records, once per asset and version.
+ * `pricer` values coin and fungible-asset records, once per price source and
+ * version, each of its reads in the same limit as the store reads.
  */
 export function transferSource(
   adapter: EventAdapter,
@@ -228,7 +229,7 @@ export function transferSource(
   const metadata = memo<string | undefined>((asset) => asset !== undefined, track);
   const infos = memo<AssetInfo | undefined>(() => true, track);
   const tokens = memo<boolean>(() => true, track);
-  const quotes = memo<Quote | undefined>(() => true, track);
+  const quotes = memo<PriceQuote | undefined>(() => true, track);
 
   /** The address `fn` returns for `object`, before the transaction if it was gone after it. */
   const read = async (
@@ -302,12 +303,11 @@ export function transferSource(
   };
 
   const withValue = async (event: StreamdEvent<Transfer>, signal: AbortSignal): Promise<StreamdEvent<Transfer>> => {
-    if (TOKEN_EVENTS.has(event.type)) return event;
-    const key = assetKey(event.data.asset);
-    const quote = await quotes(`${key}@${event.version}`, () =>
-      limiter.run(() => pricer!(key, event.version), signal, signal),
-    );
-    return quote === undefined ? event : { ...event, data: { ...event.data, value: valueOf(quote, event.data.amount) } };
+    const key = TOKEN_EVENTS.has(event.type) ? undefined : priceKey(event.data.asset);
+    if (key === undefined) return event;
+    const run = <T>(task: () => Promise<T>) => limiter.run(task, signal, signal);
+    const quote = await quotes(`${key}@${event.version}`, () => pricer!(event.data.asset, event.version, run));
+    return quote === undefined ? event : { ...event, data: { ...event.data, value: toAssetValue(quote, event.data.amount) } };
   };
 
   /** A leg to pair, or a finished record for an object transfer, which names both sides. */

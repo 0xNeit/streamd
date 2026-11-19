@@ -174,7 +174,8 @@ interface BalanceRunConfig {
   reader: BalanceReader;
   assets: readonly string[];
   amounts: Map<string, bigint>;
-  values: Map<string, AssetValue> | undefined;
+  values: Map<string, AssetValue>;
+  withValue: boolean;
   listener: Omit<BalancesOptions, "asset" | "onChange" | "withValue">;
   onChange: BalancesOptions["onChange"];
   report: (err: Error) => void;
@@ -190,20 +191,20 @@ async function runBalances(cfg: BalanceRunConfig): Promise<ReadonlyMap<string, b
   const first: [string, bigint, AssetValue | undefined][] = [];
   for (const asset of cfg.assets) {
     const balance = await cfg.reader.read(cfg.host.adapter, who, asset, head);
-    const value = cfg.values === undefined ? undefined : await cfg.reader.value!(cfg.host.adapter, asset, balance, head);
+    const value = cfg.withValue ? await cfg.reader.value!(cfg.host.adapter, asset, balance, head) : undefined;
     first.push([asset, balance, value]);
   }
   if (cfg.signal.aborted) throw cfg.signal.reason;
   for (const [asset, balance, value] of first) {
     cfg.amounts.set(asset, balance);
-    if (value !== undefined) cfg.values!.set(asset, value);
+    if (value !== undefined) cfg.values.set(asset, value);
   }
 
   let polling: Subscription | undefined;
   polling = cfg.host.subscribe(
     {
       batch: (events) =>
-        applyBalanceBatch(cfg.amounts, cfg.values ?? new Map(), events, cfg.onChange, cfg.report, () => cfg.signal.aborted),
+        applyBalanceBatch(cfg.amounts, cfg.values, events, cfg.onChange, cfg.report, () => cfg.signal.aborted),
     },
     {
       ...cfg.listener,
@@ -214,7 +215,7 @@ async function runBalances(cfg: BalanceRunConfig): Promise<ReadonlyMap<string, b
       },
     },
     (source) =>
-      balancePoll(source, cfg.host.descriptor, cfg.reader, who, cfg.amounts, cfg.assets, head, cfg.values !== undefined),
+      balancePoll(source, cfg.host.descriptor, cfg.reader, who, cfg.amounts, cfg.assets, head, cfg.withValue),
   );
   cfg.attachPolling(polling);
   return new Map(cfg.amounts);
@@ -294,7 +295,8 @@ export function startBalances(
     reader,
     assets,
     amounts,
-    values: withValue ? values : undefined,
+    values,
+    withValue: withValue === true,
     listener,
     onChange,
     report,
