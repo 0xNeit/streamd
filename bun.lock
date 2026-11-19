@@ -38,6 +38,7 @@
       },
       "dependencies": {
         "@streamd/aptos": "workspace:*",
+        "@streamd/codegen": "workspace:*",
         "@streamd/core": "workspace:*",
         "@streamd/gateway": "workspace:*",
         "@streamd/store-postgres": "workspace:*",
@@ -68,6 +69,13 @@
         "kafkajs",
         "pg",
       ],
+    },
+    "packages/codegen": {
+      "name": "@streamd/codegen",
+      "version": "0.1.0",
+      "dependencies": {
+        "@streamd/core": "workspace:*",
+      },
     },
     "packages/core": {
       "name": "@streamd/core",
@@ -216,6 +224,8 @@
     "@streamd/aptos": ["@streamd/aptos@workspace:packages/aptos"],
 
     "@streamd/cli": ["@streamd/cli@workspace:packages/cli"],
+
+    "@streamd/codegen": ["@streamd/codegen@workspace:packages/codegen"],
 
     "@streamd/core": ["@streamd/core@workspace:packages/core"],
 

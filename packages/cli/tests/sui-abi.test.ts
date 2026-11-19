@@ -2,9 +2,9 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { generateEventTypes } from "@streamd/codegen";
+import type { ModuleRef } from "@streamd/codegen";
 import { StreamdError } from "@streamd/core";
-import { generateEventTypes } from "../src/codegen.js";
-import type { ModuleRef } from "../src/codegen.js";
 import { SUI_DIALECT, suiCodegen } from "../src/sui-abi.js";
 import type { SuiPackageService } from "../src/sui-abi.js";
 

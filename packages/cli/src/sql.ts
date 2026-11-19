@@ -1,34 +1,12 @@
 import { createHash } from "node:crypto";
+import type { ColumnMapping, Dialect, MoveType, StructAbi, TableTarget, TableWriter } from "@streamd/codegen";
 import { normalizeAddress, STANDARD_COLUMNS, StreamdError } from "@streamd/core";
-import type { EventColumn, EventColumnType, EventTable, MoveEventType } from "@streamd/core";
+import type { EventColumn, EventTable, MoveEventType } from "@streamd/core";
 import { eventTableSchema as postgresSchema } from "@streamd/store-postgres";
 import { eventTableSchema as sqliteSchema } from "@streamd/store-sqlite";
-import type { MoveType, StructAbi } from "./abi.js";
-import type { Dialect } from "./codegen.js";
 
 /** The SQL dialects `--sql` writes DDL for. */
 export type SqlDialect = "sqlite" | "postgres";
-
-/** Where a value of one Move type is stored, relative to the value. */
-export interface ColumnMapping {
-  type: EventColumnType;
-  path: (string | number)[];
-  nullable: boolean;
-}
-
-/** What a framework struct's column mapping can call on. */
-export interface ColumnContext {
-  args: MoveType[];
-  /** The mapping of a type argument. */
-  inner: (t: MoveType) => ColumnMapping;
-}
-
-/** An event struct to make a table for. */
-export interface TableTarget {
-  address: string;
-  module: string;
-  struct: StructAbi;
-}
 
 const MAX_NAME = 63;
 // Taken by every table, or refused by Postgres as a column name.
@@ -155,4 +133,9 @@ export function renderTables(tables: EventTable[], sql: SqlDialect): string {
     // Template literals stay readable; validated names and fixed types hold no backtick or `${`.
     ...(schema.length === 0 ? [] : [...schema.map((s) => `  \`${s}\`,`), "];"]),
   ].join("\n");
+}
+
+/** The `tables` option of `generateEventTypes` for one dialect. */
+export function sqlTables(sql: SqlDialect): TableWriter {
+  return { import: TABLES_IMPORT, render: (events, d) => renderTables(eventTables(events, d), sql) };
 }

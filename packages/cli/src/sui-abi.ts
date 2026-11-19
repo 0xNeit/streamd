@@ -1,7 +1,6 @@
+import { BYTE_LENGTH } from "@streamd/codegen";
+import type { Builtin, Dialect, FieldAbi, LoadModule, ModuleAbi, ModuleRef, MoveType, Primitive, StructAbi } from "@streamd/codegen";
 import { normalizeAddress, StreamdError } from "@streamd/core";
-import type { FieldAbi, ModuleAbi, MoveType, Primitive, StructAbi } from "./abi.js";
-import { BYTE_LENGTH } from "./arbitraries.js";
-import type { Builtin, Dialect, LoadModule, ModuleRef } from "./codegen.js";
 
 /** The part of a `SuiGrpcClient`'s `movePackageService` codegen reads. */
 export interface SuiPackageService {

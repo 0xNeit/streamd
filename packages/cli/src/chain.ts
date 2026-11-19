@@ -1,13 +1,12 @@
 import { Aptos, AptosConfig, Network, getAptosFullNode } from "@aptos-labs/ts-sdk";
 import type { Client, ClientRequest, ClientResponse } from "@aptos-labs/ts-sdk";
 import { AptosClient, FullnodeScanAdapter, checkDescriptor, networks, primaryName, resolveName } from "@streamd/aptos";
+import { parseModuleAbi } from "@streamd/codegen";
+import type { ListModules, LoadModule, ModuleAbi } from "@streamd/codegen";
 import { ArchiveFallbackAdapter, CachingAdapter, PoolAdapter, StreamdError, StreamdNetworkError, toStreamdError } from "@streamd/core";
 import type { CachingAdapterOptions, EventAdapter, ModuleEventDescriptor, StreamdClient } from "@streamd/core";
-import { parseModuleAbi } from "./abi.js";
-import type { ModuleAbi } from "./abi.js";
 import type { Endpoint } from "./args.js";
 import type { TypeChecks } from "./check.js";
-import type { ListModules, LoadModule } from "./codegen.js";
 import { message } from "./format.js";
 import type { RequestStats } from "./stats.js";
 import { suiChain } from "./sui.js";

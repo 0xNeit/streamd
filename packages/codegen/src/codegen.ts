@@ -2,8 +2,7 @@ import { normalizeAddress, StreamdError } from "@streamd/core";
 import type { FieldAbi, ModuleAbi, MoveType, StructAbi, ViewAbi } from "./abi.js";
 import { arbitraryWriter, BYTE_LENGTH } from "./arbitraries.js";
 import type { ArbitraryContext } from "./arbitraries.js";
-import { eventTables, renderTables, TABLES_IMPORT } from "./sql.js";
-import type { ColumnContext, ColumnMapping, SqlDialect } from "./sql.js";
+import type { EventColumnType } from "@streamd/core";
 
 /** One module, or every module at `address` when `module` is unset. */
 export interface ModuleRef {
@@ -26,10 +25,38 @@ export interface GenerateOptions {
   validators?: boolean;
   /** Writes an `arbitrary<Type>` random payload generator per generated type; default false. */
   arbitraries?: boolean;
-  /** Writes a table spec per event type and its DDL in this SQL dialect; default none. */
-  sql?: SqlDialect;
+  /** Writes a table spec per event type and its DDL; default none. */
+  tables?: TableWriter;
   /** How the chain's node writes values as JSON; default Aptos's. */
   dialect?: Dialect;
+}
+
+/** Where a value of one Move type is stored, relative to the value. */
+export interface ColumnMapping {
+  type: EventColumnType;
+  path: (string | number)[];
+  nullable: boolean;
+}
+
+/** What a framework struct's column mapping can call on. */
+export interface ColumnContext {
+  args: MoveType[];
+  /** The mapping of a type argument. */
+  inner: (t: MoveType) => ColumnMapping;
+}
+
+/** An event struct to make a table for. */
+export interface TableTarget {
+  address: string;
+  module: string;
+  struct: StructAbi;
+}
+
+/** Renders event tables, kept out of this module so it stays free of database packages. */
+export interface TableWriter {
+  /** The import line the rendered section needs. */
+  import: string;
+  render: (events: TableTarget[], dialect: Dialect) => string;
 }
 
 type StructType = Extract<MoveType, { kind: "struct" }>;
@@ -647,7 +674,7 @@ export async function generateEventTypes(
       guards.set(e.key, guard);
     }
   }
-  if (options.sql !== undefined) {
+  if (options.tables !== undefined) {
     const clash = entries.find((e) => names.get(e.key) === "StreamdEventTable");
     if (clash !== undefined) throw new StreamdError(`${qualified(clash)} is named StreamdEventTable, which the generated tables use`);
   }
@@ -682,7 +709,7 @@ export async function generateEventTypes(
     ...(options.arbitraries && hasEvents ? ['import type { ModuleEventDescriptor, StreamdEvent } from "@streamd/core";'] : []),
     ...(views.length > 0 ? ['import type { ViewRequest } from "@streamd/core";'] : []),
     ...(handles.length > 0 ? ['import type { HandleEventDescriptor } from "@streamd/core";'] : []),
-    ...(options.sql !== undefined ? [TABLES_IMPORT] : []),
+    ...(options.tables !== undefined ? [options.tables.import] : []),
   ];
   const events = entries.filter((e) => e.struct.isEvent).map((e) => ({ address: e.module.address, module: e.module.name, struct: e.struct }));
   const sections = [
@@ -692,7 +719,7 @@ export async function generateEventTypes(
     ...handles.map((h, i) => renderHandle(h, handleBuilders[i]!, names)),
     ...(checks.length > 0 ? [(Object.keys(HELPERS) as Helper[]).filter((h) => used.has(h)).map((h) => (h === "bytes" ? dialect.bytes : HELPERS[h])).join("\n"), ...checks] : []),
     ...(options.arbitraries ? [...arbitrary.preamble(hasEvents), ...arbitraries] : []),
-    ...(options.sql !== undefined ? [renderTables(eventTables(events, dialect), options.sql)] : []),
+    ...(options.tables !== undefined ? [options.tables.render(events, dialect)] : []),
   ];
   return `${sections.join("\n\n")}\n`;
 }
