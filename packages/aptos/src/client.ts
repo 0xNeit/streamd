@@ -21,6 +21,7 @@ import { IndexerAccountAdapter } from "./indexer.js";
 import { provenanceDescriptor, provenanceSource } from "./provenance.js";
 import { governanceSource, startProposals } from "./governance.js";
 import { MULTISIG_DESCRIPTOR, multisigSource, previewMultisig, startMultisig } from "./multisig.js";
+import { AAVE_DESCRIPTOR, positionSource, startPositions } from "./lending.js";
 import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { PYTH_DESCRIPTOR, priceSource, pythPriceReader, requireFeedId } from "./prices.js";
@@ -31,7 +32,7 @@ import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
 import { assetPricer, toAssetValue, type Pricer } from "./values.js";
-import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, Multisig, MultisigOptions, MultisigPreviewOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, LendingProtocol, Multisig, MultisigOptions, MultisigPreviewOptions, PackageUpgrade, Positions, PositionsOptions, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -318,6 +319,47 @@ export class AptosClient extends StreamdClient {
         return previewMultisig(previewHost, handle.value, sequenceNumber, opts);
       },
     }) as Multisig;
+  }
+
+  /**
+   * Keep lending positions current on `protocol` (`"aave"`, Aave V3 on Aptos
+   * mainnet): each account's supplies, debts, collateral and debt value and
+   * health factor, as the protocol's own views compute them with its own
+   * oracle at a version. `account` names the accounts, read at the head (or
+   * the version before `fromVersion`) first; without it every account an
+   * Aave event names is tracked from then on. Each position is reread at the
+   * version of every event naming it, from one scan over Aave's
+   * position-changing events, its views at most four at a time outside
+   * `maxConcurrentRequests`. `threshold` sets the health `below` and `onCross`
+   * compare with. Views go through `EventAdapter.view`, so the adapter must
+   * implement it. Like `reduce()`, it is not a listener for `off()` or
+   * `listenerCount()`; `destroy()` ends it.
+   */
+  positions(protocol: LendingProtocol, options?: PositionsOptions): Positions {
+    const adapter = this.adapter;
+    if (typeof adapter.view !== "function" || typeof adapter.getHeadVersion !== "function") {
+      throw new StreamdError("positions needs an adapter that implements view and getHeadVersion");
+    }
+    const host = {
+      view: (request: ViewRequest, version: bigint) => this.limiter.run(() => adapter.view!(request, version)),
+      head: () => this.limiter.run(() => adapter.getHeadVersion!(AAVE_DESCRIPTOR)),
+      track: this.reduceHost.track,
+    };
+    return startPositions(
+      (only, d, r, i, o) => {
+        const wrap = (source: EventAdapter) => positionSource(source, only, this.requestTimeout);
+        const scoped = {
+          ...this.reduceHost,
+          query: new EventQuery(wrap(adapter), this.limiter, this.names),
+          subscribe: (desc: EventDescriptor | readonly EventDescriptor[], callback: EventCallback, opts: object) =>
+            this.subscribe(desc as EventDescriptor, callback, opts, undefined, undefined, wrap),
+        };
+        return startReduction(scoped, d, r, i, o);
+      },
+      host,
+      protocol,
+      options,
+    );
   }
 
   /**

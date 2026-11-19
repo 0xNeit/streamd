@@ -1,9 +1,9 @@
-import { StreamdError } from "@streamd/core";
-import type { ViewRequest } from "@streamd/core";
-import { address, amount } from "./records.js";
+import { RequestLimiter, StreamdError, markSelfTimed } from "@streamd/core";
+import type { EventAdapter, ModuleEventDescriptor, ReduceOptions, Reducer, Reduction, StreamdEvent, ViewRequest } from "@streamd/core";
+import { addr, address, amount, malformed, pageSource } from "./records.js";
 import type { Fields } from "./records.js";
 import { isViewAbort } from "./transfers.js";
-import type { Fraction, LendingPosition, PositionAsset } from "./types.js";
+import type { Fraction, LendingPosition, Positions, PositionsOptions, PositionAsset } from "./types.js";
 import { fraction } from "./values.js";
 
 /** A view read at a version, as `EventAdapter.view` reads one. */
@@ -95,4 +95,225 @@ export function isBelow(position: LendingPosition, threshold: Fraction): boolean
   const { health } = position;
   if (health === undefined) return false;
   return health.numerator * threshold.denominator < threshold.numerator * health.denominator;
+}
+
+/** Each Aave event that changes a position, and the fields naming the accounts it changes. */
+const AAVE_EVENTS: Record<string, readonly string[]> = {
+  "supply_logic::Supply": ["on_behalf_of"],
+  "supply_logic::Withdraw": ["user"],
+  "borrow_logic::Borrow": ["on_behalf_of"],
+  "borrow_logic::Repay": ["user"],
+  "liquidation_logic::LiquidationCall": ["user"],
+  "liquidation_logic::DeficitCreated": ["user"],
+  "events::ReserveUsedAsCollateralEnabled": ["user"],
+  "events::ReserveUsedAsCollateralDisabled": ["user"],
+  "emode_logic::UserEModeSet": ["user"],
+  // An aToken moving between accounts, a liquidator taking the collateral included.
+  "events::BalanceTransfer": ["from", "to"],
+};
+const ACCOUNT_FIELDS = new Map(Object.entries(AAVE_EVENTS).map(([name, fields]) => [`${AAVE}::${name}`, fields]));
+
+/**
+ * The one scan `positions("aave")` follows. Only the module defining an event
+ * type can emit it, so every event here is Aave's own.
+ */
+export const AAVE_DESCRIPTOR: ModuleEventDescriptor = {
+  kind: "module",
+  eventType: [...ACCOUNT_FIELDS.keys()] as `${string}::${string}::${string}`[],
+};
+
+const ZERO = `0x${"0".repeat(64)}`;
+
+/** The accounts `event` changes, long form; throws for a known event without its fields. */
+export function accountsOf(event: StreamdEvent): string[] {
+  const fields = ACCOUNT_FIELDS.get(event.type);
+  if (fields === undefined) return [];
+  const d = event.data as Fields | null;
+  if (typeof d !== "object" || d === null) throw malformed(event);
+  const named = fields.map((f) => addr(d[f], event)).filter((a) => a !== ZERO);
+  return [...new Set(named)];
+}
+
+/**
+ * The scan's source: events naming no tracked account are dropped (every
+ * named account is tracked when `only` is undefined), and each kept event
+ * carries the positions of the accounts it names as `state`, read at its
+ * version once per account and version, at most four at a time.
+ */
+export function positionSource(adapter: EventAdapter, only: ReadonlySet<string> | undefined, requestTimeout?: number): EventAdapter {
+  if (typeof adapter.view !== "function") throw new StreamdError("positions needs an adapter that implements view");
+  // Outside the client's limiter, whose slot the page asking holds while its
+  // views run; each read is timed here and the page marked self-timed.
+  const timed = new RequestLimiter(4, Infinity, requestTimeout).wrap(adapter);
+  const view: ViewAt = (request, version) => timed.view!(request, version);
+  return markSelfTimed(pageSource(timed, (events) => {
+    const read = new Map<string, Promise<LendingPosition>>();
+    const kept: [StreamdEvent, string[]][] = [];
+    for (const event of events) {
+      const accounts = accountsOf(event).filter((a) => only === undefined || only.has(a));
+      if (accounts.length === 0) continue;
+      kept.push([event, accounts]);
+      for (const a of accounts) {
+        const key = `${a}@${event.version}`;
+        if (!read.has(key)) read.set(key, readAavePosition(view, a, event.version));
+      }
+    }
+    return Promise.all(
+      kept.map(async ([event, accounts]) => ({ ...event, state: await Promise.all(accounts.map((a) => read.get(`${a}@${event.version}`)!)) })),
+    );
+  }));
+}
+
+/** `client.reduce()` over the scan's source narrowed to `only`, as `positions()` calls it. */
+export type ReducePositions = (
+  only: ReadonlySet<string> | undefined,
+  descriptor: ModuleEventDescriptor,
+  reducer: Reducer<null>,
+  initial: null,
+  options: ReduceOptions<null>,
+) => Reduction<null>;
+
+const ALLOWED: readonly string[] = [
+  "account",
+  "threshold",
+  "fromVersion",
+  "pollInterval",
+  "batchSize",
+  "maxErrors",
+  "maxBackoff",
+  "maxPollInterval",
+  "retries",
+  "signal",
+  "onError",
+  "onChange",
+  "onCross",
+] satisfies readonly (keyof PositionsOptions)[];
+
+function accountSet(chosen: unknown): ReadonlySet<string> | undefined {
+  if (chosen === undefined) return undefined;
+  const list: unknown = typeof chosen === "string" ? [chosen] : chosen;
+  const found = Array.isArray(list) ? list.map(address) : [];
+  if (found.length === 0 || found.includes(undefined)) {
+    throw new StreamdError("account must be an address or a non-empty list of addresses");
+  }
+  return new Set(found as string[]);
+}
+
+function checkThreshold(threshold: unknown): Fraction {
+  if (threshold === undefined) return { numerator: 1n, denominator: 1n };
+  const { numerator, denominator } = (threshold ?? {}) as Partial<Fraction>;
+  if (typeof numerator !== "bigint" || typeof denominator !== "bigint" || numerator < 0n || denominator <= 0n) {
+    throw new StreamdError("threshold must be { numerator, denominator } bigints, the numerator not negative and the denominator positive");
+  }
+  return { numerator, denominator };
+}
+
+/** What `startPositions` reads through besides the reduction. */
+export interface PositionsHost {
+  view: ViewAt;
+  head: () => Promise<bigint>;
+  track: (stop: () => void) => () => void;
+}
+
+/**
+ * `AptosClient.positions()`: the tracked accounts read at the start (the head,
+ * or the version before `fromVersion`), then one reduction over the event
+ * scan from the version after, each event's positions replacing those held
+ * unless older.
+ */
+export function startPositions(reduce: ReducePositions, host: PositionsHost, protocol: unknown, options: PositionsOptions = {}): Positions {
+  if (protocol !== "aave") throw new StreamdError(`positions reads one of: aave (got ${String(protocol)})`);
+  const refused = Object.keys(options).find((k) => !ALLOWED.includes(k));
+  if (refused !== undefined) {
+    throw new StreamdError(`Unsupported positions option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
+  }
+  const { account, threshold: given, fromVersion, onChange, onCross, ...rest } = options;
+  const only = accountSet(account);
+  const threshold = checkThreshold(given);
+  if (fromVersion !== undefined && (typeof fromVersion !== "bigint" || fromVersion < 1n)) {
+    throw new StreamdError("positions fromVersion must be a bigint version of at least 1");
+  }
+  const positions = new Map<string, LendingPosition>();
+  const sides = new Map<string, boolean>();
+
+  /** Holds `next` unless a newer read is held; returns whether it was held and whether it crossed. */
+  const apply = (next: LendingPosition): [boolean, boolean] => {
+    const held = positions.get(next.account);
+    if (held !== undefined && held.version > next.version) return [false, false];
+    const below = isBelow(next, threshold);
+    const position = below === undefined ? next : { ...next, below };
+    positions.set(next.account, position);
+    if (below === undefined) return [true, false];
+    const before = sides.get(next.account);
+    sides.set(next.account, below);
+    return [true, before !== undefined && before !== below];
+  };
+
+  let walk: Reduction<null> | undefined;
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    untrack();
+    walk?.unsubscribe();
+  };
+  // Tracked until the reduction exists and tracks itself, so destroy() also
+  // stops a start read in flight.
+  const untrack = host.track(stop);
+  const halted = () => stopped || rest.signal?.aborted === true;
+  let notify: [LendingPosition, boolean][] = [];
+  const ready = (async () => {
+    try {
+      let from = fromVersion;
+      if (only !== undefined) {
+        const at = fromVersion === undefined ? await host.head() : fromVersion - 1n;
+        for (const p of await Promise.all([...only].map((a) => readAavePosition(host.view, a, at)))) apply(p);
+        from = at + 1n;
+      }
+      if (halted()) throw new StreamdError("positions was stopped before it was ready");
+      walk = reduce(
+        only,
+        AAVE_DESCRIPTOR,
+        (s, event) => {
+          notify = [];
+          for (const p of event.state as LendingPosition[]) {
+            const [held, crossed] = apply(p);
+            if (held) notify.push([positions.get(p.account)!, crossed]);
+          }
+          return s;
+        },
+        null,
+        {
+          ...rest,
+          ...(from !== undefined && { fromVersion: from }),
+          onChange: (_, event: StreamdEvent) => {
+            for (const [p, crossed] of notify) {
+              onChange?.(p, event);
+              if (crossed) onCross?.(p, event);
+            }
+          },
+        },
+      );
+      untrack();
+      await walk.ready;
+      return positions as ReadonlyMap<string, LendingPosition>;
+    } catch (err) {
+      stopped = true;
+      untrack();
+      throw err;
+    }
+  })();
+  ready.catch(() => {});
+  return {
+    value: positions,
+    get: (at) => {
+      const key = address(at);
+      return key === undefined ? undefined : positions.get(key);
+    },
+    ready,
+    get active() {
+      return !halted() && (walk === undefined || walk.active);
+    },
+    unsubscribe: stop,
+    [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: stop,
+  } as Positions;
 }
