@@ -153,7 +153,8 @@ function memo<T>(keep: (value: T) => boolean, pending?: (drop: () => void) => vo
   };
 }
 
-function isViewAbort(err: unknown): boolean {
+/** A view that failed in Move (an abort, a missing resource), rather than in transport or setup. */
+export function isViewAbort(err: unknown): boolean {
   return (
     err instanceof StreamdError &&
     !(err instanceof StreamdNetworkError) &&
