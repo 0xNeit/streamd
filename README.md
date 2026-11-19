@@ -905,6 +905,9 @@ const preview = await streamd.explain(await aptos.transaction.build.simple({ sen
   `{ account, asset, delta }` per account and asset over them, grouped by account in order
   of first appearance and each account's assets in theirs, zero nets left out. `symbol` and `decimals` are read by view unless
   `withAssetInfo: false`.
+  `withValue: true` adds `value` in USDC to transfers and balance changes, a change taking the
+  price of its asset's transfers (see [Values](#values)); `formatExplanation` prints it in
+  brackets after the amount. A simulation is priced at the state its views read.
 - **Swaps and sales.** Decoded from the same events as `swaps()` and `sales()` decode them.
 - **Names.** `withNames` (mainnet only) adds `names`: the primary name or `null`
   of the sender, the fee payer, every transfer's `from` and `to` and every sale's buyer and
@@ -1902,6 +1905,8 @@ const mine = await streamd.getTransfers({ fromVersion: -10_000n, account: "alice
   reads. Records the `account` filter drops cost none, tokens have neither field, and an
   asset whose view aborts is left without them. `formatAmount(amount, decimals)` turns base
   units into a decimal string, every digit kept: `formatAmount(1_500_000n, 8)` is `"0.015"`.
+- **Values.** `withValue: true` adds `value`, the amount in USDC at the record's version, to
+  APT, USDt and USDC records; see [Values](#values).
 - **One account.** `account` keeps the records whose `from` or `to` is that
   address. It filters finished records, because a deposit needs its withdraw to
   report `from`, so it costs the same reads as no filter; add `asset` to save
@@ -2596,6 +2601,11 @@ wallet.unsubscribe();
 - **Failures.** `ready` rejects if the first read fails. A later failed read retries
   with backoff, and `maxErrors` stops it; a view that aborts stops it at once. A balances handle is not a listener for
   `off()` or `listenerCount()`.
+- **Values.** `withValue: true` values each priced asset (see [Values](#values)) at the head
+  version its balance was read at, on the first read and whenever the balance changes:
+  `wallet.values` maps each to its `AssetValue`, and each change carries `value`. A price move
+  alone does not refresh a value or call `onChange`. It costs one more view per priced asset
+  on those reads.
 
 ### A balance at a past version
 
@@ -2735,6 +2745,61 @@ const sub = streamd.prices([APT_USD, BTC_USD], ({ data }) => {
   and a live `prices()` delivers nothing until updates resume.
 - **Switchboard is not read.** Neither of its Aptos packages has updated a price since
   2026-08-29 (on-demand) or before the fullnode's retained window (v2).
+
+## Values
+
+`withValue: true` on `transfers`, `getTransfers`, `iterateTransfers`, `balances` and `explain`
+prices amounts in native USDC at the version they were read at:
+
+```ts
+const transfers = await streamd.getTransfers({ fromVersion: -1000n, asset: "0xa", withValue: true });
+// A 10 APT transfer at version 8123509211:
+transfers[0]?.data.value;
+// { quote: "0xbae2...6f3b", decimals: 6, amount: 4334712n,
+//   price: { numerator: ..., denominator: ... }, source: "pool", reference: "0x9256...00d8" }
+formatAmount(transfers[0]!.data.value!.amount, 6); // "4.334712" USDC
+```
+
+- **What is priced.** A curated table; any other asset, and every token, has no `value`:
+
+  | Asset | Pool read (Hyperion, `0x8b4a2c4b...e05c`) | Pyth feed before the pool |
+  | --- | --- | --- |
+  | APT (`0xa` and `0x1::aptos_coin::AptosCoin`) | APT/USDC, 0.05%, `0x925660b8618394809f89f8002e2926600c775221f43bf1919782b297a79400d8` | APT/USD |
+  | USDt (`0x357b0b74...dc2b`) | USDt/USDC, 0.01%, `0xd3894aca06d5f42b27c89e6f448114b3ed6a1ba07f992a58b2126c71dd83c127` | USDT/USD |
+  | USDC (`0xbae20765...6f3b`) | none: at par, `source: "par"` | |
+
+  Each pool was the deepest for its pair when chosen. No BTC is priced: every BTC pool
+  against USDC held under 2,000 USDC.
+- **A pool's price.** `pool_v3::current_tick_and_price(pool)` at the version returns the
+  pool's `sqrt_price`, a Q64.64 square root of USDC base units per base unit of the asset, so
+  the price is exactly `sqrt_price² / 2^128`, reduced to lowest terms. A pool at
+  `sqrt_price` 0 gives no value.
+- **Pyth, before the pools.** The pools were created at versions 2321906214 (USDt) and
+  2321920813 (APT), in February 2025. Below its pool's creation version an asset is priced
+  by Pyth (`priceAt`), taken as USDC at par, `price × 10^(exponent + 6 - decimals)` per base
+  unit, `source: "oracle"`, only when positive and at most 60 seconds from the block's time
+  either way; otherwise there is no value. From the creation version on, only the pool is
+  read, and any failed read fails, so a pool problem never turns into an oracle price. Pyth
+  reads go through the client's `aptos`, so a pruned version needs `aptos` on an archive node.
+  In practice few records reach it: on mainnet, transfers before the pools mostly cannot be
+  built at all, since `0x1::object::owner` was not yet a view (checked at versions 2000000000
+  and 2321009010) and coin moves were legacy handle events, which `transfers()` does not read.
+- **Exact.** `price` is the exact fraction of quote base units per base unit of the asset;
+  `amount` is the asset amount times `price`, rounded toward zero, so a negative balance
+  change has a negative value. Nothing passes through a float.
+- **Spot prices can be moved.** A value is the pool's price after the whole transaction at
+  that version. A swap through the pool in the same transaction (a sandwich, or the
+  transfer's own swap) moves it, and there is no time-weighting and no liquidity check.
+  Treat values as indicative, not as a settlement price.
+- **Cost.** One pool view per price source and version, shared by the records at that
+  version (the APT coin and its fungible asset share one), each read inside the transfer
+  reads' limit of 4 and its `requestTimeout`, outside `maxConcurrentRequests`. Before the
+  pools a value costs a Pyth table read and a block read instead. A failed read fails the
+  page or query, as the transfer reads do. Pool views go through the adapter, so
+  `ArchiveFallbackAdapter` answers pruned versions.
+- **Mainnet only.** The table names mainnet pools and feeds; on another network the pool
+  views fail and so does the call.
+- **Other chains.** `SuiClient.balances` refuses `withValue`.
 
 ## Data sources and their limits
 

@@ -206,3 +206,63 @@ describe("formatAmount", () => {
     expect(() => formatAmount(1n, -1)).toThrow(StreamdError);
   });
 });
+
+describe("startBalances withValue", () => {
+  const priced = (ledger: Map<string, bigint>, valued: string[]): BalanceReader => ({
+    ...reader(ledger),
+    // COIN is worth 3 quote units each; GEM has no price source.
+    value: async (_adapter, asset, amount, version) => {
+      valued.push(`${asset}=${amount}@${version}`);
+      return asset === "COIN" ? { quote: "USD", decimals: 0, amount: amount * 3n, price: { numerator: 3n, denominator: 1n }, source: "par" } : undefined;
+    },
+  });
+
+  it("values the first read and each change at its version, leaving unpriced assets out", async () => {
+    const head = { value: 5n };
+    const ledger = new Map([["COIN", 10n], ["GEM", 1n]]);
+    const valued: string[] = [];
+    const changes: StreamdEvent<BalanceChange>[] = [];
+    using wallet = client(head).balances(priced(ledger, valued), {
+      asset: ["coin", "gem"],
+      withValue: true,
+      pollInterval: 5,
+      onChange: (_all, change) => changes.push(change),
+    });
+    await wallet.ready;
+    expect([...wallet.values].map(([a, v]) => [a, v.amount])).toEqual([["COIN", 30n]]);
+    await wait(30);
+    expect(valued).toEqual(["COIN=10@5", "GEM=1@5"]);
+    ledger.set("COIN", 12n);
+    ledger.set("GEM", 2n);
+    head.value = 6n;
+    await wait(30);
+    expect(changes.map((c) => [c.data.asset, c.data.value?.amount])).toEqual([["COIN", 36n], ["GEM", undefined]]);
+    expect(wallet.values.get("COIN")!.amount).toBe(36n);
+    expect(wallet.values.has("GEM")).toBe(false);
+    expect(valued).toEqual(["COIN=10@5", "GEM=1@5", "COIN=12@6", "GEM=2@6"]);
+  });
+
+  it("drops a value once its asset is no longer priced", async () => {
+    const head = { value: 5n };
+    const ledger = new Map([["COIN", 10n]]);
+    let priceable = true;
+    const read = { ...reader(ledger), value: async (_a: EventAdapter, _asset: string, amount: bigint) => (priceable ? { quote: "USD", decimals: 0, amount, price: { numerator: 1n, denominator: 1n }, source: "par" as const } : undefined) };
+    using wallet = client(head).balances(read, { withValue: true, pollInterval: 5 });
+    await wallet.ready;
+    expect(wallet.values.has("COIN")).toBe(true);
+    priceable = false;
+    ledger.set("COIN", 11n);
+    head.value = 6n;
+    for (let i = 0; i < 100 && wallet.get("COIN") !== 11n; i++) await wait(5);
+    expect(wallet.values.has("COIN")).toBe(false);
+  });
+
+  it("reads no values without withValue, and refuses it from a reader that prices nothing", async () => {
+    const valued: string[] = [];
+    using wallet = client({ value: 5n }).balances(priced(new Map([["COIN", 1n]]), valued), { pollInterval: 5 });
+    await wallet.ready;
+    expect(wallet.values.size).toBe(0);
+    expect(valued).toEqual([]);
+    expect(() => client({ value: 5n }).balances(reader(new Map()), { withValue: true })).toThrow("withValue is not served on this chain");
+  });
+});

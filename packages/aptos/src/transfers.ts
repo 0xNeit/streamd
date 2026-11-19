@@ -5,6 +5,8 @@ import { RequestLimiter } from "@streamd/core";
 import { requireAddress } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, StreamdEvent, ViewRequest } from "@streamd/core";
 import type { Transfer } from "@streamd/core";
+import { priceKey, toAssetValue } from "./values.js";
+import type { PriceQuote, Pricer } from "./values.js";
 
 export { formatAmount } from "@streamd/core";
 
@@ -198,6 +200,8 @@ const byIdentity = (a: StreamdEvent, b: StreamdEvent) =>
  *
  * `account` resolves to the long-form address whose records to keep. It filters
  * finished records, since a deposit needs its withdraw to report `from`.
+ * `pricer` values coin and fungible-asset records, once per price source and
+ * version, each of its reads in the same limit as the store reads.
  */
 export function transferSource(
   adapter: EventAdapter,
@@ -205,6 +209,7 @@ export function transferSource(
   account?: () => Promise<string>,
   withAssetInfo?: boolean,
   requestTimeout?: number,
+  pricer?: Pricer,
 ): EventAdapter {
   if (typeof adapter.view !== "function") {
     throw new StreamdError("transfers needs an adapter that implements view");
@@ -224,6 +229,7 @@ export function transferSource(
   const metadata = memo<string | undefined>((asset) => asset !== undefined, track);
   const infos = memo<AssetInfo | undefined>(() => true, track);
   const tokens = memo<boolean>(() => true, track);
+  const quotes = memo<PriceQuote | undefined>(() => true, track);
 
   /** The address `fn` returns for `object`, before the transaction if it was gone after it. */
   const read = async (
@@ -296,6 +302,14 @@ export function transferSource(
     return info === undefined ? event : { ...event, data: { ...event.data, ...info } };
   };
 
+  const withValue = async (event: StreamdEvent<Transfer>, signal: AbortSignal): Promise<StreamdEvent<Transfer>> => {
+    const key = TOKEN_EVENTS.has(event.type) ? undefined : priceKey(event.data.asset);
+    if (key === undefined) return event;
+    const run = <T>(task: () => Promise<T>) => limiter.run(task, signal, signal);
+    const quote = await quotes(`${key}@${event.version}`, () => pricer!(event.data.asset, event.version, run));
+    return quote === undefined ? event : { ...event, data: { ...event.data, value: toAssetValue(quote, event.data.amount) } };
+  };
+
   /** A leg to pair, or a finished record for an object transfer, which names both sides. */
   const legOf = async (
     event: StreamdEvent,
@@ -359,6 +373,7 @@ export function transferSource(
       // The store reads above can outlast the page, and these reads are memoized too.
       overtaken();
       if (withAssetInfo) events = await Promise.all(events.map((event) => withInfo(event, signal)));
+      if (pricer !== undefined) events = await Promise.all(events.map((event) => withValue(event, signal)));
       if (options.orderBy === "desc") events.reverse();
       return { ...fetched, events };
     },

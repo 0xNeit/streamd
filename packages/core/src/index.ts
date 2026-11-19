@@ -136,6 +136,7 @@ export type {
 
 export type {
   AccountEventDescriptor,
+  AssetValue,
   BalanceChange,
   Balances,
   BalancesOptions,
