@@ -324,16 +324,16 @@ export class AptosClient extends StreamdClient {
 
   /**
    * Keep lending positions current on `protocol` (`"aave"`, Aave V3 on Aptos
-   * mainnet): each account's supplies, debts, collateral and debt value and
+   * mainnet, or `"echelon"`, Echelon's vaults): each account's supplies, debts, collateral and debt value and
    * health factor, as the protocol's own views compute them with its own
    * oracle at a version. `account` names the accounts, read at the head (or
    * the version before `fromVersion`) first; without it every account an
-   * Aave event names is tracked from then on. Each position is reread at the
-   * version of every event naming it, from one scan over Aave's
+   * protocol's event names is tracked from then on. Each position is reread at the
+   * version of every event naming it, from one scan over the protocol's
    * position-changing events, its views at most four at a time outside
    * `maxConcurrentRequests`. With `account`, every position is also reread at
    * the head every `refreshInterval` ms (60000 by default), since a price
-   * moves with no Aave event; if those reads give up, the monitor stops.
+   * moves with no event; if those reads give up, the monitor stops.
    * `threshold` sets the health `below` and `onCross` compare with. Views go through `EventAdapter.view`, so the adapter must
    * implement it. Like `reduce()`, it is not a listener for `off()` or
    * `listenerCount()`; `destroy()` ends it.

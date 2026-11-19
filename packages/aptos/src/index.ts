@@ -16,7 +16,7 @@ export { primaryName, resolveName } from "./names.js";
 export { formatAmount } from "./transfers.js";
 export { proposalState } from "./governance.js";
 export { MULTISIG_DESCRIPTOR } from "./multisig.js";
-export { AAVE_DESCRIPTOR } from "./lending.js";
+export { AAVE_DESCRIPTOR, ECHELON_DESCRIPTOR } from "./lending.js";
 export { tracePath } from "./trace.js";
 export type {
   AbiChanges,

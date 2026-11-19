@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test";
-import { StreamdError, StreamdNetworkError } from "@streamd/core";
-import type { ViewRequest } from "@streamd/core";
+import { MemoryAdapter, StreamdError, StreamdNetworkError } from "@streamd/core";
+import type { StreamdEvent, ViewRequest } from "@streamd/core";
 import { ECHELON, readEchelonPosition } from "../src/echelon.js";
 import type { EchelonMarkets } from "../src/echelon.js";
-import { isBelow } from "../src/lending.js";
+import { accountsOf, isBelow } from "../src/lending.js";
 import type { ViewAt } from "../src/lending.js";
+import { ECHELON_DESCRIPTOR } from "../src/index.js";
+import { testClient } from "./helpers.js";
 
 const USER = "0x93c82b4669112ac419babac66281b87579a0cc97247394d359c2ab57d33ca9e3";
 const USDC_M = "0xa9c51ca3bcd93978d0c4aada7c4cf47c0791caced3cdc4e15f2c8e0797d1f93c";
@@ -159,5 +161,118 @@ describe("readEchelonPosition", () => {
     await expect(read({ ...BEFORE, market_asset_mantissa: ["0"] })).rejects.toThrow("market asset is not");
     await expect(read({ ...BEFORE, market_is_coin: [1] })).rejects.toThrow("market type is not");
     await expect(read({ ...BEFORE, market_coin: ["AptosCoin"] })).rejects.toThrow("market asset is not");
+  });
+});
+
+const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
+const [A, B, C] = [long("a1"), long("b1"), long("c1")];
+const ev = (version: number, name: string, data: Record<string, unknown>, eventIndex = 0): StreamdEvent => ({
+  type: `${ECHELON}::lending::${name}`,
+  data,
+  version: BigInt(version),
+  sequenceNumber: 0n,
+  eventIndex,
+});
+
+describe("ECHELON_DESCRIPTOR", () => {
+  it("is exported, one scan over the five vault-changing event types", () => {
+    expect(ECHELON_DESCRIPTOR.kind).toBe("module");
+    expect([ECHELON_DESCRIPTOR.eventType].flat().sort() as string[]).toEqual(
+      ["BorrowEvent", "LiquidateEvent", "RepayEvent", "SupplyEvent", "WithdrawEvent"].map((n) => `${ECHELON}::lending::${n}`),
+    );
+  });
+
+  it("names the accounts each event type changes: both sides of a liquidation, not a repayer", () => {
+    const market = obj(USDT_M);
+    expect(accountsOf(ev(1, "SupplyEvent", { account_addr: A, market_obj: market, amount: "1" }))).toEqual([A]);
+    expect(accountsOf(ev(1, "WithdrawEvent", { account_addr: A, market_obj: market, amount: "1" }))).toEqual([A]);
+    expect(accountsOf(ev(1, "BorrowEvent", { account_addr: A, market_obj: market, amount: "1" }))).toEqual([A]);
+    expect(accountsOf(ev(1, "RepayEvent", { borrower_addr: A, repayer_addr: B, market_obj: market }))).toEqual([A]);
+    expect(accountsOf(ev(1, "LiquidateEvent", { liquidator_addr: B, borrower_addr: A, repay_amount: "1" }))).toEqual([A, B]);
+    expect(accountsOf(ev(1, "AccrueVaultInterestEvent", { account_addr: A }))).toEqual([]);
+    expect(() => accountsOf(ev(1, "RepayEvent", { repayer_addr: B }))).toThrow("does not have its struct's fields");
+  });
+});
+
+/**
+ * A memory adapter whose Echelon views give every account one USDt debt and
+ * one USDC supply, with the threshold `threshold(account, version)` against a
+ * liability of 1, recording each health read as `account@version` and each
+ * market read.
+ */
+function echelonAdapter(events: StreamdEvent[], threshold: (account: string, version: bigint) => bigint | Error) {
+  const memory = new MemoryAdapter(events);
+  const reads: string[] = [];
+  const marketReads: string[] = [];
+  const one = (1n << 64n).toString();
+  const replies: Record<string, Reply> = {
+    ...BEFORE,
+    account_collateral_markets: [[obj(USDC_M)]],
+    account_coins: ["5"],
+    account_lend_value: [{ v: one }],
+  };
+  const view = async (request: ViewRequest, version: bigint) => {
+    const name = request.function.split("::")[2]!;
+    const args = [...(request.functionArguments ?? [])];
+    if (name.startsWith("market_")) marketReads.push(name);
+    if (name === "preview_health_factor_given_repay") {
+      reads.push(`${String(args[0]).slice(-2)}@${version}`);
+      const t = threshold(String(args[0]), version);
+      if (t instanceof Error) throw t;
+      return [{ v: t.toString() }, { v: one }];
+    }
+    const reply = replies[name];
+    return typeof reply === "function" ? (reply(args) as unknown[]) : (reply as unknown[]);
+  };
+  return { adapter: Object.assign(memory, { view }), memory, reads, marketReads };
+}
+
+const waitFor = async (check: () => boolean) => {
+  for (let i = 0; i < 400 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
+  if (!check()) throw new Error("timed out waiting");
+};
+
+describe("positions on echelon", () => {
+  const HALF = 1n << 63n;
+
+  it("reads at the start, at each event naming a tracked account, and at the head, reporting a crossing", async () => {
+    const t: Record<string, bigint | Error> = { [A]: 2n << 64n, [B]: 3n << 64n };
+    const { adapter, memory, reads, marketReads } = echelonAdapter(
+      [ev(10, "BorrowEvent", { account_addr: A }), ev(11, "SupplyEvent", { account_addr: C })],
+      (account) => t[account] ?? 1n,
+    );
+    const client = testClient({ adapter, defaults: { pollInterval: 5 } });
+    const crossed: [string, bigint, boolean | undefined, boolean][] = [];
+    const positions = client.positions("echelon", {
+      account: [A, B],
+      fromVersion: 5n,
+      refreshInterval: 10,
+      onCross: (p, e) => crossed.push([p.account, p.version, p.below, e === undefined]),
+    });
+    expect(client.listenerCount()).toBe(0);
+    await positions.ready;
+    expect(reads.sort()).toEqual(["a1@10", "a1@4", "b1@4"]);
+    expect(positions.get(A)).toMatchObject({ protocol: "echelon", version: 10n, health: { numerator: 2n, denominator: 1n }, below: false });
+    t[B] = HALF;
+    memory.push(ev(20, "LiquidateEvent", { borrower_addr: long("d1"), liquidator_addr: B }));
+    await waitFor(() => crossed.length === 1);
+    expect(crossed[0]).toEqual([B, 20n, true, false]);
+    t[A] = HALF;
+    memory.push(ev(30, "SupplyEvent", { account_addr: long("e1") }));
+    await waitFor(() => crossed.length === 2);
+    expect(crossed[1]).toEqual([A, 30n, true, true]);
+    expect(marketReads.filter((n) => n === "market_is_coin")).toHaveLength(2);
+    client.destroy();
+    expect(positions.active).toBe(false);
+  });
+
+  it("holds an unknown position while the oracle refuses a price", async () => {
+    const { adapter } = echelonAdapter([], () => new StreamdError("Move abort in 0x92e9::tiered_oracle: ERR_ORACLE_INVALID_PRICE(0x6b): "));
+    const client = testClient({ adapter });
+    const positions = client.positions("echelon", { account: A, refreshInterval: 0 });
+    await positions.ready;
+    expect(positions.get(A)).toMatchObject({ unknown: "Move abort in 0x92e9::tiered_oracle: ERR_ORACLE_INVALID_PRICE(0x6b):", assets: [{ supplied: 5n }, { borrowed: 659359n }] });
+    expect(positions.get(A)!.below).toBeUndefined();
+    client.destroy();
   });
 });
