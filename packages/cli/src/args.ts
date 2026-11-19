@@ -255,6 +255,14 @@ export interface ServeOptions extends Endpoint {
   pollInterval?: number;
   maxTopics?: number;
   maxConnections?: number;
+  /** Registered webhooks, kept in `file`; absent means the gateway has no webhook API. */
+  webhooks?: {
+    file: string;
+    allowPrivateTargets?: boolean;
+    retries?: number;
+    timeout?: number;
+    batchSize?: number;
+  };
 }
 
 export interface CheckOptions extends Endpoint {
@@ -405,6 +413,11 @@ const SERVE_OPTIONS = {
   "poll-interval": { type: "string" },
   "max-topics": { type: "string" },
   "max-connections": { type: "string" },
+  webhooks: { type: "string" },
+  "webhook-allow-private": { type: "boolean" },
+  retries: { type: "string" },
+  timeout: { type: "string" },
+  "batch-size": { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -607,7 +620,8 @@ Prometheus text (default type: ${MONITOR_DEFAULT_TYPE} on Aptos).
 serve runs a gateway (under Bun) that polls each descriptor its clients ask for
 once and streams it to all of them as Server-Sent Events (/v1/events) and
 WebSocket (/v1/ws), resumed by Last-Event-ID, with POST /v1/fetch, /v1/head and
-/v1/earliest for GatewayAdapter and GET /v1/status.
+/v1/earliest for GatewayAdapter and GET /v1/status. With --webhooks it also
+posts to webhooks registered at /v1/webhooks, signed and at least once.
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
 With --check it compares what it would write with --out instead, and exits 1
@@ -683,8 +697,8 @@ Options:
   --format <name>        tail: json, or pretty for aligned lines in UTC (default: json);
                          inspect: json, or pretty for one line per changed path;
                          coverage: json, or pretty for one line per event struct
-  --retries <n>          forward, alert: retries per batch or alert (default: ${DEFAULT_RETRIES})
-  --timeout <ms>         forward, alert: per-request timeout (default: ${DEFAULT_TIMEOUT});
+  --retries <n>          forward, alert, serve: retries per batch or alert (default: ${DEFAULT_RETRIES})
+  --timeout <ms>         forward, alert, serve: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx: wait for commit (default: 20000)
   --header <h>           forward, alert: request header 'Name: value', repeatable
   --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
@@ -699,7 +713,8 @@ Options:
                          inspect: a version or head (default: head);
                          forward: deliver up to here, then exit 0; transfers: a version or
                          head, read the range instead of following (needs a start)
-  --batch-size <n>       forward: most events per POST (default: 25); transfers (following):
+  --batch-size <n>       forward: most events per POST (default: 25); serve: per webhook POST
+                         (default: each page); transfers (following):
                          transactions per page (default: 25)
   --order <asc|desc>     query, transfers with --to-version: oldest or newest first (default: asc;
                          desc without --limit buffers the range to reverse it)
@@ -740,6 +755,12 @@ Options:
                          repeatable, or * for any
   --max-topics <n>       serve: most descriptors followed at once (default: 32)
   --max-connections <n>  serve: most open streams, SSE and WebSocket (default: 1000)
+  --webhooks <file>      serve: enable /v1/webhooks, keeping registered webhooks and their
+                         cursors in <file> across restarts; --retries, --timeout and
+                         --batch-size apply to their deliveries
+  --webhook-allow-private
+                         serve: let webhook targets be loopback, private or other
+                         non-public addresses (refused by default)
   -h, --help             show this help
 `;
 
@@ -1384,6 +1405,22 @@ function parseServe(args: string[]): ParsedCommand {
   if (maxTopics !== undefined) options.maxTopics = maxTopics;
   const maxConnections = integer("max-connections", values["max-connections"], 1, 1_000_000);
   if (maxConnections !== undefined) options.maxConnections = maxConnections;
+  if (values.webhooks === undefined) {
+    for (const flag of ["webhook-allow-private", "retries", "timeout", "batch-size"] as const) {
+      if (values[flag] !== undefined) throw new UsageError(`--${flag} needs --webhooks`);
+    }
+    return { command: "serve", options };
+  }
+  if (values.webhooks === "") throw new UsageError("--webhooks must not be empty");
+  const webhooks: NonNullable<ServeOptions["webhooks"]> = { file: values.webhooks };
+  if (values["webhook-allow-private"]) webhooks.allowPrivateTargets = true;
+  const retries = integer("retries", values.retries, 0, MAX_RETRIES);
+  if (retries !== undefined) webhooks.retries = retries;
+  const timeout = integer("timeout", values.timeout, 1, MAX_TIMEOUT);
+  if (timeout !== undefined) webhooks.timeout = timeout;
+  const batchSize = integer("batch-size", values["batch-size"], 1, 1000);
+  if (batchSize !== undefined) webhooks.batchSize = batchSize;
+  options.webhooks = webhooks;
   return { command: "serve", options };
 }
 

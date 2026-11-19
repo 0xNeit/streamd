@@ -1,6 +1,7 @@
 import { redactSecrets } from "@streamd/core";
 import type { EventAdapter, StreamdClient } from "@streamd/core";
 import { createGateway } from "@streamd/gateway";
+import type { Gateway } from "@streamd/gateway";
 import type { ServeOptions } from "./args.js";
 import { message } from "./format.js";
 
@@ -22,18 +23,30 @@ export async function runServe(options: ServeOptions, deps: ServeDeps): Promise<
     deps.error("streamd: serve needs Bun, for its WebSocket server: run it with bun x streamd serve");
     return 1;
   }
-  const gateway = createGateway({
-    client: deps.client,
-    adapter: deps.adapter,
-    token: options.token,
-    allowOrigins: options.allowOrigins,
-    maxTopics: options.maxTopics,
-    maxConnections: options.maxConnections,
-    pollInterval: options.pollInterval,
-    onError: (err, descriptor) => {
-      deps.error(`streamd: ${JSON.stringify(descriptor, (_k, v: unknown) => (typeof v === "bigint" ? String(v) : v))}: ${redactSecrets(message(err))}`);
-    },
-  });
+  let gateway: Gateway;
+  try {
+    gateway = createGateway({
+      client: deps.client,
+      adapter: deps.adapter,
+      token: options.token,
+      allowOrigins: options.allowOrigins,
+      maxTopics: options.maxTopics,
+      maxConnections: options.maxConnections,
+      pollInterval: options.pollInterval,
+      onError: (err, descriptor) => {
+        deps.error(`streamd: ${JSON.stringify(descriptor, (_k, v: unknown) => (typeof v === "bigint" ? String(v) : v))}: ${redactSecrets(message(err))}`);
+      },
+      ...(options.webhooks !== undefined && {
+        webhooks: {
+          ...options.webhooks,
+          onError: (text, id) => deps.error(`streamd: webhook ${id}: ${redactSecrets(text.replace(/^streamd: /, ""))}`),
+        },
+      }),
+    });
+  } catch (err) {
+    deps.error(`streamd: ${message(err)}`);
+    return 1;
+  }
   const { host, port } = options.listen;
   let server: ReturnType<typeof Bun.serve>;
   try {
