@@ -4755,6 +4755,12 @@ malformed header, a changed body or another secret gives `false`; the hex may be
 An empty secret, a body that is neither a string nor a `Uint8Array`, or a runtime without
 `crypto.subtle` throws a `StreamdError`.
 
+The sending side is in core too, for code that posts its own webhooks the way `forward` and the
+gateway do: `signWebhook(body, secret)` resolves the header value, `webhookSink({ to, secret?,
+headers?, timeout })` makes one signed POST that never follows a redirect, and
+`deliver(body, sink, retries, { error, signal, retryDelay? })` retries it with the same backoff
+and `Retry-After` rule, resolving `true` once acknowledged.
+
 The signature has no timestamp, so it proves origin and integrity but not freshness: a captured
 request can be replayed. Deduplicate on each event's `version` and `eventIndex`, which delivery
 being at least once already calls for.
@@ -5652,6 +5658,8 @@ the commands that read events (`--network`, `--node-url`, `--api-key`, `--archiv
 | `--allow-origin <origin>` | none | browser origins sent CORS headers and allowed to open WebSockets, repeatable, or `*` |
 | `--max-topics <n>` | 32 | descriptors followed at once; a new one past it answers 503 |
 | `--max-connections <n>` | 1000 | open SSE and WebSocket streams; past it, 503 |
+| `--webhooks <file>` | none | enables the webhook API, keeping webhooks and their cursors in the file |
+| `--webhook-allow-private` | off | lets webhook targets be non-public addresses |
 
 Clients name the descriptor as JSON in a `descriptor` query parameter, with `creationNumber`
 as a decimal string:
@@ -5719,8 +5727,55 @@ CORS preflight `--allow-origin` governs. With no token, the gateway answers only
 `Host` is loopback, which refuses a page that rebinds its own name to 127.0.0.1. Block lookups, `fromTime`, transaction lookups, simulations and views are not served.
 `where` and `decode` run in the client as usual.
 
-`GET /v1/status` lists each topic (descriptor, clients, last id, events held) and the open
-stream count. Webhook subscriptions are not served yet.
+`GET /v1/status` lists each topic (descriptor, clients, last id, events held), the open
+stream count and the number of registered webhooks.
+
+**Webhooks.** With `--webhooks <file>`, clients register webhooks through the gateway's API, and
+the gateway POSTs every new event on each one's descriptor to its URL, as `streamd forward`
+does: a JSON array of events per POST, signed in `x-streamd-signature`, retried with backoff
+and `Retry-After`, at least once. `@streamd/receiver` or `verifyWebhook` reads them.
+
+```sh
+bun x streamd serve --webhooks ./webhooks.json
+
+curl -X POST http://127.0.0.1:8787/v1/webhooks -H "content-type: application/json" \
+  -d '{"url":"https://hooks.example/streamd","descriptor":{"kind":"module","eventType":"0x1::coin::CoinDeposit"}}'
+# {"id":"9c1e0b4f7a2d3e65","url":"https://hooks.example/streamd","descriptor":{...},"status":"active",
+#  "createdAt":"2026-11-19T12:00:00.000Z","delivered":0,"fromVersion":"4205513021","secret":"<64 hex characters>"}
+```
+
+| Route | |
+| --- | --- |
+| `POST /v1/webhooks` | `{ url, descriptor }`; 201 with the webhook and its `secret`, the only response that carries it |
+| `GET /v1/webhooks` | `{ webhooks: [...] }`, each with `status` (`active` or `failed`), `cursor`, `delivered` (events acknowledged, redeliveries included) and `lastError` |
+| `GET /v1/webhooks/<id>` | one webhook |
+| `DELETE /v1/webhooks/<id>` | 204; it stops at once, abandoning a POST in flight |
+| `POST /v1/webhooks/<id>/resume` | restarts a failed webhook from its cursor |
+
+The routes take the gateway's token like every other, and exist only with `--webhooks`.
+Without a token they refuse any request carrying an `Origin` header (403): a loopback gateway
+is reachable from every page its operator opens, so browsers are kept off the webhook API.
+
+- **Start and cursor.** A webhook starts at the head the gateway's node reports when it is
+  registered (`fromVersion`), and follows with a cursor of its own. The file holds every webhook, its secret and its cursor (mode 0600, replaced
+  whole on each write), and its cursor moves only after the target acknowledged the page
+  with a 2xx, so a restarted gateway carries on from there and may repeat a page, never skip
+  one. A file that cannot be read stops `serve` with exit code 1.
+- **Delivery.** `--retries` (default 5) per batch, `--timeout` (default 10000 ms) per POST,
+  `--batch-size` events per POST (default: each page). A 408, 429 or 5xx is retried, any other
+  status is not, and redirects are never followed.
+- **A target that keeps failing.** Once a batch fails past its retries, or polling gives up,
+  the webhook is marked `failed` with the reason in `lastError`, stops, and keeps its cursor.
+  `resume` delivers from that page on. A failed webhook stays failed across restarts.
+- **Targets.** `http` or `https`, no credentials in the URL. The gateway refuses a host that
+  is, or resolves to, a loopback, private, link-local, shared, multicast or reserved address,
+  checked at registration and again before every POST, unless `--webhook-allow-private` is
+  given (for a receiver on the same network). The address is not pinned for the request, so a
+  name that resolves to a public address at the check and a private one at the connect is not
+  stopped: give a gateway that registers untrusted URLs no route to what it must not reach.
+- **Limits.** At most 100 webhooks. Each polls on its own: webhooks on one descriptor share a
+  node read only while their cursors are equal, so many on a busy type cost the node one walk
+  each.
 
 ### Store events
 

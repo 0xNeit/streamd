@@ -81,7 +81,7 @@ export class Topic {
   }
 }
 
-function describe(error: Error): string {
+export function describe(error: Error): string {
   return error.cause instanceof Error ? `${error.message}: ${error.cause.message}` : error.message;
 }
 

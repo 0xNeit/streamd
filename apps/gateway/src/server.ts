@@ -4,6 +4,8 @@ import { DEFAULT_LIMIT, RequestLimiter, SharedFetches, StreamdError, StreamdNetw
 import type { EventAdapter, EventDescriptor, FetchOptions, StreamdClient } from "@streamd/core";
 import { Topics } from "./topics.js";
 import type { Entry, Subscriber, Topic, TopicStatus } from "./topics.js";
+import { Webhooks } from "./webhooks.js";
+import type { WebhooksOptions } from "./webhooks.js";
 import { parseDescriptor, parseFetchOptions, toJson, toWireError } from "./wire.js";
 
 export interface GatewayOptions {
@@ -41,6 +43,12 @@ export interface GatewayOptions {
   keepAlive?: number;
   pollInterval?: number;
   batchSize?: number;
+  /**
+   * Enables `/v1/webhooks`: registered webhooks kept in `webhooks.file`, each
+   * polled through `client` (at `pollInterval` unless it sets its own),
+   * each starting at the head `adapter` reports at registration.
+   */
+  webhooks?: Omit<WebhooksOptions, "client" | "headVersion">;
   /** A topic's polling errors; the topic keeps polling unless its poller gave up. */
   onError?: (error: Error, descriptor: EventDescriptor) => void;
 }
@@ -48,6 +56,8 @@ export interface GatewayOptions {
 export interface GatewayStatus {
   topics: TopicStatus[];
   connections: number;
+  /** Registered webhooks, active or failed. */
+  webhooks: number;
 }
 
 /** What a WebSocket carries from its upgrade to its `open`. */
@@ -134,20 +144,29 @@ async function boundedText(request: Request): Promise<string> {
   return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
-async function readBody(request: Request): Promise<{ descriptor: EventDescriptor; options: FetchOptions }> {
+async function readJson(request: Request): Promise<unknown> {
   // Anything else is a form a page on another origin could post without a preflight.
   if (!request.headers.get("content-type")?.startsWith("application/json")) {
     throw new StreamdNetworkError("Requests must be sent as application/json", 415);
   }
   const text = await boundedText(request);
-  let body: unknown;
   try {
-    body = JSON.parse(text);
+    return JSON.parse(text);
   } catch {
     throw new StreamdError("The request body must be JSON");
   }
+}
+
+async function readBody(request: Request): Promise<{ descriptor: EventDescriptor; options: FetchOptions }> {
+  const body = await readJson(request);
   if (!isObject(body)) throw new StreamdError("The request body must be an object");
   return { descriptor: parseDescriptor(body.descriptor), options: parseFetchOptions(body.options) };
+}
+
+const WEBHOOK_PATH = /^\/v1\/webhooks\/([0-9a-f]{16})(\/resume)?$/;
+
+function notFound(): Response {
+  return json({ error: { name: "Error", message: "Not found" } }, 404);
 }
 
 /** A request the topic serves: no start, end, offset or newest-first order. */
@@ -198,6 +217,13 @@ export function createGateway(options: GatewayOptions): Gateway {
   const upstream = limited === undefined
     ? undefined
     : new SharedFetches(limited, requestTimeout).view(options.pollInterval ?? 1000);
+  const headVersion = limited?.getHeadVersion;
+  if (options.webhooks !== undefined && headVersion === undefined) {
+    throw new StreamdError("webhooks need an adapter with getHeadVersion, to fix each webhook's start");
+  }
+  const webhooks = options.webhooks === undefined
+    ? undefined
+    : new Webhooks({ pollInterval: options.pollInterval, ...options.webhooks, client: options.client, headVersion: headVersion! });
   const maxConnections = options.maxConnections ?? 1000;
   const maxQueuedBytes = options.maxQueuedBytes ?? 1024 * 1024;
   const allowed = new Set(options.allowOrigins ?? []);
@@ -394,16 +420,43 @@ export function createGateway(options: GatewayOptions): Gateway {
     if (url.pathname === "/v1/events" && request.method === "GET") return events(request, url);
     if (url.pathname === "/v1/ws" && request.method === "GET") return upgrade(request, url, server);
     if (url.pathname === "/v1/status" && request.method === "GET") return json(status());
+    if (webhooks !== undefined && url.pathname.startsWith("/v1/webhooks")) return webhookRoute(webhooks, request, url);
     if (request.method === "POST") {
       if (url.pathname === "/v1/fetch") return readBody(request).then(({ descriptor, options }) => fetchPage(descriptor, options));
       if (url.pathname === "/v1/head") return version(request, "getHeadVersion");
       if (url.pathname === "/v1/earliest") return version(request, "getEarliestVersion");
     }
-    return json({ error: { name: "Error", message: "Not found" } }, 404);
+    return notFound();
+  }
+
+  async function webhookRoute(hooks: Webhooks, request: Request, url: URL): Promise<Response> {
+    // Without a token, any page the operator visits can reach a loopback gateway, so browsers are kept off it.
+    if (token === undefined && request.headers.get("origin") !== null) {
+      return json({ error: { name: "StreamdError", message: "Webhooks are not served to browsers without a token" } }, 403);
+    }
+    if (url.pathname === "/v1/webhooks") {
+      if (request.method === "GET") return json({ webhooks: hooks.list() });
+      if (request.method === "POST") return json(await hooks.create(await readJson(request)), 201);
+      return notFound();
+    }
+    const match = WEBHOOK_PATH.exec(url.pathname);
+    const id = match?.[1];
+    if (id === undefined) return notFound();
+    if (match![2] !== undefined) {
+      if (request.method !== "POST") return notFound();
+      const resumed = hooks.resume(id);
+      return resumed === undefined ? notFound() : json(resumed);
+    }
+    if (request.method === "GET") {
+      const found = hooks.get(id);
+      return found === undefined ? notFound() : json(found);
+    }
+    if (request.method === "DELETE") return hooks.delete(id) ? new Response(null, { status: 204 }) : notFound();
+    return notFound();
   }
 
   function status(): GatewayStatus {
-    return { topics: topics.status(), connections: connections.size };
+    return { topics: topics.status(), connections: connections.size, webhooks: webhooks?.size ?? 0 };
   }
 
   return {
@@ -414,7 +467,7 @@ export function createGateway(options: GatewayOptions): Gateway {
           status: 204,
           headers: {
             ...cors,
-            "access-control-allow-methods": "GET, POST, OPTIONS",
+            "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
             "access-control-allow-headers": "authorization, content-type, last-event-id",
             "access-control-max-age": "600",
           },
@@ -438,6 +491,7 @@ export function createGateway(options: GatewayOptions): Gateway {
     status,
     close() {
       clearInterval(ticker);
+      webhooks?.close();
       for (const connection of [...connections]) connection.close();
       topics.close();
     },

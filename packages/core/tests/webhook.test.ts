@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { createHmac } from "node:crypto";
-import { StreamdError, WEBHOOK_SIGNATURE_HEADER, verifyWebhook } from "../src/index.js";
+import { StreamdError, WEBHOOK_SIGNATURE_HEADER, deliver, signWebhook, verifyWebhook, webhookSink } from "../src/index.js";
+import type { DeliveryAttempt, DeliverySink } from "../src/index.js";
 
 const SECRET = "s3cret-token";
 const BODY = JSON.stringify([{ type: "0x1::coin::DepositEvent", data: { memo: "café 🚀" }, version: "7" }]);
@@ -79,5 +80,89 @@ describe("verifyWebhook", () => {
       Object.defineProperty(globalThis, "crypto", original);
     }
     expect(await verifyWebhook(BODY, sign(BODY), SECRET)).toBe(true);
+  });
+});
+
+describe("signWebhook", () => {
+  it("signs as forward does, and verifyWebhook accepts it", async () => {
+    const header = await signWebhook(BODY, SECRET);
+    expect(header).toBe(sign(BODY));
+    expect(await verifyWebhook(BODY, header, SECRET)).toBe(true);
+  });
+
+  it("refuses an empty secret", async () => {
+    await expect(signWebhook(BODY, "")).rejects.toBeInstanceOf(StreamdError);
+  });
+});
+
+describe("deliver", () => {
+  const io = (errors: string[] = [], signal = new AbortController().signal) => ({
+    error: (m: string) => errors.push(m),
+    signal,
+    retryDelay: 1,
+  });
+  const sink = (attempts: DeliveryAttempt[]): DeliverySink & { calls: number } => {
+    const fake = {
+      calls: 0,
+      send: async () => attempts[fake.calls++] ?? { ok: true },
+    };
+    return fake;
+  };
+
+  it("retries a retryable failure until acknowledged", async () => {
+    const errors: string[] = [];
+    const fake = sink([{ ok: false, failure: "HTTP 500", retryable: true }]);
+    expect(await deliver("[]", fake, 3, io(errors))).toBe(true);
+    expect(fake.calls).toBe(2);
+    expect(errors).toEqual(["streamd: delivery failed (attempt 1/4): HTTP 500; retrying in 1ms"]);
+  });
+
+  it("waits a failure's retryAfter instead of the backoff", async () => {
+    const errors: string[] = [];
+    const fake = sink([{ ok: false, failure: "HTTP 429", retryable: true, retryAfter: 30 }]);
+    const start = Date.now();
+    expect(await deliver("[]", fake, 1, io(errors))).toBe(true);
+    expect(Date.now() - start).toBeGreaterThanOrEqual(25);
+    expect(errors[0]).toContain("retrying in 30ms");
+  });
+
+  it("gives up past its retries and on a failure that is not retryable", async () => {
+    const errors: string[] = [];
+    const failing = { ok: false, failure: "HTTP 500", retryable: true };
+    expect(await deliver("[]", sink([failing, failing]), 1, io(errors))).toBe(false);
+    expect(errors.at(-1)).toBe("streamd: delivery failed: HTTP 500");
+    const fake = sink([{ ok: false, failure: "HTTP 400", retryable: false }]);
+    expect(await deliver("[]", fake, 5, io())).toBe(false);
+    expect(fake.calls).toBe(1);
+  });
+
+  it("stops waiting when the signal aborts", async () => {
+    const controller = new AbortController();
+    const fake = sink([{ ok: false, failure: "HTTP 503", retryable: true, retryAfter: 10_000 }]);
+    const done = deliver("[]", fake, 3, io([], controller.signal));
+    setTimeout(() => controller.abort(), 5);
+    expect(await done).toBe(false);
+    expect(fake.calls).toBe(1);
+  });
+});
+
+describe("webhookSink", () => {
+  it("POSTs the body signed, acknowledging a 2xx and not following redirects", async () => {
+    const seen: { body: string; signature: string | null }[] = [];
+    let status = 204;
+    using server = Bun.serve({
+      port: 0,
+      async fetch(request) {
+        seen.push({ body: await request.text(), signature: request.headers.get(WEBHOOK_SIGNATURE_HEADER) });
+        return new Response(null, { status, headers: status === 302 ? { location: "http://127.0.0.1:1/" } : {} });
+      },
+    });
+    const target = webhookSink({ to: `http://127.0.0.1:${server.port}/hook`, secret: SECRET, timeout: 2000 });
+    const signal = new AbortController().signal;
+    expect(await target.send(BODY, signal)).toEqual({ ok: true });
+    expect(await verifyWebhook(seen[0]!.body, seen[0]!.signature, SECRET)).toBe(true);
+    status = 302;
+    expect(await target.send(BODY, signal)).toMatchObject({ ok: false, failure: "HTTP 302", retryable: false });
+    expect(seen).toHaveLength(2);
   });
 });

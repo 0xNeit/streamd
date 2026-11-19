@@ -1837,5 +1837,16 @@ describe("parseCommand serve", () => {
     [["serve", "--allow-origin", "app.example"], /--allow-origin must be/],
     [["serve", "--max-topics", "0"], /--max-topics must be an integer/],
     [["serve", TYPE], /serve takes no event types/],
+    [["serve", "--retries", "2"], /--retries needs --webhooks/],
+    [["serve", "--webhook-allow-private"], /--webhook-allow-private needs --webhooks/],
+    [["serve", "--webhooks", ""], /--webhooks must not be empty/],
+    [["serve", "--webhooks", "w.json", "--batch-size", "0"], /--batch-size must be an integer/],
   ])("rejects %j", (argv, message) => rejects(argv, message));
+
+  it("takes the webhook file and its delivery options", () => {
+    expect(serve("--webhooks", "w.json").webhooks).toEqual({ file: "w.json" });
+    expect(
+      serve("--webhooks", "w.json", "--webhook-allow-private", "--retries", "0", "--timeout", "500", "--batch-size", "10").webhooks,
+    ).toEqual({ file: "w.json", allowPrivateTargets: true, retries: 0, timeout: 500, batchSize: 10 });
+  });
 });
