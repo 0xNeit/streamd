@@ -21,7 +21,8 @@ import { IndexerAccountAdapter } from "./indexer.js";
 import { provenanceDescriptor, provenanceSource } from "./provenance.js";
 import { governanceSource, startProposals } from "./governance.js";
 import { MULTISIG_DESCRIPTOR, multisigSource, previewMultisig, startMultisig } from "./multisig.js";
-import { AAVE_DESCRIPTOR, positionSource, refreshSource, startPositions } from "./lending.js";
+import { positionSource, refreshSource, startPositions } from "./lending.js";
+import type { LendingMarket, PositionReader } from "./lending.js";
 import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { PYTH_DESCRIPTOR, priceSource, pythPriceReader, requireFeedId } from "./prices.js";
@@ -344,35 +345,37 @@ export class AptosClient extends StreamdClient {
     }
     const host = {
       view: (request: ViewRequest, version: bigint, drop: AbortSignal) => this.limiter.run(() => adapter.view!(request, version), drop),
-      head: () => this.limiter.run(() => adapter.getHeadVersion!(AAVE_DESCRIPTOR)),
+      head: (descriptor: EventDescriptor) => this.limiter.run(() => adapter.getHeadVersion!(descriptor)),
       track: this.reduceHost.track,
       onError: this.onError,
       refresh: (
+        market: LendingMarket,
+        read: PositionReader,
         tracked: () => Iterable<string>,
-        deliver: (read: LendingPosition[]) => void,
+        deliver: (positions: LendingPosition[]) => void,
         opts: { onError: (error: Error) => void },
         since: bigint | undefined,
         drop: AbortSignal,
       ) =>
         this.subscribe(
-          AAVE_DESCRIPTOR,
+          market.descriptor,
           { batch: (events) => deliver(events.map((e) => e.data as LendingPosition)) },
           opts,
           undefined,
           undefined,
-          (source) => refreshSource(source, tracked, opts.onError, since, this.requestTimeout, drop),
+          (source) => refreshSource(source, market, read, tracked, opts.onError, since, this.requestTimeout, drop),
         ),
     };
     return startPositions(
-      (only, drop, d, r, i, o) => {
-        const wrap = (source: EventAdapter) => positionSource(source, only, this.requestTimeout, drop);
+      (market, read, only, drop, r, i, o) => {
+        const wrap = (source: EventAdapter) => positionSource(source, read, only, this.requestTimeout, drop);
         const scoped = {
           ...this.reduceHost,
           query: new EventQuery(wrap(adapter), this.limiter, this.names),
           subscribe: (desc: EventDescriptor | readonly EventDescriptor[], callback: EventCallback, opts: object) =>
             this.subscribe(desc as EventDescriptor, callback, opts, undefined, undefined, wrap),
         };
-        return startReduction(scoped, d, r, i, o);
+        return startReduction(scoped, market.descriptor, r, i, o);
       },
       host,
       protocol,

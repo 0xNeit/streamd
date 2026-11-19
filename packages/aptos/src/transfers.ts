@@ -164,6 +164,15 @@ export function isViewAbort(err: unknown): boolean {
 }
 
 /**
+ * The Move abort a failed view reports, without the node's URL or the
+ * version, so two reads refused for one reason compare equal.
+ */
+export function abortReason(err: unknown): string {
+  const found = /Move abort[^"\n]*/.exec(err instanceof Error ? err.message : String(err));
+  return found === null ? "the view aborted" : found[0].trim();
+}
+
+/**
  * Pairs one transaction's legs, in event order: a deposit takes the most
  * recent waiting withdraw of the same asset and amount; withdraws nothing took
  * stand alone. Each record keeps its anchor event's identity.

@@ -3,8 +3,8 @@ import type { EventAdapter, ModuleEventDescriptor, ReduceOptions, Reducer, Reduc
 import type { ViewAt } from "./multisig.js";
 import { addr, address, amount, malformed, pageSource } from "./records.js";
 import type { Fields } from "./records.js";
-import { isViewAbort } from "./transfers.js";
-import type { Fraction, LendingPosition, Positions, PositionsOptions, PositionAsset } from "./types.js";
+import { abortReason, isViewAbort } from "./transfers.js";
+import type { Fraction, LendingPosition, LendingProtocol, Positions, PositionsOptions, PositionAsset } from "./types.js";
 import { fraction } from "./values.js";
 
 export type { ViewAt };
@@ -15,15 +15,6 @@ const WAD = 10n ** 18n;
 const BPS = 10_000n;
 
 const bad = (account: string, what: string) => new StreamdError(`aave position ${account}: ${what} is not what the view returns`);
-
-/**
- * The Move abort a failed view reports, without the node's URL or the
- * version, so two reads refused for one reason compare equal.
- */
-function abortReason(err: unknown): string {
-  const found = /Move abort[^"\n]*/.exec(err instanceof Error ? err.message : String(err));
-  return found === null ? "the account data view aborted" : found[0].trim();
-}
 
 function int(value: unknown, account: string, what: string): bigint {
   const n = amount(value);
@@ -120,16 +111,39 @@ const AAVE_EVENTS: Record<string, readonly string[]> = {
   // An aToken moving between accounts, a liquidator taking the collateral included.
   "events::BalanceTransfer": ["from", "to"],
 };
-const ACCOUNT_FIELDS = new Map(Object.entries(AAVE_EVENTS).map(([name, fields]) => [`${AAVE}::${name}`, fields]));
-
 /**
  * The one scan `positions("aave")` follows. Only the module defining an event
  * type can emit it, so every event here is Aave's own.
  */
 export const AAVE_DESCRIPTOR: ModuleEventDescriptor = {
   kind: "module",
-  eventType: [...ACCOUNT_FIELDS.keys()] as `${string}::${string}::${string}`[],
+  eventType: Object.keys(AAVE_EVENTS).map((name) => `${AAVE}::${name}`) as `${string}::${string}::${string}`[],
 };
+
+/** Reads one account's position at a version. */
+export type PositionReader = (view: ViewAt, account: string, version: bigint) => Promise<LendingPosition>;
+
+/** What `positions()` needs to follow one protocol. */
+export interface LendingMarket {
+  /** The package address, naming the head reads' records. */
+  address: string;
+  /** The scan over every event that changes a position. */
+  descriptor: ModuleEventDescriptor;
+  /** Each event type, in full, and the fields naming the accounts it changes. */
+  fields: ReadonlyMap<string, readonly string[]>;
+  /** A reader for one monitor, which may keep what never changes between reads. */
+  reader: () => PositionReader;
+}
+
+const fieldsOf = (address: string, events: Record<string, readonly string[]>) =>
+  new Map(Object.entries(events).map(([name, fields]) => [`${address}::${name}`, fields]));
+
+/** Every protocol `positions()` reads. */
+export const LENDING: Record<LendingProtocol, LendingMarket> = {
+  aave: { address: AAVE, descriptor: AAVE_DESCRIPTOR, fields: fieldsOf(AAVE, AAVE_EVENTS), reader: () => readAavePosition },
+};
+
+const ACCOUNT_FIELDS = new Map(Object.values(LENDING).flatMap((m) => [...m.fields]));
 
 const ZERO = `0x${"0".repeat(64)}`;
 
@@ -151,6 +165,7 @@ export function accountsOf(event: StreamdEvent): string[] {
  */
 export function positionSource(
   adapter: EventAdapter,
+  read: PositionReader,
   only: ReadonlySet<string> | undefined,
   requestTimeout?: number,
   drop?: AbortSignal,
@@ -162,7 +177,7 @@ export function positionSource(
   const timed = new RequestLimiter(4, Infinity, requestTimeout).wrap(adapter, drop);
   const view: ViewAt = (request, version) => timed.view!(request, version);
   return markSelfTimed(pageSource(timed, (events) => {
-    const read = new Map<string, Promise<LendingPosition>>();
+    const reads = new Map<string, Promise<LendingPosition>>();
     const kept: [StreamdEvent, string[]][] = [];
     for (const event of events) {
       const accounts = accountsOf(event).filter((a) => only === undefined || only.has(a));
@@ -170,11 +185,11 @@ export function positionSource(
       kept.push([event, accounts]);
       for (const a of accounts) {
         const key = `${a}@${event.version}`;
-        if (!read.has(key)) read.set(key, readAavePosition(view, a, event.version));
+        if (!reads.has(key)) reads.set(key, read(view, a, event.version));
       }
     }
     return Promise.all(
-      kept.map(async ([event, accounts]) => ({ ...event, state: await Promise.all(accounts.map((a) => read.get(`${a}@${event.version}`)!)) })),
+      kept.map(async ([event, accounts]) => ({ ...event, state: await Promise.all(accounts.map((a) => reads.get(`${a}@${event.version}`)!)) })),
     );
   }));
 }
@@ -190,6 +205,8 @@ export function positionSource(
  */
 export function refreshSource(
   adapter: EventAdapter,
+  market: Pick<LendingMarket, "address">,
+  read: PositionReader,
   tracked: () => Iterable<string>,
   failed: (err: Error) => void,
   since: bigint | undefined,
@@ -206,15 +223,15 @@ export function refreshSource(
     fetchEvents: async (descriptor) => {
       const head = await timed.getHeadVersion!(descriptor);
       if (head <= latest) return { events: [], nextCursor: String(latest), hasMore: false };
-      const settled = await Promise.allSettled([...tracked()].map((a) => readAavePosition(view, a, head)));
-      const read = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+      const settled = await Promise.allSettled([...tracked()].map((a) => read(view, a, head)));
+      const positions = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
       const errors = settled.flatMap((r) => (r.status === "rejected" ? [r.reason as Error] : []));
       // Left unset when nothing was read, so the poller retries this head.
-      if (read.length === 0 && errors.length > 0) throw errors[0];
+      if (positions.length === 0 && errors.length > 0) throw errors[0];
       errors.forEach(failed);
       latest = head;
       return {
-        events: read.map((data, eventIndex) => ({ type: `${AAVE}::position`, data, version: head, sequenceNumber: 0n, eventIndex })),
+        events: positions.map((data, eventIndex) => ({ type: `${market.address}::position`, data, version: head, sequenceNumber: 0n, eventIndex })),
         nextCursor: String(head),
         hasMore: false,
         throughVersion: head,
@@ -225,9 +242,10 @@ export function refreshSource(
 
 /** `client.reduce()` over the scan's source narrowed to `only`, as `positions()` calls it. */
 export type ReducePositions = (
+  market: LendingMarket,
+  read: PositionReader,
   only: ReadonlySet<string> | undefined,
   drop: AbortSignal,
-  descriptor: ModuleEventDescriptor,
   reducer: Reducer<null>,
   initial: null,
   options: ReduceOptions<null>,
@@ -272,11 +290,13 @@ function checkThreshold(threshold: unknown): Fraction {
 /** What `startPositions` reads through besides the reduction. */
 export interface PositionsHost {
   view: (request: Parameters<ViewAt>[0], version: bigint, drop: AbortSignal) => Promise<unknown[]>;
-  head: () => Promise<bigint>;
+  head: (descriptor: ModuleEventDescriptor) => Promise<bigint>;
   track: (stop: () => void) => () => void;
   onError: ((error: Error) => void) | undefined;
   /** Follows `refreshSource` over `tracked`, delivering each fetch's positions. */
   refresh: (
+    market: LendingMarket,
+    read: PositionReader,
     tracked: () => Iterable<string>,
     deliver: (positions: LendingPosition[]) => void,
     options: Pick<PositionsOptions, "maxErrors" | "maxBackoff" | "signal"> & { pollInterval: number; onError: (error: Error) => void },
@@ -307,7 +327,12 @@ function checkInterval(interval: unknown, tracking: boolean): number {
  * unless older.
  */
 export function startPositions(reduce: ReducePositions, host: PositionsHost, protocol: unknown, options: PositionsOptions = {}): Positions {
-  if (protocol !== "aave") throw new StreamdError(`positions reads one of: aave (got ${String(protocol)})`);
+  const protocols = Object.keys(LENDING);
+  if (typeof protocol !== "string" || !protocols.includes(protocol)) {
+    throw new StreamdError(`positions reads one of: ${protocols.join(", ")} (got ${String(protocol)})`);
+  }
+  const market = LENDING[protocol as LendingProtocol];
+  const read = market.reader();
   const refused = Object.keys(options).find((k) => !ALLOWED.includes(k));
   if (refused !== undefined) {
     throw new StreamdError(`Unsupported positions option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
@@ -372,6 +397,8 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
   const startRefresh = () => {
     const { maxErrors, maxBackoff, signal } = rest;
     refresh = host.refresh(
+      market,
+      read,
       // Health only stays live while both run, so one ending ends both.
       () => (walk?.active === true ? positions.keys() : (stop(), [])),
       (read) => {
@@ -403,17 +430,18 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
     try {
       let from = fromVersion;
       if (only !== undefined) {
-        const at = fromVersion === undefined ? await host.head() : fromVersion - 1n;
+        const at = fromVersion === undefined ? await host.head(market.descriptor) : fromVersion - 1n;
         const view: ViewAt = (request, version) => host.view(request, version, dropped.signal);
-        for (const p of await Promise.all([...only].map((a) => readAavePosition(view, a, at)))) apply(p);
+        for (const p of await Promise.all([...only].map((a) => read(view, a, at)))) apply(p);
         startedAt = at;
         from = at + 1n;
       }
       if (halted()) throw new StreamdError("positions was stopped before it was ready");
       walk = reduce(
+        market,
+        read,
         only,
         dropped.signal,
-        AAVE_DESCRIPTOR,
         (s, event) => {
           notify = [];
           for (const p of event.state as LendingPosition[]) {
