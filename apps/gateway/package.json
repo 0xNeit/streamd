@@ -1,7 +1,7 @@
 {
   "name": "@streamd/gateway",
   "version": "0.1.0",
-  "description": "A self-hosted streamd gateway: one poller per descriptor, fanned out as Server-Sent Events and WebSocket streams, and a GatewayAdapter for browser clients",
+  "description": "A self-hosted streamd gateway: one poller per descriptor, fanned out as Server-Sent Events and WebSocket streams, and a GatewayAdapter for browser clients at @streamd/gateway/adapter",
   "type": "module",
   "exports": {
     ".": {
@@ -12,6 +12,16 @@
       "require": {
         "types": "./dist/index.d.cts",
         "default": "./dist/index.cjs"
+      }
+    },
+    "./adapter": {
+      "import": {
+        "types": "./dist/adapter.d.ts",
+        "default": "./dist/adapter.js"
+      },
+      "require": {
+        "types": "./dist/adapter.d.cts",
+        "default": "./dist/adapter.cjs"
       }
     }
   },

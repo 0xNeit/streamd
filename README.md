@@ -67,7 +67,8 @@ TypeScript types:
   checked, the events parsed and repeats dropped. See
   [Forward events to a webhook](#forward-events-to-a-webhook).
 - `@streamd/gateway` (`apps/gateway`) - the gateway behind `streamd serve`, and
-  `GatewayAdapter`, which reads through one. See [Serve a gateway](#serve-a-gateway).
+  `GatewayAdapter`, which reads through one, from the browser-safe `@streamd/gateway/adapter`.
+  See [Serve a gateway](#serve-a-gateway).
 - `@streamd/playground` (`apps/playground`) - a browser page to check an event type, watch it
   live and copy its generated types and a snippet. Not published. See [Playground](#playground).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
@@ -5764,13 +5765,14 @@ query.
 discarded, rather than buffered without bound. Its client reconnects and resumes from its last id while the topic still
 holds it.
 
-**`GatewayAdapter`.** In `@streamd/gateway`, an `EventAdapter` over the gateway's
+**`GatewayAdapter`.** In `@streamd/gateway/adapter`, an `EventAdapter` over the gateway's
 `POST /v1/fetch`, `/v1/head` and `/v1/earliest`, so a `StreamdClient` in the browser reads
-through it:
+through it. That subpath imports only `@streamd/core`; the package root also exports it, beside
+`createGateway`, whose Node built-ins a browser bundle cannot load:
 
 ```ts
 import { StreamdClient } from "@streamd/core";
-import { GatewayAdapter } from "@streamd/gateway";
+import { GatewayAdapter } from "@streamd/gateway/adapter";
 
 const streamd = new StreamdClient({ adapter: new GatewayAdapter({ url: "http://127.0.0.1:8787", token }) });
 streamd.on(descriptor, (event) => console.log(event));                    // the shared topic
