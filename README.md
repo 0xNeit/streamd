@@ -2393,7 +2393,8 @@ for (const tx of treasury.value.pending.values()) {
   the creation time plus the timelock period while the approvals are below the override
   threshold.
 - **Live changes.** The account never signs (owners create and vote, an owner executes), so an
-  `account` walk sees nothing. Instead one scan over every `0x1::multisig_account` event type is
+  `account` walk sees nothing. Instead one scan over every `0x1::multisig_account` event type but
+  `MetadataUpdated` (metadata is not kept) is
   narrowed by the events' `multisig_account` field, and the views are reread at the version of
   each of the account's events, once per version and at most four at a time, outside
   `maxConcurrentRequests`; the state is replaced field by field in place. The legacy
@@ -2402,8 +2403,9 @@ for (const tx of treasury.value.pending.values()) {
   `bigint`) reads the state at the version before and folds every change after it before `ready`;
   without it the state is read at the head. A `fromVersion` older than the timelock views fails.
 - **Previews.** `preview(sequenceNumber, { payload? })` simulates with no key through
-  `previewEvents`. For the next transaction in the queue, the first owner for whom
-  `can_execute(owner, multisig, sequenceNumber)` is true at the head is the sender of a
+  `previewEvents`. The queue position is read again at the head, and a transaction resolved
+  there is refused. For the next transaction in the queue, the first owner (in `owners` order)
+  for whom `can_execute(owner, multisig, sequenceNumber)` is true at the head is the sender of a
   multisig-wrapped transaction, as an execution would run; `can_execute` counts that owner's own
   approval when they have not voted, so a transaction one approval short previews too. Otherwise
   (further short, held by the timelock, or behind another pending transaction) the entry
@@ -2417,7 +2419,8 @@ for (const tx of treasury.value.pending.values()) {
   hex); it is checked against `payloadHash` by SHA3-256 before anything is simulated, and a
   payload passed for a transaction that stores its own is refused.
 - **Stops.** A failed start read rejects `ready` (an account that is not a multisig aborts the
-  views); a failed view on a live page fails the poll, which retries as for `on()`. Options:
+  views), as does `unsubscribe()`, `destroy()` or `signal` before the start read finishes; a
+  failed view on a live page fails the poll, which retries as for `on()`. Options:
   `fromVersion`, `onChange`, `onError`, `signal`, `pollInterval`, `batchSize`, `maxErrors`,
   `maxBackoff`, `maxPollInterval` and `retries`; anything else throws. `address` may be an
   Aptos name. Like `reduce()`, it is not a listener for `off()` or `listenerCount()`;

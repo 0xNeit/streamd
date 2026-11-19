@@ -101,8 +101,9 @@ describe("readMultisig", () => {
 
   it("refuses a reply not shaped as the view returns, and passes a failed view on", async () => {
     await expect(readMultisig(views({ ...base, num_signatures_required: 2 }), M, 1n)).rejects.toThrow("signatures required");
-    await expect(readMultisig(views({ ...base, get_pending_transactions: [item({ votes: { data: [{ key: "0xa", value: "yes" }] } })] }), M, 1n)).rejects.toThrow("pending transaction 5");
-    await expect(readMultisig(views({ ...base, get_pending_transactions: [item({ payload: { vec: ["zz"] } })] }), M, 1n)).rejects.toThrow("pending transaction 5");
+    await expect(readMultisig(views({ ...base, next_sequence_number: "6", get_pending_transactions: [item({ votes: { data: [{ key: "0xa", value: "yes" }] } })] }), M, 1n)).rejects.toThrow("pending transaction 5");
+    await expect(readMultisig(views({ ...base, next_sequence_number: "6", get_pending_transactions: [item({ payload: { vec: ["zz"] } })] }), M, 1n)).rejects.toThrow("pending transaction 5");
+    await expect(readMultisig(views({ ...base, next_sequence_number: "8" }), M, 1n)).rejects.toThrow("pending transactions is not");
     const { owners: _, ...none } = base;
     await expect(readMultisig(views(none), M, 1n)).rejects.toThrow("unexpected view owners");
   });
@@ -116,14 +117,14 @@ const ev = (version: number, eventIndex: number, name: string, account: string):
   eventIndex,
 });
 
-/** A memory adapter whose views answer `base`, with the version read as `next_sequence_number`. */
+/** A memory adapter whose views answer `base`. */
 function multisigAdapter(events: StreamdEvent[], asked: [string, bigint][] = []) {
   const memory = new MemoryAdapter(events);
   const view = async (request: ViewRequest, version: bigint) => {
     const name = request.function.split("::")[2]!;
     asked.push([name, version]);
     if (request.functionArguments?.[0] !== M) throw new Error("not a multisig");
-    return [name === "next_sequence_number" ? String(version) : base[name as keyof typeof base]];
+    return [base[name as keyof typeof base]];
   };
   return { adapter: Object.assign(memory, { view }), memory, asked };
 }
@@ -144,7 +145,7 @@ describe("multisig", () => {
     expect(client.listenerCount()).toBe(0);
     const state = await multisig.ready;
     expect(state).toBe(multisig.value);
-    expect(state).toMatchObject({ address: M, version: 20n, nextSequenceNumber: 20n, owners: [A, B, C] });
+    expect(state).toMatchObject({ address: M, version: 20n, owners: [A, B, C] });
     expect(multisig.get(5n)?.approvals).toEqual([A]);
     expect([...new Set(asked.map(([, v]) => v))]).toEqual([4n, 11n, 20n]);
     expect(asked).toHaveLength(21);
@@ -183,6 +184,32 @@ describe("multisig", () => {
     expect(other.active).toBe(false);
     client.destroy();
   });
+
+  it("stops a start read in flight on unsubscribe, abort or destroy, starting no walk", async () => {
+    const { adapter } = multisigAdapter(history);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const fetches: unknown[] = [];
+    const slow = Object.assign(Object.create(adapter), {
+      view: async (request: ViewRequest, version: bigint) => (await gate, adapter.view(request, version)),
+      fetchEvents: (...args: Parameters<typeof adapter.fetchEvents>) => (fetches.push(args), adapter.fetchEvents(...args)),
+    });
+    const client = testClient({ adapter: slow });
+    const unsubscribed = client.multisig(M);
+    const controller = new AbortController();
+    const aborted = client.multisig(M, { signal: controller.signal });
+    const destroyed = client.multisig(M);
+    unsubscribed.unsubscribe();
+    controller.abort();
+    expect(aborted.active).toBe(false);
+    client.destroy();
+    release();
+    for (const m of [unsubscribed, aborted, destroyed]) {
+      await expect(m.ready).rejects.toThrow("stopped before it was ready");
+      expect(m.active).toBe(false);
+    }
+    expect(fetches).toEqual([]);
+  });
 });
 
 describe("previewMultisig", () => {
@@ -196,7 +223,7 @@ describe("previewMultisig", () => {
     event("0x1::transaction_fee::FeeStatement"),
   ];
 
-  async function setup(canExecute: string[]) {
+  async function setup(canExecute: string[], resolved = "4") {
     const state = await readMultisig(
       views({ ...base, get_pending_transactions: [item(), item({ payload: { vec: [] }, payload_hash: { vec: [sha3(transfer(5))] } })] }),
       M,
@@ -205,7 +232,9 @@ describe("previewMultisig", () => {
     const built: [string, unknown, string?][] = [];
     const asked: string[] = [];
     const host: PreviewHost = {
-      view: async (request) => {
+      view: async (request, version) => {
+        expect(version).toBe(60n);
+        if (request.function.endsWith("::last_resolved_sequence_number")) return [resolved];
         asked.push(String(request.functionArguments![0]));
         return [canExecute.includes(String(request.functionArguments![0]))];
       },
@@ -219,7 +248,7 @@ describe("previewMultisig", () => {
   it("sends the next transaction through the multisig as the first owner can_execute names", async () => {
     const { state, host, built, asked } = await setup([B, C]);
     const preview = await previewMultisig(host, state, 5n);
-    expect(asked).toEqual([A, B]);
+    expect(asked).toEqual([A, B, C]);
     expect(built[0]![0]).toBe(B);
     expect(built[0]![1]).toBeInstanceOf(TransactionPayloadMultiSig);
     expect(built[0]![2]).toBeUndefined();
@@ -246,6 +275,9 @@ describe("previewMultisig", () => {
     await expect(previewMultisig(host, state, 5n, { payload: transfer(1_000_000) })).rejects.toThrow("stores its payload");
     await expect(previewMultisig(host, state, 7n)).rejects.toThrow("transaction 7 is not pending");
     await expect(previewMultisig(host, state, 5 as never)).rejects.toThrow("bigint sequence number");
+    const stale = await setup([A], "5");
+    await expect(previewMultisig(stale.host, stale.state, 5n)).rejects.toThrow("transaction 5 is already resolved");
+    expect(await previewMultisig(stale.host, stale.state, 6n, { payload: transfer(5) })).toMatchObject({ sender: A, partial: false });
     expect(built).toEqual([]);
     await previewMultisig(host, state, 6n, { payload: Hex.fromHexInput(transfer(5)).toUint8Array() });
     expect(built).toHaveLength(1);

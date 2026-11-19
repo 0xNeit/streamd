@@ -276,6 +276,7 @@ export class AptosClient extends StreamdClient {
     const host = {
       view: (request: ViewRequest, version: bigint) => this.limiter.run(() => adapter.view!(request, version)),
       head: () => this.limiter.run(() => adapter.getHeadVersion!(MULTISIG_DESCRIPTOR)),
+      track: this.reduceHost.track,
     };
     const handle = startMultisig(
       (account, d, r, i, o) => {

@@ -9,7 +9,7 @@ import {
   hashValues,
 } from "@aptos-labs/ts-sdk";
 import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { RequestLimiter, StreamdError } from "@streamd/core";
+import { RequestLimiter, StreamdError, markSelfTimed } from "@streamd/core";
 import type { EntryFunctionCall, EventAdapter, ModuleEventDescriptor, ReduceOptions, Reducer, Reduction, StreamdEvent, ViewRequest } from "@streamd/core";
 import { address, amount, pageSource } from "./records.js";
 import type { Fields } from "./records.js";
@@ -126,6 +126,8 @@ export async function readMultisig(view: ViewAt, account: string, version: bigin
       ? undefined
       : { periodSecs, ...(overrideThreshold !== undefined && { overrideThreshold: int(overrideThreshold, account, "timelock override threshold") }) };
   const resolved = int(lastResolved, account, "last resolved sequence number");
+  const nextSequenceNumber = int(next, account, "next sequence number");
+  if (BigInt(pending.length) !== nextSequenceNumber - resolved - 1n) throw bad(account, "pending transactions");
   return {
     address: account,
     version,
@@ -133,7 +135,7 @@ export async function readMultisig(view: ViewAt, account: string, version: bigin
     threshold: int(threshold, account, "signatures required"),
     ...(timelock !== undefined && { timelock }),
     lastResolved: resolved,
-    nextSequenceNumber: int(next, account, "next sequence number"),
+    nextSequenceNumber,
     pending: new Map(pending.map((item, i) => {
       const seq = resolved + 1n + BigInt(i);
       return [seq, pendingAt(item, seq, timelock, account)];
@@ -142,7 +144,8 @@ export async function readMultisig(view: ViewAt, account: string, version: bigin
 }
 
 /**
- * Every event `0x1::multisig_account` emits. Each names its account in a
+ * Every event `0x1::multisig_account` emits but `MetadataUpdated`, whose
+ * metadata the state does not keep. Each names its account in a
  * `multisig_account` field, and the account never signs (owners create and
  * vote, an owner executes), so this one scan, narrowed by that field, is how
  * an account's changes are seen.
@@ -153,7 +156,6 @@ export const MULTISIG_DESCRIPTOR: ModuleEventDescriptor = {
     "AddOwners",
     "RemoveOwners",
     "UpdateSignaturesRequired",
-    "MetadataUpdated",
     "TimelockUpdated",
     "TimelockRemoved",
     "CreateTransaction",
@@ -171,16 +173,17 @@ export const MULTISIG_DESCRIPTOR: ModuleEventDescriptor = {
  */
 export function multisigSource(adapter: EventAdapter, account: string, requestTimeout?: number): EventAdapter {
   if (typeof adapter.view !== "function") throw new StreamdError("multisig needs an adapter that implements view");
-  // Outside the client's limiter, as governance's views are: the page asking
-  // holds a slot. Timed, so a view that never settles fails the page.
-  const views = new RequestLimiter(4, Infinity, requestTimeout).wrap(adapter);
-  const view: ViewAt = (request, version) => views.view!(request, version);
-  return pageSource(adapter, (events) => {
+  // Outside the client's limiter, which a history page holds a slot of while
+  // its views run. Each read is timed here instead, and the page marked
+  // self-timed, so a page of many versions is not cut by one timeout.
+  const timed = new RequestLimiter(4, Infinity, requestTimeout).wrap(adapter);
+  const view: ViewAt = (request, version) => timed.view!(request, version);
+  return markSelfTimed(pageSource(timed, (events) => {
     const kept = events.filter((e) => address((e.data as Fields | null)?.multisig_account) === account);
     const read = new Map<bigint, Promise<MultisigState>>();
     for (const { version } of kept) if (!read.has(version)) read.set(version, readMultisig(view, account, version));
     return Promise.all(kept.map(async (e) => ({ ...e, state: [await read.get(e.version)!] })));
-  });
+  }));
 }
 
 /** `client.reduce()` over the account's source, as the companion calls it. */
@@ -219,7 +222,7 @@ function replace(state: MultisigState, next: MultisigState): void {
  */
 export function startMultisig(
   reduce: ReduceMultisig,
-  host: { view: ViewAt; head: () => Promise<bigint> },
+  host: { view: ViewAt; head: () => Promise<bigint>; track: (stop: () => void) => () => void },
   account: () => Promise<string>,
   options: MultisigOptions = {},
 ): Omit<Multisig, "preview"> {
@@ -236,14 +239,19 @@ export function startMultisig(
   let stopped = false;
   const stop = () => {
     stopped = true;
+    untrack();
     walk?.unsubscribe();
   };
+  // Tracked until the reduction exists and tracks itself, so destroy() also
+  // stops a start read in flight.
+  const untrack = host.track(stop);
+  const halted = () => stopped || rest.signal?.aborted === true;
   const ready = (async () => {
     try {
       const at = fromVersion === undefined ? await host.head() : fromVersion - 1n;
       const resolved = await account();
       replace(state, await readMultisig(host.view, resolved, at));
-      if (stopped) throw new StreamdError("multisig was stopped before it was ready");
+      if (halted()) throw new StreamdError("multisig was stopped before it was ready");
       walk = reduce(
         resolved,
         MULTISIG_DESCRIPTOR,
@@ -254,6 +262,7 @@ export function startMultisig(
         null,
         { ...rest, fromVersion: at + 1n, onChange: (_, event: StreamdEvent) => onChange?.(state, event) },
       );
+      untrack();
       await walk.ready;
       return state;
     } catch (err) {
@@ -267,7 +276,7 @@ export function startMultisig(
     get: (sequenceNumber) => state.pending.get(sequenceNumber),
     ready,
     get active() {
-      return !stopped && (walk === undefined || walk.active);
+      return !halted() && (walk === undefined || walk.active);
     },
     unsubscribe: stop,
     [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: stop,
@@ -314,8 +323,9 @@ function payloadOf(state: MultisigState, sequenceNumber: bigint, given: Uint8Arr
 }
 
 /**
- * Simulates pending transaction `sequenceNumber` with no key. When it is next
- * in the queue, the first owner `can_execute` names at the head (which counts
+ * Simulates pending transaction `sequenceNumber` with no key, refusing one the
+ * head shows resolved. When it is next in the queue at the head, the first
+ * owner `can_execute` names there (which counts
  * that owner's approval if they have not voted) sends it through the
  * multisig, as an execution would run; otherwise its entry function is
  * simulated directly with the multisig as sender, and the preview is partial.
@@ -330,17 +340,15 @@ export async function previewMultisig(
 ): Promise<MultisigPreview> {
   if (typeof sequenceNumber !== "bigint") throw new StreamdError("multisig preview needs a bigint sequence number");
   const payload = payloadOf(state, sequenceNumber, options.payload);
+  const head = await host.head();
+  const at = (fn: string, args: unknown[]) =>
+    host.view({ function: `${MODULE}::${fn}`, typeArguments: [], functionArguments: [...args] } as ViewRequest, head).then(([value]) => value);
+  const resolved = int(await at("last_resolved_sequence_number", [state.address]), state.address, "last resolved sequence number");
+  if (sequenceNumber <= resolved) throw new StreamdError(`multisig ${state.address} transaction ${sequenceNumber} is already resolved`);
   let sender: string | undefined;
-  if (sequenceNumber === state.lastResolved + 1n) {
-    const head = await host.head();
-    for (const owner of state.owners) {
-      const request: ViewRequest = { function: `${MODULE}::can_execute`, typeArguments: [], functionArguments: [owner, state.address, String(sequenceNumber)] };
-      const [can] = await host.view(request, head);
-      if (can === true) {
-        sender = owner;
-        break;
-      }
-    }
+  if (sequenceNumber === resolved + 1n) {
+    const can = await Promise.all(state.owners.map((owner) => at("can_execute", [owner, state.address, String(sequenceNumber)])));
+    sender = state.owners[can.indexOf(true)];
   }
   const partial = sender === undefined;
   const transaction = await host.build(

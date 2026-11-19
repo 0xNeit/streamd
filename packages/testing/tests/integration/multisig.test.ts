@@ -92,6 +92,7 @@ describe.skipIf(!enabled)("AptosClient.multisig (aptos CLI localnet)", () => {
       expect(multisig.get(2n)!.approvals).toEqual([long(a)]);
       await submit(localnet, a, { function: "0x1::multisig_account::execute_rejected_transaction", functionArguments: [m] });
       await until(multisig, (s) => s.lastResolved === 2n && s.pending.size === 0);
+      for (let i = 0; i < 50 && seen.length < 8; i++) await new Promise((r) => setTimeout(r, 100));
       // The executor's own rejection is recorded as a vote before the rejected transaction resolves.
       expect(seen).toEqual(["CreateTransaction", "CreateTransaction", "Vote", "TransactionExecutionSucceeded", "Vote", "Vote", "Vote", "ExecuteRejectedTransaction"]);
 
