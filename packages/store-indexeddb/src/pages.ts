@@ -4,17 +4,22 @@ const DATABASE = "streamd-pages";
 const VERSION = 1;
 const STORE = "pages";
 const KEY_INDEX = "key";
+// Every write keeps the page count here, since count() walks the whole store.
+const COUNT_KEY = "count";
+
+// Handlers take `never` so the DOM's own `IDBFactory`, whose handlers take
+// specific event types, is assignable without the DOM lib.
 
 /** The parts of an IndexedDB request this store reads. */
 export interface IdbRequestLike<T = unknown> {
   result: T;
   error: unknown;
-  onsuccess: ((event: unknown) => void) | null;
-  onerror: ((event: unknown) => void) | null;
+  onsuccess: ((event: never) => void) | null;
+  onerror: ((event: never) => void) | null;
 }
 
 export interface IdbOpenRequestLike extends IdbRequestLike<IdbDatabaseLike> {
-  onupgradeneeded: ((event: unknown) => void) | null;
+  onupgradeneeded: ((event: never) => void) | null;
 }
 
 export interface IdbIndexLike {
@@ -25,7 +30,8 @@ export interface IdbIndexLike {
 export interface IdbObjectStoreLike {
   add(value: unknown): IdbRequestLike<unknown>;
   delete(key: unknown): IdbRequestLike<unknown>;
-  count(): IdbRequestLike<number>;
+  get(key: string): IdbRequestLike<unknown>;
+  put(value: unknown, key: string): IdbRequestLike<unknown>;
   getAllKeys(query: null, count: number): IdbRequestLike<unknown[]>;
   index(name: string): IdbIndexLike;
   createIndex(name: string, keyPath: string, options: { unique: boolean }): unknown;
@@ -34,9 +40,8 @@ export interface IdbObjectStoreLike {
 export interface IdbTransactionLike {
   error: unknown;
   objectStore(name: string): IdbObjectStoreLike;
-  oncomplete: ((event: unknown) => void) | null;
-  onabort: ((event: unknown) => void) | null;
-  onerror: ((event: unknown) => void) | null;
+  oncomplete: ((event: never) => void) | null;
+  onabort: ((event: never) => void) | null;
 }
 
 export interface IdbDatabaseLike {
@@ -44,8 +49,8 @@ export interface IdbDatabaseLike {
   createObjectStore(name: string, options: { autoIncrement: boolean }): IdbObjectStoreLike;
   transaction(store: string, mode: "readonly" | "readwrite"): IdbTransactionLike;
   close(): void;
-  onversionchange: ((event: unknown) => void) | null;
-  onclose: ((event: unknown) => void) | null;
+  onversionchange: ((event: never) => void) | null;
+  onclose: ((event: never) => void) | null;
 }
 
 /** The part of `IDBFactory` (the browser's `indexedDB`) this store uses. */
@@ -110,25 +115,27 @@ export class IndexedDbPageStore implements PageStore {
     // A quota failure arrives as the transaction's abort, not on any request.
     const done = new Promise<void>((resolve, reject) => {
       tx.oncomplete = () => resolve();
+      // A failed request also aborts, and only by then is tx.error set.
       tx.onabort = () => reject(failure("write", tx.error));
-      tx.onerror = () => reject(failure("write", tx.error));
     });
     const store = tx.objectStore(STORE);
     const max = this.maxEntries;
     const lookup = store.index(KEY_INDEX).getKey(scoped);
-    lookup.onsuccess = () => {
+    const counted = store.get(COUNT_KEY);
+    counted.onsuccess = () => {
       // Delete then add gives the key a new auto-increment id, so id order is write order.
       if (lookup.result !== undefined) store.delete(lookup.result);
       store.add({ key: scoped, page });
-      if (max === undefined) return;
-      const counted = store.count();
-      counted.onsuccess = () => {
-        if (counted.result <= max) return;
-        const oldest = store.getAllKeys(null, counted.result - max);
+      let rows = (typeof counted.result === "number" ? counted.result : 0) + (lookup.result === undefined ? 1 : 0);
+      if (max !== undefined && rows > max) {
+        // String keys sort after the numeric ids, so these are pages, oldest first.
+        const oldest = store.getAllKeys(null, rows - max);
         oldest.onsuccess = () => {
           for (const id of oldest.result) store.delete(id);
         };
-      };
+        rows = max;
+      }
+      store.put(rows, COUNT_KEY);
     };
     await done;
   }

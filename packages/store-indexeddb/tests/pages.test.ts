@@ -53,12 +53,70 @@ describe("IndexedDbPageStore", () => {
     const store = new IndexedDbPageStore({ namespace: "n", indexedDB });
     await store.set("a", "1");
     indexedDB.abortWrites = { name: "QuotaExceededError" };
-    const failed = store.set("b", "2");
+    const failed = Promise.race([store.set("b", "2"), Bun.sleep(200).then(() => "hung")]);
     await expect(failed).rejects.toThrow(StreamdError);
     await expect(failed).rejects.toThrow("quota");
     indexedDB.abortWrites = undefined;
     expect(await store.get("a")).toBe("1");
     expect(await store.get("b")).toBeUndefined();
+  });
+
+  it("keeps the page count as it writes, so a limit needs no scan", async () => {
+    const indexedDB = new FakeIndexedDb();
+    const store = new IndexedDbPageStore({ namespace: "n", indexedDB });
+    await store.set("a", "1");
+    await store.set("b", "2");
+    await store.set("a", "3");
+    expect(indexedDB.meta.get("count")).toBe(2);
+    await new IndexedDbPageStore({ namespace: "n", maxEntries: 1, indexedDB }).set("c", "4");
+    expect(indexedDB.meta.get("count")).toBe(1);
+    expect(indexedDB.keys()).toEqual(["n\nc"]);
+  });
+
+  it("keeps exactly maxEntries pages", async () => {
+    const indexedDB = new FakeIndexedDb();
+    const store = new IndexedDbPageStore({ namespace: "n", maxEntries: 2, indexedDB });
+    await store.set("a", "1");
+    await store.set("b", "2");
+    expect(indexedDB.keys()).toEqual(["n\na", "n\nb"]);
+  });
+
+  it("keeps every write when several land at once", async () => {
+    const indexedDB = new FakeIndexedDb();
+    const store = new IndexedDbPageStore({ namespace: "n", maxEntries: 3, indexedDB });
+    await Promise.all(["a", "b", "a", "c", "d"].map((key, i) => store.set(key, String(i))));
+    expect(indexedDB.keys()).toEqual(["n\na", "n\nc", "n\nd"]);
+    expect(await store.get("a")).toBe("2");
+  });
+
+  it("creates one auto-increment store with a unique key index", async () => {
+    const indexedDB = new FakeIndexedDb();
+    await new IndexedDbPageStore({ namespace: "n", indexedDB }).get("a");
+    expect(indexedDB.schema).toEqual({ store: "pages", autoIncrement: true, index: ["key", "key", { unique: true }] });
+  });
+
+  it("rejects a failed read, and a failed write rolls back", async () => {
+    const indexedDB = new FakeIndexedDb();
+    const store = new IndexedDbPageStore({ namespace: "n", maxEntries: 5, indexedDB });
+    await store.set("a", "1");
+    indexedDB.failRequests = "get";
+    await expect(store.get("a")).rejects.toThrow("IndexedDB read failed");
+    indexedDB.failRequests = "add";
+    const failed = store.set("a", "2");
+    await expect(failed).rejects.toThrow("IndexedDB write failed");
+    await expect(failed).rejects.not.toThrow("quota");
+    indexedDB.failRequests = undefined;
+    expect(await store.get("a")).toBe("1");
+  });
+
+  it("closes its connection for another tab's upgrade and reopens on the next call", async () => {
+    const indexedDB = new FakeIndexedDb();
+    const store = new IndexedDbPageStore({ namespace: "n", indexedDB });
+    await store.set("a", "1");
+    indexedDB.versionChange();
+    expect(indexedDB.connections.map((db) => (db as { closed?: boolean }).closed)).toEqual([true]);
+    expect(await store.get("a")).toBe("1");
+    expect(indexedDB.opens).toBe(2);
   });
 
   it("retries a failed open on the next call", async () => {
@@ -75,7 +133,7 @@ describe("IndexedDbPageStore", () => {
     const indexedDB = new FakeIndexedDb();
     const store = new IndexedDbPageStore({ namespace: "n", indexedDB });
     await store.set("a", "1");
-    indexedDB.rows.get(1)!.page = { events: [] };
+    indexedDB.row("n\na")!.page = { events: [] };
     expect(await store.get("a")).toBeUndefined();
   });
 
