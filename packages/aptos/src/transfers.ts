@@ -151,7 +151,7 @@ function memo<T>(keep: (value: T) => boolean, pending?: (drop: () => void) => vo
   };
 }
 
-function isViewAbort(err: unknown): boolean {
+export function isViewAbort(err: unknown): boolean {
   return (
     err instanceof StreamdError &&
     !(err instanceof StreamdNetworkError) &&
