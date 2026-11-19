@@ -202,7 +202,8 @@ describe("holdersAt fold", () => {
       later: [current(4, 30n, 190n)],
       activities: [act(4, 150n, 30n, "Deposit")],
     }).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect((err as Error).message).toContain("missed");
   });
 
   it("adds gas fee rows back, failed transactions' other rows aside", async () => {
@@ -239,7 +240,7 @@ describe("holdersAt fold", () => {
       stores: [current(1, 10n, 150n)],
       activities: [act(1, 120n, 11n, "Deposit")],
     }).catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(StreamdNetworkError);
+    expect(err).toBeInstanceOf(StreamdError);
     expect((err as Error).message).toContain("negative");
   });
 
@@ -265,5 +266,113 @@ describe("holdersAt fold", () => {
     expect(() => requireFungibleAsset("0xa")).toThrow("APT");
     expect(() => requireFungibleAsset("nope")).toThrow(StreamdError);
     expect(requireFungibleAsset("0x5555555555555555555555555555555555555555555555555555555555555555")).toBe(ASSET);
+  });
+});
+
+describe("holdersAt checks", () => {
+  const state = (): Fake => ({
+    processed: [200n],
+    stores: [current(1, 50n, 150n), current(2, 30n, 90n)],
+    activities: [act(1, 120n, 20n, "Deposit")],
+  });
+  const supply = (n: bigint | undefined) => () => [{ vec: n === undefined ? [] : [n.toString()] }];
+  const balances = (by: Record<string, bigint>) => (request: ViewRequest) => [by[request.functionArguments![0] as string]!.toString()];
+
+  it("checks the total against the supply at the version by default", async () => {
+    const { adapter, views } = viewAdapter({ "0x1::fungible_asset::supply": supply(60n) });
+    const { result } = await snapshot(state(), {}, 100n, adapter);
+    expect(result.supply).toBe(60n);
+    expect(result.verified).toBe("supply");
+    expect(views).toEqual([
+      "0x1::coin::paired_coin@200",
+      "0x1::fungible_asset::is_asset_type_dispatchable@200",
+      "0x1::fungible_asset::supply@100",
+    ]);
+    expect(result.requests).toBe(7);
+  });
+
+  it("rejects a total that differs from the supply", async () => {
+    const { adapter } = viewAdapter({ "0x1::fungible_asset::supply": supply(61n) });
+    await expect(snapshot(state(), {}, 100n, adapter)).rejects.toThrow("supply there is 61");
+  });
+
+  it("rejects an untracked supply under the default check, and passes it under stores", async () => {
+    const untracked = viewAdapter({ "0x1::fungible_asset::supply": supply(undefined) });
+    await expect(snapshot(state(), {}, 100n, untracked.adapter)).rejects.toThrow("no tracked supply");
+    const stores = viewAdapter({
+      "0x1::fungible_asset::supply": supply(undefined),
+      "0x1::fungible_asset::balance": balances({ [long(1)]: 30n, [long(2)]: 30n }),
+    });
+    const { result } = await snapshot(state(), { verify: "stores" }, 100n, stores.adapter);
+    expect(result.supply).toBeUndefined();
+    expect(result.verified).toBe("stores");
+  });
+
+  it("reads every holder's balance at the version under stores, and rejects a mismatch", async () => {
+    const good = viewAdapter({
+      "0x1::fungible_asset::supply": supply(60n),
+      "0x1::fungible_asset::balance": balances({ [long(1)]: 30n, [long(2)]: 30n }),
+    });
+    await snapshot(state(), { verify: "stores" }, 100n, good.adapter);
+    expect(good.views.filter((v) => v.startsWith("0x1::fungible_asset::balance@100"))).toHaveLength(2);
+    const bad = viewAdapter({
+      "0x1::fungible_asset::supply": supply(60n),
+      "0x1::fungible_asset::balance": balances({ [long(1)]: 31n, [long(2)]: 29n }),
+    });
+    await expect(snapshot(state(), { verify: "stores" }, 100n, bad.adapter)).rejects.toThrow(`store ${long(1)}`);
+  });
+
+  it("refuses a paired asset before any store is listed", async () => {
+    const { adapter } = viewAdapter({
+      "0x1::coin::paired_coin": () => [{ vec: [{ account_address: "0x1", module_name: "0x6d", struct_name: "0x54" }] }],
+    });
+    const fake = fakeIndexer(state());
+    const run = holdersAt({ indexer: fake.indexer, adapter, run: (task) => task() }, ASSET, 100n);
+    await expect(run).rejects.toThrow("paired with a coin");
+    expect(fake.calls).toEqual(["version"]);
+  });
+
+  it("refuses a dispatchable asset unless every store is checked", async () => {
+    const answers = {
+      "0x1::fungible_asset::is_asset_type_dispatchable": () => [true],
+      "0x1::fungible_asset::supply": supply(60n),
+      "0x1::fungible_asset::balance": balances({ [long(1)]: 30n, [long(2)]: 30n }),
+    };
+    await expect(snapshot(state(), {}, 100n, viewAdapter(answers).adapter)).rejects.toThrow('verify: "stores"');
+    const { result } = await snapshot(state(), { verify: "stores" }, 100n, viewAdapter(answers).adapter);
+    expect(result.dispatchable).toBe(true);
+  });
+
+  it("stops at maxRequests", async () => {
+    await expect(snapshot(state(), { verify: "none", maxRequests: 3 })).rejects.toThrow("maxRequests of 3");
+  });
+
+  it("retries a rate-limited request under retries", async () => {
+    const fake = fakeIndexer({ processed: [200n], stores: [], activities: [] });
+    let refusals = 1;
+    const indexer = {
+      ...fake.indexer,
+      async getFungibleAssetVersion() {
+        if (refusals-- > 0) throw new StreamdNetworkError("slow down", 429, undefined, 1);
+        return fake.indexer.getFungibleAssetVersion();
+      },
+    };
+    const host = { indexer, adapter: viewAdapter().adapter, run: <T>(task: () => Promise<T>) => task() };
+    await expect(holdersAt(host, ASSET, 100n, { verify: "none" })).rejects.toThrow("slow down");
+    refusals = 1;
+    const result = await holdersAt(host, ASSET, 100n, { verify: "none", retries: 1 });
+    // The refused read and its retry, two views, one store page, the second version read and one activity page.
+    expect(result.requests).toBe(2 + 2 + 1 + 1 + 1);
+  });
+
+  it.each([
+    [{ verify: "all" }],
+    [{ maxRequests: 0 }],
+    [{ retries: -1 }],
+  ])("refuses options %p before any request", async (options) => {
+    const fake = fakeIndexer(state());
+    const run = holdersAt({ indexer: fake.indexer, adapter: viewAdapter().adapter, run: (task) => task() }, ASSET, 100n, options as never);
+    await expect(run).rejects.toThrow(StreamdError);
+    expect(fake.calls).toEqual([]);
   });
 });

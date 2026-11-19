@@ -1,6 +1,7 @@
-import { StreamdError, StreamdNetworkError, requireAddress, sleep, withRetries } from "@streamd/core";
-import type { EventAdapter } from "@streamd/core";
+import { StreamdError, StreamdNetworkError, UNSIGNED_INTEGER, requireAddress, requireLedgerVersion, sleep, withRetries } from "@streamd/core";
+import type { EventAdapter, ViewRequest } from "@streamd/core";
 import type { FungibleActivityRow, FungibleStoreRow } from "./indexer.js";
+import { TRANSFER_DESCRIPTOR } from "./transfers.js";
 import type { FungibleAssetIndexer, FungibleHolder, HolderSnapshot, HoldersAtOptions, HolderVerification } from "./types.js";
 
 const PAGE = 100;
@@ -9,6 +10,7 @@ const PROCESSOR_WAIT = 1000;
 const APT = `0x${"a".padStart(64, "0")}`;
 const DEPOSITS = new Set(["0x1::fungible_asset::Deposit", "0x1::fungible_asset::DepositEvent"]);
 const WITHDRAWS = new Set(["0x1::fungible_asset::Withdraw", "0x1::fungible_asset::WithdrawEvent"]);
+const METADATA = "0x1::fungible_asset::Metadata";
 const VERIFICATIONS = new Set<unknown>(["none", "supply", "stores"]);
 
 /** What `holdersAt` reads through: the Indexer, the adapter's `view`, and the client's limiter. */
@@ -168,7 +170,7 @@ async function fold(
   for (const [store, rows] of orphans) {
     if (created.has(store)) {
       if (rows.some((row) => row.version <= u0)) {
-        throw new StreamdNetworkError(`The Indexer's walk missed store ${store}, which changed at or before version ${u0}`);
+        throw new StreamdError(`The Indexer's walk missed store ${store}, which changed at or before version ${u0}`);
       }
       continue;
     }
@@ -181,11 +183,77 @@ function ranked(balances: Map<string, FungibleHolder>, version: bigint): Fungibl
   const holders: FungibleHolder[] = [];
   for (const holder of balances.values()) {
     if (holder.balance < 0n) {
-      throw new StreamdNetworkError(`The Indexer's history folds store ${holder.store} to a negative balance at version ${version}`);
+      throw new StreamdError(`The Indexer's history folds store ${holder.store} to a negative balance at version ${version}`);
     }
     if (holder.balance > 0n) holders.push(holder);
   }
   return holders.sort((a, b) => (a.balance === b.balance ? (a.store < b.store ? -1 : 1) : a.balance > b.balance ? -1 : 1));
+}
+
+function view(call: Call, adapter: EventAdapter, request: ViewRequest, version: bigint): Promise<unknown[]> {
+  return call(() => adapter.view!(request, version, TRANSFER_DESCRIPTOR));
+}
+
+/** A Move `Option` a view returned first: its value, or `undefined` for none. */
+function option(result: unknown[], what: string): unknown {
+  const value = Array.isArray(result) ? (result[0] as { vec?: unknown } | undefined) : undefined;
+  const vec = typeof value === "object" && value !== null ? value.vec : undefined;
+  if (!Array.isArray(vec) || vec.length > 1) throw new StreamdNetworkError(`${what} returned no option`);
+  return vec[0];
+}
+
+function amount(value: unknown, what: string): bigint {
+  if (typeof value !== "string" || !UNSIGNED_INTEGER.test(value)) throw new StreamdNetworkError(`${what} returned no amount`);
+  return BigInt(value);
+}
+
+/** Refuses a coin-paired asset, and a dispatchable one unless every store will be checked. */
+async function refuseUnproven(call: Call, adapter: EventAdapter, asset: string, at: bigint, verify: HolderVerification): Promise<boolean> {
+  const paired = await view(call, adapter, { function: "0x1::coin::paired_coin", typeArguments: [], functionArguments: [asset] }, at);
+  if (option(paired, "0x1::coin::paired_coin") !== undefined) {
+    throw new StreamdError(`holdersAt does not fold ${asset}: it is paired with a coin, and CoinStore balances are not in fungible stores`);
+  }
+  const request = { function: "0x1::fungible_asset::is_asset_type_dispatchable", typeArguments: [], functionArguments: [asset] } as const;
+  const [dispatchable] = await view(call, adapter, request, at);
+  if (typeof dispatchable !== "boolean") throw new StreamdNetworkError(`${request.function} returned no boolean`);
+  if (dispatchable && verify !== "stores") {
+    throw new StreamdError(
+      `${asset} is dispatchable: its hooks can move balances in ways the fold was never checked against, so holdersAt needs verify: "stores"`,
+    );
+  }
+  return dispatchable;
+}
+
+/** The checks `verify` asks for, each a view at `version`; returns the supply when it was read. */
+async function verifyAt(
+  call: Call,
+  adapter: EventAdapter,
+  asset: string,
+  version: bigint,
+  holders: FungibleHolder[],
+  total: bigint,
+  verify: HolderVerification,
+): Promise<bigint | undefined> {
+  if (verify === "none") return undefined;
+  const fn = "0x1::fungible_asset::supply";
+  const tracked = option(await view(call, adapter, { function: fn, typeArguments: [METADATA], functionArguments: [asset] }, version), fn);
+  const supply = tracked === undefined ? undefined : amount(tracked, fn);
+  if (supply === undefined && verify === "supply") {
+    throw new StreamdError(`${asset} has no tracked supply at version ${version}, or is not a fungible asset there; pass verify: "stores" or "none"`);
+  }
+  if (supply !== undefined && supply !== total) {
+    throw new StreamdError(`The fold of ${asset} sums to ${total} at version ${version}, but its supply there is ${supply}`);
+  }
+  if (verify !== "stores") return supply;
+  for (const { store, balance } of holders) {
+    const request: ViewRequest = { function: "0x1::fungible_asset::balance", typeArguments: ["0x1::fungible_asset::FungibleStore"], functionArguments: [store] };
+    const [held] = await view(call, adapter, request, version);
+    const actual = amount(held, request.function);
+    if (actual !== balance) {
+      throw new StreamdError(`The fold puts store ${store} at ${balance} at version ${version}, but it held ${actual}`);
+    }
+  }
+  return supply;
 }
 
 /**
@@ -199,18 +267,34 @@ export async function holdersAt(
   options: HoldersAtOptions = {},
 ): Promise<HolderSnapshot> {
   const checked = checkOptions(options);
-  const { indexer } = host;
+  const metadata = requireFungibleAsset(asset);
+  requireLedgerVersion(version);
+  const { indexer, adapter } = host;
+  if (typeof adapter.view !== "function") throw new StreamdError("holdersAt needs an adapter that implements view");
   const { call, requests } = counter(host.run, checked);
   const u0 = await call(() => indexer.getFungibleAssetVersion());
   if (version > u0) {
     throw new StreamdError(`The Indexer has processed fungible assets only through version ${u0}, before ${version}`);
   }
-  const stores = await currentStores(call, indexer, asset);
+  // Pairing and hooks are set when an asset is created, so the processed version answers for `version` too.
+  const dispatchable = await refuseUnproven(call, adapter, metadata, u0, checked.verify);
+  const stores = await currentStores(call, indexer, metadata);
   let newest = u0;
   for (const row of stores.values()) if (row.lastVersion > newest) newest = row.lastVersion;
   const indexedVersion = await processedThrough(call, indexer, newest, checked.signal);
-  const activities = await activitiesIn(call, indexer, asset, version + 1n, indexedVersion);
-  const holders = ranked(await fold(call, indexer, asset, u0, stores, activities), version);
+  const activities = await activitiesIn(call, indexer, metadata, version + 1n, indexedVersion);
+  const holders = ranked(await fold(call, indexer, metadata, u0, stores, activities), version);
   const total = holders.reduce((sum, holder) => sum + holder.balance, 0n);
-  return { asset, version, indexedVersion, holders, total, verified: "none", dispatchable: false, requests: requests() };
+  const supply = await verifyAt(call, adapter, metadata, version, holders, total, checked.verify);
+  return {
+    asset: metadata,
+    version,
+    indexedVersion,
+    holders,
+    total,
+    ...(supply !== undefined && { supply }),
+    verified: checked.verify,
+    dispatchable,
+    requests: requests(),
+  };
 }
