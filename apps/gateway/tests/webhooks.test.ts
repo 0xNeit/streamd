@@ -3,6 +3,8 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MemoryAdapter, StreamdClient, StreamdError, WEBHOOK_SIGNATURE_HEADER, parseEvent, verifyWebhook } from "@streamd/core";
+import { createGateway } from "../src/server.js";
+import type { Gateway } from "../src/server.js";
 import { Webhooks } from "../src/webhooks.js";
 import type { WebhooksOptions } from "../src/webhooks.js";
 import { PINGS, ev, waitFor } from "./helpers.js";
@@ -220,5 +222,72 @@ describe("Webhooks", () => {
     expect(() => new Webhooks({ client, file })).toThrow(`webhook file ${file}: webhook 0: "id" is missing or invalid`);
     writeFileSync(file, "{");
     expect(() => new Webhooks({ client, file })).toThrow(StreamdError);
+  });
+});
+
+describe("webhook routes", () => {
+  function gateway(options: { token?: string; webhooks?: boolean } = {}): Gateway {
+    const client = new StreamdClient({ adapter: new MemoryAdapter() });
+    const g = createGateway({
+      client,
+      pollInterval: 5,
+      token: options.token,
+      ...(options.webhooks !== false && { webhooks: { file, allowPrivateTargets: true, maxWebhooks: 1 } }),
+    });
+    cleanup.push(() => {
+      g.close();
+      client.destroy();
+    });
+    return g;
+  }
+
+  const call = async (g: Gateway, method: string, path: string, body?: unknown, headers: Record<string, string> = {}) =>
+    (await g.fetch(
+      new Request(`http://localhost${path}`, {
+        method,
+        headers: body === undefined ? headers : { "content-type": "application/json", ...headers },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      }),
+    ))!;
+
+  it("creates with the secret once, then lists, gets, resumes and deletes without it", async () => {
+    const g = gateway();
+    const target = receiver();
+    const created = await call(g, "POST", "/v1/webhooks", { url: target.url, descriptor: PINGS });
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as { id: string; secret: string; descriptor: unknown; status: string };
+    expect(body).toMatchObject({ descriptor: PINGS, status: "active", delivered: 0, url: target.url });
+    expect(body.secret).toMatch(/^[0-9a-f]{64}$/);
+    const listed = await (await call(g, "GET", "/v1/webhooks")).text();
+    expect(listed).toContain(body.id);
+    expect(listed).not.toContain(body.secret);
+    const one = await call(g, "GET", `/v1/webhooks/${body.id}`);
+    expect(await one.json()).toMatchObject({ id: body.id, status: "active" });
+    expect(await (await call(g, "POST", `/v1/webhooks/${body.id}/resume`)).json()).toMatchObject({ status: "active" });
+    expect(g.status().webhooks).toBe(1);
+    expect((await call(g, "DELETE", `/v1/webhooks/${body.id}`)).status).toBe(204);
+    expect((await call(g, "GET", `/v1/webhooks/${body.id}`)).status).toBe(404);
+    expect((await call(g, "DELETE", `/v1/webhooks/${body.id}`)).status).toBe(404);
+  });
+
+  it("answers bad input 400, a non-JSON body 415, past maxWebhooks 503, and unknown paths 404", async () => {
+    const g = gateway();
+    const target = receiver();
+    expect((await call(g, "POST", "/v1/webhooks", { url: "ftp://x/", descriptor: PINGS })).status).toBe(400);
+    expect((await call(g, "POST", "/v1/webhooks", { url: target.url, descriptor: {} })).status).toBe(400);
+    const form = await g.fetch(new Request("http://localhost/v1/webhooks", { method: "POST", body: "url=x" }));
+    expect(form!.status).toBe(415);
+    expect((await call(g, "POST", "/v1/webhooks", { url: target.url, descriptor: PINGS })).status).toBe(201);
+    expect((await call(g, "POST", "/v1/webhooks", { url: target.url, descriptor: PINGS })).status).toBe(503);
+    expect((await call(g, "GET", "/v1/webhooks/nope")).status).toBe(404);
+    expect((await call(g, "POST", "/v1/webhooks/0123456789abcdef/resume")).status).toBe(404);
+    expect((await call(g, "PUT", "/v1/webhooks")).status).toBe(404);
+  });
+
+  it("requires the token, and is absent without a webhook file", async () => {
+    const guarded = gateway({ token: "t0ken" });
+    expect((await call(guarded, "GET", "/v1/webhooks")).status).toBe(401);
+    expect((await call(guarded, "GET", "/v1/webhooks", undefined, { authorization: "Bearer t0ken" })).status).toBe(200);
+    expect((await call(gateway({ webhooks: false }), "GET", "/v1/webhooks")).status).toBe(404);
   });
 });

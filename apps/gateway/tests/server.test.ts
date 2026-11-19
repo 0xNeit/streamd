@@ -213,6 +213,6 @@ describe("requests", () => {
     const stream = reader(await call(gateway, new Request(eventsUrl())));
     gateway.close();
     await waitFor(() => stream.done);
-    expect(gateway.status()).toEqual({ topics: [], connections: 0 });
+    expect(gateway.status()).toEqual({ topics: [], connections: 0, webhooks: 0 });
   });
 });
