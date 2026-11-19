@@ -480,3 +480,116 @@ describe("IndexerAccountAdapter.listTransactionVersions", () => {
     );
   });
 });
+
+describe("IndexerAccountAdapter fungible asset reads", () => {
+  const ASSET = `0x${"5".repeat(64)}`;
+  const long = (n: number) => `0x${n.toString(16).padStart(64, "0")}`;
+  const store = (n: number, amount: unknown = 10, last: unknown = 7) => ({
+    storage_id: long(n),
+    owner_address: "0xb0b",
+    amount,
+    last_transaction_version: last,
+  });
+  const activity = (version: number, eventIndex: number, extra: Record<string, unknown> = {}) => ({
+    transaction_version: version,
+    event_index: eventIndex,
+    storage_id: "0xc",
+    owner_address: "0xb0b",
+    amount: 5,
+    type: "0x1::fungible_asset::Deposit",
+    is_transaction_success: true,
+    is_gas_fee: false,
+    ...extra,
+  });
+
+  it("reads the fungible asset processor's version", async () => {
+    const { adapter, calls } = adapterWith(() => processed(99));
+    expect(await adapter.getFungibleAssetVersion()).toBe(99n);
+    expect(calls[0]!.variables).toEqual({ processor: "fungible_asset_processor" });
+  });
+
+  it("lists current stores by storage_id after a key, in long form", async () => {
+    const { adapter, calls } = adapterWith(() => ({ data: { current_fungible_asset_balances: [store(2), store(3, 4, 8)] } }));
+    expect(await adapter.listFungibleStores("0x5555555555555555555555555555555555555555555555555555555555555555", "0x1", 2)).toEqual([
+      { store: long(2), owner: long(0xb0b), amount: 10n, lastVersion: 7n },
+      { store: long(3), owner: long(0xb0b), amount: 4n, lastVersion: 8n },
+    ]);
+    expect(calls[0]!.query).toContain("storage_id: { _gt: $after }");
+    expect(calls[0]!.variables).toEqual({ asset: ASSET, after: long(1), limit: 2 });
+    await adapter.listFungibleStores(ASSET, undefined, 100);
+    expect(calls[1]!.variables.after).toBe("");
+  });
+
+  it("keeps an amount above 2^53 exact", async () => {
+    const body = `{"data":{"current_fungible_asset_balances":[{"storage_id":"${long(2)}","owner_address":"0x1","amount":18446744073709551615,"last_transaction_version":7}]}}`;
+    const { adapter } = adapterWith(() => new Response(body, { headers: { "content-type": "application/json" } }));
+    const [row] = await adapter.listFungibleStores(ASSET, undefined, 1);
+    expect(row!.amount).toBe(18446744073709551615n);
+  });
+
+  it.each([
+    ["a row out of order", [store(3), store(2)]],
+    ["a repeated store", [store(2), store(2)]],
+    ["a negative amount", [store(2, -1)]],
+    ["a fractional amount", [store(2, 1.5)]],
+    ["a bad address", [{ ...store(2), storage_id: "xyz" }]],
+    ["more rows than asked", [store(2), store(3), store(4)]],
+  ])("rejects %s", async (_name, rows) => {
+    const { adapter } = adapterWith(() => ({ data: { current_fungible_asset_balances: rows } }));
+    const err = await adapter.listFungibleStores(ASSET, undefined, 2).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
+  });
+
+  it("looks up named stores, leaving out those without a row", async () => {
+    const { adapter, calls } = adapterWith(() => ({ data: { current_fungible_asset_balances: [store(3)] } }));
+    expect(await adapter.getFungibleStores(ASSET, ["0x2", "0x3", long(3)])).toEqual([
+      { store: long(3), owner: long(0xb0b), amount: 10n, lastVersion: 7n },
+    ]);
+    expect(calls[0]!.variables).toEqual({ asset: ASSET, stores: [long(2), long(3)] });
+    expect(await adapter.getFungibleStores(ASSET, [])).toEqual([]);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("rejects a lookup answering a store it was not asked for", async () => {
+    const { adapter } = adapterWith(() => ({ data: { current_fungible_asset_balances: [store(9)] } }));
+    await expect(adapter.getFungibleStores(ASSET, ["0x2"])).rejects.toThrow(StreamdNetworkError);
+  });
+
+  it("lists activities over a version range with an offset", async () => {
+    const rows = [activity(5, 0), activity(5, 2, { amount: null, type: "0x1::fungible_asset::Frozen" }), activity(6, 0, { is_gas_fee: true, is_transaction_success: false })];
+    const { adapter, calls } = adapterWith(() => ({ data: { fungible_asset_activities: rows } }));
+    expect(await adapter.listFungibleActivities(ASSET, 5n, 9n, 3, 4)).toEqual([
+      { version: 5n, eventIndex: 0, store: long(0xc), owner: long(0xb0b), type: "0x1::fungible_asset::Deposit", amount: 5n, success: true, gasFee: false },
+      { version: 5n, eventIndex: 2, store: long(0xc), owner: long(0xb0b), type: "0x1::fungible_asset::Frozen", amount: 0n, success: true, gasFee: false },
+      { version: 6n, eventIndex: 0, store: long(0xc), owner: long(0xb0b), type: "0x1::fungible_asset::Deposit", amount: 5n, success: false, gasFee: true },
+    ]);
+    expect(calls[0]!.variables).toEqual({ asset: ASSET, from: "5", to: "9", limit: 3, offset: 4 });
+  });
+
+  it.each([
+    ["out of order", [activity(6, 0), activity(5, 0)]],
+    ["a repeated event", [activity(5, 1), activity(5, 1)]],
+    ["outside the range", [activity(10, 0)]],
+    ["a missing flag", [{ ...activity(5, 0), is_gas_fee: undefined }]],
+    ["a non-integer event index", [activity(5, 0.5)]],
+  ])("rejects activities %s", async (_name, rows) => {
+    const { adapter } = adapterWith(() => ({ data: { fungible_asset_activities: rows } }));
+    await expect(adapter.listFungibleActivities(ASSET, 5n, 9n, 100)).rejects.toThrow(StreamdNetworkError);
+  });
+
+  it.each([
+    [() => ["0x5", 9n, 5n, 1]],
+    [() => ["0x5", 0n, 5n, 0]],
+    [() => ["0x5", 0n, 5n, 101]],
+    [() => ["0x5", 0n, 5n, 1, -1]],
+    [() => ["nope", 0n, 5n, 1]],
+  ])("refuses bad arguments before any request %#", async (args) => {
+    const { adapter, calls } = adapterWith(() => ({ data: {} }));
+    const err = await adapter
+      .listFungibleActivities(...(args() as unknown as [string, bigint, bigint, number]))
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(StreamdError);
+    expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    expect(calls).toHaveLength(0);
+  });
+});
