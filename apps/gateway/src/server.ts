@@ -1,4 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { Server, WebSocketHandler } from "bun";
 import { StreamdError, StreamdNetworkError, redactSecrets } from "@streamd/core";
 import type { EventDescriptor, StreamdClient } from "@streamd/core";
 import { Topics } from "./topics.js";
@@ -35,9 +36,23 @@ export interface GatewayStatus {
   connections: number;
 }
 
+/** What a WebSocket carries from its upgrade to its `open`. */
+export interface SocketData {
+  topic: Topic;
+  /** The id to resume after, read again at `open` so nothing published in between is missed. */
+  after: string;
+  close?: () => void;
+}
+
 export interface Gateway {
-  /** The HTTP handler, for `Bun.serve`'s `fetch` or any `Request -> Response` host. */
-  fetch(request: Request): Promise<Response>;
+  /**
+   * The HTTP handler, for `Bun.serve`'s `fetch` or any `Request -> Response`
+   * host. WebSockets need `server`, from `Bun.serve`, and resolve `undefined`
+   * once upgraded.
+   */
+  fetch(request: Request, server?: Server<SocketData>): Promise<Response | undefined>;
+  /** `Bun.serve`'s `websocket` handler for `/v1/ws`. */
+  websocket: WebSocketHandler<SocketData>;
   status(): GatewayStatus;
   /** Stops every topic and closes every stream. */
   close(): void;
@@ -106,7 +121,7 @@ export function resume(topics: Topics, descriptor: EventDescriptor, lastEventId:
 
 /**
  * A gateway over `options.client`: one topic per descriptor however many
- * clients follow it, served as Server-Sent Events.
+ * clients follow it, served as Server-Sent Events and WebSocket streams.
  */
 export function createGateway(options: GatewayOptions): Gateway {
   const topics = new Topics({
@@ -205,8 +220,67 @@ export function createGateway(options: GatewayOptions): Gateway {
     });
   }
 
-  function route(request: Request, url: URL): Response | Promise<Response> {
+  /** A browser sends `Origin` on every WebSocket and no CORS check applies, so it is checked here. */
+  function originAllowed(request: Request): boolean {
+    const origin = request.headers.get("origin");
+    if (origin === null || allowed.has("*") || allowed.has(origin)) return true;
+    try {
+      return new URL(origin).host === request.headers.get("host");
+    } catch {
+      return false;
+    }
+  }
+
+  function upgrade(request: Request, url: URL, server: Server<SocketData> | undefined): Response | undefined {
+    if (!originAllowed(request)) return json({ error: { name: "StreamdError", message: "Origin not allowed" } }, 403);
+    if (server === undefined) return json({ error: { name: "Error", message: "WebSockets need Bun.serve" } }, 501);
+    reserve();
+    const { topic, backlog } = resume(topics, descriptorParam(url), url.searchParams.get("lastEventId"));
+    const after = topic.id(backlog[0] === undefined ? topic.seq : backlog[0].seq - 1);
+    if (server.upgrade(request, { data: { topic, after } })) return undefined;
+    return json({ error: { name: "StreamdError", message: "Expected a WebSocket upgrade" } }, 400);
+  }
+
+  const websocket: WebSocketHandler<SocketData> = {
+    open(ws) {
+      const { topic } = ws.data;
+      const backlog = topic.after(ws.data.after);
+      if (topics.get(topic.descriptor) !== topic || backlog === undefined) {
+        ws.close(4410, "Resume point no longer held; start the stream again");
+        return;
+      }
+      const send = (text: string) => {
+        ws.send(text);
+        // As for SSE: a client this far behind is dropped, to resume from the topic.
+        if (ws.getBufferedAmount() > maxQueuedBytes) ws.close(1013, "Too slow; resume from the last id");
+      };
+      const subscriber: Subscriber = {
+        deliver: (entries) => {
+          for (const entry of entries) send(`{"id":"${topic.id(entry.seq)}","event":${entry.line}}`);
+        },
+        end: (message) => {
+          ws.send(JSON.stringify({ end: message }));
+          ws.close(1011, "Topic ended");
+        },
+      };
+      const connection: Connection = { close: () => ws.close(1001, "Gateway closing") };
+      ws.data.close = () => {
+        topics.leave(topic, subscriber);
+        connections.delete(connection);
+      };
+      connections.add(connection);
+      topics.join(topic, subscriber);
+      if (backlog.length > 0) subscriber.deliver(backlog);
+    },
+    message() {},
+    close(ws) {
+      ws.data.close?.();
+    },
+  };
+
+  function route(request: Request, url: URL, server?: Server<SocketData>): Response | undefined | Promise<Response> {
     if (url.pathname === "/v1/events" && request.method === "GET") return events(request, url);
+    if (url.pathname === "/v1/ws" && request.method === "GET") return upgrade(request, url, server);
     if (url.pathname === "/v1/status" && request.method === "GET") return json(status());
     return json({ error: { name: "Error", message: "Not found" } }, 404);
   }
@@ -216,7 +290,7 @@ export function createGateway(options: GatewayOptions): Gateway {
   }
 
   return {
-    async fetch(request) {
+    async fetch(request, server) {
       const cors = corsHeaders(request);
       if (request.method === "OPTIONS") {
         return new Response(null, {
@@ -230,19 +304,20 @@ export function createGateway(options: GatewayOptions): Gateway {
         });
       }
       const url = new URL(request.url);
-      let response: Response;
+      let response: Response | undefined;
       if (!authorized(request, url)) {
         response = json({ error: { name: "StreamdError", message: "Unauthorized" } }, 401, { "www-authenticate": "Bearer" });
       } else {
         try {
-          response = await route(request, url);
+          response = await route(request, url, server);
         } catch (err) {
           response = errorResponse(err);
         }
       }
-      for (const [name, value] of Object.entries(cors)) response.headers.set(name, value);
+      for (const [name, value] of Object.entries(cors)) response?.headers.set(name, value);
       return response;
     },
+    websocket,
     status,
     close() {
       clearInterval(ticker);
