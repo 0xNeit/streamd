@@ -25,6 +25,7 @@ export type {
   ActivityListenerOptions,
   ActivityOptions,
   AptosTransactionSimulation,
+  AssetValue,
   BalanceDelta,
   BalanceChange,
   Balances,

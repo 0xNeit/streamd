@@ -15,6 +15,7 @@ import type {
 } from "@streamd/core";
 
 export type {
+  AssetValue,
   BalanceChange,
   Balances,
   BalancesOptions,
