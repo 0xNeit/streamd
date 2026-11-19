@@ -9,7 +9,7 @@ export { adapterMetrics } from "./adapters/metrics.js";
 export { withTracing } from "./adapters/tracing.js";
 export { toPrometheus } from "./prometheus.js";
 export { MemoryAdapter } from "./adapters/memory.js";
-export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
+export { pageJson, parsePage, recordingAdapter, replayAdapter } from "./adapters/recording.js";
 export { RoutingAdapter } from "./adapters/routing.js";
 export { TabSharedAdapter } from "./adapters/tabs.js";
 export { EventPoller } from "./poller.js";
@@ -23,7 +23,7 @@ export { RequestLimiter, markDescending, markSelfTimed, supportsDescending } fro
 export { SharedFetches } from "./shared.js";
 // Building blocks the chain packages use for their own client methods.
 export { UNSIGNED_INTEGER, fieldDecoder } from "./decode.js";
-export { descriptorKey, onAbort, raceAbort, resolveFromVersion, sleep } from "./utils.js";
+export { descriptorKey, onAbort, raceAbort, redactSecrets, resolveFromVersion, sleep } from "./utils.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
 export { STANDARD_COLUMNS, eventTableRows, requireEventTables } from "./tables.js";
 export type { EventTableRow } from "./tables.js";

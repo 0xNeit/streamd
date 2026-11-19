@@ -58,6 +58,7 @@ function toJson(value: unknown): unknown {
   );
 }
 
+/** `page` as JSON-safe values: events in `serializeEvent`'s form, bigints as decimal strings. */
 export function pageJson(page: EventPage): unknown {
   return toJson({
     events: page.events.map((event) => JSON.parse(serializeEvent(event)) as unknown),
@@ -212,6 +213,7 @@ function optional<T>(value: unknown, type: string, field: string): T | undefined
   return value as T | undefined;
 }
 
+/** `pageJson`'s output back as a page, refusing anything malformed with a `StreamdError`. */
 export function parsePage(value: unknown): EventPage {
   if (!isObject(value) || !Array.isArray(value.events)) {
     throw new StreamdError('"events" must be an array');
