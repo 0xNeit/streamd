@@ -376,3 +376,30 @@ describe("holdersAt checks", () => {
     expect(fake.calls).toEqual([]);
   });
 });
+
+describe("client.holdersAt", () => {
+  it("folds through the client's adapter and limiter", async () => {
+    const { testClient } = await import("./helpers.js");
+    const { adapter, views } = viewAdapter({ "0x1::fungible_asset::supply": () => [{ vec: ["50"] }] });
+    const fake = fakeIndexer({ processed: [200n], stores: [current(1, 50n, 90n)], activities: [] });
+    const client = testClient({ adapter, maxConcurrentRequests: 1 });
+    const result = await client.holdersAt("0x5555555555555555555555555555555555555555555555555555555555555555", 100n, { indexer: fake.indexer });
+    expect(result.holders).toEqual([{ store: long(1), owner: OWNER, balance: 50n }]);
+    expect(result.verified).toBe("supply");
+    expect(views).toHaveLength(3);
+    client.destroy();
+  });
+
+  it("refuses an indexer missing a method, and bad input, before any request", async () => {
+    const { testClient } = await import("./helpers.js");
+    const client = testClient({ adapter: viewAdapter().adapter });
+    const fake = fakeIndexer({ processed: [200n], stores: [], activities: [] });
+    const { listFungibleStores: _missing, ...partial } = fake.indexer;
+    await expect(client.holdersAt(ASSET, 100n, { indexer: partial as never })).rejects.toThrow("indexer must implement");
+    await expect(client.holdersAt(ASSET, -1n, { indexer: fake.indexer })).rejects.toThrow(StreamdError);
+    await expect(client.holdersAt("0x1::aptos_coin::AptosCoin", 100n, { indexer: fake.indexer })).rejects.toThrow("coin type");
+    await expect(client.holdersAt(ASSET, 100n, null as never)).rejects.toThrow("options must be an object");
+    expect(fake.calls).toEqual([]);
+    client.destroy();
+  });
+});
