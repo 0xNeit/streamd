@@ -96,6 +96,12 @@ describe("assetPricer", () => {
     expect(toAssetValue((await price("0xa", BEFORE))!, 100_000_000n).amount).toBe(4_691_832n);
   });
 
+  it("reads USDt's pool from its own creation version", async () => {
+    const { price } = pricer({ sqrt: (1n << 64n).toString() });
+    expect((await price(USDT, 2321906213n))!.source).toBe("oracle");
+    expect((await price(USDT, 2321906214n))!.source).toBe("pool");
+  });
+
   it("scales an oracle price up when its exponent leaves no denominator", async () => {
     const { price } = pricer({ oracle: pyth({ price: 7n, exponent: 4 }) });
     expect((await price(USDT, BEFORE))!.price).toEqual({ numerator: 70_000n, denominator: 1n });
