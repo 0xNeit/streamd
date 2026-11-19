@@ -647,6 +647,92 @@ export interface StakePools {
   [Symbol.dispose](): void;
 }
 
+/** A lending market `positions()` reads. */
+export type LendingProtocol = "aave";
+
+/** An exact ratio, reduced, with a positive denominator. */
+export interface Fraction {
+  numerator: bigint;
+  denominator: bigint;
+}
+
+/** One reserve an account supplies or borrows, in the asset's base units. */
+export interface PositionAsset {
+  /** The reserve's underlying fungible asset, long form. */
+  asset: string;
+  decimals: number;
+  /** The current aToken balance, interest included. */
+  supplied: bigint;
+  /** The current variable debt, interest included. */
+  borrowed: bigint;
+  /** True when the account uses its supply as collateral. */
+  collateral: boolean;
+}
+
+/** One account's position in a lending market, as the protocol computes it at `version`. */
+export interface LendingPosition {
+  protocol: LendingProtocol;
+  /** Long form. */
+  account: string;
+  /** The version every figure was read at. */
+  version: bigint;
+  /** Reserves holding a supply or a debt, by asset. */
+  assets: PositionAsset[];
+  /** Collateral in USD, priced by the protocol's own oracle; absent when `unknown`. */
+  collateralValue?: Fraction;
+  /** Debt in USD, as `collateralValue`. */
+  debtValue?: Fraction;
+  /** The collateral-weighted liquidation threshold. */
+  liquidationThreshold?: Fraction;
+  /** The protocol's health factor; absent with no debt or when `unknown`. Below 1, the protocol allows a liquidation. */
+  health?: Fraction;
+  /** `health` below the monitor's threshold; false with no debt, absent when `unknown`. */
+  below?: boolean;
+  /** Why the protocol could not value the position, as the node gave it (an oracle refusing a price, say). */
+  unknown?: string;
+}
+
+/** Options for `AptosClient.positions`. */
+export interface PositionsOptions
+  extends Pick<
+    ReduceOptions,
+    | "fromVersion"
+    | "fromTime"
+    | "pollInterval"
+    | "batchSize"
+    | "maxErrors"
+    | "maxBackoff"
+    | "maxPollInterval"
+    | "retries"
+    | "signal"
+    | "onError"
+  > {
+  /** An address or a non-empty list of them, read at the start; without it every account an event names is tracked from then on. */
+  account?: string | readonly string[];
+  /** The health `below` and `onCross` compare with; 1 (the liquidation line) when omitted. */
+  threshold?: Fraction;
+  /** Milliseconds between head reads of every tracked position, which see price moves no event shows; 60000 when omitted, 0 for none. */
+  refreshInterval?: number;
+  /** Called after `ready` for each position a read replaced, with its event, or none for a head read. A throw goes to `onError`. */
+  onChange?: (position: LendingPosition, event?: StreamdEvent) => void;
+  /** Called when a position's `below` changes between two known values; an account's first read is not a crossing. A throw goes to `onError`. */
+  onCross?: (position: LendingPosition, event?: StreamdEvent) => void;
+}
+
+/** A running `positions()`: every tracked position, kept current. */
+export interface Positions {
+  /** By long-form account; the map is updated in place, each position replaced whole. */
+  readonly value: ReadonlyMap<string, LendingPosition>;
+  /** By address, in any form. */
+  get(account: string): LendingPosition | undefined;
+  /** Resolves once the start reads and any history are folded; rejects if that fails or it is stopped first. */
+  readonly ready: Promise<ReadonlyMap<string, LendingPosition>>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
+}
+
 /** A `#[event]` struct or enum as its module ABI declares it. */
 export interface EventStructSignature {
   /** `address::module::Struct`, the address in long form. */

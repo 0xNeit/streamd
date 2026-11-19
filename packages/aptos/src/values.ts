@@ -68,7 +68,8 @@ export function priceKey(asset: string): string | undefined {
 
 const gcd = (a: bigint, b: bigint): bigint => (b === 0n ? (a < 0n ? -a : a) : gcd(b, a % b));
 
-function fraction(numerator: bigint, denominator: bigint): AssetValue["price"] {
+/** `numerator / denominator`, reduced. */
+export function fraction(numerator: bigint, denominator: bigint): AssetValue["price"] {
   const d = gcd(numerator, denominator);
   return { numerator: numerator / d, denominator: denominator / d };
 }
