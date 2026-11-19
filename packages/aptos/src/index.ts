@@ -13,6 +13,7 @@ export { AptosClient } from "./client.js";
 export { formatExplanation } from "./explain.js";
 export type { AptosClientConfig } from "./client.js";
 export { primaryName, resolveName } from "./names.js";
+export { sendOnce } from "./send.js";
 export { formatAmount } from "./transfers.js";
 export { proposalState } from "./governance.js";
 export { MULTISIG_DESCRIPTOR } from "./multisig.js";

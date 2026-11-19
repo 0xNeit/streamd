@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { sendOnce } from "@streamd/aptos";
 import { MemoryAdapter, StreamdClient, StreamdError, StreamdNetworkError } from "@streamd/core";
 import type { EventAdapter, StreamdEvent } from "@streamd/core";
 import type { InspectOptions } from "../src/args.js";
-import { resourceReader, sendOnce } from "../src/chain.js";
+import { resourceReader } from "../src/chain.js";
 import { changeLine, changeRecord, diffValues, prettyChange, runInspect, valueLine } from "../src/inspect.js";
 
 const TYPE = "0x1::block::BlockResource";

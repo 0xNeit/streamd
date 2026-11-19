@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
+import type { ModuleRef } from "@streamd/codegen";
 import { WEBHOOK_SIGNATURE_HEADER, normalizeAddress, requireAddress, requireEventType, requireResourceType } from "@streamd/core";
 import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
-import type { ModuleRef } from "./codegen.js";
 import { FILTER_OPTIONS, parseDecode, parseFilter } from "./filter.js";
 import { parseKafkaUrl } from "./kafka.js";
 import type { CliFilter, FilterFlags } from "./filter.js";

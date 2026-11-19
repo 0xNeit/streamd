@@ -1,11 +1,11 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Ed25519Account } from "@aptos-labs/ts-sdk";
+import { parseModuleAbi } from "@streamd/codegen";
+import type { ModuleAbi } from "@streamd/codegen";
 import { normalizeAddress } from "@streamd/core";
 import type { MoveEventType, StreamdEvent } from "@streamd/core";
 import type { Localnet } from "@streamd/testing";
-import { parseModuleAbi } from "./abi.js";
-import type { ModuleAbi } from "./abi.js";
 import type { CoverageOptions } from "./args.js";
 import { message } from "./format.js";
 

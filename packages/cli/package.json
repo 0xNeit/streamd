@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@streamd/aptos": "workspace:*",
+    "@streamd/codegen": "workspace:*",
     "@streamd/core": "workspace:*",
     "@streamd/gateway": "workspace:*",
     "@streamd/store-postgres": "workspace:*",

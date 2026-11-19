@@ -3,9 +3,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Account, type Ed25519Account } from "@aptos-labs/ts-sdk";
+import type { ModuleAbi, StructAbi } from "@streamd/codegen";
 import type { StreamdEvent } from "@streamd/core";
 import type { Localnet } from "@streamd/testing";
-import type { ModuleAbi, StructAbi } from "../src/abi.js";
 import { coverageLine, coverageReport, eventStructTypes, prettyCoverageLine, runCoverage, unboundAddresses } from "../src/coverage.js";
 import type { CoverageIO } from "../src/coverage.js";
 

@@ -4,9 +4,8 @@
 // fullnode as `<address>-<name>.json`, keeping only `abi.address`, `abi.name` and `abi.structs`.
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { generateEventTypes, parseModuleAbi } from "@streamd/codegen";
 import { normalizeAddress, StreamdError } from "@streamd/core";
-import { parseModuleAbi } from "../src/abi.js";
-import { generateEventTypes } from "../src/codegen.js";
 
 export const FRAMEWORK_MODULES = {
   "0x1": [

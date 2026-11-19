@@ -70,7 +70,7 @@ async function loadValidators(
   targets: Array<{ address: string; module?: string }>,
   cg?: SuiCodegen,
 ): Promise<LoadedValidators> {
-  const { generateEventTypes } = (await import(new URL("../../../cli/src/codegen.js", import.meta.url).href)) as CliCodegenModule;
+  const { generateEventTypes } = (await import(new URL("../../../codegen/src/codegen.js", import.meta.url).href)) as CliCodegenModule;
   const { suiCodegen, SUI_DIALECT } = (await import(new URL("../../../cli/src/sui-abi.js", import.meta.url).href)) as CliSuiAbiModule;
   const codegen = cg ?? suiCodegen(grpc.movePackageService);
   const resolved = await codegen.targets(targets);

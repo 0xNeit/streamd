@@ -3,10 +3,9 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { generateEventTypes, parseModuleAbi } from "@streamd/codegen";
 import { normalizeAddress, StreamdError } from "@streamd/core";
-import { parseModuleAbi } from "../src/abi.js";
 import { checkGenerated } from "../src/codegen-check.js";
-import { generateEventTypes } from "../src/codegen.js";
 
 const dir = mkdtempSync(join(tmpdir(), "streamd-codegen-check-"));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
@@ -84,7 +83,7 @@ describe("checkGenerated", () => {
   });
 
   it("compares the output of the flags the file was generated with", async () => {
-    const fixtures = fileURLToPath(new URL("./fixtures/abi/", import.meta.url));
+    const fixtures = fileURLToPath(new URL("../../codegen/tests/fixtures/abi/", import.meta.url));
     const abis = readdirSync(fixtures).map((f) => parseModuleAbi(JSON.parse(readFileSync(join(fixtures, f), "utf8"))));
     const load = async (address: string, module: string) => {
       const found = abis.find((a) => normalizeAddress(a.address) === normalizeAddress(address) && a.name === module);

@@ -4,14 +4,13 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { generateEventTypes, parseModuleAbi } from "@streamd/codegen";
+import type { GenerateOptions, ModuleAbi } from "@streamd/codegen";
 import { normalizeAddress, StreamdError } from "@streamd/core";
 import type { EventColumn, EventTable, StreamdEvent } from "@streamd/core";
 import { PostgresEventStore } from "@streamd/store-postgres";
 import { SqliteEventStore } from "@streamd/store-sqlite";
-import { parseModuleAbi } from "../src/abi.js";
-import type { ModuleAbi } from "../src/abi.js";
-import { generateEventTypes } from "../src/codegen.js";
-import type { GenerateOptions } from "../src/codegen.js";
+import { sqlTables } from "../src/sql.js";
 import { SUI_DIALECT } from "../src/sui-abi.js";
 
 const DEX = "0x00000000000000000000000000000000000000000000000000000000000cafe0";
@@ -56,7 +55,7 @@ function loader(abis: ModuleAbi[]) {
   };
 }
 
-async function tablesOf(abis: ModuleAbi[], options: GenerateOptions = { sql: "sqlite" }): Promise<EventTable[]> {
+async function tablesOf(abis: ModuleAbi[], options: GenerateOptions = { tables: sqlTables("sqlite") }): Promise<EventTable[]> {
   const dir = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".sql-"));
   try {
     const source = await generateEventTypes(abis.map((a) => ({ address: a.address, module: a.name })), loader(abis), options);
@@ -152,7 +151,7 @@ describe("generateEventTypes sql", () => {
     const views = parseModuleAbi({
       abi: { address: DEX, name: "v", structs: [], exposed_functions: [{ name: "f", is_view: true, generic_type_params: [], params: [] }] },
     });
-    const source = await generateEventTypes([{ address: DEX, module: "v" }], loader([views]), { sql: "sqlite" });
+    const source = await generateEventTypes([{ address: DEX, module: "v" }], loader([views]), { tables: sqlTables("sqlite") });
     expect(source).toContain("export const streamdTables: readonly StreamdEventTable[] = [];");
     expect(source).toContain("export const streamdSchema: readonly string[] = [];");
   });
@@ -166,7 +165,7 @@ describe("generateEventTypes sql", () => {
       ], true, 1),
       { name: "Kind", is_event: true, is_enum: true, generic_type_params: [], fields: [], variants: [{ name: "A", fields: [] }] },
     ]);
-    const tables = await tablesOf([sui], { sql: "postgres", dialect: SUI_DIALECT });
+    const tables = await tablesOf([sui], { tables: sqlTables("postgres"), dialect: SUI_DIALECT });
     expect(columnsOf(tables, "pool_kind")).toEqual({ variant: ["text", "@variant", false], data: ["json", "", false] });
     expect(columnsOf(tables, "pool_moved")).toEqual({
       id: ["address", "id", false], uid: ["address", "uid", false], coin: ["u64", "coin", false], link: ["text", "link", false],
@@ -182,7 +181,7 @@ describe("generateEventTypes sql", () => {
     expect(plain).not.toContain("StreamdEventTable");
     const clash = module(DEX, "c", [struct("StreamdEventTable", [], true)]);
     await expect(generateEventTypes([{ address: DEX, module: "c" }], loader([clash]))).resolves.toBeString();
-    await expect(generateEventTypes([{ address: DEX, module: "c" }], loader([clash]), { sql: "sqlite" })).rejects.toThrow(/StreamdEventTable/);
+    await expect(generateEventTypes([{ address: DEX, module: "c" }], loader([clash]), { tables: sqlTables("sqlite") })).rejects.toThrow(/StreamdEventTable/);
   });
 });
 
@@ -192,7 +191,7 @@ async function withGenerated(sql: "sqlite" | "postgres", run: (mod: Mod, dir: st
   // Inside the package, so the generated import of @streamd/core resolves at runtime.
   const dir = mkdtempSync(join(fileURLToPath(new URL("..", import.meta.url)), ".sql-"));
   try {
-    const source = await generateEventTypes([{ address: DEX, module: "shapes" }], loader([shapes]), { sql, arbitraries: true });
+    const source = await generateEventTypes([{ address: DEX, module: "shapes" }], loader([shapes]), { tables: sqlTables(sql), arbitraries: true });
     writeFileSync(join(dir, "gen.ts"), source);
     await run(await import(join(dir, "gen.ts")), dir, source);
   } finally {
