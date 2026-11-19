@@ -1132,6 +1132,40 @@ different times share only once their cursors meet: after the next event for `ha
 `account` descriptors, usually never for `module` descriptors on `FullnodeScanAdapter`.
 Shared subscriptions receive the same event objects, so treat events as read-only.
 
+### Share polling across browser tabs
+
+```ts
+import { TabSharedAdapter } from "@streamd/core";
+import { AptosClient, FullnodeScanAdapter } from "@streamd/aptos";
+
+const adapter = new TabSharedAdapter(new FullnodeScanAdapter(aptos), { name: "streamd-aptos-mainnet" });
+const streamd = new AptosClient({ aptos, adapter });
+```
+
+With the same app open in several tabs, one tab (the leader, chosen with `navigator.locks`)
+sends every `fetchEvents` request to the source. The other tabs post their requests to it over
+a `BroadcastChannel` named `name` and get its page back, so they stay under one tab's request
+budget. Identical requests from several tabs within `shareFor` ms (default 1000) are one source
+request. Each tab keeps its own cursors, so when the leader's tab closes or navigates away the
+next tab in the lock's queue takes over and every subscription resumes where it was, with no
+gap and no repeat. Requests the old leader had not answered are sent again to the new one.
+
+- **A start at the head joins the leader's walk.** A request with no cursor, `fromVersion`,
+  `toVersion` or `offset` gets the newest caught-up page fetched for the same descriptor and
+  options within `shareFor`, so a tab opened later shares every page with the rest, and may
+  begin with events from up to `shareFor` ms before it started. A walk with its own start
+  (`fromVersion`, `fromTime`, a saved cursor) is fetched on its own until it matches another.
+- **`name` must differ per network and source.** Any tab on the name may answer the others.
+- **Only `fetchEvents` is shared.** Views, head reads, block reads and transaction lookups run
+  in the calling tab.
+- **Without Web Locks or `BroadcastChannel`** (server rendering, older browsers) every call goes
+  straight to the source, so each tab polls on its own. `isLeader` says whether this tab leads.
+- **A leader that is alive but stuck** keeps the lock: the others wait for it, or fail at the
+  client's `requestTimeout` and retry, until it answers. Pass the same `requestTimeout` to the
+  adapter so the leader stops joining a source request that never settles.
+- `close()` leaves the election and fails this tab's waiting requests. Errors cross tabs as
+  `StreamdNetworkError` (with `statusCode` and `retryAfter`) or `StreamdError`.
+
 ### Manage listeners
 
 ```ts
