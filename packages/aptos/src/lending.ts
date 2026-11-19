@@ -146,7 +146,7 @@ const fieldsOf = (address: string, events: Record<string, readonly string[]>) =>
   new Map(Object.entries(events).map(([name, fields]) => [`${address}::${name}`, fields]));
 
 /** Every protocol `positions()` reads. */
-export const LENDING: Record<LendingProtocol, LendingMarket> = {
+const LENDING: Record<LendingProtocol, LendingMarket> = {
   aave: { address: AAVE, descriptor: AAVE_DESCRIPTOR, fields: fieldsOf(AAVE, AAVE_EVENTS), reader: () => readAavePosition },
   echelon: {
     address: ECHELON,
@@ -417,9 +417,9 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
       read,
       // Health only stays live while both run, so one ending ends both.
       () => (walk?.active === true ? positions.keys() : (stop(), [])),
-      (read) => {
+      (fresh) => {
         const changes: [LendingPosition, boolean][] = [];
-        for (const p of read) {
+        for (const p of fresh) {
           const [changed, crossed] = apply(p);
           if (changed) changes.push([positions.get(p.account)!, crossed]);
         }

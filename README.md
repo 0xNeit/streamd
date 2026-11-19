@@ -2536,12 +2536,14 @@ bytecode, decompiled locally, and confirmed against its views on mainnet.
   market's mantissa; `supplied` from `account_coins`, `borrowed` from `account_liability`
   (accrued); `collateral` true for every supply, since Echelon keeps supplies in the vault's
   collateral. Each market's asset is read once per monitor.
-- **Reads.** About five views per position plus two per market held, and three more the first
-  time a market is seen.
+- **Reads.** About five views per position, plus one per market supplied and one per market
+  borrowed, and three more the first time a market is seen. A head read of 100 tracked accounts
+  is several hundred views per interval from one IP.
 - **Live changes.** One scan over `lending::SupplyEvent`, `WithdrawEvent`, `BorrowEvent`,
   `RepayEvent` (the borrower; a repayer pays from its wallet) and `LiquidateEvent` (the borrower,
   and the liquidator, whose vault receives the seized shares). Entering or leaving an efficiency
-  mode emits no event, so only a head read sees it.
+  mode, and the manager's `clear_bad_debt`, change a vault with no event, so only a head read
+  (with `account`) sees them.
 
 ## Package upgrades
 

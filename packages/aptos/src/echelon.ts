@@ -13,8 +13,9 @@ const ONE = 1n << 64n;
 /**
  * Each Echelon event that changes a vault, and the fields naming the accounts
  * it changes. A repayer pays from its wallet; a liquidator's vault receives
- * the seized shares. Entering or leaving an efficiency mode emits nothing, so
- * only a head read sees it.
+ * the seized shares. Entering or leaving an efficiency mode, and the
+ * manager's `clear_bad_debt` and `reconcile_20250218`, change a vault with no
+ * event, so only a head read sees them.
  */
 export const ECHELON_EVENTS: Record<string, readonly string[]> = {
   "lending::SupplyEvent": ["account_addr"],
@@ -101,6 +102,7 @@ export async function readEchelonPosition(view: ViewAt, account: string, version
     call("account_collateral_markets", [account]).then((r) => objects(r, account, "collateral markets")),
     call("account_liability_markets", [account]).then((r) => objects(r, account, "liability markets")),
   ]);
+  if (supplied.length === 0 && borrowed.length === 0) return { ...position, collateralValue: fraction(0n, 1n), debtValue: fraction(0n, 1n) };
   const [values, assets] = await Promise.all([
     Promise.all([
       call("account_lend_value", [account]),

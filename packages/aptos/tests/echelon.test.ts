@@ -126,6 +126,28 @@ describe("readEchelonPosition", () => {
     expect(empty.health).toBeUndefined();
   });
 
+  it("has no health when the accrued liability is 0, and is not below then", async () => {
+    const position = await read({ ...BEFORE, preview_health_factor_given_repay: [{ v: "5" }, { v: "0" }] });
+    expect(position.health).toBeUndefined();
+    expect(isBelow(position, { numerator: 1n, denominator: 1n })).toBe(false);
+  });
+
+  it("reads coins only where supplied and debt only where borrowed, and a borrow beside an empty supply is not collateral", async () => {
+    const asked: [string, unknown[], bigint][] = [];
+    await read(BEFORE, new Map(), asked);
+    expect(asked.filter(([n, args]) => n === "account_coins" && args[1] === USDT_M)).toEqual([]);
+    expect(asked.filter(([n, args]) => n === "account_liability" && args[1] !== USDT_M)).toEqual([]);
+    const both = await read({ ...BEFORE, account_collateral_markets: [[obj(USDT_M)]], account_coins: ["0"] });
+    expect(both.assets).toEqual([{ asset: MARKETS[USDT_M]![2] as string, decimals: 6, supplied: 0n, borrowed: 659359n, collateral: false }]);
+  });
+
+  it("skips the value views for a vault holding nothing", async () => {
+    const asked: [string, unknown[], bigint][] = [];
+    const position = await read({ ...BEFORE, account_collateral_markets: [[]], account_liability_markets: [[]] }, new Map(), asked);
+    expect(position).toMatchObject({ assets: [], collateralValue: { numerator: 0n, denominator: 1n }, debtValue: { numerator: 0n, denominator: 1n } });
+    expect(asked.map(([n]) => n).sort()).toEqual(["account_collateral_markets", "account_liability_markets", "vault_exists"]);
+  });
+
   it("drops markets holding nothing", async () => {
     const position = await read({ ...BEFORE, account_coins: ["0"] });
     expect(position.assets.map((a) => a.borrowed)).toEqual([659359n]);
@@ -161,6 +183,9 @@ describe("readEchelonPosition", () => {
     await expect(read({ ...BEFORE, market_asset_mantissa: ["0"] })).rejects.toThrow("market asset is not");
     await expect(read({ ...BEFORE, market_is_coin: [1] })).rejects.toThrow("market type is not");
     await expect(read({ ...BEFORE, market_coin: ["AptosCoin"] })).rejects.toThrow("market asset is not");
+    await expect(read({ ...BEFORE, market_asset_mantissa: [(10n ** 256n).toString()] })).rejects.toThrow("market asset is not");
+    await expect(read({ ...BEFORE, preview_health_factor_given_repay: [{}, { v: "1" }] })).rejects.toThrow("liquidation threshold is not");
+    await expect(read({ ...BEFORE, account_liability_markets: [[]], account_liquidation_threshold: ["x"] })).rejects.toThrow("liquidation threshold is not");
   });
 });
 

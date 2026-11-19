@@ -324,11 +324,12 @@ export class AptosClient extends StreamdClient {
 
   /**
    * Keep lending positions current on `protocol` (`"aave"`, Aave V3 on Aptos
-   * mainnet, or `"echelon"`, Echelon's vaults): each account's supplies, debts, collateral and debt value and
-   * health factor, as the protocol's own views compute them with its own
-   * oracle at a version. `account` names the accounts, read at the head (or
-   * the version before `fromVersion`) first; without it every account an
-   * protocol's event names is tracked from then on. Each position is reread at the
+   * mainnet, or `"echelon"`, Echelon's vaults): each account's supplies,
+   * debts, collateral and debt value and health factor, as the protocol's own
+   * views compute them with its own oracle at a version. `account` names the
+   * accounts, read at the head (or the version before `fromVersion`) first;
+   * without it every account one of the protocol's events names is tracked
+   * from then on. Each position is reread at the
    * version of every event naming it, from one scan over the protocol's
    * position-changing events, its views at most four at a time outside
    * `maxConcurrentRequests`. With `account`, every position is also reread at
