@@ -69,7 +69,11 @@ function source(page: (options: FetchOptions) => EventPage = (o) => ({
   return { adapter, calls };
 }
 
-function tabs(n: number, adapter: EventAdapter, extra: { shareFor?: number } = {}) {
+function tabs(
+  n: number,
+  adapter: EventAdapter,
+  extra: { shareFor?: number; requestTimeout?: number; joinHeadStarts?: boolean } = {},
+) {
   const locks = new FakeLocks();
   const channel = channelHub();
   return Array.from(
@@ -83,6 +87,7 @@ describe("TabSharedAdapter", () => {
     const { adapter } = source();
     expect(() => new TabSharedAdapter(adapter, { name: "" })).toThrow(StreamdError);
     expect(() => new TabSharedAdapter(adapter, { name: "t", shareFor: 0 })).toThrow(/shareFor/);
+    expect(() => new TabSharedAdapter(adapter, { name: "t", requestTimeout: 0 })).toThrow(/requestTimeout/);
   });
 
   it("calls the source directly without Web Locks", async () => {
@@ -141,7 +146,7 @@ describe("TabSharedAdapter", () => {
 
   it("joins a start at the head to the newest caught-up page of its walk", async () => {
     const s = source();
-    const [a, b] = tabs(2, s.adapter);
+    const [a, b] = tabs(2, s.adapter, { joinHeadStarts: true });
     await settle();
     await a!.fetchEvents(desc, { cursor: "9", limit: 5 });
     expect((await b!.fetchEvents(desc, { limit: 5 })).nextCursor).toBe("10");
@@ -153,11 +158,32 @@ describe("TabSharedAdapter", () => {
 
   it("does not join a walk to a page that was not caught up", async () => {
     const s = source((o) => ({ events: [], nextCursor: String(Number(o.cursor ?? 0) + 1), hasMore: true }));
-    const [a, b] = tabs(2, s.adapter);
+    const [a, b] = tabs(2, s.adapter, { joinHeadStarts: true });
     await settle();
     await a!.fetchEvents(desc, { cursor: "9" });
     await b!.fetchEvents(desc, {});
     expect(s.calls).toHaveLength(2);
+  });
+
+  it("joins no start unless asked, and never for a handle or account walk", async () => {
+    const handle: EventDescriptor = { kind: "handle", accountAddress: "0x1", creationNumber: 5n };
+    for (const [d, join] of [[desc, false], [handle, true]] as const) {
+      const s = source();
+      const [a, b] = tabs(2, s.adapter, { joinHeadStarts: join });
+      await settle();
+      await a!.fetchEvents(d, { cursor: "9" });
+      expect((await b!.fetchEvents(d, {})).nextCursor).toBe("1");
+      expect(s.calls).toHaveLength(2);
+    }
+  });
+
+  it("gives up on a request the leader never answers after requestTimeout", async () => {
+    const stuck: EventAdapter = { fetchEvents: () => new Promise(() => {}) };
+    const [, b] = tabs(2, stuck, { requestTimeout: 20 });
+    await settle();
+    const failed = await b!.fetchEvents(desc, { cursor: "1" }).catch((e: unknown) => e);
+    expect(failed).toBeInstanceOf(StreamdNetworkError);
+    expect((b as unknown as { pending: Map<number, unknown> }).pending.size).toBe(0);
   });
 
   it("asks the next leader for a request the old one took with it", async () => {
@@ -181,7 +207,9 @@ describe("TabSharedAdapter", () => {
         Promise.reject(
           o.cursor === "1"
             ? new StreamdNetworkError("rate limited", 429, undefined, 2000)
-            : new Error("broken"),
+            : o.cursor === "2"
+              ? new Error("broken")
+              : new StreamdError("bad input"),
         ),
     };
     const [, b] = tabs(2, s);
@@ -189,23 +217,33 @@ describe("TabSharedAdapter", () => {
     const failed = await b!.fetchEvents(desc, { cursor: "1" }).catch((e: unknown) => e);
     expect(failed).toBeInstanceOf(StreamdNetworkError);
     expect(failed).toMatchObject({ message: "rate limited", statusCode: 429, retryAfter: 2000 });
+    // Retried, as the leading tab's own poller would retry it.
     const other = await b!.fetchEvents(desc, { cursor: "2" }).catch((e: unknown) => e);
-    expect(other).toBeInstanceOf(StreamdError);
-    expect(other).not.toBeInstanceOf(StreamdNetworkError);
+    expect(other).toBeInstanceOf(StreamdNetworkError);
     expect((other as Error).message).toBe("broken");
+    const input = await b!.fetchEvents(desc, { cursor: "3" }).catch((e: unknown) => e);
+    expect(input).toBeInstanceOf(StreamdError);
+    expect(input).not.toBeInstanceOf(StreamdNetworkError);
   });
 
   it("ignores messages that are not its own or not well formed", async () => {
     const locks = new FakeLocks();
     const hub = channelHub();
-    const a = new TabSharedAdapter(source().adapter, { name: "t", locks, channel: hub() });
+    const s = source();
+    const a = new TabSharedAdapter(s.adapter, { name: "t", locks, channel: hub() });
+    const b = new TabSharedAdapter(s.adapter, { name: "t", locks, channel: hub() });
     const stranger = hub();
     await settle();
     stranger.postMessage({ kind: "request", from: 5, id: "x" });
-    stranger.postMessage({ kind: "reply", to: "nobody", id: 1, page: { events: [] } });
+    stranger.postMessage({ kind: "request", from: "s", id: 1, descriptor: "x" });
     stranger.postMessage("noise");
     await settle();
     expect(a.isLeader).toBe(true);
+    expect(s.calls).toHaveLength(0);
+    const tab = (b as unknown as { tab: string }).tab;
+    const waiting = b.fetchEvents(desc, { cursor: "1" });
+    stranger.postMessage({ kind: "reply", to: tab, id: 1, page: { events: [{ version: "1" }], hasMore: false } });
+    await expect(waiting).rejects.toThrow(/malformed/);
   });
 
   it("delivers every event once to two clients across a handover", async () => {

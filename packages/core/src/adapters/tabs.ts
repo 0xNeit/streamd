@@ -28,8 +28,19 @@ export interface TabSharedAdapterOptions {
   name: string;
   /** How long, in ms, the leader reuses a page for an identical request (default: 1000). */
   shareFor?: number;
-  /** After this many ms the leader stops joining a source request that has not settled. */
+  /**
+   * After this many ms a request waiting on the leading tab fails with a
+   * `StreamdNetworkError`, and the leader stops joining a source request that
+   * has not settled. Pass the client's `requestTimeout`.
+   */
   requestTimeout?: number;
+  /**
+   * Answer a `module` or `resource` request with no start from the newest
+   * caught-up page of the same walk, so tabs opened at different times share
+   * one walk. Only for sources that read such a request from the head, as
+   * `FullnodeScanAdapter` does; `MemoryAdapter` reads it from the start.
+   */
+  joinHeadStarts?: boolean;
   /** Defaults to `navigator.locks`. */
   locks?: LockManagerLike;
   /** Defaults to `new BroadcastChannel(name)`. */
@@ -37,6 +48,7 @@ export interface TabSharedAdapterOptions {
 }
 
 const DEFAULT_SHARE_FOR = 1000;
+const MAX_TIMEOUT = 2_147_483_647;
 
 const OPTIONAL = [
   "getHeadVersion",
@@ -55,6 +67,7 @@ interface Pending {
   options: FetchOptions;
   resolve(page: EventPage): void;
   reject(reason: unknown): void;
+  timer?: ReturnType<typeof setTimeout>;
 }
 
 interface WireError {
@@ -73,13 +86,16 @@ function toWire(err: unknown): WireError {
   if (err instanceof StreamdNetworkError) {
     return { name: err.name, message: err.message, statusCode: err.statusCode, retryAfter: err.retryAfter };
   }
-  return { name: "StreamdError", message: err instanceof Error ? err.message : String(err) };
+  const message = err instanceof Error ? err.message : String(err);
+  return { name: err instanceof StreamdError ? "StreamdError" : "Error", message };
 }
 
+// A plain StreamdError stops a poller as bad input, so only one that was a
+// StreamdError at the source comes back as one; anything else is retried.
 function fromWire(err: WireError): StreamdError {
-  return err.name === "StreamdNetworkError"
-    ? new StreamdNetworkError(err.message, err.statusCode, undefined, err.retryAfter)
-    : new StreamdError(err.message);
+  return err.name === "StreamdError"
+    ? new StreamdError(err.message)
+    : new StreamdNetworkError(err.message, err.statusCode, undefined, err.retryAfter);
 }
 
 /**
@@ -87,6 +103,7 @@ function fromWire(err: WireError): StreamdError {
  * starts at the head or continues a walk; anything bounded has none.
  */
 function walkKey(descriptor: EventDescriptor, options: FetchOptions): string | undefined {
+  if (descriptor.kind !== "module" && descriptor.kind !== "resource") return undefined;
   const { fromVersion, toVersion, offset, orderBy } = options;
   if (fromVersion !== undefined || toVersion !== undefined || offset !== undefined) return undefined;
   if (orderBy === "desc") return undefined;
@@ -104,8 +121,8 @@ function openChannel(name: string): BroadcastChannelLike | undefined {
  * tab sends `fetchEvents` requests to it. The others post each request to
  * that tab over a `BroadcastChannel` and get its page back, and each keeps
  * its own cursors, so whichever tab leads next resumes every walk where its
- * own subscriptions left off. A start at the head joins the newest caught-up
- * page of the same walk, so tabs opened at different times share one walk. Without Web Locks or
+ * own subscriptions left off. With `joinHeadStarts`, a start at the head
+ * joins the newest caught-up page of the same walk. Without Web Locks or
  * `BroadcastChannel` every call goes straight to `adapter`, so each tab polls
  * on its own. The other adapter methods always run in the calling tab.
  */
@@ -127,6 +144,8 @@ export class TabSharedAdapter implements EventAdapter {
   private readonly pending = new Map<number, Pending>();
   private readonly walks = new Map<string, { at: number; page: EventPage }>();
   private readonly shareFor: number;
+  private readonly requestTimeout?: number;
+  private readonly joinHeadStarts: boolean;
   private readonly abort = new AbortController();
   private nextId = 0;
   private leading = false;
@@ -143,7 +162,13 @@ export class TabSharedAdapter implements EventAdapter {
     if (!(Number.isFinite(shareFor) && shareFor > 0)) {
       throw new StreamdError(`Invalid shareFor: ${String(shareFor)} (expected a positive number of ms)`);
     }
+    const timeout = options.requestTimeout;
+    if (timeout !== undefined && !(Number.isFinite(timeout) && timeout > 0 && timeout <= MAX_TIMEOUT)) {
+      throw new StreamdError(`Invalid requestTimeout: ${String(timeout)} (expected 1..${MAX_TIMEOUT}ms)`);
+    }
     this.shareFor = shareFor;
+    this.requestTimeout = timeout;
+    this.joinHeadStarts = options.joinHeadStarts === true;
     this.shared = new SharedFetches(this.source, options.requestTimeout).view(shareFor);
     for (const name of OPTIONAL) {
       const method = this.source[name];
@@ -177,8 +202,15 @@ export class TabSharedAdapter implements EventAdapter {
     if (this.leading) return this.serve(descriptor, options);
     return new Promise((resolve, reject) => {
       const id = ++this.nextId;
-      const request = { descriptor, options, resolve, reject };
+      const request: Pending = { descriptor, options, resolve, reject };
       this.pending.set(id, request);
+      if (this.requestTimeout !== undefined) {
+        request.timer = setTimeout(() => {
+          if (this.pending.delete(id)) {
+            reject(new StreamdNetworkError(`The leading tab did not answer within ${this.requestTimeout}ms`));
+          }
+        }, this.requestTimeout);
+      }
       this.ask(id, request);
     });
   }
@@ -191,7 +223,7 @@ export class TabSharedAdapter implements EventAdapter {
     this.abort.abort();
     this.release?.();
     this.channel?.close();
-    for (const p of this.pending.values()) p.reject(new StreamdError("TabSharedAdapter is closed"));
+    for (const p of this.pending.values()) clearTimeout(p.timer), p.reject(new StreamdError("TabSharedAdapter is closed"));
     this.pending.clear();
     this.walks.clear();
   }
@@ -206,17 +238,19 @@ export class TabSharedAdapter implements EventAdapter {
 
   private goLocal(): void {
     this.local = true;
+    this.channel?.close();
     this.servePending((d, o) => this.source.fetchEvents(d, o));
   }
 
   private servePending(fetch: (d: EventDescriptor, o: FetchOptions) => Promise<EventPage>): void {
     const waiting = [...this.pending.values()];
     this.pending.clear();
+    for (const p of waiting) clearTimeout(p.timer);
     for (const p of waiting) fetch(p.descriptor, p.options).then(p.resolve, p.reject);
   }
 
   private async serve(descriptor: EventDescriptor, options: FetchOptions): Promise<EventPage> {
-    const walk = walkKey(descriptor, options);
+    const walk = this.joinHeadStarts ? walkKey(descriptor, options) : undefined;
     if (walk !== undefined && options.cursor === undefined) {
       const newest = this.walks.get(walk);
       if (newest !== undefined && performance.now() - newest.at <= this.shareFor) return newest.page;
@@ -246,7 +280,8 @@ export class TabSharedAdapter implements EventAdapter {
       } satisfies Message);
     } catch (err) {
       this.pending.delete(id);
-      request.reject(new StreamdError("A request could not be sent to the leading tab", err));
+      clearTimeout(request.timer);
+      request.reject(new StreamdNetworkError("A request could not be sent to the leading tab", undefined, err));
     }
   }
 
@@ -280,7 +315,7 @@ export class TabSharedAdapter implements EventAdapter {
     this.serve(descriptor as unknown as EventDescriptor, fetchOptions).then(
       (page) => {
         if (!this.post({ kind: "reply", to, id, page })) {
-          const error = toWire(new StreamdError("The page could not be sent between tabs"));
+          const error = toWire(new StreamdNetworkError("The page could not be sent between tabs"));
           this.post({ kind: "reply", to, id, error });
         }
       },
@@ -292,6 +327,7 @@ export class TabSharedAdapter implements EventAdapter {
     const request = typeof message.id === "number" ? this.pending.get(message.id) : undefined;
     if (request === undefined) return;
     this.pending.delete(message.id as number);
+    clearTimeout(request.timer);
     const { page, error } = message;
     if (isObject(error)) {
       request.reject(
@@ -302,12 +338,23 @@ export class TabSharedAdapter implements EventAdapter {
           retryAfter: num(error.retryAfter),
         }),
       );
-    } else if (isObject(page) && Array.isArray(page.events)) {
-      request.resolve(page as unknown as EventPage);
+    } else if (isPage(page)) {
+      request.resolve(page);
     } else {
-      request.reject(new StreamdError("The leading tab sent a malformed page"));
+      request.reject(new StreamdNetworkError("The leading tab sent a malformed page"));
     }
   }
+}
+
+// A tab still running an older build may answer on the same name.
+function isPage(value: unknown): value is EventPage {
+  return (
+    isObject(value) &&
+    Array.isArray(value.events) &&
+    (value.nextCursor === undefined || typeof value.nextCursor === "string") &&
+    typeof value.hasMore === "boolean" &&
+    value.events.every((e) => isObject(e) && typeof e.version === "bigint" && typeof e.eventIndex === "number")
+  );
 }
 
 function num(value: unknown): number | undefined {

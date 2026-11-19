@@ -1138,8 +1138,12 @@ Shared subscriptions receive the same event objects, so treat events as read-onl
 import { TabSharedAdapter } from "@streamd/core";
 import { AptosClient, FullnodeScanAdapter } from "@streamd/aptos";
 
-const adapter = new TabSharedAdapter(new FullnodeScanAdapter(aptos), { name: "streamd-aptos-mainnet" });
-const streamd = new AptosClient({ aptos, adapter });
+const adapter = new TabSharedAdapter(new FullnodeScanAdapter(aptos), {
+  name: "streamd-aptos-mainnet",
+  requestTimeout: 15_000,
+  joinHeadStarts: true,
+});
+const streamd = new AptosClient({ aptos, adapter, requestTimeout: 15_000 });
 ```
 
 With the same app open in several tabs, one tab (the leader, chosen with `navigator.locks`)
@@ -1150,21 +1154,30 @@ request. Each tab keeps its own cursors, so when the leader's tab closes or navi
 next tab in the lock's queue takes over and every subscription resumes where it was, with no
 gap and no repeat. Requests the old leader had not answered are sent again to the new one.
 
-- **A start at the head joins the leader's walk.** A request with no cursor, `fromVersion`,
-  `toVersion` or `offset` gets the newest caught-up page fetched for the same descriptor and
-  options within `shareFor`, so a tab opened later shares every page with the rest, and may
-  begin with events from up to `shareFor` ms before it started. A walk with its own start
+- **`joinHeadStarts` lets a start at the head join the leader's walk.** Two tabs started at
+  different times hold different cursors, and module scan cursors rarely meet, so without it
+  each tab's walk is its own source request. With it, a `module` or `resource` request with no
+  cursor, `fromVersion`, `toVersion` or `offset` gets the newest caught-up page fetched for the
+  same descriptor and options within `shareFor`, so a tab opened later shares every page with
+  the rest, and may begin with events from up to `shareFor` ms before it started. Turn it on
+  only for a source that reads such a request from the head, as `FullnodeScanAdapter` does
+  (`MemoryAdapter` reads it from the start, and a query with no `fromVersion` would get one
+  page). `handle` and `account` walks are never joined. A walk with its own start
   (`fromVersion`, `fromTime`, a saved cursor) is fetched on its own until it matches another.
 - **`name` must differ per network and source.** Any tab on the name may answer the others.
 - **Only `fetchEvents` is shared.** Views, head reads, block reads and transaction lookups run
   in the calling tab.
 - **Without Web Locks or `BroadcastChannel`** (server rendering, older browsers) every call goes
   straight to the source, so each tab polls on its own. `isLeader` says whether this tab leads.
-- **A leader that is alive but stuck** keeps the lock: the others wait for it, or fail at the
-  client's `requestTimeout` and retry, until it answers. Pass the same `requestTimeout` to the
-  adapter so the leader stops joining a source request that never settles.
-- `close()` leaves the election and fails this tab's waiting requests. Errors cross tabs as
-  `StreamdNetworkError` (with `statusCode` and `retryAfter`) or `StreamdError`.
+- **A leader that is alive but stuck** keeps the lock: the others wait for it until it answers,
+  or, with the adapter's `requestTimeout` (pass the client's), fail with a
+  `StreamdNetworkError` and retry. The same timeout stops the leader joining a source request
+  that never settles.
+- `close()` leaves the election and fails this tab's waiting requests. A source failure reaches
+  the asking tab as a `StreamdNetworkError` (keeping `statusCode` and `retryAfter`), so it backs
+  off as in the leading tab, except a `StreamdError` thrown for bad input, which stays one.
+- Each request and reply is broadcast to every tab and dropped by all but the one it is for, so
+  each page is copied into every open tab.
 
 ### Manage listeners
 
