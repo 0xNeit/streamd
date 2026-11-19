@@ -43,10 +43,13 @@ TypeScript types:
   chain SDK.
 - `@streamd/aptos` (`packages/aptos`) - Aptos: `AptosClient`, `FullnodeScanAdapter`,
   `IndexerAccountAdapter`, the network presets, `checkDescriptor`, `listEventHandles`, `ownedBy`,
-  `resolveName`, `primaryName`, and the
+  `resolveName`, `primaryName`, `sendOnce`, and the
   `@streamd/aptos/framework` event catalog. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer dependency.
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core` and
   `@streamd/aptos`.
+- `@streamd/codegen` (`packages/codegen`) - the generator behind
+  [`streamd codegen`](#generate-event-types), with no Node or database import, so it also runs
+  in a browser.
 - `@streamd/store-sqlite` (`packages/store-sqlite`) - opt-in persistence: events written to a
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
 - `@streamd/store-postgres` (`packages/store-postgres`) - the same over a Postgres client you
@@ -65,6 +68,8 @@ TypeScript types:
   [Forward events to a webhook](#forward-events-to-a-webhook).
 - `@streamd/gateway` (`apps/gateway`) - the gateway behind `streamd serve`, and
   `GatewayAdapter`, which reads through one. See [Serve a gateway](#serve-a-gateway).
+- `@streamd/playground` (`apps/playground`) - a browser page to check an event type, watch it
+  live and copy its generated types and a snippet. Not published. See [Playground](#playground).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents`, `useSubmitTransaction` and
   `useTransfers` take an `AptosClient`. See [React hooks](#react-hooks).
@@ -4485,6 +4490,59 @@ p50, p95 and max latency per method.
   nothing during server rendering or before mount. It is meant for development builds; gate it
   as above.
 
+### Fullnode errors in the browser
+
+The SDK's browser client parses every response body as JSON, so a public fullnode's plain-text
+429 reaches you as a JSON syntax error, with no status and no backoff hint. Give the SDK
+`sendOnce` from `@streamd/aptos`, which sends each request once through `fetch` and keeps a
+non-JSON body as text, so the SDK's error keeps the 429 and streamd's adapters and checks
+report it as a `StreamdNetworkError` with `statusCode` 429:
+
+```ts
+import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { AptosClient, sendOnce } from "@streamd/aptos";
+
+const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, client: sendOnce(30_000) }));
+const streamd = new AptosClient({ aptos, maxRequestsPerSecond: 2 });
+```
+
+The argument is a per-request timeout in ms. It does not retry; the poller's backoff does.
+
+## Playground
+
+`apps/playground` is a small web page over the same packages. Enter a Move event type and press
+Check, and it shows:
+
+- **The check:** `checkDescriptor`'s verdict, such as "a module event" or "not declared
+  `#[event]`".
+- **Live events:** after a passing check, the most recent 25 through `useEvents`, newest
+  first, with Stop and Start.
+- **Generated types:** what [`streamd codegen <address>::<module>`](#generate-event-types)
+  writes for the type's module, generated in the browser by `@streamd/codegen`.
+- **A snippet:** a Bun script that follows the type with `AptosClient`, importing the
+  generated descriptor from `./events.js` (or naming the type inline for a generic event).
+
+Both have Copy buttons. Build and serve it locally:
+
+```sh
+cd apps/playground
+bun run build   # dist/, a browser bundle
+bun run serve   # http://127.0.0.1:5207 (PORT to change it)
+```
+
+- **Networks.** Aptos mainnet (the default) and testnet.
+- **API key.** Optional. It is sent only to the Aptos node, as the SDK's `API_KEY`, and kept
+  in memory unless "Remember the key on this device" is ticked, which stores it in
+  `localStorage`; unticking removes it. The snippet never contains it: it reads
+  `APTOS_API_KEY` from the environment.
+- **Rate limits.** The public fullnodes limit anonymous requests per IP, and following a module
+  event scans every transaction. Without a key the page sends at most two requests a second
+  through `sendOnce`, a 429 is shown as a rate limit with the advice to add a key, and the
+  poller backs off, giving up after five failures in a row. Polling starts only after a passing check, and Stop ends it.
+  Expect an anonymous tab to be limited after some minutes on a busy chain.
+- **Scope.** Module events only, on Aptos. No handle, account or resource descriptors, type
+  arguments, or codegen options.
+
 ## Command line
 
 `@streamd/cli` installs a `streamd` executable. `streamd tail` follows matching events and
@@ -5833,6 +5891,9 @@ events reference, fetched from whichever modules and accounts declare them.
 ```sh
 streamd codegen --out src/events.ts 0x1::fungible_asset 0x1::coin
 ```
+
+The generator is `generateEventTypes` in `@streamd/codegen`, which takes a function reading a
+module's ABI, so it runs anywhere, the [Playground](#playground) included.
 
 It also writes a typed `handle` descriptor builder for each legacy `0x1::event::EventHandle<T>`
 field of a resource (a struct with `key`) in the modules it reads, named `<Struct>_<Field>` and
