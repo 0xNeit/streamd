@@ -223,7 +223,10 @@ export class TabSharedAdapter implements EventAdapter {
     this.abort.abort();
     this.release?.();
     this.channel?.close();
-    for (const p of this.pending.values()) clearTimeout(p.timer), p.reject(new StreamdError("TabSharedAdapter is closed"));
+    for (const p of this.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new StreamdError("TabSharedAdapter is closed"));
+    }
     this.pending.clear();
     this.walks.clear();
   }

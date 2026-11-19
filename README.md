@@ -1175,7 +1175,8 @@ gap and no repeat. Requests the old leader had not answered are sent again to th
   that never settles.
 - `close()` leaves the election and fails this tab's waiting requests. A source failure reaches
   the asking tab as a `StreamdNetworkError` (keeping `statusCode` and `retryAfter`), so it backs
-  off as in the leading tab, except a `StreamdError` thrown for bad input, which stays one.
+  off as in the leading tab. Any other `StreamdError` arrives as a plain `StreamdError`, which
+  stops a listener as invalid input, as it would in the leading tab.
 - Each request and reply is broadcast to every tab and dropped by all but the one it is for, so
   each page is copied into every open tab.
 
