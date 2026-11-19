@@ -30,6 +30,7 @@ import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
+import { assetPricer, type Pricer } from "./values.js";
 import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, Multisig, MultisigOptions, MultisigPreviewOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
@@ -48,6 +49,8 @@ export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
 export class AptosClient extends StreamdClient {
   protected readonly aptos: Aptos;
   private readonly pythPrice: (feedId: string, version: bigint) => Promise<Price | undefined>;
+  // For reads inside a page fetch, which already holds a limiter slot.
+  private readonly pagePythPrice: (feedId: string, version: bigint) => Promise<Price | undefined>;
 
   constructor(config: AptosClientConfig) {
     const aptos = config?.aptos instanceof Aptos ? config.aptos : config?.aptos === undefined ? undefined : new Aptos(config.aptos);
@@ -56,6 +59,7 @@ export class AptosClient extends StreamdClient {
     super({ ...rest, adapter: config.adapter ?? new FullnodeScanAdapter(aptos) });
     this.aptos = aptos;
     this.pythPrice = pythPriceReader(aptos, (task) => this.limiter.run(task));
+    this.pagePythPrice = pythPriceReader(aptos, (task) => task());
     // Testnet's ANS router is gone, and a localnet has none published at the
     // SDK's local router address, so only mainnet can answer.
     const network = aptos.config?.network;
@@ -84,14 +88,16 @@ export class AptosClient extends StreamdClient {
    * with `amount` 1, only when the object holds a `0x4::token::Token`,
    * checked once per object by view. `asset` narrows to one fungible asset,
    * coin type or token before any owner is read; `account` keeps what one
-   * address sent or received. Like `reduce()`, it is not a listener for
-   * `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+   * address sent or received. `withValue` adds each coin or fungible-asset
+   * record's value in USDC at its version, read inside the same limit of 4.
+   * Like `reduce()`, it is not a listener for `off()` or `listenerCount()`;
+   * `unsubscribe()` or `destroy()` ends it.
    */
   transfers(
     callback: EventCallback<Transfer>,
     options: TransferListenerOptions = {},
   ): Subscription {
-    const { asset, account, withAssetInfo, ...rest } = options;
+    const { asset, account, withAssetInfo, withValue, ...rest } = options;
     const who = this.accountOf(account);
     return this.subscribe(
       TRANSFER_DESCRIPTOR,
@@ -99,7 +105,8 @@ export class AptosClient extends StreamdClient {
       rest,
       undefined,
       rest.id,
-      (source) => transferSource(source, asset, who, withAssetInfo, this.requestTimeout),
+      (source) =>
+        transferSource(source, asset, who, withAssetInfo, this.requestTimeout, withValue ? this.pagePricer(source) : undefined),
     );
   }
 
@@ -544,16 +551,22 @@ export class AptosClient extends StreamdClient {
     return lazyResolve(addressOrName(account), () => resolveName(this.aptos, account));
   }
 
+  /** Prices by pool view through `adapter`, and by Pyth outside the limiter, for reads made inside a page fetch. */
+  private pagePricer(adapter: EventAdapter): Pricer {
+    return assetPricer((request, version) => adapter.view!(request, version, TRANSFER_DESCRIPTOR), this.pagePythPrice);
+  }
+
   private transferQuery(
     filter: TransferFilter = {},
-  ): [EventQuery, Omit<TransferFilter, "asset" | "account" | "withAssetInfo">] {
-    const { asset, account, withAssetInfo, ...rest } = filter;
+  ): [EventQuery, Omit<TransferFilter, "asset" | "account" | "withAssetInfo" | "withValue">] {
+    const { asset, account, withAssetInfo, withValue, ...rest } = filter;
     const source = transferSource(
       this.adapter,
       asset,
       this.accountOf(account),
       withAssetInfo,
       this.requestTimeout,
+      withValue ? this.pagePricer(this.adapter) : undefined,
     );
     return [new EventQuery(source, this.limiter, this.names), rest];
   }

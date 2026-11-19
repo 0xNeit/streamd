@@ -62,6 +62,12 @@ export interface TransferOptions {
    * two views per asset, cached. A view that aborts leaves them off.
    */
   withAssetInfo?: boolean;
+  /**
+   * Adds `value`, the amount in USDC at the record's version, to APT, USDt
+   * and USDC records: one Hyperion pool view per asset and version, or Pyth
+   * before the pools existed. Other assets and tokens get none.
+   */
+  withValue?: boolean;
 }
 
 /** Options for `StreamdClient.transfers`. */

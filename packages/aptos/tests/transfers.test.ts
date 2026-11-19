@@ -978,3 +978,57 @@ describe("transfers with requestTimeout", () => {
     client.destroy();
   });
 });
+
+describe("transfers withValue", () => {
+  const QUOTE = "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b";
+  const POOL = "::pool_v3::current_tick_and_price";
+  // sqrt price 2^60 is 2^120 / 2^128: 1/256 USDC base units per octa.
+  const answer = (call: Call) => {
+    if (call.function.endsWith(POOL)) return [0, (1n << 60n).toString()];
+    if (call.store === store("c2")) return call.function === OWNER ? [CAROL] : [{ inner: QUOTE }];
+    return undefined;
+  };
+  const events = [
+    fa(5, 0, "Withdraw", "a1", "100000000"),
+    fa(5, 1, "Deposit", "b1", "100000000"),
+    fa(5, 2, "Withdraw", "b1", "512"),
+    fa(5, 3, "Deposit", "a1", "512"),
+    fa(5, 4, "Deposit", "c2", "2500000"),
+    fa(5, 5, "Deposit", "b2", "7"),
+    coin(6, 0, "Deposit", BOB, "256"),
+    moved(6, 1, NFT, ALICE, BOB),
+  ];
+  const pool = { price: { numerator: 1n, denominator: 256n }, source: "pool", reference: "0x925660b8618394809f89f8002e2926600c775221f43bf1919782b297a79400d8" };
+  const value = (amount: bigint, quote: object = pool) => ({ quote: QUOTE, decimals: 6, amount, ...quote });
+
+  it("values APT by pool and USDC at par, once per asset and version, leaving other assets and tokens bare", async () => {
+    const { adapter, calls } = withViews(events, answer);
+    const records = await testClient({ adapter }).getTransfers({ fromVersion: 0n, withValue: true });
+    expect(records.map((r) => [`${r.version}:${r.eventIndex}`, r.data.value])).toEqual([
+      ["5:1", value(390625n)],
+      ["5:3", value(2n)],
+      ["5:4", value(2500000n, { price: { numerator: 1n, denominator: 1n }, source: "par" })],
+      ["5:5", undefined],
+      ["6:0", value(1n)],
+      ["6:1", undefined],
+    ]);
+    expect(calls.filter((c) => c.function.endsWith(POOL)).map((c) => c.version)).toEqual([5n, 6n]);
+  });
+
+  it("values live records the same way", async () => {
+    const { adapter } = withViews(events, answer);
+    const client = testClient({ adapter });
+    const seen: Transfer[] = [];
+    const sub = client.transfers((e) => void seen.push(e.data), { fromVersion: 0n, withValue: true, pollInterval: 5 });
+    await sub.caughtUp;
+    sub.unsubscribe();
+    expect(seen.map((t) => t.value?.amount)).toEqual([390625n, 2n, 2500000n, undefined, 1n, undefined]);
+  });
+
+  it("reads no prices without withValue", async () => {
+    const { adapter, calls } = withViews(events, answer);
+    const records = await testClient({ adapter }).getTransfers({ fromVersion: 0n });
+    expect(records.some((r) => r.data.value !== undefined)).toBe(false);
+    expect(calls.some((c) => c.function.endsWith(POOL))).toBe(false);
+  });
+});

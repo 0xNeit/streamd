@@ -28,19 +28,24 @@ const APT: Source = {
   feed: "0x03ae4db29ed4ae33d323568895aa00337e658e348b37509f5372ae51f0af00d5",
 };
 
-/** Keyed by `assetKey`; each pool was the deepest for its pair when chosen. */
+const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
+
+/**
+ * Keyed as `assetKey` writes them, spelled out since `transfers.ts` imports
+ * this module; each pool was the deepest for its pair when chosen.
+ */
 const SOURCES = new Map<string, Source | "par">([
-  [assetKey("0xa"), APT],
-  [assetKey("0x1::aptos_coin::AptosCoin"), APT],
+  [long("a"), APT],
+  [`${long("1")}::aptos_coin::AptosCoin`, APT],
   [
-    assetKey("0x357b0b74bc833e95a115ad22604854d6b0fca151cecd94111770e5d6ffc9dc2b"),
+    "0x357b0b74bc833e95a115ad22604854d6b0fca151cecd94111770e5d6ffc9dc2b",
     {
       decimals: 6,
       pool: "0xd3894aca06d5f42b27c89e6f448114b3ed6a1ba07f992a58b2126c71dd83c127",
           feed: "0x2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b",
     },
   ],
-  [assetKey(QUOTE), "par"],
+  [QUOTE, "par"],
 ]);
 
 /** A price: quote base units per base unit of the asset, and where it was read. */

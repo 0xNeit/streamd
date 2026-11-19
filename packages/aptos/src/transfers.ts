@@ -5,6 +5,8 @@ import { RequestLimiter } from "@streamd/core";
 import { requireAddress } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, StreamdEvent, ViewRequest } from "@streamd/core";
 import type { Transfer } from "@streamd/core";
+import { valueOf } from "./values.js";
+import type { Pricer, Quote } from "./values.js";
 
 export { formatAmount } from "@streamd/core";
 
@@ -198,6 +200,7 @@ const byIdentity = (a: StreamdEvent, b: StreamdEvent) =>
  *
  * `account` resolves to the long-form address whose records to keep. It filters
  * finished records, since a deposit needs its withdraw to report `from`.
+ * `pricer` values coin and fungible-asset records, once per asset and version.
  */
 export function transferSource(
   adapter: EventAdapter,
@@ -205,6 +208,7 @@ export function transferSource(
   account?: () => Promise<string>,
   withAssetInfo?: boolean,
   requestTimeout?: number,
+  pricer?: Pricer,
 ): EventAdapter {
   if (typeof adapter.view !== "function") {
     throw new StreamdError("transfers needs an adapter that implements view");
@@ -224,6 +228,7 @@ export function transferSource(
   const metadata = memo<string | undefined>((asset) => asset !== undefined, track);
   const infos = memo<AssetInfo | undefined>(() => true, track);
   const tokens = memo<boolean>(() => true, track);
+  const quotes = memo<Quote | undefined>(() => true, track);
 
   /** The address `fn` returns for `object`, before the transaction if it was gone after it. */
   const read = async (
@@ -296,6 +301,15 @@ export function transferSource(
     return info === undefined ? event : { ...event, data: { ...event.data, ...info } };
   };
 
+  const withValue = async (event: StreamdEvent<Transfer>, signal: AbortSignal): Promise<StreamdEvent<Transfer>> => {
+    if (TOKEN_EVENTS.has(event.type)) return event;
+    const key = assetKey(event.data.asset);
+    const quote = await quotes(`${key}@${event.version}`, () =>
+      limiter.run(() => pricer!(key, event.version), signal, signal),
+    );
+    return quote === undefined ? event : { ...event, data: { ...event.data, value: valueOf(quote, event.data.amount) } };
+  };
+
   /** A leg to pair, or a finished record for an object transfer, which names both sides. */
   const legOf = async (
     event: StreamdEvent,
@@ -359,6 +373,7 @@ export function transferSource(
       // The store reads above can outlast the page, and these reads are memoized too.
       overtaken();
       if (withAssetInfo) events = await Promise.all(events.map((event) => withInfo(event, signal)));
+      if (pricer !== undefined) events = await Promise.all(events.map((event) => withValue(event, signal)));
       if (options.orderBy === "desc") events.reverse();
       return { ...fetched, events };
     },
