@@ -11,6 +11,7 @@ export { toPrometheus } from "./prometheus.js";
 export { MemoryAdapter } from "./adapters/memory.js";
 export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
 export { RoutingAdapter } from "./adapters/routing.js";
+export { TabSharedAdapter } from "./adapters/tabs.js";
 export { EventPoller } from "./poller.js";
 export { EventQuery, withRetries } from "./query.js";
 export { CursorManager, eventId } from "./cursor.js";
@@ -106,6 +107,11 @@ export type {
   EventDifferenceField,
 } from "./compare.js";
 export type { CachingAdapterOptions, PageStore } from "./adapters/caching.js";
+export type {
+  BroadcastChannelLike,
+  LockManagerLike,
+  TabSharedAdapterOptions,
+} from "./adapters/tabs.js";
 export type {
   AdapterMethod,
   AdapterMetrics,
