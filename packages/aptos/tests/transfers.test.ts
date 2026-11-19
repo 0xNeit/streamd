@@ -5,7 +5,7 @@ import { MemoryAdapter, RoutingAdapter, StreamdError, StreamdNetworkError } from
 import { activityDescriptor, activitySource } from "../src/activity.js";
 import { FullnodeScanAdapter } from "../src/fullnode.js";
 import { TRANSFER_DESCRIPTOR, formatAmount, transferSource } from "../src/transfers.js";
-import type { EventAdapter, FetchOptions, StreamdEvent, ViewRequest } from "@streamd/core";
+import type { AssetValue, EventAdapter, FetchOptions, StreamdEvent, ViewRequest } from "@streamd/core";
 import type { Transfer } from "../src/types.js";
 
 const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
@@ -998,8 +998,9 @@ describe("transfers withValue", () => {
     coin(6, 0, "Deposit", BOB, "256"),
     moved(6, 1, NFT, ALICE, BOB),
   ];
-  const pool = { price: { numerator: 1n, denominator: 256n }, source: "pool", reference: "0x925660b8618394809f89f8002e2926600c775221f43bf1919782b297a79400d8" };
-  const value = (amount: bigint, quote: object = pool) => ({ quote: QUOTE, decimals: 6, amount, ...quote });
+  type Quote = Pick<AssetValue, "price" | "source" | "reference">;
+  const pool: Quote = { price: { numerator: 1n, denominator: 256n }, source: "pool", reference: "0x925660b8618394809f89f8002e2926600c775221f43bf1919782b297a79400d8" };
+  const value = (amount: bigint, quote: Quote = pool): AssetValue => ({ quote: QUOTE, decimals: 6, amount, ...quote });
 
   it("values APT by pool and USDC at par, once per asset and version, leaving other assets and tokens bare", async () => {
     const { adapter, calls } = withViews(events, answer);
