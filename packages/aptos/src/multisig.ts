@@ -1,9 +1,19 @@
-import { Deserializer, Hex, MultiSigTransactionPayload } from "@aptos-labs/ts-sdk";
+import {
+  AccountAddress,
+  Deserializer,
+  Hex,
+  MultiSig,
+  MultiSigTransactionPayload,
+  TransactionPayloadEntryFunction,
+  TransactionPayloadMultiSig,
+  hashValues,
+} from "@aptos-labs/ts-sdk";
+import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
 import { RequestLimiter, StreamdError } from "@streamd/core";
 import type { EntryFunctionCall, EventAdapter, ModuleEventDescriptor, ReduceOptions, Reducer, Reduction, StreamdEvent, ViewRequest } from "@streamd/core";
 import { address, amount, pageSource } from "./records.js";
 import type { Fields } from "./records.js";
-import type { Multisig, MultisigOptions, MultisigState, MultisigTimelock, PendingMultisigTransaction } from "./types.js";
+import type { Multisig, MultisigOptions, MultisigPreview, MultisigPreviewOptions, MultisigState, MultisigTimelock, PendingMultisigTransaction } from "./types.js";
 
 const MODULE = "0x1::multisig_account";
 
@@ -36,12 +46,22 @@ function hex(value: unknown, account: string, what: string): string | undefined 
   return value;
 }
 
+/** `bytes` as one whole `MultisigTransactionPayload`, or `undefined`. */
+function decodePayload(bytes: Uint8Array): MultiSigTransactionPayload | undefined {
+  try {
+    const reader = new Deserializer(bytes);
+    const payload = MultiSigTransactionPayload.deserialize(reader);
+    return reader.remaining() === 0 ? payload : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** The entry function a stored `MultisigTransactionPayload` calls, or `undefined` for bytes that do not decode whole. */
 export function decodeCall(payload: string): EntryFunctionCall | undefined {
+  const call = decodePayload(Hex.fromHexInput(payload).toUint8Array())?.transaction_payload;
+  if (call === undefined) return undefined;
   try {
-    const bytes = new Deserializer(Hex.fromHexInput(payload).toUint8Array());
-    const call = MultiSigTransactionPayload.deserialize(bytes).transaction_payload;
-    if (bytes.remaining() !== 0) return undefined;
     const { address: at, name } = call.module_name;
     return {
       function: `${at.toString()}::${name.identifier}::${call.function_name.identifier}`,
@@ -252,4 +272,88 @@ export function startMultisig(
     unsubscribe: stop,
     [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: stop,
   } as Omit<Multisig, "preview">;
+}
+
+/** What `preview` reads through: views and the head, a transaction builder, and `previewEvents`. */
+export interface PreviewHost {
+  view: ViewAt;
+  head: () => Promise<bigint>;
+  build: (sender: string, payload: TransactionPayloadMultiSig | TransactionPayloadEntryFunction) => Promise<SimpleTransaction>;
+  simulate: (transaction: SimpleTransaction) => Promise<StreamdEvent[]>;
+}
+
+const EXECUTOR_EVENTS = new Set(["Vote", "TransactionExecutionSucceeded", "TransactionExecutionFailed"].map((n) => `${MODULE}::${n}`));
+
+function toBytes(given: Uint8Array | string): Uint8Array {
+  try {
+    return Hex.fromHexInput(given).toUint8Array();
+  } catch {
+    throw new StreamdError("multisig preview payload must be bytes or 0x hex");
+  }
+}
+
+/** The payload `sequenceNumber` would run: its stored one, or `given` checked against its hash. */
+function payloadOf(state: MultisigState, sequenceNumber: bigint, given: Uint8Array | string | undefined): MultiSigTransactionPayload {
+  const item = state.pending.get(sequenceNumber);
+  const name = `multisig ${state.address} transaction ${sequenceNumber}`;
+  if (item === undefined) throw new StreamdError(`${name} is not pending`);
+  let bytes: Uint8Array;
+  if (item.payload !== undefined) {
+    if (given !== undefined) throw new StreamdError(`${name} stores its payload, so preview takes none`);
+    bytes = toBytes(item.payload);
+  } else {
+    if (given === undefined) throw new StreamdError(`${name} stores only its payload's hash; pass the payload to preview it`);
+    bytes = toBytes(given);
+    if (Hex.fromHexInput(hashValues([bytes])).toString() !== item.payloadHash?.toLowerCase()) {
+      throw new StreamdError(`The payload given does not match ${name}'s hash`);
+    }
+  }
+  const payload = decodePayload(bytes);
+  if (payload === undefined) throw new StreamdError(`${name}'s payload is not a MultisigTransactionPayload`);
+  return payload;
+}
+
+/**
+ * Simulates pending transaction `sequenceNumber` with no key. When it is next
+ * in the queue, the first owner `can_execute` names at the head (which counts
+ * that owner's approval if they have not voted) sends it through the
+ * multisig, as an execution would run; otherwise its entry function is
+ * simulated directly with the multisig as sender, and the preview is partial.
+ */
+export async function previewMultisig(
+  host: PreviewHost,
+  state: MultisigState,
+  sequenceNumber: bigint,
+  options: MultisigPreviewOptions = {},
+): Promise<MultisigPreview> {
+  if (typeof sequenceNumber !== "bigint") throw new StreamdError("multisig preview needs a bigint sequence number");
+  const payload = payloadOf(state, sequenceNumber, options.payload);
+  let sender: string | undefined;
+  if (sequenceNumber === state.lastResolved + 1n) {
+    const head = await host.head();
+    for (const owner of state.owners) {
+      const request: ViewRequest = { function: `${MODULE}::can_execute`, typeArguments: [], functionArguments: [owner, state.address, String(sequenceNumber)] };
+      const [can] = await host.view(request, head);
+      if (can === true) {
+        sender = owner;
+        break;
+      }
+    }
+  }
+  const partial = sender === undefined;
+  const transaction = await host.build(
+    sender ?? state.address,
+    partial
+      ? new TransactionPayloadEntryFunction(payload.transaction_payload)
+      : new TransactionPayloadMultiSig(new MultiSig(AccountAddress.from(state.address), payload)),
+  );
+  const simulated = await host.simulate(transaction);
+  const own = (e: StreamdEvent) => EXECUTOR_EVENTS.has(e.type) && address((e.data as Fields | null)?.multisig_account) === state.address;
+  return {
+    sequenceNumber,
+    sender: sender ?? state.address,
+    partial,
+    events: simulated.filter((e) => !own(e)),
+    executorEvents: simulated.filter(own),
+  };
 }

@@ -519,8 +519,6 @@ export interface MultisigPreview {
    * from the current state rather than after the transactions before it.
    */
   partial: boolean;
-  /** The simulated version. */
-  version: bigint;
   /** The payload's events, fee statement included. */
   events: StreamdEvent[];
   /**

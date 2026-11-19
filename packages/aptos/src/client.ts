@@ -1,4 +1,4 @@
-import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
+import { Aptos, Network, SimpleTransaction, generateRawTransaction, type AptosConfig, type MultiAgentTransaction } from "@aptos-labs/ts-sdk";
 import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, lazyResolve, requireAddress, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
 import type {
   EventAdapter,
@@ -20,7 +20,7 @@ import { holdersAt } from "./holders.js";
 import { IndexerAccountAdapter } from "./indexer.js";
 import { provenanceDescriptor, provenanceSource } from "./provenance.js";
 import { governanceSource, startProposals } from "./governance.js";
-import { MULTISIG_DESCRIPTOR, multisigSource, startMultisig } from "./multisig.js";
+import { MULTISIG_DESCRIPTOR, multisigSource, previewMultisig, startMultisig } from "./multisig.js";
 import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { PYTH_DESCRIPTOR, priceSource, pythPriceReader, requireFeedId } from "./prices.js";
@@ -30,7 +30,7 @@ import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
-import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, Multisig, MultisigOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, Multisig, MultisigOptions, MultisigPreviewOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -292,7 +292,18 @@ export class AptosClient extends StreamdClient {
       who,
       options,
     );
-    return Object.assign(handle, { preview: () => Promise.reject(new StreamdError("not yet")) }) as Multisig;
+    const previewHost = {
+      ...host,
+      build: async (sender: string, payload: Parameters<typeof generateRawTransaction>[0]["payload"]) =>
+        new SimpleTransaction(await this.limiter.run(() => generateRawTransaction({ aptosConfig: this.aptos.config, sender, payload }))),
+      simulate: (transaction: SimpleTransaction) => this.previewEvents(transaction),
+    };
+    return Object.assign(handle, {
+      preview: async (sequenceNumber: bigint, opts?: MultisigPreviewOptions) => {
+        await handle.ready;
+        return previewMultisig(previewHost, handle.value, sequenceNumber, opts);
+      },
+    }) as Multisig;
   }
 
   /**

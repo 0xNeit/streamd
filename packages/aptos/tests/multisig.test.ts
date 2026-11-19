@@ -1,8 +1,19 @@
 import { describe, expect, it } from "bun:test";
-import { AccountAddress, EntryFunction, MultiSigTransactionPayload, U64 } from "@aptos-labs/ts-sdk";
+import {
+  AccountAddress,
+  EntryFunction,
+  Hex,
+  MultiSigTransactionPayload,
+  TransactionPayloadEntryFunction,
+  TransactionPayloadMultiSig,
+  U64,
+  hashValues,
+} from "@aptos-labs/ts-sdk";
+import type { SimpleTransaction } from "@aptos-labs/ts-sdk";
 import { MemoryAdapter } from "@streamd/core";
 import type { StreamdEvent, ViewRequest } from "@streamd/core";
-import { decodeCall, readMultisig } from "../src/multisig.js";
+import { decodeCall, previewMultisig, readMultisig } from "../src/multisig.js";
+import type { PreviewHost } from "../src/multisig.js";
 import type { MultisigState } from "../src/types.js";
 import { testClient } from "./helpers.js";
 
@@ -111,7 +122,7 @@ function multisigAdapter(events: StreamdEvent[], asked: [string, bigint][] = [])
   const view = async (request: ViewRequest, version: bigint) => {
     const name = request.function.split("::")[2]!;
     asked.push([name, version]);
-    if (request.functionArguments[0] !== M) throw new Error("not a multisig");
+    if (request.functionArguments?.[0] !== M) throw new Error("not a multisig");
     return [name === "next_sequence_number" ? String(version) : base[name as keyof typeof base]];
   };
   return { adapter: Object.assign(memory, { view }), memory, asked };
@@ -170,6 +181,79 @@ describe("multisig", () => {
     const other = client.multisig(long("beef"), { fromVersion: 1n });
     await expect(other.ready).rejects.toThrow("not a multisig");
     expect(other.active).toBe(false);
+    client.destroy();
+  });
+});
+
+describe("previewMultisig", () => {
+  const sha3 = (hex: string) => Hex.fromHexInput(hashValues([Hex.fromHexInput(hex).toUint8Array()])).toString();
+  const event = (type: string, account = M): StreamdEvent => ({ type, data: { multisig_account: account }, version: 99n, sequenceNumber: 0n, eventIndex: 0 });
+  const simulated = [
+    event("0x1::fungible_asset::Withdraw"),
+    event("0x1::multisig_account::Vote"),
+    event("0x1::multisig_account::Vote", long("other")),
+    event("0x1::multisig_account::TransactionExecutionSucceeded"),
+    event("0x1::transaction_fee::FeeStatement"),
+  ];
+
+  async function setup(canExecute: string[]) {
+    const state = await readMultisig(
+      views({ ...base, get_pending_transactions: [item(), item({ payload: { vec: [] }, payload_hash: { vec: [sha3(transfer(5))] } })] }),
+      M,
+      50n,
+    );
+    const built: [string, unknown][] = [];
+    const asked: string[] = [];
+    const host: PreviewHost = {
+      view: async (request) => {
+        asked.push(String(request.functionArguments![0]));
+        return [canExecute.includes(String(request.functionArguments![0]))];
+      },
+      head: async () => 60n,
+      build: async (sender, payload) => (built.push([sender, payload]), { sender } as unknown as SimpleTransaction),
+      simulate: async () => simulated,
+    };
+    return { state, host, built, asked };
+  }
+
+  it("sends the next transaction through the multisig as the first owner can_execute names", async () => {
+    const { state, host, built, asked } = await setup([B, C]);
+    const preview = await previewMultisig(host, state, 5n);
+    expect(asked).toEqual([A, B]);
+    expect(built[0]![0]).toBe(B);
+    expect(built[0]![1]).toBeInstanceOf(TransactionPayloadMultiSig);
+    expect(preview).toMatchObject({ sequenceNumber: 5n, sender: B, partial: false });
+    expect(preview.events.map((e) => e.type)).toEqual(["0x1::fungible_asset::Withdraw", "0x1::multisig_account::Vote", "0x1::transaction_fee::FeeStatement"]);
+    expect(preview.executorEvents.map((e) => e.type)).toEqual(["0x1::multisig_account::Vote", "0x1::multisig_account::TransactionExecutionSucceeded"]);
+  });
+
+  it("falls back to the entry function as the multisig when no owner can execute, or it is not next", async () => {
+    const none = await setup([]);
+    expect(await previewMultisig(none.host, none.state, 5n)).toMatchObject({ sender: M, partial: true });
+    expect(none.built[0]![1]).toBeInstanceOf(TransactionPayloadEntryFunction);
+    const later = await setup([A]);
+    expect(await previewMultisig(later.host, later.state, 6n, { payload: transfer(5) })).toMatchObject({ sender: M, partial: true });
+    expect(later.asked).toEqual([]);
+  });
+
+  it("checks a hash-only payload before building anything, and refuses what it cannot preview", async () => {
+    const { state, host, built } = await setup([]);
+    await expect(previewMultisig(host, state, 6n)).rejects.toThrow("stores only its payload's hash");
+    await expect(previewMultisig(host, state, 6n, { payload: transfer(6) })).rejects.toThrow("does not match");
+    await expect(previewMultisig(host, state, 6n, { payload: "nothex" })).rejects.toThrow("bytes or 0x hex");
+    await expect(previewMultisig(host, state, 5n, { payload: transfer(1_000_000) })).rejects.toThrow("stores its payload");
+    await expect(previewMultisig(host, state, 7n)).rejects.toThrow("transaction 7 is not pending");
+    await expect(previewMultisig(host, state, 5 as never)).rejects.toThrow("bigint sequence number");
+    expect(built).toEqual([]);
+    await previewMultisig(host, state, 6n, { payload: Hex.fromHexInput(transfer(5)).toUint8Array() });
+    expect(built).toHaveLength(1);
+  });
+
+  it("waits for ready on the client", async () => {
+    const { adapter } = multisigAdapter([]);
+    const client = testClient({ adapter });
+    const multisig = client.multisig(M);
+    await expect(multisig.preview(6n)).rejects.toThrow("stores only its payload's hash");
     client.destroy();
   });
 });
