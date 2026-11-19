@@ -8,6 +8,7 @@ export function staticPath(root: string, pathname: string): string | undefined {
   } catch {
     return undefined;
   }
+  if (decoded.includes("\0")) return undefined;
   const path = resolve(join(root, decoded === "/" ? "index.html" : decoded));
   return path.startsWith(resolve(root) + sep) ? path : undefined;
 }

@@ -10,8 +10,9 @@ export const NETWORKS = {
 export type PlaygroundNetwork = keyof typeof NETWORKS;
 
 // The public fullnodes share one anonymous quota per IP, and a module scan
-// reads every transaction, so a keyless tab paces itself to leave room.
-export const ANONYMOUS_REQUESTS_PER_SECOND = 2;
+// reads every transaction, so a keyless tab spaces its adapter calls. Each
+// call can still read several pages, so this slows a tab rather than capping it.
+const ANONYMOUS_REQUESTS_PER_SECOND = 2;
 const REQUEST_TIMEOUT = 30_000;
 
 /** An `Aptos` instance and an `AptosClient` over it; a blank key means anonymous. */

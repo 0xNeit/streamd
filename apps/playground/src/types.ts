@@ -1,10 +1,11 @@
+import { getAptosFullNode } from "@aptos-labs/ts-sdk";
 import type { Aptos } from "@aptos-labs/ts-sdk";
 import { generateEventTypes, parseModuleAbi } from "@streamd/codegen";
 import type { LoadModule, ModuleRef } from "@streamd/codegen";
 import { StreamdError, toStreamdError } from "@streamd/core";
 
 /** The module an event type is declared in, type arguments ignored; the type must already be checked. */
-export function moduleOf(eventType: string): ModuleRef {
+export function moduleOf(eventType: string): ModuleRef & { module: string } {
   const [address = "", module = ""] = eventType.split("<", 1)[0]!.split("::");
   return { address, module };
 }
@@ -14,7 +15,13 @@ export function moduleLoader(aptos: Aptos): LoadModule {
   return async (address, module) => {
     let response: unknown;
     try {
-      response = await aptos.getAccountModule({ accountAddress: address, moduleName: module });
+      // Not getAccountModule: the SDK memoizes it by address and name alone, so
+      // after a network switch it would answer from the other network's ABI.
+      ({ data: response } = await getAptosFullNode<{}, object>({
+        aptosConfig: aptos.config,
+        originMethod: "playground",
+        path: `accounts/${address}/module/${module}`,
+      }));
     } catch (err) {
       if ((err as { status?: unknown } | null)?.status === 404) throw new StreamdError(`Module ${address}::${module} not found`);
       throw toStreamdError(err, `module ${address}::${module}`);

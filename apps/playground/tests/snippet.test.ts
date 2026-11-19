@@ -4,6 +4,7 @@ import { descriptorName, snippet } from "../src/snippet.js";
 const SOURCE = [
   'export const Deposit = defineEvent<Deposit>("0x1::fungible_asset::Deposit");',
   'export const FungibleAsset_Withdraw = defineEvent<FungibleAsset_Withdraw>("0x1::fungible_asset::Withdraw");',
+  'export const Alias = defineEvent<Other>("0x1::fungible_asset::Frozen");',
   "export const Moved = <T0>(t0: string) =>",
   "  defineEvent<Moved<T0>>(`0xcafe::pool::Moved<${t0}>`);",
 ].join("\n");

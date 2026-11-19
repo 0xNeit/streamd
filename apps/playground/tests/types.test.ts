@@ -1,6 +1,7 @@
-import { describe, expect, it } from "bun:test";
-import type { Aptos } from "@aptos-labs/ts-sdk";
+import { afterEach, describe, expect, it } from "bun:test";
 import { StreamdError, StreamdNetworkError } from "@streamd/core";
+import { clientFor, describeError } from "../src/client.js";
+import type { PlaygroundNetwork } from "../src/client.js";
 import { generateFor, moduleLoader, moduleOf } from "../src/types.js";
 
 const struct = (name: string, isEvent: boolean, fields: { name: string; type: string }[], params = 0) => ({
@@ -25,18 +26,26 @@ const MODULES: Record<string, unknown> = {
   "0xcafe::pair": { abi: { address: "0xcafe", name: "pair", structs: [struct("Pair", false, [{ name: "left", type: "address" }])] } },
 };
 
-function fakeAptos(fail?: unknown) {
+const realFetch = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
+/** An anonymous client whose fullnode answers from `modules`, or with `fail`'s status and body. */
+function fakeAptos(fail?: { status: number; body: string }, network: PlaygroundNetwork = "mainnet", modules = MODULES) {
   const calls: string[] = [];
-  const aptos = {
-    getAccountModule: async ({ accountAddress, moduleName }: { accountAddress: string; moduleName: string }) => {
-      calls.push(`${accountAddress}::${moduleName}`);
-      if (fail !== undefined) throw fail;
-      const found = MODULES[`${accountAddress}::${moduleName}`];
-      if (found === undefined) throw Object.assign(new Error("Module not found"), { status: 404 });
-      return found;
-    },
-  } as unknown as Aptos;
-  return { aptos, calls };
+  globalThis.fetch = (async (input: string | URL) => {
+    const url = new URL(String(input));
+    const [, address, module] = url.pathname.match(/\/accounts\/([^/]+)\/module\/([^/]+)$/) ?? [];
+    calls.push(`${url.host} ${address}::${module}`);
+    if (fail !== undefined) return new Response(fail.body, { status: fail.status });
+    const found = modules[`${address}::${module}`];
+    if (found === undefined) return Response.json({ message: "Module not found", error_code: "module_not_found" }, { status: 404 });
+    return Response.json(found);
+  }) as unknown as typeof fetch;
+  const { aptos, client } = clientFor(network, "");
+  client.destroy();
+  return { aptos, calls: () => calls.map((c) => c.split(" ")[1]), hosts: () => calls.map((c) => c.split(" ")[0]) };
 }
 
 describe("moduleOf", () => {
@@ -53,7 +62,7 @@ describe("generateFor", () => {
     expect(source).toContain('export const Swap = defineEvent<Swap>("0xcafe::pool::Swap");');
     expect(source).toContain("export interface Pair {");
     expect(source).toContain("export const Moved = <T0 = unknown>(t0: string) =>");
-    expect(calls).toEqual(["0xcafe::pool", "0xcafe::pair"]);
+    expect(calls()).toEqual(["0xcafe::pool", "0xcafe::pair"]);
   });
 
   it("names a missing module", async () => {
@@ -63,16 +72,26 @@ describe("generateFor", () => {
     expect(err.message).toBe("Module 0xcafe::gone not found");
   });
 
-  it("wraps any other failure with the module and keeps its status", async () => {
-    const cause = Object.assign(new Error("Too Many Requests"), { status: 429 });
-    const err = await moduleLoader(fakeAptos(cause).aptos)("0xcafe", "pool").catch((e) => e);
+  it("reports a plain-text 429 as a rate limit", async () => {
+    const err = await moduleLoader(fakeAptos({ status: 429, body: "Per anonymous IP rate limit exceeded" }).aptos)("0xcafe", "pool").catch((e) => e);
     expect(err).toBeInstanceOf(StreamdNetworkError);
-    expect(err.message).toBe("Fullnode request for module 0xcafe::pool failed: Too Many Requests");
+    expect(err.message).toStartWith("Fullnode request for module 0xcafe::pool failed:");
     expect(err.statusCode).toBe(429);
+    expect(describeError(err, false)).toContain("Add an API key");
+  });
+
+  it("reads each network's own ABI, with nothing cached across networks", async () => {
+    const testnetPool = { abi: { address: "0xcafe", name: "pool", structs: [struct("TestOnly", true, [])] } };
+    expect(await generateFor(fakeAptos().aptos, "0xcafe::pool::Swap")).toContain("export const Swap =");
+    const testnet = fakeAptos(undefined, "testnet", { ...MODULES, "0xcafe::pool": testnetPool });
+    const source = await generateFor(testnet.aptos, "0xcafe::pool::TestOnly");
+    expect(source).toContain("export const TestOnly =");
+    expect(source).not.toContain("export const Swap =");
+    expect(testnet.hosts()[0]).toContain("testnet");
   });
 
   it("refuses a response with no ABI", async () => {
-    const aptos = { getAccountModule: async () => ({ bytecode: "0x00" }) } as unknown as Aptos;
+    const { aptos } = fakeAptos(undefined, "mainnet", { "0xcafe::pool": { bytecode: "0x00" } });
     await expect(moduleLoader(aptos)("0xcafe", "pool")).rejects.toThrow(StreamdError);
   });
 });

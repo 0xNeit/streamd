@@ -23,4 +23,20 @@ describe("sendOnce", () => {
     expect(await requests[0]!.text()).toBe('{"k":1}');
     await expect(sendOnce(20).provider({ url: "https://a.example/v1", method: "GET" })).rejects.toMatchObject({ name: "TimeoutError" });
   });
+
+  it("parses JSON, keeps the method, response headers and a binary body as given", async () => {
+    let seen: Request | undefined;
+    globalThis.fetch = (async (input: string | URL, init?: RequestInit) => {
+      seen = new Request(String(input), init);
+      return Response.json({ ok: true }, { headers: { "retry-after": "3" } });
+    }) as unknown as typeof fetch;
+    const bytes = new Uint8Array([1, 2, 255]);
+    const response = await sendOnce().provider({ url: "https://a.example/v1/simulate", method: "POST", body: bytes });
+    expect(response).toMatchObject({ status: 200, data: { ok: true } });
+    expect((response.headers as Record<string, string>)["retry-after"]).toBe("3");
+    expect(seen!.method).toBe("POST");
+    expect(new Uint8Array(await seen!.arrayBuffer())).toEqual(bytes);
+    await sendOnce().provider({ url: "https://a.example/v1", method: "GET" });
+    expect(seen!.method).toBe("GET");
+  });
 });

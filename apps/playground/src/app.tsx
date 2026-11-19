@@ -9,7 +9,7 @@ import { clientFor, describeError, NETWORKS } from "./client.js";
 import type { PlaygroundNetwork } from "./client.js";
 import { browserStorage, rememberedKey, storeKey } from "./settings.js";
 import { descriptorName, snippet } from "./snippet.js";
-import { generateFor } from "./types.js";
+import { generateFor, moduleOf } from "./types.js";
 
 const EXAMPLE = "0x1::fungible_asset::Deposit";
 const MAX_EVENTS = 25;
@@ -164,7 +164,7 @@ export function App() {
           {run?.source !== undefined ? (
             <>
               <p className="muted">
-                What <code>streamd codegen {run.eventType.split("::").slice(0, 2).join("::")}</code> writes. Save it as{" "}
+                What <code>streamd codegen {moduleName(run.eventType)}</code> writes. Save it as{" "}
                 <code>events.ts</code>.
               </p>
               <pre className="code" tabIndex={0} aria-label="Generated TypeScript">
@@ -225,6 +225,11 @@ function LiveEvents({ run, following, onToggle }: { run: Run; following: boolean
       </ol>
     </section>
   );
+}
+
+function moduleName(eventType: string): string {
+  const { address, module } = moduleOf(eventType);
+  return `${address}::${module}`;
 }
 
 function withName(run: Run): { name?: string } {

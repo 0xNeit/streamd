@@ -14,5 +14,6 @@ describe("staticPath", () => {
     expect(staticPath(ROOT, "/..%2f..%2fetc%2fpasswd")).toBeUndefined();
     expect(staticPath(ROOT, "/%2e%2e/dist-other/x")).toBeUndefined();
     expect(staticPath(ROOT, "/%E0%A4%A")).toBeUndefined();
+    expect(staticPath(ROOT, "/index.html%00.js")).toBeUndefined();
   });
 });

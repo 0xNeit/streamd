@@ -1,8 +1,8 @@
 import { normalizeAddress, StreamdError } from "@streamd/core";
+import type { EventColumnType } from "@streamd/core";
 import type { FieldAbi, ModuleAbi, MoveType, StructAbi, ViewAbi } from "./abi.js";
 import { arbitraryWriter, BYTE_LENGTH } from "./arbitraries.js";
 import type { ArbitraryContext } from "./arbitraries.js";
-import type { EventColumnType } from "@streamd/core";
 
 /** One module, or every module at `address` when `module` is unset. */
 export interface ModuleRef {

@@ -4536,8 +4536,10 @@ bun run serve   # http://127.0.0.1:5207 (PORT to change it)
   `localStorage`; unticking removes it. The snippet never contains it: it reads
   `APTOS_API_KEY` from the environment.
 - **Rate limits.** The public fullnodes limit anonymous requests per IP, and following a module
-  event scans every transaction. Without a key the page sends at most two requests a second
-  through `sendOnce`, a 429 is shown as a rate limit with the advice to add a key, and the
+  event scans every transaction. Without a key the client makes at most two adapter calls a
+  second; each module-scan call reads up to ten pages of transactions, so a busy type such as
+  `0x1::fungible_asset::Deposit` runs at about four HTTP requests a second. Requests go through
+  `sendOnce`, a 429 is shown as a rate limit with the advice to add a key, and the
   poller backs off, giving up after five failures in a row. Polling starts only after a passing check, and Stop ends it.
   Expect an anonymous tab to be limited after some minutes on a busy chain.
 - **Scope.** Module events only, on Aptos. No handle, account or resource descriptors, type
