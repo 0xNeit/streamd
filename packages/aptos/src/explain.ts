@@ -1,12 +1,13 @@
 import { StreamdError, checkTimeout, committedTransaction, formatAmount, normalizeAddress, raceAbort, requireTransactionHash } from "@streamd/core";
-import type { EventAdapter, EventPage, RequestLimiter, StreamdEvent, TransactionEvents, Transfer } from "@streamd/core";
+import type { AssetValue, EventAdapter, EventPage, RequestLimiter, StreamdEvent, TransactionEvents, Transfer } from "@streamd/core";
 import { deltas } from "./activity.js";
 import { u } from "./records.js";
 import { toSale } from "./sales.js";
 import { toSwap } from "./swaps.js";
 import { simulation } from "./transaction.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import type { AccountBalanceChange, ExplainOptions, GasUsage, TransactionExplanation } from "./types.js";
+import { QUOTE, assetPricer, valueOf } from "./values.js";
+import type { AccountBalanceChange, ExplainOptions, GasUsage, Price, TransactionExplanation } from "./types.js";
 
 const FEE_STATEMENT = "0x1::transaction_fee::FeeStatement";
 const KEYS = ["signerPublicKey", "secondarySignersPublicKeys", "feePayerPublicKey"] as const;
@@ -22,6 +23,8 @@ export interface ExplainHost {
   };
   pollInterval: number;
   requestTimeout?: number;
+  /** Pyth's price of a feed at a version, through the client's limiter. */
+  pyth: (feedId: string, version: bigint) => Promise<Price | undefined>;
 }
 
 function gasOf(events: StreamdEvent[], unitPrice: bigint | undefined): GasUsage | undefined {
@@ -48,7 +51,10 @@ function balanceChanges(transfers: Transfer[]): AccountBalanceChange[] {
   return [...accounts].flatMap((account) =>
     deltas(transfers, account!).map(({ asset, delta }) => {
       const info = transfers.find((t) => t.asset === asset && t.symbol !== undefined);
-      return { account: account!, asset, delta, ...(info && { symbol: info.symbol, decimals: info.decimals }) };
+      const priced = transfers.find((t) => t.asset === asset && t.value !== undefined)?.value;
+      const change: AccountBalanceChange = { account: account!, asset, delta, ...(info && { symbol: info.symbol, decimals: info.decimals }) };
+      if (priced !== undefined) change.value = valueOf(priced, delta);
+      return change;
     }),
   );
 }
@@ -58,16 +64,19 @@ async function transfersOf(
   host: ExplainHost,
   found: TransactionEvents,
   shift: bigint,
-  withAssetInfo: boolean,
-  signal: AbortSignal | undefined,
+  options: ExplainOptions,
 ): Promise<Transfer[]> {
+  const { signal } = options;
   const page: EventPage = { events: found.events, nextCursor: undefined, hasMore: false };
   const limited = host.limiter.wrap(host.adapter, signal, signal);
   const feed: EventAdapter = {
     fetchEvents: async () => page,
     view: (request, version, descriptor) => limited.view!(request, version - shift, descriptor),
   };
-  const source = transferSource(feed, undefined, undefined, withAssetInfo, host.requestTimeout);
+  const pricer = options.withValue
+    ? assetPricer((request, version) => feed.view!(request, version, TRANSFER_DESCRIPTOR), (feedId, version) => host.pyth(feedId, version - shift))
+    : undefined;
+  const source = transferSource(feed, undefined, undefined, options.withAssetInfo !== false, host.requestTimeout, pricer);
   return (await source.fetchEvents(TRANSFER_DESCRIPTOR, {})).events.map((e) => e.data as Transfer);
 }
 
@@ -137,7 +146,7 @@ export async function explain(host: ExplainHost, target: unknown, options: Expla
     const events = found.events;
     const first = events[0];
     const sender = first?.sender === undefined ? undefined : normalizeAddress(first.sender);
-    const transfers = await transfersOf(host, found, shift, options.withAssetInfo !== false, options.signal);
+    const transfers = await transfersOf(host, found, shift, options);
     const explanation: TransactionExplanation = {
       simulated: typeof target !== "string",
       version: found.version,
@@ -190,10 +199,11 @@ export function formatExplanation(explanation: TransactionExplanation): string {
       details.set(t.asset, { symbol, decimals });
     }
   }
-  const amount = (value: bigint, asset: string, signed = false) => {
+  const amount = (value: bigint, asset: string, signed = false, worth?: AssetValue) => {
     const info = details.get(asset);
-    const text = info === undefined ? `${value} ${clean(asset)}` : `${formatAmount(value, info.decimals)} ${clean(info.symbol)}`;
-    return signed && value > 0n ? `+${text}` : text;
+    let text = info === undefined ? `${value} ${clean(asset)}` : `${formatAmount(value, info.decimals)} ${clean(info.symbol)}`;
+    if (signed && value > 0n) text = `+${text}`;
+    return worth === undefined ? text : `${text} (${formatAmount(worth.amount, worth.decimals)} ${worth.quote === QUOTE ? "USDC" : clean(worth.quote)})`;
   };
   const apt = (octas: bigint) => `${formatAmount(octas, APT_DECIMALS)} APT`;
 
@@ -217,10 +227,10 @@ export function formatExplanation(explanation: TransactionExplanation): string {
   section(
     "Transfers",
     e.transfers.map((t) =>
-      [amount(t.amount, t.asset), t.from === undefined ? "" : ` from ${who(t.from)}`, t.to === undefined ? "" : ` to ${who(t.to)}`].join(""),
+      [amount(t.amount, t.asset, false, t.value), t.from === undefined ? "" : ` from ${who(t.from)}`, t.to === undefined ? "" : ` to ${who(t.to)}`].join(""),
     ),
   );
-  section("Balance changes", e.balanceChanges.map((c) => `${who(c.account)}: ${amount(c.delta, c.asset, true)}`));
+  section("Balance changes", e.balanceChanges.map((c) => `${who(c.account)}: ${amount(c.delta, c.asset, true, c.value)}`));
   section(
     "Swaps",
     e.swaps.map((s) => `${s.protocol}: ${amount(s.amountIn, s.assetIn)} in, ${amount(s.amountOut, s.assetOut)} out, pool ${clean(s.poolId)}`),

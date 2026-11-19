@@ -1,6 +1,7 @@
 import type { MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type { IndexerAccountAdapter } from "./indexer.js";
 import type {
+  AssetValue,
   EntryFunctionCall,
   EventFilter,
   EventPredicate,
@@ -278,6 +279,8 @@ export interface AccountBalanceChange {
   /** From the transfers, when they carry asset details. */
   symbol?: string;
   decimals?: number;
+  /** `delta` in USDC at the transfers' price, with `withValue`. */
+  value?: AssetValue;
 }
 
 /**
@@ -333,6 +336,8 @@ export interface ExplainOptions
   signal?: AbortSignal;
   /** Adds `symbol` and `decimals` to transfers and balance changes, read by view (default true). */
   withAssetInfo?: boolean;
+  /** Adds `value` in USDC to transfers and balance changes, as `TransferOptions.withValue` (default false). */
+  withValue?: boolean;
   /** Attaches `names`, through the client's name cache (`true` for the default expiry, or `{ ttl }`). */
   withNames?: boolean | NameOptions;
 }

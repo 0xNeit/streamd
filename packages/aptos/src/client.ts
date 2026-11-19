@@ -707,8 +707,8 @@ export class AptosClient extends StreamdClient {
    * a built, unsigned transaction, simulated as `previewEvents` simulates it,
    * with its views read at the newest state the node had. A failed
    * transaction resolves with `success: false`, its gas and no transfers.
-   * Asset details are read unless `withAssetInfo: false`; `withNames` adds
-   * `names`. Store and asset reads go through the client's limiter; a failed
+   * Asset details are read unless `withAssetInfo: false`; `withValue` adds
+   * USDC values to transfers and balance changes; `withNames` adds `names`. Store and asset reads go through the client's limiter; a failed
    * read rejects. `formatExplanation` renders the result as text.
    */
   async explain(
@@ -721,6 +721,7 @@ export class AptosClient extends StreamdClient {
       names: this.names,
       pollInterval: this.defaults.pollInterval!,
       requestTimeout: this.requestTimeout,
+      pyth: this.pythPrice,
     };
     return explain(host, target, options);
   }

@@ -106,6 +106,8 @@ export function assetPricer(
 
 /** `amount` of an asset at `quote`, in USDC base units rounded toward zero. */
 export function valueOf(quote: Quote, amount: bigint): AssetValue {
-  const { numerator, denominator } = quote.price;
-  return { quote: QUOTE, decimals: QUOTE_DECIMALS, amount: (amount * numerator) / denominator, ...quote };
+  const { price, source, reference } = quote;
+  const value: AssetValue = { quote: QUOTE, decimals: QUOTE_DECIMALS, amount: (amount * price.numerator) / price.denominator, price, source };
+  if (reference !== undefined) value.reference = reference;
+  return value;
 }

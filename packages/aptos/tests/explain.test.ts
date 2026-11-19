@@ -3,10 +3,12 @@ import { AccountAddress, Aptos, AptosConfig, Ed25519PrivateKey, Network, parseTy
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { StreamdError, parseEvent } from "@streamd/core";
-import type { EventAdapter, StreamdEvent, TransactionEvents, ViewRequest } from "@streamd/core";
+import type { AssetValue, EventAdapter, StreamdEvent, TransactionEvents, ViewRequest } from "@streamd/core";
 import { toSale } from "../src/sales.js";
 import { toSwap } from "../src/swaps.js";
 import { formatExplanation } from "../src/index.js";
+import { explain } from "../src/explain.js";
+import { RequestLimiter } from "@streamd/core";
 import type { TransactionExplanation } from "../src/index.js";
 import { testClient } from "./helpers.js";
 
@@ -42,7 +44,7 @@ const fa = (v: bigint, i: number, side: string, store: string, amount: string) =
 const fee = (v: bigint, i: number) => ev(v, i, "0x1::transaction_fee::FeeStatement", FEE, { transactionHash: HASH });
 
 /** Serves one committed transaction and one simulation, with views over `STORES` and `INFO` that record the version read. */
-function adapter(found: TransactionEvents, simulated?: TransactionEvents, head = 99n) {
+function adapter(found: TransactionEvents, simulated?: TransactionEvents, head = 99n, sqrtPrice?: string) {
   const views: [string, bigint][] = [];
   const base: EventAdapter = {
     fetchEvents: async () => ({ events: [], nextCursor: undefined, hasMore: false }),
@@ -52,6 +54,7 @@ function adapter(found: TransactionEvents, simulated?: TransactionEvents, head =
     view: async (request: ViewRequest, version: bigint) => {
       views.push([request.function, version]);
       const name = request.function.split("::").pop()!;
+      if (name === "current_tick_and_price" && sqrtPrice !== undefined) return [0, sqrtPrice];
       if (name === "symbol" || name === "decimals") {
         const info = INFO[String(request.functionArguments![0])]!;
         return [name === "symbol" ? info[0] : String(info[1])];
@@ -402,5 +405,63 @@ describe("formatExplanation", () => {
     });
     expect(text.split("\n")[0]).toBe(`Transaction ${HASH} at version 10`);
     expect(text).toContain(`  5 ${APT} from ${ALICE} to ${BOB}`);
+  });
+});
+
+describe("explain withValue", () => {
+  const USDC_QUOTE = "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b";
+  const POOL = "0x925660b8618394809f89f8002e2926600c775221f43bf1919782b297a79400d8";
+  // sqrt price 2^60: 1/256 USDC base units per octa.
+  const worth = (amount: bigint): AssetValue => ({ quote: USDC_QUOTE, decimals: 6, amount, price: { numerator: 1n, denominator: 256n }, source: "pool", reference: POOL });
+
+  it("values transfers and each account's delta at the transaction's version, a loss negative", async () => {
+    const { base, views } = adapter(transfer, undefined, 99n, (1n << 60n).toString());
+    const explanation = await testClient({ adapter: base }).explain(HASH, { withValue: true, withAssetInfo: false });
+    expect(explanation.transfers[0]!.value).toEqual(worth(976562n));
+    expect(explanation.balanceChanges.map((c) => [c.account, c.value])).toEqual([
+      [ALICE, worth(-976562n)],
+      [BOB, worth(976562n)],
+    ]);
+    expect(views.filter(([f]) => f.endsWith("current_tick_and_price"))).toEqual([[`0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c::pool_v3::current_tick_and_price`, 10n]]);
+    const plain = await testClient({ adapter: base }).explain(HASH, { withAssetInfo: false });
+    expect(plain.transfers[0]!.value).toBeUndefined();
+    expect(plain.balanceChanges.some((c) => c.value !== undefined)).toBe(false);
+  });
+
+  it("prices a simulation at the state its views read, by pool and by Pyth", async () => {
+    const sim = { ...transfer, version: 120n, events: transfer.events.map((e) => ({ ...e, version: 120n, transactionHash: undefined })) };
+    const aptos = offline();
+    const target = await simulation(aptos);
+    const asked: bigint[] = [];
+    for (const sqrt of [(1n << 60n).toString(), undefined]) {
+      const { base, views } = adapter(transfer, sim, 99n, sqrt);
+      const host = {
+        adapter: base,
+        limiter: new RequestLimiter(),
+        names: { ttl: () => undefined, name: async () => null },
+        pollInterval: 1,
+        pyth: async (_feed: string, version: bigint) => (asked.push(version), undefined),
+      };
+      const explanation = await explain(host, target, { withValue: true, withAssetInfo: false });
+      expect(views.filter(([f]) => f.endsWith("current_tick_and_price")).map(([, v]) => v)).toEqual([99n]);
+      expect(explanation.transfers[0]!.value?.amount).toBe(sqrt === undefined ? undefined : 976562n);
+    }
+    expect(asked).toEqual([99n]);
+  });
+
+  it("renders values beside amounts", () => {
+    const text = formatExplanation({
+      simulated: false,
+      version: 10n,
+      success: true,
+      vmStatus: "Executed successfully",
+      transfers: [{ asset: APT, amount: 250000000n, from: ALICE, to: BOB, symbol: "APT", decimals: 8, value: worth(976562n) }],
+      balanceChanges: [{ account: ALICE, asset: APT, delta: -250000000n, symbol: "APT", decimals: 8, value: worth(-976562n) }],
+      swaps: [],
+      sales: [],
+      events: [],
+    });
+    expect(text).toContain(`  2.5 APT (0.976562 USDC) from ${ALICE} to ${BOB}`);
+    expect(text).toContain(`  ${ALICE}: -2.5 APT (-0.976562 USDC)`);
   });
 });
