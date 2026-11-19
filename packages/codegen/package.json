@@ -1,0 +1,33 @@
+{
+  "name": "@streamd/codegen",
+  "version": "0.1.0",
+  "description": "TypeScript types, descriptors and view builders generated from Move module ABIs, with no Node or database dependency",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build.ts",
+    "test": "bun test --timeout 30000",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@streamd/core": "workspace:*"
+  },
+  "license": "MIT"
+}

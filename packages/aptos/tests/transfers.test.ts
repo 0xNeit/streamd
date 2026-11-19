@@ -5,7 +5,7 @@ import { MemoryAdapter, RoutingAdapter, StreamdError, StreamdNetworkError } from
 import { activityDescriptor, activitySource } from "../src/activity.js";
 import { FullnodeScanAdapter } from "../src/fullnode.js";
 import { TRANSFER_DESCRIPTOR, formatAmount, transferSource } from "../src/transfers.js";
-import type { EventAdapter, FetchOptions, StreamdEvent, ViewRequest } from "@streamd/core";
+import type { AssetValue, EventAdapter, FetchOptions, StreamdEvent, ViewRequest } from "@streamd/core";
 import type { Transfer } from "../src/types.js";
 
 const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
@@ -976,5 +976,117 @@ describe("transfers with requestTimeout", () => {
     const bad = client.iterateTransfers({ asset: "not-an-asset" });
     await expect(bad.next()).rejects.toThrow(StreamdError);
     client.destroy();
+  });
+});
+
+describe("transfers withValue", () => {
+  const QUOTE = "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b";
+  const POOL = "::pool_v3::current_tick_and_price";
+  // sqrt price 2^60 is 2^120 / 2^128: 1/256 USDC base units per octa.
+  const answer = (call: Call) => {
+    if (call.function.endsWith(POOL)) return [0, (1n << 60n).toString()];
+    if (call.store === store("c2")) return call.function === OWNER ? [CAROL] : [{ inner: QUOTE }];
+    return undefined;
+  };
+  // After the pools were created; earlier versions are priced by Pyth.
+  const V = 3_000_000_000;
+  const events = [
+    fa(V + 5, 0, "Withdraw", "a1", "100000000"),
+    fa(V + 5, 1, "Deposit", "b1", "100000000"),
+    fa(V + 5, 2, "Withdraw", "b1", "512"),
+    fa(V + 5, 3, "Deposit", "a1", "512"),
+    fa(V + 5, 4, "Deposit", "c2", "2500000"),
+    fa(V + 5, 5, "Deposit", "b2", "7"),
+    coin(V + 5, 6, "Deposit", BOB, "256"),
+    moved(V + 6, 1, NFT, ALICE, BOB),
+  ];
+  type Quote = Pick<AssetValue, "price" | "source" | "reference">;
+  const pool: Quote = { price: { numerator: 1n, denominator: 256n }, source: "pool", reference: "0x925660b8618394809f89f8002e2926600c775221f43bf1919782b297a79400d8" };
+  const value = (amount: bigint, quote: Quote = pool): AssetValue => ({ quote: QUOTE, decimals: 6, amount, ...quote });
+
+  it("values APT by pool and USDC at par, once per asset and version, leaving other assets and tokens bare", async () => {
+    const { adapter, calls } = withViews(events, answer);
+    const records = await testClient({ adapter }).getTransfers({ fromVersion: 0n, withValue: true });
+    expect(records.map((r) => [r.eventIndex, r.data.value])).toEqual([
+      [1, value(390625n)],
+      [3, value(2n)],
+      [4, value(2500000n, { price: { numerator: 1n, denominator: 1n }, source: "par" })],
+      [5, undefined],
+      [6, value(1n)],
+      [1, undefined],
+    ]);
+    // The APT coin and its fungible asset share the pool, so one read at the version.
+    expect(calls.filter((c) => c.function.endsWith(POOL)).map((c) => c.version)).toEqual([BigInt(V + 5)]);
+  });
+
+  it("values live records the same way", async () => {
+    const { adapter } = withViews(events, answer);
+    const client = testClient({ adapter });
+    const seen: Transfer[] = [];
+    const sub = client.transfers((e) => void seen.push(e.data), { fromVersion: 0n, withValue: true, pollInterval: 5 });
+    await sub.caughtUp;
+    sub.unsubscribe();
+    expect(seen.map((t) => t.value?.amount)).toEqual([390625n, 2n, 2500000n, undefined, 1n, undefined]);
+  });
+
+  it("prices each version afresh, across pages", async () => {
+    const { adapter, calls } = withViews([fa(V + 5, 0, "Deposit", "b1", "65536"), fa(V + 9, 0, "Deposit", "b1", "65536")], (call) =>
+      call.function.endsWith(POOL) ? [0, (1n << (call.version === BigInt(V + 5) ? 60n : 62n)).toString()] : undefined,
+    );
+    const client = testClient({ adapter });
+    const seen: Transfer[] = [];
+    const sub = client.transfers((e) => void seen.push(e.data), { fromVersion: 0n, withValue: true, batchSize: 1, pollInterval: 5 });
+    await sub.caughtUp;
+    sub.unsubscribe();
+    // 2^60 squared over 2^128 is 1/256 per octa, 2^62 is 1/16.
+    expect(seen.map((t) => t.value?.amount)).toEqual([256n, 4096n]);
+    expect(calls.filter((c) => c.function.endsWith(POOL))).toHaveLength(2);
+  });
+
+  it("prices a version before the pools by Pyth through the client's aptos, with one request slot", async () => {
+    const PYTH = "0x7e783b349d3e89cf5931af376ebeadbfab855b3fa239b7ada8f5a92fbea6b387";
+    const TABLE = "0xd1321c17eebcaceee2d54d5f6ea0f78dae846689935ef53d1f0c3cff9e2d6c49";
+    const asked: string[] = [];
+    const node = {
+      async provider(req: { url: string; params?: Record<string, unknown> }) {
+        const path = req.url.replace(/^http:\/\/fake\/v1\/?/, "");
+        asked.push(`${path}@${req.params?.ledger_version ?? ""}`);
+        const data = path.startsWith("accounts/")
+          ? { type: `${PYTH}::state::LatestPriceInfo`, data: { info: { handle: TABLE } } }
+          : path.startsWith("blocks/")
+            ? { block_height: "1", block_timestamp: "1700000005000000", first_version: "1", last_version: "1" }
+            : {
+                price_feed: {
+                  price_identifier: { bytes: "0x03ae4db29ed4ae33d323568895aa00337e658e348b37509f5372ae51f0af00d5" },
+                  price: { conf: "1", expo: { magnitude: "8", negative: true }, price: { magnitude: "500000000", negative: false }, timestamp: "1700000000" },
+                },
+              };
+        return { status: 200, statusText: "OK", data, headers: {} };
+      },
+    };
+    const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, fullnode: "http://fake/v1", client: node as never, clientConfig: { http2: false } }));
+    const { adapter, calls } = withViews([fa(2_000_000_000, 0, "Deposit", "b1", "100000000")]);
+    const client = testClient({ adapter, aptos, maxConcurrentRequests: 1, requestTimeout: 1000 });
+    const [record] = await client.getTransfers({ fromVersion: 0n, withValue: true });
+    // $5 per APT, 5 seconds stale.
+    expect(record!.data.value).toMatchObject({ amount: 5_000_000n, source: "oracle" });
+    expect(asked).toContain("tables/" + TABLE + "/item@2000000000");
+    expect(calls.some((c) => c.function.endsWith(POOL))).toBe(false);
+    client.destroy();
+  });
+
+  it("fails the query when a pool read fails", async () => {
+    const { adapter } = withViews(events, (call) => {
+      if (call.function.endsWith(POOL)) throw new StreamdNetworkError("rate limited", 429);
+      return answer(call);
+    });
+    await expect(testClient({ adapter }).getTransfers({ fromVersion: 0n, withValue: true })).rejects.toThrow("rate limited");
+  });
+
+  it("reads no prices without withValue", async () => {
+    const { adapter, calls } = withViews(events, answer);
+    const records = await testClient({ adapter }).getTransfers({ fromVersion: 0n });
+    expect(records.some((r) => r.data.value !== undefined)).toBe(false);
+    expect(calls.some((c) => c.function.endsWith(POOL))).toBe(false);
   });
 });

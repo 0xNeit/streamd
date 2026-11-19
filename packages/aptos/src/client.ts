@@ -1,5 +1,5 @@
-import { Aptos, Network, type AptosConfig, type MultiAgentTransaction, type SimpleTransaction } from "@aptos-labs/ts-sdk";
-import { EventQuery, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, lazyResolve, requireAddress, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
+import { AccountAddress, Aptos, Network, SimpleTransaction, generateRawTransaction, type AptosConfig, type MultiAgentTransaction } from "@aptos-labs/ts-sdk";
+import { EventQuery, RequestLimiter, StreamdClient, StreamdError, checkTimeout, eventsAt, expectEvents, lazyResolve, requireAddress, requireLedgerVersion, requireTransactionHash, startBalances, startReduction } from "@streamd/core";
 import type {
   EventAdapter,
   EventCallback,
@@ -9,15 +9,20 @@ import type {
   StreamdEvent,
   Subscription,
   SubscriptionOptions,
+  ViewRequest,
 } from "@streamd/core";
 import { activityDescriptor, activitySource } from "./activity.js";
 import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
 import { explain } from "./explain.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
+import { holdersAt } from "./holders.js";
 import { IndexerAccountAdapter } from "./indexer.js";
 import { provenanceDescriptor, provenanceSource } from "./provenance.js";
 import { governanceSource, startProposals } from "./governance.js";
+import { MULTISIG_DESCRIPTOR, multisigSource, previewMultisig, startMultisig } from "./multisig.js";
+import { positionSource, refreshSource, startPositions } from "./lending.js";
+import type { LendingMarket, PositionReader } from "./lending.js";
 import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { PYTH_DESCRIPTOR, priceSource, pythPriceReader, requireFeedId } from "./prices.js";
@@ -27,7 +32,8 @@ import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
-import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import { assetPricer, toAssetValue, type Pricer } from "./values.js";
+import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, LendingPosition, LendingProtocol, Multisig, MultisigOptions, MultisigPreviewOptions, PackageUpgrade, Positions, PositionsOptions, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -45,6 +51,8 @@ export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
 export class AptosClient extends StreamdClient {
   protected readonly aptos: Aptos;
   private readonly pythPrice: (feedId: string, version: bigint) => Promise<Price | undefined>;
+  // For reads inside a page fetch, which already holds a limiter slot.
+  private readonly pagePythPrice: (feedId: string, version: bigint) => Promise<Price | undefined>;
 
   constructor(config: AptosClientConfig) {
     const aptos = config?.aptos instanceof Aptos ? config.aptos : config?.aptos === undefined ? undefined : new Aptos(config.aptos);
@@ -53,6 +61,9 @@ export class AptosClient extends StreamdClient {
     super({ ...rest, adapter: config.adapter ?? new FullnodeScanAdapter(aptos) });
     this.aptos = aptos;
     this.pythPrice = pythPriceReader(aptos, (task) => this.limiter.run(task));
+    // Timed on its own, since its table read is shared by every later page.
+    const timed = new RequestLimiter(Infinity, Infinity, this.requestTimeout);
+    this.pagePythPrice = pythPriceReader(aptos, (task) => timed.run(task));
     // Testnet's ANS router is gone, and a localnet has none published at the
     // SDK's local router address, so only mainnet can answer.
     const network = aptos.config?.network;
@@ -81,14 +92,16 @@ export class AptosClient extends StreamdClient {
    * with `amount` 1, only when the object holds a `0x4::token::Token`,
    * checked once per object by view. `asset` narrows to one fungible asset,
    * coin type or token before any owner is read; `account` keeps what one
-   * address sent or received. Like `reduce()`, it is not a listener for
-   * `off()` or `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+   * address sent or received. `withValue` adds each coin or fungible-asset
+   * record's value in USDC at its version, read inside the same limit of 4.
+   * Like `reduce()`, it is not a listener for `off()` or `listenerCount()`;
+   * `unsubscribe()` or `destroy()` ends it.
    */
   transfers(
     callback: EventCallback<Transfer>,
     options: TransferListenerOptions = {},
   ): Subscription {
-    const { asset, account, withAssetInfo, ...rest } = options;
+    const { asset, account, withAssetInfo, withValue, ...rest } = options;
     const who = this.accountOf(account);
     return this.subscribe(
       TRANSFER_DESCRIPTOR,
@@ -96,7 +109,8 @@ export class AptosClient extends StreamdClient {
       rest,
       undefined,
       rest.id,
-      (source) => transferSource(source, asset, who, withAssetInfo, this.requestTimeout),
+      (source) =>
+        transferSource(source, asset, who, withAssetInfo, this.requestTimeout, withValue ? this.pagePricer(source) : undefined),
     );
   }
 
@@ -251,6 +265,126 @@ export class AptosClient extends StreamdClient {
   }
 
   /**
+   * Keep one `0x1::multisig_account` current: owners, threshold, timelock and
+   * every pending transaction with its approvals, rejections and decoded
+   * call, read from the module's views at the head (or at the version before
+   * `fromVersion`), then reread at the version of each of the account's
+   * events from one scan over the module's events, narrowed by their
+   * `multisig_account` field; the account never signs, so an `account` walk
+   * would see nothing. Views go through `EventAdapter.view`, so the adapter
+   * must implement it; a `fromVersion` older than the timelock views fails.
+   * `address` may be an Aptos name, resolved once. `preview` simulates a
+   * pending transaction with no key. Like `reduce()`, it is not a listener
+   * for `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  multisig(address: string, options?: MultisigOptions): Multisig {
+    if (typeof address !== "string") throw new StreamdError("multisig needs an address or Aptos name");
+    const who = this.accountOf(address)!;
+    const adapter = this.adapter;
+    if (typeof adapter.view !== "function" || typeof adapter.getHeadVersion !== "function") {
+      throw new StreamdError("multisig needs an adapter that implements view and getHeadVersion");
+    }
+    const host = {
+      view: (request: ViewRequest, version: bigint) => this.limiter.run(() => adapter.view!(request, version)),
+      head: () => this.limiter.run(() => adapter.getHeadVersion!(MULTISIG_DESCRIPTOR)),
+      track: this.reduceHost.track,
+    };
+    const handle = startMultisig(
+      (account, d, r, i, o) => {
+        const wrap = (source: EventAdapter) => multisigSource(source, account, this.requestTimeout);
+        const scoped = {
+          ...this.reduceHost,
+          query: new EventQuery(wrap(adapter), this.limiter, this.names),
+          subscribe: (desc: EventDescriptor | readonly EventDescriptor[], callback: EventCallback, opts: object) =>
+            this.subscribe(desc as EventDescriptor, callback, opts, undefined, undefined, wrap),
+        };
+        return startReduction(scoped, d, r, i, o);
+      },
+      host,
+      who,
+      options,
+    );
+    const previewHost = {
+      ...host,
+      build: async (sender: string, payload: Parameters<typeof generateRawTransaction>[0]["payload"], feePayer?: string) => {
+        const raw = await this.limiter.run(() =>
+          generateRawTransaction({ aptosConfig: this.aptos.config, sender, payload, ...(feePayer !== undefined && { feePayerAddress: feePayer }) }),
+        );
+        return new SimpleTransaction(raw, feePayer === undefined ? undefined : AccountAddress.from(feePayer));
+      },
+      simulate: (transaction: SimpleTransaction) => this.previewEvents(transaction),
+    };
+    return Object.assign(handle, {
+      preview: async (sequenceNumber: bigint, opts?: MultisigPreviewOptions) => {
+        await handle.ready;
+        return previewMultisig(previewHost, handle.value, sequenceNumber, opts);
+      },
+    }) as Multisig;
+  }
+
+  /**
+   * Keep lending positions current on `protocol` (`"aave"`, Aave V3 on Aptos
+   * mainnet, or `"echelon"`, Echelon's vaults): each account's supplies,
+   * debts, collateral and debt value and health factor, as the protocol's own
+   * views compute them with its own oracle at a version. `account` names the
+   * accounts, read at the head (or the version before `fromVersion`) first;
+   * without it every account one of the protocol's events names is tracked
+   * from then on. Each position is reread at the
+   * version of every event naming it, from one scan over the protocol's
+   * position-changing events, its views at most four at a time outside
+   * `maxConcurrentRequests`. With `account`, every position is also reread at
+   * the head every `refreshInterval` ms (60000 by default), since a price
+   * moves with no event; if those reads give up, the monitor stops.
+   * `threshold` sets the health `below` and `onCross` compare with. Views go through `EventAdapter.view`, so the adapter must
+   * implement it. Like `reduce()`, it is not a listener for `off()` or
+   * `listenerCount()`; `destroy()` ends it.
+   */
+  positions(protocol: LendingProtocol, options?: PositionsOptions): Positions {
+    const adapter = this.adapter;
+    if (typeof adapter.view !== "function" || typeof adapter.getHeadVersion !== "function") {
+      throw new StreamdError("positions needs an adapter that implements view and getHeadVersion");
+    }
+    const host = {
+      view: (request: ViewRequest, version: bigint, drop: AbortSignal) => this.limiter.run(() => adapter.view!(request, version), drop),
+      head: (descriptor: EventDescriptor) => this.limiter.run(() => adapter.getHeadVersion!(descriptor)),
+      track: this.reduceHost.track,
+      onError: this.onError,
+      refresh: (
+        market: LendingMarket,
+        read: PositionReader,
+        tracked: () => Iterable<string>,
+        deliver: (positions: LendingPosition[]) => void,
+        opts: { onError: (error: Error) => void },
+        since: bigint | undefined,
+        drop: AbortSignal,
+      ) =>
+        this.subscribe(
+          market.descriptor,
+          { batch: (events) => deliver(events.map((e) => e.data as LendingPosition)) },
+          opts,
+          undefined,
+          undefined,
+          (source) => refreshSource(source, market, read, tracked, opts.onError, since, this.requestTimeout, drop),
+        ),
+    };
+    return startPositions(
+      (market, read, only, drop, r, i, o) => {
+        const wrap = (source: EventAdapter) => positionSource(source, read, only, this.requestTimeout, drop);
+        const scoped = {
+          ...this.reduceHost,
+          query: new EventQuery(wrap(adapter), this.limiter, this.names),
+          subscribe: (desc: EventDescriptor | readonly EventDescriptor[], callback: EventCallback, opts: object) =>
+            this.subscribe(desc as EventDescriptor, callback, opts, undefined, undefined, wrap),
+        };
+        return startReduction(scoped, market.descriptor, r, i, o);
+      },
+      host,
+      protocol,
+      options,
+    );
+  }
+
+  /**
    * Keep every stake pool current from one scan over the staking module
    * events: the rewards and transaction fees each pool was paid at every
    * epoch change, its delegation pool commission changes, and each
@@ -359,7 +493,9 @@ export class AptosClient extends StreamdClient {
    * default interval makes 2 requests per second and needs an API key or a
    * higher `pollInterval` (such as 5000ms) on the anonymous fullnode. `asset`
    * names what to follow, one or a list, since no view lists a wallet's assets;
-   * without it, APT is followed. `address` may be an Aptos name. Like
+   * without it, APT is followed. `withValue` adds USDC values (one more view
+   * per priced asset whenever its balance is read and changed); a price
+   * move alone does not refresh them. `address` may be an Aptos name. Like
    * `reduce()`, it is not a listener for `off()` or `listenerCount()`;
    * `destroy()` ends it.
    */
@@ -375,7 +511,13 @@ export class AptosClient extends StreamdClient {
         track: this.reduceHost.track,
       },
       this.accountOf(address)!,
-      APTOS_BALANCES,
+      {
+        ...APTOS_BALANCES,
+        value: async (adapter, asset, amount, version) => {
+          const quote = await this.pagePricer(adapter)(asset, version);
+          return quote === undefined ? undefined : toAssetValue(quote, amount);
+        },
+      },
       options,
     );
   }
@@ -399,6 +541,40 @@ export class AptosClient extends StreamdClient {
     if (typeof adapter.view !== "function") throw new StreamdError("balanceAt needs an adapter that implements view");
     const owner = this.accountOf(address)!;
     return APTOS_BALANCES.read(adapter, await owner(), key!, version);
+  }
+
+  /**
+   * Every fungible store holding `asset` (a metadata address) at `version`,
+   * with its owner and exact balance, folded backward from the Aptos Indexer:
+   * the asset's current store balances, then each deposit and withdraw after
+   * `version` undone. The total is checked against
+   * `0x1::fungible_asset::supply` at `version` unless `verify` is `"none"`,
+   * and `verify: "stores"` also reads every holder's balance there, so a
+   * fold that does not hold rejects rather than resolving. APT and
+   * coin-paired assets are refused, and a dispatchable asset needs
+   * `verify: "stores"`. Costs about one Indexer request per 100 stores and
+   * per 100 activity rows after `version`, plus the views; every request goes
+   * through the client's limiter and `requestTimeout`, retried under
+   * `retries` and capped by `maxRequests`. The views at `version` need it
+   * inside the fullnode's window, or an `ArchiveFallbackAdapter`.
+   */
+  async holdersAt(asset: string, version: bigint, options: HoldersAtOptions = {}): Promise<HolderSnapshot> {
+    const indexer = options?.indexer;
+    const methods = ["getFungibleAssetVersion", "listFungibleStores", "getFungibleStores", "listFungibleActivities"] as const;
+    if (indexer !== undefined && methods.some((method) => typeof (indexer as Partial<FungibleAssetIndexer>)?.[method] !== "function")) {
+      throw new StreamdError(`indexer must implement ${methods.join(", ")}`);
+    }
+    const signal = options?.signal;
+    return holdersAt(
+      {
+        indexer: indexer ?? new IndexerAccountAdapter(this.aptos),
+        adapter: this.adapter,
+        run: (task) => this.limiter.run(task, signal, signal),
+      },
+      asset,
+      version,
+      options,
+    );
   }
 
   /**
@@ -449,16 +625,22 @@ export class AptosClient extends StreamdClient {
     return lazyResolve(addressOrName(account), () => resolveName(this.aptos, account));
   }
 
+  /** Prices by pool view through `adapter`, and by Pyth outside the limiter, for reads made inside a page fetch. */
+  private pagePricer(adapter: EventAdapter): Pricer {
+    return assetPricer((request, version) => adapter.view!(request, version, TRANSFER_DESCRIPTOR), this.pagePythPrice);
+  }
+
   private transferQuery(
     filter: TransferFilter = {},
-  ): [EventQuery, Omit<TransferFilter, "asset" | "account" | "withAssetInfo">] {
-    const { asset, account, withAssetInfo, ...rest } = filter;
+  ): [EventQuery, Omit<TransferFilter, "asset" | "account" | "withAssetInfo" | "withValue">] {
+    const { asset, account, withAssetInfo, withValue, ...rest } = filter;
     const source = transferSource(
       this.adapter,
       asset,
       this.accountOf(account),
       withAssetInfo,
       this.requestTimeout,
+      withValue ? this.pagePricer(this.adapter) : undefined,
     );
     return [new EventQuery(source, this.limiter, this.names), rest];
   }
@@ -599,8 +781,8 @@ export class AptosClient extends StreamdClient {
    * a built, unsigned transaction, simulated as `previewEvents` simulates it,
    * with its views read at the newest state the node had. A failed
    * transaction resolves with `success: false`, its gas and no transfers.
-   * Asset details are read unless `withAssetInfo: false`; `withNames` adds
-   * `names`. Store and asset reads go through the client's limiter; a failed
+   * Asset details are read unless `withAssetInfo: false`; `withValue` adds
+   * USDC values to transfers and balance changes; `withNames` adds `names`. Store and asset reads go through the client's limiter; a failed
    * read rejects. `formatExplanation` renders the result as text.
    */
   async explain(
@@ -613,6 +795,7 @@ export class AptosClient extends StreamdClient {
       names: this.names,
       pollInterval: this.defaults.pollInterval!,
       requestTimeout: this.requestTimeout,
+      pyth: this.pythPrice,
     };
     return explain(host, target, options);
   }

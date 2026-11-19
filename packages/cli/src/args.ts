@@ -1,7 +1,7 @@
 import { parseArgs } from "node:util";
+import type { ModuleRef } from "@streamd/codegen";
 import { WEBHOOK_SIGNATURE_HEADER, normalizeAddress, requireAddress, requireEventType, requireResourceType } from "@streamd/core";
 import type { EventDescriptor, ModuleEventDescriptor, MoveEventType } from "@streamd/core";
-import type { ModuleRef } from "./codegen.js";
 import { FILTER_OPTIONS, parseDecode, parseFilter } from "./filter.js";
 import { parseKafkaUrl } from "./kafka.js";
 import type { CliFilter, FilterFlags } from "./filter.js";
@@ -47,6 +47,8 @@ export interface TailOptions extends SourceOptions {
 
 export const SIGNATURE_HEADER = WEBHOOK_SIGNATURE_HEADER;
 export const SECRET_ENV = "STREAMD_WEBHOOK_SECRET";
+export const TOKEN_ENV = "STREAMD_GATEWAY_TOKEN";
+export const DEFAULT_SERVE_PORT = 8787;
 export const API_KEY_ENV = "APTOS_API_KEY";
 
 export interface ForwardOptions extends SourceOptions {
@@ -244,6 +246,25 @@ export interface MonitorOptions extends Endpoint {
   limit?: number;
 }
 
+/** `streamd serve`: the gateway's bind address, access and limits. */
+export interface ServeOptions extends Endpoint {
+  listen: { host: string; port: number };
+  /** Required unless `listen.host` is loopback. */
+  token?: string;
+  allowOrigins?: string[];
+  pollInterval?: number;
+  maxTopics?: number;
+  maxConnections?: number;
+  /** Registered webhooks, kept in `file`; absent means the gateway has no webhook API. */
+  webhooks?: {
+    file: string;
+    allowPrivateTargets?: boolean;
+    retries?: number;
+    timeout?: number;
+    batchSize?: number;
+  };
+}
+
 export interface CheckOptions extends Endpoint {
   descriptor: ModuleEventDescriptor;
 }
@@ -281,7 +302,8 @@ export type ParsedCommand =
   | { command: "codegen"; options: CodegenOptions }
   | { command: "coverage"; options: CoverageOptions }
   | { command: "compare"; options: CompareOptions }
-  | { command: "monitor"; options: MonitorOptions };
+  | { command: "monitor"; options: MonitorOptions }
+  | { command: "serve"; options: ServeOptions };
 
 /** Bad command-line input: reported with usage, exit code 2. */
 export class UsageError extends Error {
@@ -382,6 +404,22 @@ const COMPARE_OPTIONS = {
 
 /** The widest range `compare` walks, so one command stays a bounded job. */
 export const MAX_COMPARE_RANGE = 100_000n;
+
+const SERVE_OPTIONS = {
+  ...READ_OPTIONS,
+  listen: { type: "string" },
+  token: { type: "string" },
+  "allow-origin": { type: "string", multiple: true },
+  "poll-interval": { type: "string" },
+  "max-topics": { type: "string" },
+  "max-connections": { type: "string" },
+  webhooks: { type: "string" },
+  "webhook-allow-private": { type: "boolean" },
+  retries: { type: "string" },
+  timeout: { type: "string" },
+  "batch-size": { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
 
 const MONITOR_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
@@ -542,6 +580,7 @@ export const USAGE = `Usage:
   streamd codegen [--out <file> [--check]] [--validators] [--arbitraries] [--sql <sqlite|postgres>] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
   streamd monitor --node-url <url> --node-url <url>... [options] [<eventType>...]
+  streamd serve [--listen <[host:]port>] [--token <t>] [--allow-origin <origin>]... [options]
   streamd coverage <package> [--format pretty] -- <command> [<arg>...]
 
 tail follows matching events and prints each as one JSON line on stdout.
@@ -578,6 +617,11 @@ monitor reads every --node-url each --interval and prints one record per round
 of each node's head lag, requests, errors and 429s over --window, and how its
 events over a recent range compare with the first node's, as a JSON line or
 Prometheus text (default type: ${MONITOR_DEFAULT_TYPE} on Aptos).
+serve runs a gateway (under Bun) that polls each descriptor its clients ask for
+once and streams it to all of them as Server-Sent Events (/v1/events) and
+WebSocket (/v1/ws), resumed by Last-Event-ID, with POST /v1/fetch, /v1/head and
+/v1/earliest for GatewayAdapter and GET /v1/status. With --webhooks it also
+posts to webhooks registered at /v1/webhooks, signed and at least once.
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
 With --check it compares what it would write with --out instead, and exits 1
@@ -619,7 +663,7 @@ Options:
                          only on mainnet, testnet and devnet without --node-url)
   --from-version <n>     start at this version instead of the chain head
   --from-time <t>        tail, forward, alert, query, watch: start here, as 2h, 7d or an ISO date (UTC)
-  --poll-interval <ms>   delay between polls (default: 1000)
+  --poll-interval <ms>   delay between polls (default: 1000); serve: each topic's
   --sender <address>     only events from transactions one of these signed, repeatable
   --function <a::m::f>   only events from a call to one of these entry functions, repeatable
   --where <expr>         only events whose data matches <field><op><value>, repeatable,
@@ -653,8 +697,8 @@ Options:
   --format <name>        tail: json, or pretty for aligned lines in UTC (default: json);
                          inspect: json, or pretty for one line per changed path;
                          coverage: json, or pretty for one line per event struct
-  --retries <n>          forward, alert: retries per batch or alert (default: ${DEFAULT_RETRIES})
-  --timeout <ms>         forward, alert: per-request timeout (default: ${DEFAULT_TIMEOUT});
+  --retries <n>          forward, alert, serve: retries per batch or alert (default: ${DEFAULT_RETRIES})
+  --timeout <ms>         forward, alert, serve: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx: wait for commit (default: 20000)
   --header <h>           forward, alert: request header 'Name: value', repeatable
   --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
@@ -669,7 +713,8 @@ Options:
                          inspect: a version or head (default: head);
                          forward: deliver up to here, then exit 0; transfers: a version or
                          head, read the range instead of following (needs a start)
-  --batch-size <n>       forward: most events per POST (default: 25); transfers (following):
+  --batch-size <n>       forward: most events per POST (default: 25); serve: per webhook POST
+                         (default: each page); transfers (following):
                          transactions per page (default: 25)
   --order <asc|desc>     query, transfers with --to-version: oldest or newest first (default: asc;
                          desc without --limit buffers the range to reverse it)
@@ -702,7 +747,20 @@ Options:
   --range <n>            monitor: versions compared with the first node per round (default: 100)
   --format <name>        monitor: json, or prometheus for text exposition (default: json)
   --listen <[host:]port> monitor: also serve the latest round's Prometheus text at /metrics,
-                         on 127.0.0.1 unless a host is given
+                         on 127.0.0.1 unless a host is given; serve: where the gateway
+                         listens (default: 127.0.0.1:${DEFAULT_SERVE_PORT})
+  --token <t>            serve: require it as Authorization: Bearer or ?access_token= (or set
+                         ${TOKEN_ENV}); required to listen on a host other than loopback
+  --allow-origin <o>     serve: a browser origin given CORS headers and let open WebSockets,
+                         repeatable, or * for any
+  --max-topics <n>       serve: most descriptors followed at once (default: 32)
+  --max-connections <n>  serve: most open streams, SSE and WebSocket (default: 1000)
+  --webhooks <file>      serve: enable /v1/webhooks, keeping registered webhooks and their
+                         cursors in <file> across restarts; --retries, --timeout and
+                         --batch-size apply to their deliveries
+  --webhook-allow-private
+                         serve: let webhook targets be loopback, private or other
+                         non-public addresses (refused by default)
   -h, --help             show this help
 `;
 
@@ -1311,6 +1369,61 @@ function parseMonitor(args: string[]): ParsedCommand {
   return { command: "monitor", options };
 }
 
+const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|::1)$/;
+
+function origin(raw: string): string {
+  if (raw === "*") return raw;
+  let parsed: URL | undefined;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    parsed = undefined;
+  }
+  if (parsed === undefined || parsed.origin !== raw) throw new UsageError(`--allow-origin must be * or an origin such as https://app.example: ${raw}`);
+  return raw;
+}
+
+function parseServe(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() => parseArgs({ args, options: SERVE_OPTIONS, allowPositionals: true, strict: true }));
+  if (values.help) return { command: "help" };
+  if (positionals.length > 0) throw new UsageError("serve takes no event types: clients name what they follow");
+  const sui = chain(values.chain);
+  const options: ServeOptions = {
+    ...endpoint(values, sui),
+    listen: values.listen === undefined ? { host: "127.0.0.1", port: DEFAULT_SERVE_PORT } : listenAddress(values.listen),
+  };
+  withKey(options, values["api-key"]);
+  if (values.token === "") throw new UsageError("--token must not be empty");
+  const token = values.token ?? (process.env[TOKEN_ENV] || undefined);
+  if (token !== undefined) options.token = token;
+  // A gateway spends its node's rate limit and API key for whoever reaches it.
+  else if (!LOOPBACK.test(options.listen.host)) throw new UsageError(`serve needs --token (or ${TOKEN_ENV}) to listen on ${options.listen.host}`);
+  if (values["allow-origin"] !== undefined) options.allowOrigins = values["allow-origin"].map(origin);
+  const pollInterval = integer("poll-interval", values["poll-interval"], 1, MAX_TIMEOUT);
+  if (pollInterval !== undefined) options.pollInterval = pollInterval;
+  const maxTopics = integer("max-topics", values["max-topics"], 1, 10_000);
+  if (maxTopics !== undefined) options.maxTopics = maxTopics;
+  const maxConnections = integer("max-connections", values["max-connections"], 1, 1_000_000);
+  if (maxConnections !== undefined) options.maxConnections = maxConnections;
+  if (values.webhooks === undefined) {
+    for (const flag of ["webhook-allow-private", "retries", "timeout", "batch-size"] as const) {
+      if (values[flag] !== undefined) throw new UsageError(`--${flag} needs --webhooks`);
+    }
+    return { command: "serve", options };
+  }
+  if (values.webhooks === "") throw new UsageError("--webhooks must not be empty");
+  const webhooks: NonNullable<ServeOptions["webhooks"]> = { file: values.webhooks };
+  if (values["webhook-allow-private"]) webhooks.allowPrivateTargets = true;
+  const retries = integer("retries", values.retries, 0, MAX_RETRIES);
+  if (retries !== undefined) webhooks.retries = retries;
+  const timeout = integer("timeout", values.timeout, 1, MAX_TIMEOUT);
+  if (timeout !== undefined) webhooks.timeout = timeout;
+  const batchSize = integer("batch-size", values["batch-size"], 1, 1000);
+  if (batchSize !== undefined) webhooks.batchSize = batchSize;
+  options.webhooks = webhooks;
+  return { command: "serve", options };
+}
+
 function parseQuery(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: QUERY_OPTIONS, allowPositionals: true, strict: true }),
@@ -1625,5 +1738,6 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "coverage") return parseCoverage(rest);
   if (command === "compare") return parseCompare(rest);
   if (command === "monitor") return parseMonitor(rest);
+  if (command === "serve") return parseServe(rest);
   throw new UsageError(`unknown command: ${command}`);
 }

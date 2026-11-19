@@ -1,10 +1,9 @@
-import { setTimeout as sleep } from "node:timers/promises";
-import { descriptorKey, parseRetryAfter, serializeEvent } from "@streamd/core";
-import type { StreamdClient, Subscription } from "@streamd/core";
-import { SIGNATURE_HEADER, type ForwardOptions } from "./args.js";
+import { deliver, descriptorKey, serializeEvent, webhookSink } from "@streamd/core";
+import type { DeliverySink as Sink, StreamdClient, Subscription } from "@streamd/core";
+import type { ForwardOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { filterPredicate } from "./filter.js";
-import { message, scrubber, signature } from "./format.js";
+import { message, scrubber } from "./format.js";
 import { connectKafka, kafkaSink, type KafkaLike } from "./kafka.js";
 import { connectNats, natsSink, type NatsLike } from "./nats.js";
 import { connectRedis, redisSink, type RedisLike } from "./redis.js";
@@ -27,98 +26,9 @@ export interface ForwardIO {
   kafka?(url: string, timeout: number): KafkaLike | Promise<KafkaLike>;
 }
 
-const MAX_RETRY_DELAY = 60_000;
-
-/** What a webhook delivery reads: the URL, its headers and signing, and the per-request timeout. */
-export type Delivery = Pick<ForwardOptions, "to" | "headers" | "secret" | "timeout">;
-
-/** One delivery attempt's outcome; `retryAfter` (ms) replaces the backoff for the next wait. */
-export interface Attempt {
-  ok: boolean;
-  failure?: string;
-  retryable?: boolean;
-  retryAfter?: number;
-}
-
-/**
- * Where forward and alert deliver a body. `send` makes one attempt and says
- * whether it was acknowledged; `deliver` owns the retries, so every sink
- * shares the same backoff and the same rule that nothing counts until acked.
- */
-export interface Sink {
-  send(body: string, signal: AbortSignal): Promise<Attempt>;
-  close?(): unknown;
-}
-
-/** POSTs to the webhook; a 2xx acknowledges. */
-export function webhookSink(options: Delivery): Sink {
-  return { send: (body, signal) => post(body, options, signal) };
-}
-
-async function post(body: string, options: Delivery, signal: AbortSignal): Promise<Attempt> {
-  let response: Response;
-  try {
-    response = await fetch(options.to, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        ...options.headers,
-        ...(options.secret !== undefined && { [SIGNATURE_HEADER]: signature(body, options.secret) }),
-      },
-      body,
-      // Not following redirects keeps --header values from reaching another host.
-      redirect: "manual",
-      signal: AbortSignal.any([signal, AbortSignal.timeout(options.timeout)]),
-    });
-  } catch (err) {
-    // Only the error's own message: a cause can carry the request URL.
-    const failure =
-      err instanceof Error && err.name === "TimeoutError"
-        ? `request timed out after ${options.timeout}ms`
-        : err instanceof Error
-          ? err.message
-          : String(err);
-    return { ok: false, failure, retryable: true };
-  }
-  await response.body?.cancel().catch(() => {});
-  const { status } = response;
-  if (response.ok) return { ok: true };
-  return {
-    ok: false,
-    failure: `HTTP ${status}`,
-    retryable: status === 408 || status === 429 || status >= 500,
-    retryAfter:
-      status === 429 || status === 503
-        ? parseRetryAfter(response.headers.get("retry-after"))
-        : undefined,
-  };
-}
-
-/** Sends `body` until the sink acknowledges it, the retry bound, or abort; true once acknowledged. */
-export async function deliver(
-  body: string,
-  sink: Sink,
-  retries: number,
-  io: Pick<ForwardIO, "error" | "signal" | "retryDelay">,
-): Promise<boolean> {
-  let delay = io.retryDelay ?? 1000;
-  for (let attempt = 1; ; attempt++) {
-    const result = await sink.send(body, io.signal);
-    if (result.ok) return true;
-    if (io.signal.aborted) return false;
-    if (!result.retryable || attempt > retries) {
-      io.error(`streamd: delivery failed: ${result.failure}`);
-      return false;
-    }
-    const wait = Math.min(result.retryAfter ?? delay, MAX_RETRY_DELAY);
-    io.error(
-      `streamd: delivery failed (attempt ${attempt}/${retries + 1}): ${result.failure}; retrying in ${wait}ms`,
-    );
-    const slept = await sleep(wait, true, { signal: io.signal }).catch(() => false);
-    if (!slept) return false;
-    delay = Math.min(delay * 2, MAX_RETRY_DELAY);
-  }
-}
+// Delivery lives in core so the gateway's webhooks share it; these are the names the CLI's sinks use.
+export type { DeliveryAttempt as Attempt, DeliverySink as Sink } from "@streamd/core";
+export { deliver, webhookSink } from "@streamd/core";
 
 /**
  * Follows `options.descriptor`, delivering each batch to the webhook, the

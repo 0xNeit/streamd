@@ -4,8 +4,8 @@
 // only each package's ids and its modules' datatypes.
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { generateEventTypes } from "@streamd/codegen";
 import { normalizeAddress, StreamdError } from "@streamd/core";
-import { generateEventTypes } from "../src/codegen.js";
 import { SUI_DIALECT, suiCodegen } from "../src/sui-abi.js";
 import type { SuiPackageService } from "../src/sui-abi.js";
 

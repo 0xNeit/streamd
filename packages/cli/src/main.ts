@@ -23,6 +23,7 @@ import type {
   ParsedCommand,
   QueryOptions,
   RecordOptions,
+  ServeOptions,
   StoreOptions,
   TailOptions,
   TransfersOptions,
@@ -38,11 +39,11 @@ import type { PageCache } from "./cache.js";
 import { aptosCodegenLoader, aptosConfig, chainFor, resourceReader } from "./chain.js";
 import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
-import { generateEventTypes } from "./codegen.js";
 import { runCoverage } from "./coverage.js";
 import { checkGenerated } from "./codegen-check.js";
 import { SUI_DIALECT, suiCodegen } from "./sui-abi.js";
 import { loadSui } from "./sui.js";
+import { generateEventTypes } from "@streamd/codegen";
 import type { SuiNetworkPreset } from "@streamd/sui";
 import { startLocalnet } from "@streamd/testing";
 import { message } from "./format.js";
@@ -53,6 +54,8 @@ import { runMonitor, serveMetrics } from "./monitor.js";
 import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
+import { runServe } from "./serve.js";
+import { sqlTables } from "./sql.js";
 import { RequestStats, onStatsSignal } from "./stats.js";
 import { connectPostgres, openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
@@ -119,6 +122,20 @@ async function alert(options: AlertOptions): Promise<number> {
   try {
     return await runAlert(options, rules, {
       client,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+  } finally {
+    client.destroy();
+  }
+}
+
+async function serve(options: ServeOptions): Promise<number> {
+  const { chain, client, controller } = await setup(options);
+  try {
+    return await runServe(options, {
+      client,
+      adapter: chain.adapter(),
       error: (message) => process.stderr.write(`${message}\n`),
       signal: controller.signal,
     });
@@ -392,7 +409,7 @@ async function suiSource(options: CodegenOptions): Promise<string> {
     dialect: SUI_DIALECT,
     validators: options.validators === true,
     arbitraries: options.arbitraries === true,
-    ...(options.sql !== undefined && { sql: options.sql }),
+    ...(options.sql !== undefined && { tables: sqlTables(options.sql) }),
   });
 }
 
@@ -415,7 +432,7 @@ async function codegen(options: CodegenOptions): Promise<number> {
     list,
     validators: options.validators === true,
     arbitraries: options.arbitraries === true,
-    ...(options.sql !== undefined && { sql: options.sql }),
+    ...(options.sql !== undefined && { tables: sqlTables(options.sql) }),
   }));
 }
 
@@ -459,6 +476,7 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "coverage") return coverage(parsed.options);
   if (parsed.command === "compare") return compare(parsed.options);
   if (parsed.command === "monitor") return monitor(parsed.options);
+  if (parsed.command === "serve") return serve(parsed.options);
   if (parsed.command === "store") return store(parsed.options);
   if (parsed.command === "alert") return alert(parsed.options);
   if (parsed.command === "check") return check(parsed.options);

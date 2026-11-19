@@ -1,6 +1,7 @@
 import type { MultiAgentTransaction, PublicKey, SimpleTransaction } from "@aptos-labs/ts-sdk";
 import type { IndexerAccountAdapter } from "./indexer.js";
 import type {
+  AssetValue,
   EntryFunctionCall,
   EventFilter,
   EventPredicate,
@@ -14,6 +15,7 @@ import type {
 } from "@streamd/core";
 
 export type {
+  AssetValue,
   BalanceChange,
   Balances,
   BalancesOptions,
@@ -62,6 +64,12 @@ export interface TransferOptions {
    * two views per asset, cached. A view that aborts leaves them off.
    */
   withAssetInfo?: boolean;
+  /**
+   * Adds `value`, the amount in USDC at the record's version, to APT, USDt
+   * and USDC records: one Hyperion pool view per asset and version, or Pyth
+   * before the pools existed. Other assets and tokens get none.
+   */
+  withValue?: boolean;
 }
 
 /** Options for `StreamdClient.transfers`. */
@@ -272,6 +280,8 @@ export interface AccountBalanceChange {
   /** From the transfers, when they carry asset details. */
   symbol?: string;
   decimals?: number;
+  /** `delta` in USDC at the transfers' price, with `withValue`. */
+  value?: AssetValue;
 }
 
 /**
@@ -327,6 +337,8 @@ export interface ExplainOptions
   signal?: AbortSignal;
   /** Adds `symbol` and `decimals` to transfers and balance changes, read by view (default true). */
   withAssetInfo?: boolean;
+  /** Adds `value` in USDC to transfers and balance changes, as `TransferOptions.withValue` (default false). */
+  withValue?: boolean;
   /** Attaches `names`, through the client's name cache (`true` for the default expiry, or `{ ttl }`). */
   withNames?: boolean | NameOptions;
 }
@@ -432,6 +444,118 @@ export interface Proposals {
   [Symbol.dispose](): void;
 }
 
+/** A multisig account's timelock: how long a transaction waits after creation, unless enough owners approve. */
+export interface MultisigTimelock {
+  periodSecs: bigint;
+  /** Approvals that let a transaction run before the period ends; none when every transaction waits. */
+  overrideThreshold?: bigint;
+}
+
+/** One transaction waiting in a `0x1::multisig_account` queue, as `get_pending_transactions` reported it. */
+export interface PendingMultisigTransaction {
+  sequenceNumber: bigint;
+  /** Long form. */
+  creator: string;
+  createdAtSecs: bigint;
+  /** The stored BCS `MultisigTransactionPayload`, `0x` hex; absent when only its hash was stored. */
+  payload?: string;
+  /** SHA3-256 of the payload, `0x` hex, when the creator stored the hash instead. */
+  payloadHash?: string;
+  /**
+   * The entry function `payload` calls, its arguments each a BCS value as
+   * `0x` hex, since their types need the function's ABI. Absent without a
+   * payload, or when the bytes do not decode.
+   */
+  call?: EntryFunctionCall;
+  /** Owners who approved, long form, in the order the view listed them. */
+  approvals: string[];
+  /** Owners who rejected. */
+  rejections: string[];
+  /**
+   * When the timelock lets it run (creation plus the period, Unix seconds),
+   * while its approvals are below the override threshold; absent with no
+   * timelock or once the override is met.
+   */
+  executableAtSecs?: bigint;
+}
+
+/** A multisig account read from its views at one version. */
+export interface MultisigState {
+  /** Long form. */
+  address: string;
+  /** The version the views were read at. */
+  version: bigint;
+  /** Long form, in the account's order. */
+  owners: string[];
+  /** `num_signatures_required`. */
+  threshold: bigint;
+  timelock?: MultisigTimelock;
+  /** The last executed or rejected sequence number; the next to run is one above it. */
+  lastResolved: bigint;
+  nextSequenceNumber: bigint;
+  /** By sequence number, from `lastResolved + 1`. */
+  pending: ReadonlyMap<bigint, PendingMultisigTransaction>;
+}
+
+/** Options for `AptosClient.multisig`: the live options tune its one scan, as for `reduce()`. */
+export interface MultisigOptions
+  extends Pick<
+    ReduceOptions,
+    "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "maxPollInterval" | "retries" | "signal" | "onError"
+  > {
+  /**
+   * An absolute version to read changes from: the state is read at the
+   * version before, and every later change is folded before `ready`. The
+   * head when omitted.
+   */
+  fromVersion?: bigint;
+  /** Called after each live event of the account, with the state reread at its version. A throw goes to `onError`. */
+  onChange?: (state: MultisigState, event: StreamdEvent) => void;
+}
+
+/** Options for `Multisig.preview`. */
+export interface MultisigPreviewOptions {
+  /** The payload of a transaction stored by hash: BCS `MultisigTransactionPayload` bytes or `0x` hex, checked against the hash. */
+  payload?: Uint8Array | string;
+}
+
+/** What a pending multisig transaction would emit if it ran now. */
+export interface MultisigPreview {
+  sequenceNumber: bigint;
+  /** The owner simulated as executor, or the multisig itself when `partial`. */
+  sender: string;
+  /**
+   * True when no owner could execute it now (more than one approval short,
+   * timelocked, or not next in the queue), so the entry function was
+   * simulated directly as the multisig: no multisig checks or events, and
+   * from the current state rather than after the transactions before it.
+   */
+  partial: boolean;
+  /** The payload's events, fee statement included. */
+  events: StreamdEvent[];
+  /**
+   * The multisig's own `Vote`, `TransactionExecutionSucceeded` and
+   * `TransactionExecutionFailed` from the simulation: they name the simulated
+   * executor, not votes anyone cast.
+   */
+  executorEvents: StreamdEvent[];
+}
+
+/** A running `multisig()`: the account's state, reread as its events arrive. */
+export interface Multisig {
+  /** The latest state; replaced field by field in place, so a held reference stays current. */
+  readonly value: MultisigState;
+  get(sequenceNumber: bigint): PendingMultisigTransaction | undefined;
+  /** Resolves once the state is read and any history from `fromVersion` folded; rejects if that fails or it is stopped first. */
+  readonly ready: Promise<MultisigState>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  /** Simulate a pending transaction with no key; waits for `ready`. */
+  preview(sequenceNumber: bigint, options?: MultisigPreviewOptions): Promise<MultisigPreview>;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
+}
+
 /** What one pool was paid at one epoch change, in octas. */
 export interface EpochRewards {
   /** The epoch the rewards were earned in: the one this change ended. */
@@ -517,6 +641,88 @@ export interface StakePools {
   get(address: string): StakePool | undefined;
   /** Resolves once the history is folded and following has started; rejects if it fails or is stopped first. */
   readonly ready: Promise<ReadonlyMap<string, StakePool>>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
+}
+
+/** A lending market `positions()` reads. */
+export type LendingProtocol = "aave" | "echelon";
+
+/** An exact ratio, reduced, with a positive denominator, shaped as `AssetValue.price`. */
+export type Fraction = AssetValue["price"];
+
+/** One reserve an account supplies or borrows, in the asset's base units. */
+export interface PositionAsset {
+  /** The reserve's underlying fungible asset, long form. */
+  asset: string;
+  decimals: number;
+  /** The current aToken balance, interest included. */
+  supplied: bigint;
+  /** The current variable debt, interest included. */
+  borrowed: bigint;
+  /** True when the account uses its supply as collateral. */
+  collateral: boolean;
+}
+
+/** One account's position in a lending market, as the protocol computes it at `version`. */
+export interface LendingPosition {
+  protocol: LendingProtocol;
+  /** Long form. */
+  account: string;
+  /** The version every figure was read at. */
+  version: bigint;
+  /** Reserves holding a supply or a debt, by asset. */
+  assets: PositionAsset[];
+  /** Collateral in USD, priced by the protocol's own oracle; absent when `unknown`. */
+  collateralValue?: Fraction;
+  /** Debt in USD, as `collateralValue`. */
+  debtValue?: Fraction;
+  /** The collateral-weighted liquidation threshold. */
+  liquidationThreshold?: Fraction;
+  /** The protocol's health factor; absent with no debt or when `unknown`. Below 1, the protocol allows a liquidation. */
+  health?: Fraction;
+  /** `health` below the monitor's threshold; false with no debt, absent when `unknown`. */
+  below?: boolean;
+  /** Why the protocol could not value the position, as the node gave it (an oracle refusing a price, say). */
+  unknown?: string;
+}
+
+/** Options for `AptosClient.positions`. */
+export interface PositionsOptions
+  extends Pick<
+    ReduceOptions,
+    | "fromVersion"
+    | "pollInterval"
+    | "batchSize"
+    | "maxErrors"
+    | "maxBackoff"
+    | "maxPollInterval"
+    | "retries"
+    | "signal"
+    | "onError"
+  > {
+  /** An address or a non-empty list of them, read at the start; without it every account an event names is tracked from then on. */
+  account?: string | readonly string[];
+  /** The health `below` and `onCross` compare with; 1 (the liquidation line) when omitted. */
+  threshold?: Fraction;
+  /** Milliseconds between head reads of every tracked position, which see price moves no event shows; 60000 when omitted with `account`, otherwise 0 (none). */
+  refreshInterval?: number;
+  /** Called after `ready` for each position a read changed (any figure but the version), with its event, or none for a head read. A throw goes to `onError`. */
+  onChange?: (position: LendingPosition, event?: StreamdEvent) => void;
+  /** Called when a position's `below` changes between two known values; an account's first read is not a crossing. A throw goes to `onError`. */
+  onCross?: (position: LendingPosition, event?: StreamdEvent) => void;
+}
+
+/** A running `positions()`: every tracked position, kept current. */
+export interface Positions {
+  /** By long-form account; the map is updated in place, each position replaced whole. */
+  readonly value: ReadonlyMap<string, LendingPosition>;
+  /** By address, in any form. */
+  get(account: string): LendingPosition | undefined;
+  /** Resolves once the start reads and any history are folded; rejects if that fails or it is stopped first. */
+  readonly ready: Promise<ReadonlyMap<string, LendingPosition>>;
   /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
   readonly active: boolean;
   unsubscribe(): void;
@@ -693,5 +899,65 @@ export interface FundFlowGraph {
   /** Why the walk ended before reading every node within `hops`, when it did. */
   stoppedBy?: "nodes" | "requests" | "target";
   /** Adapter calls made. */
+  requests: number;
+}
+
+/** The Indexer reads `AptosClient.holdersAt` folds; `IndexerAccountAdapter` implements them. */
+export type FungibleAssetIndexer = Pick<
+  IndexerAccountAdapter,
+  "getFungibleAssetVersion" | "listFungibleStores" | "getFungibleStores" | "listFungibleActivities"
+>;
+
+/** How much of a `HolderSnapshot` was checked against the chain at its version. */
+export type HolderVerification = "none" | "supply" | "stores";
+
+/** Options for `AptosClient.holdersAt`. */
+export interface HoldersAtOptions extends Pick<EventFilter, "retries" | "signal"> {
+  /**
+   * The Indexer to fold (default: an `IndexerAccountAdapter` over the
+   * client's `aptos`, anonymous). Pass one built with an `apiKey` for more
+   * than the anonymous rate.
+   */
+  indexer?: FungibleAssetIndexer;
+  /**
+   * `"supply"` (the default) checks the total against
+   * `0x1::fungible_asset::supply` at the version; `"stores"` also reads every
+   * holder's `0x1::fungible_asset::balance` there (a store folded to 0 is
+   * covered only by the supply check, so not at all when supply is
+   * untracked); `"none"` checks nothing.
+   */
+  verify?: HolderVerification;
+  /** Most requests the snapshot may make, Indexer reads and views alike, retries included; default 1000. */
+  maxRequests?: number;
+}
+
+/** One store holding the asset at the snapshot's version. */
+export interface FungibleHolder {
+  /** The fungible store's address, long form. */
+  store: string;
+  /** The store's owner as the Indexer reports it, long form; not read at the version. */
+  owner: string;
+  /** Base units. */
+  balance: bigint;
+}
+
+/** What `AptosClient.holdersAt` resolves with. */
+export interface HolderSnapshot {
+  /** The metadata address, long form. */
+  asset: string;
+  version: bigint;
+  /** The Indexer version the fold started from: every change in `(version, indexedVersion]` was undone. */
+  indexedVersion: bigint;
+  /** Every store with a positive balance, largest first, ties by store. */
+  holders: FungibleHolder[];
+  /** The sum of `holders`' balances. */
+  total: bigint;
+  /** `0x1::fungible_asset::supply` at the version, when it was checked. */
+  supply?: bigint;
+  /** The checks that ran and passed. */
+  verified: HolderVerification;
+  /** Whether the asset has custom deposit and withdraw hooks. */
+  dispatchable: boolean;
+  /** Requests made. */
   requests: number;
 }

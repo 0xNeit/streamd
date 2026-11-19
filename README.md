@@ -18,7 +18,7 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `proposals`, `stakePools`, `balances`, `balanceAt`,
+`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `proposals`, `stakePools`, `multisig`, `positions`, `balances`, `balanceAt`,
 `eventsOf`, `eventsAt`, `explain`, `expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
@@ -43,10 +43,13 @@ TypeScript types:
   chain SDK.
 - `@streamd/aptos` (`packages/aptos`) - Aptos: `AptosClient`, `FullnodeScanAdapter`,
   `IndexerAccountAdapter`, the network presets, `checkDescriptor`, `listEventHandles`, `ownedBy`,
-  `resolveName`, `primaryName`, and the
+  `resolveName`, `primaryName`, `sendOnce`, and the
   `@streamd/aptos/framework` event catalog. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer dependency.
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core` and
   `@streamd/aptos`.
+- `@streamd/codegen` (`packages/codegen`) - the generator behind
+  [`streamd codegen`](#generate-event-types), with no Node or database import, so it also runs
+  in a browser.
 - `@streamd/store-sqlite` (`packages/store-sqlite`) - opt-in persistence: events written to a
   SQLite database you supply, and queried back. See [Store events in SQLite](#store-events-in-sqlite).
 - `@streamd/store-postgres` (`packages/store-postgres`) - the same over a Postgres client you
@@ -57,9 +60,17 @@ TypeScript types:
 - `@streamd/testing` (`packages/testing`) - start or attach to an Aptos localnet, publish Move
   packages to it and assert their events. Needs the `aptos` CLI. See
   [Test against a localnet](#test-against-a-localnet).
+- `@streamd/store-indexeddb` (`packages/store-indexeddb`) - `IndexedDbPageStore`, which keeps
+  `CachingAdapter`'s settled pages in the browser's IndexedDB. See
+  [History the fullnode has pruned](#history-the-fullnode-has-pruned).
 - `@streamd/receiver` (`packages/receiver`) - receive `streamd forward` webhooks: the signature
   checked, the events parsed and repeats dropped. See
   [Forward events to a webhook](#forward-events-to-a-webhook).
+- `@streamd/gateway` (`apps/gateway`) - the gateway behind `streamd serve`, and
+  `GatewayAdapter`, which reads through one, from the browser-safe `@streamd/gateway/adapter`.
+  See [Serve a gateway](#serve-a-gateway).
+- `@streamd/playground` (`apps/playground`) - a browser page to check an event type, watch it
+  live and copy its generated types and a snippet. Not published. See [Playground](#playground).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents`, `useSubmitTransaction` and
   `useTransfers` take an `AptosClient`. See [React hooks](#react-hooks).
@@ -905,6 +916,9 @@ const preview = await streamd.explain(await aptos.transaction.build.simple({ sen
   `{ account, asset, delta }` per account and asset over them, grouped by account in order
   of first appearance and each account's assets in theirs, zero nets left out. `symbol` and `decimals` are read by view unless
   `withAssetInfo: false`.
+  `withValue: true` adds `value` in USDC to transfers and balance changes, a change taking the
+  price of its asset's transfers (see [Values](#values)); `formatExplanation` prints it in
+  brackets after the amount. A simulation is priced at the state its views read.
 - **Swaps and sales.** Decoded from the same events as `swaps()` and `sales()` decode them.
 - **Names.** `withNames` (mainnet only) adds `names`: the primary name or `null`
   of the sender, the fee payer, every transfer's `from` and `to` and every sale's buyer and
@@ -1128,6 +1142,54 @@ subscription reuses it. A start at the head is never shared, so subscriptions st
 different times share only once their cursors meet: after the next event for `handle` and
 `account` descriptors, usually never for `module` descriptors on `FullnodeScanAdapter`.
 Shared subscriptions receive the same event objects, so treat events as read-only.
+
+### Share polling across browser tabs
+
+```ts
+import { TabSharedAdapter } from "@streamd/core";
+import { AptosClient, FullnodeScanAdapter } from "@streamd/aptos";
+
+const adapter = new TabSharedAdapter(new FullnodeScanAdapter(aptos), {
+  name: "streamd-aptos-mainnet",
+  requestTimeout: 15_000,
+  joinHeadStarts: true,
+});
+const streamd = new AptosClient({ aptos, adapter, requestTimeout: 15_000 });
+```
+
+With the same app open in several tabs, one tab (the leader, chosen with `navigator.locks`)
+sends every `fetchEvents` request to the source. The other tabs post their requests to it over
+a `BroadcastChannel` named `name` and get its page back, so they stay under one tab's request
+budget. Identical requests from several tabs within `shareFor` ms (default 1000) are one source
+request. Each tab keeps its own cursors, so when the leader's tab closes or navigates away the
+next tab in the lock's queue takes over and every subscription resumes where it was, with no
+gap and no repeat. Requests the old leader had not answered are sent again to the new one.
+
+- **`joinHeadStarts` lets a start at the head join the leader's walk.** Two tabs started at
+  different times hold different cursors, and module scan cursors rarely meet, so without it
+  each tab's walk is its own source request. With it, a `module` or `resource` request with no
+  cursor, `fromVersion`, `toVersion` or `offset` gets the newest caught-up page fetched for the
+  same descriptor and options within `shareFor`, so a tab opened later shares every page with
+  the rest, and may begin with events from up to `shareFor` ms before it started. Turn it on
+  only for a source that reads such a request from the head, as `FullnodeScanAdapter` does
+  (`MemoryAdapter` reads it from the start, and a query with no `fromVersion` would get one
+  page). `handle` and `account` walks are never joined. A walk with its own start
+  (`fromVersion`, `fromTime`, a saved cursor) is fetched on its own until it matches another.
+- **`name` must differ per network and source.** Any tab on the name may answer the others.
+- **Only `fetchEvents` is shared.** Views, head reads, block reads and transaction lookups run
+  in the calling tab.
+- **Without Web Locks or `BroadcastChannel`** (server rendering, older browsers) every call goes
+  straight to the source, so each tab polls on its own. `isLeader` says whether this tab leads.
+- **A leader that is alive but stuck** keeps the lock: the others wait for it until it answers,
+  or, with the adapter's `requestTimeout` (pass the client's), fail with a
+  `StreamdNetworkError` and retry. The same timeout stops the leader joining a source request
+  that never settles.
+- `close()` leaves the election and fails this tab's waiting requests. A source failure reaches
+  the asking tab as a `StreamdNetworkError` (keeping `statusCode` and `retryAfter`), so it backs
+  off as in the leading tab. Any other `StreamdError` arrives as a plain `StreamdError`, which
+  stops a listener as invalid input, as it would in the leading tab.
+- Each request and reply is broadcast to every tab and dropped by all but the one it is for, so
+  each page is copied into every open tab.
 
 ### Manage listeners
 
@@ -1902,6 +1964,8 @@ const mine = await streamd.getTransfers({ fromVersion: -10_000n, account: "alice
   reads. Records the `account` filter drops cost none, tokens have neither field, and an
   asset whose view aborts is left without them. `formatAmount(amount, decimals)` turns base
   units into a decimal string, every digit kept: `formatAmount(1_500_000n, 8)` is `"0.015"`.
+- **Values.** `withValue: true` adds `value`, the amount in USDC at the record's version, to
+  APT, USDt and USDC records; see [Values](#values).
 - **One account.** `account` keeps the records whose `from` or `to` is that
   address. It filters finished records, because a deposit needs its withdraw to
   report `from`, so it costs the same reads as no filter; add `asset` to save
@@ -2362,6 +2426,184 @@ for (const pool of pools.value.values()) {
   reads the history again. Like `reduce()`, it is not a listener for `off()` or
   `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
 
+## Multisig accounts
+
+`multisig(address, options?)` keeps one `0x1::multisig_account` current and previews what its
+pending transactions would do. `value` is a `MultisigState { address, version, owners,
+threshold, timelock?, lastResolved, nextSequenceNumber, pending }`, `pending` a map by sequence
+number of `PendingMultisigTransaction { sequenceNumber, creator, createdAtSecs, payload?,
+payloadHash?, call?, approvals, rejections, executableAtSecs? }`:
+
+```ts
+const treasury = streamd.multisig("0x...", {
+  onChange: (state, event) => console.log(event.type, [...state.pending.keys()]),
+});
+await treasury.ready;
+for (const tx of treasury.value.pending.values()) {
+  console.log(tx.sequenceNumber, tx.call?.function, `${tx.approvals.length}/${treasury.value.threshold}`);
+  const preview = await treasury.preview(tx.sequenceNumber);
+  console.log(preview.partial ? "partial" : `as ${preview.sender}`, preview.events.map((e) => e.type));
+}
+```
+
+- **State from views.** Seven `0x1::multisig_account` views at one version: `owners`,
+  `num_signatures_required`, `last_resolved_sequence_number`, `next_sequence_number`,
+  `get_pending_transactions`, `timelock_period` and `timelock_override_threshold`, through
+  `EventAdapter.view`, so the adapter must implement it and `getHeadVersion`. Pending items are
+  numbered from `lastResolved + 1`, since the view returns them in order without their numbers.
+  `call` is the entry function a stored payload calls, decoded with the SDK's
+  `MultiSigTransactionPayload`, its arguments each a BCS value as `0x` hex (their types need the
+  function's ABI); an item stored by hash has `payloadHash` and no `call`. `executableAtSecs` is
+  the creation time plus the timelock period while the approvals are below the override
+  threshold.
+- **Live changes.** The account never signs (owners create and vote, an owner executes), so an
+  `account` walk sees nothing. Instead one scan over every `0x1::multisig_account` event type but
+  `MetadataUpdated` (metadata is not kept) is
+  narrowed by the events' `multisig_account` field, and the views are reread at the version of
+  each of the account's events, once per version and at most four at a time, outside
+  `maxConcurrentRequests`; the state is replaced field by field in place. The legacy
+  `EventHandle`s on `MultisigAccount` are not read: the framework no longer writes them.
+  `onChange(state, event)` fires after each live event of the account. `fromVersion` (an absolute
+  `bigint`) reads the state at the version before and folds every change after it before `ready`;
+  without it the state is read at the head. A `fromVersion` older than the timelock views fails.
+- **Previews.** `preview(sequenceNumber, { payload? })` simulates with no key through
+  `previewEvents`. The queue position is read again at the head, and a transaction resolved
+  there is refused. For the next transaction in the queue, the first owner (in `owners` order)
+  for whom `can_execute(owner, multisig, sequenceNumber)` is true at the head is the sender of a
+  multisig-wrapped transaction, as an execution would run; `can_execute` counts that owner's own
+  approval when they have not voted, so a transaction one approval short previews too. Otherwise
+  (further short, held by the timelock, or behind another pending transaction) the entry
+  function is simulated directly as the multisig, sponsored by the first owner so the multisig
+  needs no APT, and the preview is `partial`: it skips the multisig's checks and runs from the
+  current state, not after the transactions before it. The multisig's own `Vote`,
+  `TransactionExecutionSucceeded` and `TransactionExecutionFailed` go in `executorEvents`, since
+  they name the simulated executor rather than any vote cast; a payload that would abort shows
+  as `TransactionExecutionFailed` there, with only the fee statement in `events`.
+- **Payloads stored by hash.** Pass the payload (BCS `MultisigTransactionPayload` bytes or `0x`
+  hex); it is checked against `payloadHash` by SHA3-256 before anything is simulated, and a
+  payload passed for a transaction that stores its own is refused.
+- **Stops.** A failed start read rejects `ready` (an account that is not a multisig aborts the
+  views), as does `unsubscribe()`, `destroy()` or `signal` before the start read finishes; a
+  failed view on a live page fails the poll, which retries as for `on()`. Options:
+  `fromVersion`, `onChange`, `onError`, `signal`, `pollInterval`, `batchSize`, `maxErrors`,
+  `maxBackoff`, `maxPollInterval` and `retries`; anything else throws. `address` may be an
+  Aptos name. Like `reduce()`, it is not a listener for `off()` or `listenerCount()`;
+  `unsubscribe()` or `destroy()` ends it. Metadata is not kept, and nothing is submitted.
+
+## Lending positions
+
+`positions(protocol, options?)` keeps lending positions current, each as the protocol computes
+it at a version through its own views and its own oracle. `"aave"` reads Aave V3 on Aptos
+mainnet (package `AavePool` at `0x39ddcd9e...016fb`, priced by `AaveOracle` over Chainlink), and
+`"echelon"` reads Echelon's vaults (`0xc6bc659f...21ba`, below).
+`value` maps each long-form account to a `LendingPosition { protocol, account, version, assets,
+collateralValue?, debtValue?, liquidationThreshold?, health?, below?, unknown? }`, `assets` the
+reserves it supplies or borrows as `PositionAsset { asset, decimals, supplied, borrowed,
+collateral }` in base units:
+
+```ts
+const book = streamd.positions("aave", {
+  account: ["0x...", "0x..."],
+  threshold: { numerator: 11n, denominator: 10n },
+  onCross: (p) => console.log(p.account, p.below ? "below 1.1" : "back above 1.1"),
+});
+await book.ready;
+for (const p of book.value.values()) {
+  if (p.health) console.log(p.account, Number(p.health.numerator) / Number(p.health.denominator));
+}
+```
+
+- **Health is Aave's own number.** Every figure is `user_logic::get_user_account_data`'s, which
+  `generic_logic::calculate_user_account_data` computes (the package publishes its source):
+  collateral sums `ray_mul_down(scaled aToken balance, normalized income) * price / 10^decimals`
+  over reserves used as collateral, debt sums `ceil_div(price * ray_mul_up(scaled debt,
+  normalized debt), 10^decimals)`, the liquidation threshold is the collateral-weighted average
+  (e-mode's for e-mode assets), and the health factor is `wad_div(percent_mul(collateral,
+  threshold), debt)`. Prices are `oracle::get_asset_price`, USD with 18 decimals. `health` is
+  that WAD as an exact `Fraction { numerator, denominator }` over 10^18, reduced, so `health` is
+  below 1 exactly when `validation_logic` would allow a liquidation at that version
+  (`health_factor < 1e18`). `collateralValue` and `debtValue` are USD over 10^18 and
+  `liquidationThreshold` basis points over 10^4, all reduced. No debt means no `health` and
+  `below` false.
+- **Unknown, never guessed.** When the account data view aborts (an oracle refusing a price aborts
+  the whole calculation), the position keeps its balances, which are read without prices, and has
+  no values, no `health` and no `below`; `unknown` holds the Move abort the node reported,
+  without its URL or the version. A network failure fails
+  the read instead, and the poll retries.
+- **Reads.** Three views per position at one version: `get_user_account_data`,
+  `ui_pool_data_provider_v3::get_user_reserves_data` (which reserves hold a balance), and
+  `pool_data_provider::get_user_reserve_data` for each of those (current balances, interest
+  included). The adapter must implement `view` and `getHeadVersion`.
+- **Live changes.** One scan over Aave's `Supply`, `Withdraw`, `Borrow`, `Repay`,
+  `LiquidationCall`, `DeficitCreated`, `ReserveUsedAsCollateralEnabled`/`Disabled`,
+  `UserEModeSet` and `BalanceTransfer` (both sides, so a liquidator taking aTokens is read too)
+  rereads each account the event names at its version, once per account and version and at most
+  four at a time, outside `maxConcurrentRequests` and `maxRequestsPerSecond`. `account` (an address or a list) reads those
+  accounts at the head first, or at the version before `fromVersion`, and ignores the rest;
+  without it every account an event names is tracked from the start version on. A
+  `FullnodeScanAdapter` scan walks every transaction, so from the head through an anonymous IP it
+  can fall behind; Aave's own events are rare.
+- **Price moves.** Health moves with prices and a price moves with no Aave event, so after `ready`
+  every tracked position is also read at the head every `refreshInterval` ms: 60000 by default
+  with `account`, and none by default without it, since that map holds every account any event
+  named (0 turns it off). Each head read is one poll through the client's limiter whose views
+  run at most four at a time outside `maxConcurrentRequests` and `maxRequestsPerSecond`, as the
+  scan's do: about two views plus one per reserve held, per account, per interval. An account
+  whose read fails goes to `onError` and is read again at the next head; when every read fails
+  the poll retries with backoff, and once it gives up after `maxErrors` the whole monitor stops
+  rather than show stale health as live. One account whose reads keep failing is reported each
+  interval and keeps its last read; its `version` says when that was. A read replaces a position only when it is not older
+  than the one held, so a scan that lags the head never overwrites a newer read.
+- **Callbacks.** `onChange(position, event?)` fires after `ready` when a read changes any figure
+  (the event is absent for a head read); `onCross(position, event?)` when `below` changes between
+  two known values against `threshold` (a `Fraction`, 1 when omitted, compared exactly). An
+  account's first read is not a crossing: after `ready`, `value` shows who is already below.
+  An unknown read between two known ones keeps the last known side. Each callback runs on its
+  own, so one that throws (reported to `onError`) does not hide another.
+- **Options.** `account`, `threshold`, `refreshInterval`, `fromVersion`, `onChange`, `onCross`,
+  `onError`, `signal`, `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`,
+  `maxPollInterval` and `retries`; anything else throws, as does a protocol other than `"aave"` or `"echelon"`.
+  Accounts are addresses, not names. Like `reduce()`, it is not a listener for `off()` or
+  `listenerCount()`; `unsubscribe()`, `signal` or `destroy()` ends the scan and the refresh. A
+  failed start read rejects `ready`. Mainnet only: the package address is mainnet's.
+
+### Echelon
+
+`positions("echelon", options)` takes the same options and keeps the same `LendingPosition`, one
+per vault. Echelon publishes no source; what follows was read from its `lending` module's
+bytecode, decompiled locally, and confirmed against its views on mainnet.
+
+- **Health is Echelon's own comparison.** `can_liquidate(account)` is
+  `account_liquidation_threshold < account_liability_value`, both `FixedPoint64` USD sums: the
+  threshold sums `price * coins / mantissa * threshold_bps / 10000` over collateral markets
+  (e-mode's threshold for e-mode markets), the liability `price * debt / mantissa` over
+  liability markets. A liquidation accrues the vault's interest before that check, and the plain
+  `account_liability_value` view does not, so it reads low by the interest since the vault last
+  accrued. With a debt, each read calls `preview_health_factor_given_repay(account, market, 0)`,
+  which accrues as the liquidation does and returns the same pair; `health` is their exact ratio,
+  reduced, so it is below 1 exactly when a liquidation at that version would pass.
+  `collateralValue` is `account_lend_value` and `debtValue` the accrued liability, both USD over
+  2^64; `liquidationThreshold` is the threshold over the collateral value, the collateral-weighted
+  ratio. An account with no vault, or no debt, has no `health` and `below` false.
+- **Prices** are Echelon's own: `0x92e95ed7...::oracle` (its `tiered_oracle`) for coin markets and
+  most fungible asset markets, an LP oracle or a linear discount oracle for some others. Several
+  markets' prices were refused on mainnet in November 2026 (Thala Token, StakeStone Ether and
+  Bitcoin, two Thala LP markets); a vault holding one has `unknown` with that abort, and its
+  balances.
+- **Assets.** One `PositionAsset` per market holding a supply or a debt: `asset` the coin type for
+  a coin market, as Echelon names it, or the fungible asset's metadata address; `decimals` from the
+  market's mantissa; `supplied` from `account_coins`, `borrowed` from `account_liability`
+  (accrued); `collateral` true for every supply, since Echelon keeps supplies in the vault's
+  collateral. Each market's asset is read once per monitor.
+- **Reads.** About five views per position, plus one per market supplied and one per market
+  borrowed, and three more the first time a market is seen. A head read of 100 tracked accounts
+  is several hundred views per interval from one IP.
+- **Live changes.** One scan over `lending::SupplyEvent`, `WithdrawEvent`, `BorrowEvent`,
+  `RepayEvent` (the borrower; a repayer pays from its wallet) and `LiquidateEvent` (the borrower,
+  and the liquidator, whose vault receives the seized shares). Entering or leaving an efficiency
+  mode, and the manager's `clear_bad_debt`, change a vault with no event, so only a head read
+  (with `account`) sees them.
+
 ## Package upgrades
 
 `upgrades(address, callback, options?)` follows package publishes at one address as they land,
@@ -2532,6 +2774,11 @@ wallet.unsubscribe();
 - **Failures.** `ready` rejects if the first read fails. A later failed read retries
   with backoff, and `maxErrors` stops it; a view that aborts stops it at once. A balances handle is not a listener for
   `off()` or `listenerCount()`.
+- **Values.** `withValue: true` values each priced asset (see [Values](#values)) at the head
+  version its balance was read at, on the first read and whenever the balance changes:
+  `wallet.values` maps each to its `AssetValue`, and each change carries `value`. A price move
+  alone does not refresh a value or call `onChange`. It costs one more view per priced asset
+  on those reads.
 
 ### A balance at a past version
 
@@ -2561,6 +2808,65 @@ const usdcThen = await streamd.balanceAt("alice.apt", usdc, 8038000000n);
   the earliest mainnet history it is not yet a view function at all; both reject as an abort.
 - **Aptos only.** Sui reads a balance only at its latest state, so `SuiClient` has no
   `balanceAt`.
+
+### Token holders at a version
+
+`holdersAt(asset, version, options?)` lists every fungible store holding one asset at a past
+version, with its owner and exact balance, and checks the result against the chain there:
+
+```ts
+const sol = "0x0d829a23c3a3760e2fed60ca24d83cee8943f7c61859608ae0726fdb2e4f2784";
+const snapshot = await streamd.holdersAt(sol, 8120000000n);
+// { asset, version, indexedVersion, holders: [{ store, owner, balance }, ...], total, supply,
+//   verified: "supply", dispatchable: false, requests }
+```
+
+- **Source.** No view lists an asset's holders, and `Deposit` and `Withdraw` name only a store,
+  so the fold runs backward over the Aptos Indexer: every row of
+  `current_fungible_asset_balances` for the asset, then each `fungible_asset_activities` row
+  after `version` undone (a deposit subtracted, a withdraw added back), up to the newest
+  version the fungible asset processor has finished. A store's row is undone only through its
+  own `last_transaction_version`, so a store that changes while the walk runs stays exact. A
+  store seen only in activities is looked up: one deleted before the walk folds from zero, and
+  one created during it is left out.
+- **Checks.** `verify` is `"supply"` by default: the total must equal
+  `0x1::fungible_asset::supply` at `version`, and an asset with no tracked supply rejects.
+  `"stores"` also reads every holder's `0x1::fungible_asset::balance` at `version`, one view
+  each, and rejects up front when `maxRequests` cannot cover them. A store the fold puts at 0
+  is covered only by the supply check, so not at all for an asset with no tracked supply.
+  `"none"` checks nothing and trusts the Indexer. A failed check, a balance that folds below zero, and an
+  activity type that moves an amount the fold does not know reject with a `StreamdError`
+  rather than resolving a wrong list.
+- **Refused.** APT, since gas fees and storage refunds move it in ways the fold was never
+  checked against; an asset paired with a coin (`0x1::coin::paired_coin`), since balances still
+  in a `CoinStore` are not in fungible stores; coin types and legacy tokens. A dispatchable
+  asset (`is_asset_type_dispatchable`) needs `verify: "stores"`, since its hooks are not proven
+  to move balance only through the events the Indexer records, and the snapshot carries
+  `dispatchable: true`.
+- **Owner.** `owner` is the Indexer's: the current owner of a store that still exists, or the
+  owner on its first activity row after `version` for one since deleted. It is not read at
+  `version`, so a secondary store whose object changed hands without moving balance reports
+  its later owner.
+- **Cost.** About one Indexer request per 100 stores and one per 100 activity rows after
+  `version`, plus two views at the processed version, the supply view and, under `"stores"`,
+  one view per holder. Every request goes through the client's limiter (`maxRequestsPerSecond`,
+  `requestTimeout`), retries under `retries` with any `Retry-After`, and counts toward
+  `maxRequests` (default 1000), past which the call rejects. The anonymous Indexer and
+  fullnode share a budget of roughly 40 requests per 5 minutes per IP, so a busy asset over a
+  wide window needs an `indexer` built with an API key,
+  `new IndexerAccountAdapter(aptos, { apiKey })`, and a fullnode key.
+- **Window.** The views at `version` need it inside the fullnode's window, or an
+  `ArchiveFallbackAdapter`; `verify: "none"` reads no view at `version`. A version the
+  Indexer has not processed yet is refused.
+- **Measured.** For SOL (above) 200,000 versions back, the snapshot made 43 requests over
+  about 3 minutes anonymously: 55 current stores, 517 activity rows, 31 holders, the total
+  equal to the supply at `version`, and every holder equal to its balance view there.
+- **Not checked on mainnet:** dispatchable assets, stores deleted after `version`, frozen
+  transfers, and mints or burns inside the window. The supply check covers the total in each
+  case, and `"stores"` every holder.
+- **Large amounts.** The Indexer sends amounts as JSON numbers. They are read exactly where
+  `JSON.parse` gives a reviver the source text (Bun, Node 21 and later, current browsers);
+  elsewhere an amount above 2^53 rejects with a `StreamdError` rather than being rounded.
 
 ## Oracle prices
 
@@ -2612,6 +2918,61 @@ const sub = streamd.prices([APT_USD, BTC_USD], ({ data }) => {
   and a live `prices()` delivers nothing until updates resume.
 - **Switchboard is not read.** Neither of its Aptos packages has updated a price since
   2026-08-29 (on-demand) or before the fullnode's retained window (v2).
+
+## Values
+
+`withValue: true` on `transfers`, `getTransfers`, `iterateTransfers`, `balances` and `explain`
+prices amounts in native USDC at the version they were read at:
+
+```ts
+const transfers = await streamd.getTransfers({ fromVersion: -1000n, asset: "0xa", withValue: true });
+// A 10 APT transfer at version 8123509211:
+transfers[0]?.data.value;
+// { quote: "0xbae2...6f3b", decimals: 6, amount: 4334712n,
+//   price: { numerator: ..., denominator: ... }, source: "pool", reference: "0x9256...00d8" }
+formatAmount(transfers[0]!.data.value!.amount, 6); // "4.334712" USDC
+```
+
+- **What is priced.** A curated table; any other asset, and every token, has no `value`:
+
+  | Asset | Pool read (Hyperion, `0x8b4a2c4b...e05c`) | Pyth feed before the pool |
+  | --- | --- | --- |
+  | APT (`0xa` and `0x1::aptos_coin::AptosCoin`) | APT/USDC, 0.05%, `0x925660b8618394809f89f8002e2926600c775221f43bf1919782b297a79400d8` | APT/USD |
+  | USDt (`0x357b0b74...dc2b`) | USDt/USDC, 0.01%, `0xd3894aca06d5f42b27c89e6f448114b3ed6a1ba07f992a58b2126c71dd83c127` | USDT/USD |
+  | USDC (`0xbae20765...6f3b`) | none: at par, `source: "par"` | |
+
+  Each pool was the deepest for its pair when chosen. No BTC is priced: every BTC pool
+  against USDC held under 2,000 USDC.
+- **A pool's price.** `pool_v3::current_tick_and_price(pool)` at the version returns the
+  pool's `sqrt_price`, a Q64.64 square root of USDC base units per base unit of the asset, so
+  the price is exactly `sqrt_price² / 2^128`, reduced to lowest terms. A pool at
+  `sqrt_price` 0 gives no value.
+- **Pyth, before the pools.** The pools were created at versions 2321906214 (USDt) and
+  2321920813 (APT), in February 2025. Below its pool's creation version an asset is priced
+  by Pyth (`priceAt`), taken as USDC at par, `price × 10^(exponent + 6 - decimals)` per base
+  unit, `source: "oracle"`, only when positive and at most 60 seconds from the block's time
+  either way; otherwise there is no value. From the creation version on, only the pool is
+  read, and any failed read fails, so a pool problem never turns into an oracle price. Pyth
+  reads go through the client's `aptos`, so a pruned version needs `aptos` on an archive node.
+  In practice few records reach it: on mainnet, transfers before the pools mostly cannot be
+  built at all, since `0x1::object::owner` was not yet a view (checked at versions 2000000000
+  and 2321009010) and coin moves were legacy handle events, which `transfers()` does not read.
+- **Exact.** `price` is the exact fraction of quote base units per base unit of the asset;
+  `amount` is the asset amount times `price`, rounded toward zero, so a negative balance
+  change has a negative value. Nothing passes through a float.
+- **Spot prices can be moved.** A value is the pool's price after the whole transaction at
+  that version. A swap through the pool in the same transaction (a sandwich, or the
+  transfer's own swap) moves it, and there is no time-weighting and no liquidity check.
+  Treat values as indicative, not as a settlement price.
+- **Cost.** One pool view per price source and version, shared by the records at that
+  version (the APT coin and its fungible asset share one), each read inside the transfer
+  reads' limit of 4 and its `requestTimeout`, outside `maxConcurrentRequests`. Before the
+  pools a value costs a Pyth table read and a block read instead. A failed read fails the
+  page or query, as the transfer reads do. Pool views go through the adapter, so
+  `ArchiveFallbackAdapter` answers pruned versions.
+- **Mainnet only.** The table names mainnet pools and feeds; on another network the pool
+  views fail and so does the call.
+- **Other chains.** `SuiClient.balances` refuses `withValue`.
 
 ## Data sources and their limits
 
@@ -3351,6 +3712,29 @@ import { SqlitePageStore } from "@streamd/store-sqlite";
 const store = new SqlitePageStore(new Database("pages.db"), { namespace: "mainnet" });
 const adapter = new CachingAdapter(new FullnodeScanAdapter(aptos), { store });
 ```
+
+In the browser, `@streamd/store-indexeddb` keeps them in IndexedDB, so a reload reads settled
+history without the source:
+
+```ts
+import { IndexedDbPageStore } from "@streamd/store-indexeddb";
+
+const store = new IndexedDbPageStore({ namespace: "aptos-mainnet", maxEntries: 5_000 });
+const adapter = new CachingAdapter(new FullnodeScanAdapter(aptos), { store });
+```
+
+It writes one database, `streamd-pages`, shared by every tab and every app of the origin, and
+a write lands only when its transaction commits. `maxEntries` counts the whole database, so
+give every store on the origin the same limit, and when the source is configurable put it in
+the namespace (as `streamd query --cache` puts a hash of the node URLs in its own), so one
+node's pages never answer for another's. To forget everything stored, for example on sign-out,
+call `indexedDB.deleteDatabase("streamd-pages")`. A write the origin's storage quota refuses rejects with a
+`StreamdError` naming the quota, which reaches `onStoreError` while the page is still served,
+so set `maxEntries` to keep the store inside the quota. Where there is no IndexedDB (server
+rendering, a worker without it) every read is a miss. Over `TabSharedAdapter`, wrap it
+outside (`new CachingAdapter(new TabSharedAdapter(...), { store })`) so each tab answers
+settled pages from the shared database without asking the leader; every tab sharing the
+`TabSharedAdapter` name must then use the same source and namespace.
 
 Memory is checked first, then the store, then the source. A store that fails or
 holds an unreadable entry counts as a miss and reaches `onStoreError`, so a broken
@@ -4107,6 +4491,61 @@ p50, p95 and max latency per method.
   nothing during server rendering or before mount. It is meant for development builds; gate it
   as above.
 
+### Fullnode errors in the browser
+
+The SDK's browser client parses every response body as JSON, so a public fullnode's plain-text
+429 reaches you as a JSON syntax error, with no status and no backoff hint. Give the SDK
+`sendOnce` from `@streamd/aptos`, which sends each request once through `fetch` and keeps a
+non-JSON body as text, so the SDK's error keeps the 429 and streamd's adapters and checks
+report it as a `StreamdNetworkError` with `statusCode` 429:
+
+```ts
+import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { AptosClient, sendOnce } from "@streamd/aptos";
+
+const aptos = new Aptos(new AptosConfig({ network: Network.MAINNET, client: sendOnce(30_000) }));
+const streamd = new AptosClient({ aptos, maxRequestsPerSecond: 2 });
+```
+
+The argument is a per-request timeout in ms. It does not retry; the poller's backoff does.
+
+## Playground
+
+`apps/playground` is a small web page over the same packages. Enter a Move event type and press
+Check, and it shows:
+
+- **The check:** `checkDescriptor`'s verdict, such as "a module event" or "not declared
+  `#[event]`".
+- **Live events:** after a passing check, the most recent 25 through `useEvents`, newest
+  first, with Stop and Start.
+- **Generated types:** what [`streamd codegen <address>::<module>`](#generate-event-types)
+  writes for the type's module, generated in the browser by `@streamd/codegen`.
+- **A snippet:** a Bun script that follows the type with `AptosClient`, importing the
+  generated descriptor from `./events.js` (or naming the type inline for a generic event).
+
+Both have Copy buttons. Build and serve it locally:
+
+```sh
+cd apps/playground
+bun run build   # dist/, a browser bundle
+bun run serve   # http://127.0.0.1:5207 (PORT to change it)
+```
+
+- **Networks.** Aptos mainnet (the default) and testnet.
+- **API key.** Optional. It is sent only to the Aptos node, as the SDK's `API_KEY`, and kept
+  in memory unless "Remember the key on this device" is ticked, which stores it in
+  `localStorage`; unticking removes it. The snippet never contains it: it reads
+  `APTOS_API_KEY` from the environment.
+- **Rate limits.** The public fullnodes limit anonymous requests per IP, and following a module
+  event scans every transaction. Without a key the client makes at most two adapter calls a
+  second; each module-scan call reads up to ten pages of transactions, so a busy type such as
+  `0x1::fungible_asset::Deposit` runs at about four HTTP requests a second. Requests go through
+  `sendOnce`, a 429 is shown as a rate limit with the advice to add a key, and the
+  poller backs off, giving up after five failures in a row. Polling starts only after a passing check, and Stop ends it.
+  Expect an anonymous tab to be limited after some minutes on a busy chain.
+- **Scope.** Module events only, on Aptos. No handle, account or resource descriptors, type
+  arguments, or codegen options.
+
 ## Command line
 
 `@streamd/cli` installs a `streamd` executable. `streamd tail` follows matching events and
@@ -4376,6 +4815,12 @@ constant time through `crypto.subtle.verify`. A string body is read as UTF-8. A 
 malformed header, a changed body or another secret gives `false`; the hex may be either case.
 An empty secret, a body that is neither a string nor a `Uint8Array`, or a runtime without
 `crypto.subtle` throws a `StreamdError`.
+
+The sending side is in core too, for code that posts its own webhooks the way `forward` and the
+gateway do: `signWebhook(body, secret)` resolves the header value, `webhookSink({ to, secret?,
+headers?, timeout })` makes one signed POST that never follows a redirect, and
+`deliver(body, sink, retries, { error, signal, retryDelay? })` retries it with the same backoff
+and `Retry-After` rule, resolving `true` once acknowledged.
 
 The signature has no timestamp, so it proves origin and integrity but not freshness: a captured
 request can be replayed. Deduplicate on each event's `version` and `eventIndex`, which delivery
@@ -5248,6 +5693,152 @@ per other node, within the anonymous Aptos fullnode limit for a few nodes. Exit 
 `--listen` cannot bind or stdout fails; `2` for invalid arguments. A node that is down never ends
 the command.
 
+### Serve a gateway
+
+`streamd serve` runs a gateway that many clients follow at once. It polls each descriptor its
+clients ask for once, from the head, and streams every event to all of them as Server-Sent
+Events or WebSocket messages. Browsers get live events without an API key or a node of their
+own, and a hundred tabs on one event type cost the node one walk.
+
+```sh
+# loopback only, port 8787
+bun x streamd serve --network mainnet
+
+# reachable from elsewhere: a token is required
+STREAMD_GATEWAY_TOKEN=... bun x streamd serve --listen 0.0.0.0:8787 --allow-origin https://app.example
+```
+
+It needs Bun, for its WebSocket server; under Node it exits 1. It takes the endpoint flags of
+the commands that read events (`--network`, `--node-url`, `--api-key`, `--archive`, `--stats`,
+`--chain sui`), `--poll-interval` for every topic, and these:
+
+| Flag | Default | |
+| --- | --- | --- |
+| `--listen [host:]port` | `127.0.0.1:8787` | any host but loopback needs a token |
+| `--token` or `STREAMD_GATEWAY_TOKEN` | none | required on every request as `Authorization: Bearer <t>`, or `?access_token=<t>` where a browser cannot set headers (`EventSource`, `WebSocket`); query strings can end up in logs |
+| `--allow-origin <origin>` | none | browser origins sent CORS headers and allowed to open WebSockets, repeatable, or `*` |
+| `--max-topics <n>` | 32 | descriptors followed at once; a new one past it answers 503 |
+| `--max-connections <n>` | 1000 | open SSE and WebSocket streams; past it, 503 |
+| `--webhooks <file>` | none | enables the webhook API, keeping webhooks and their cursors in the file |
+| `--webhook-allow-private` | off | lets webhook targets be non-public addresses |
+
+Clients name the descriptor as JSON in a `descriptor` query parameter, with `creationNumber`
+as a decimal string:
+
+```sh
+curl -N "http://127.0.0.1:8787/v1/events?descriptor=%7B%22kind%22%3A%22module%22%2C%22eventType%22%3A%220x1%3A%3Atransaction_fee%3A%3AFeeStatement%22%7D"
+# id: 3f2a91c0:0
+#
+# id: 3f2a91c0:1
+# data: {"type":"0x1::transaction_fee::FeeStatement","data":{...},"version":"4205513021",...}
+```
+
+```ts
+import { parseEvent } from "@streamd/core";
+
+const descriptor = encodeURIComponent(JSON.stringify({ kind: "module", eventType: "0x1::coin::CoinDeposit" }));
+
+const source = new EventSource(`http://127.0.0.1:8787/v1/events?descriptor=${descriptor}`);
+source.onmessage = (message) => console.log(parseEvent(message.data));
+source.addEventListener("end", (message) => source.close()); // the gateway gave up on this descriptor
+
+const socket = new WebSocket(`ws://127.0.0.1:8787/v1/ws?descriptor=${descriptor}`);
+socket.onmessage = (message) => {
+  const body = JSON.parse(message.data);
+  if (body.end !== undefined) return; // the gateway gave up; a 1011 close follows
+  if (body.event === undefined) return; // the opening { id }: where the socket starts
+  console.log(body.id, parseEvent(JSON.stringify(body.event)));
+};
+```
+
+**Resuming.** Each event's id is `<epoch>:<seq>`, numbered by the gateway as its topic receives
+events. A stream opens with the id it starts after (an SSE `id:` with no data, or a WebSocket
+`{ "id" }` frame), so a client that has seen no event yet can still resume. It starts at the
+newest event, or, given `Last-Event-ID` (which `EventSource`
+sends by itself on reconnect) or `?lastEventId=` (for WebSockets), right after that id, with no
+gap and no repeat. Each topic keeps its last 1000 events, and lingers 60 seconds after its last
+client leaves. A resume point the topic no longer holds, or one from before the gateway
+restarted, answers 410: start the stream again, and read what was missed by version with a
+query.
+
+**Slow clients.** A stream more than 1 MiB behind is dropped (WebSocket code 1013), its queue
+discarded, rather than buffered without bound. Its client reconnects and resumes from its last id while the topic still
+holds it.
+
+**`GatewayAdapter`.** In `@streamd/gateway/adapter`, an `EventAdapter` over the gateway's
+`POST /v1/fetch`, `/v1/head` and `/v1/earliest`, so a `StreamdClient` in the browser reads
+through it. That subpath imports only `@streamd/core`; the package root also exports it, beside
+`createGateway`, whose Node built-ins a browser bundle cannot load:
+
+```ts
+import { StreamdClient } from "@streamd/core";
+import { GatewayAdapter } from "@streamd/gateway/adapter";
+
+const streamd = new StreamdClient({ adapter: new GatewayAdapter({ url: "http://127.0.0.1:8787", token }) });
+streamd.on(descriptor, (event) => console.log(event));                    // the shared topic
+const recent = await streamd.getEvents(descriptor, { fromVersion: -1000n }); // the gateway's node
+```
+
+A walk with no start follows the gateway's topic from its newest event, as its streams do,
+whatever the source would do with no start. A walk with a start, an end, an offset or
+newest-first order reads the gateway's node, identical requests within a poll interval sharing
+one read, at most 4 in flight and each abandoned after 30 seconds, and keeps following it on
+that node's cursors: backfill-then-follow walks are not shared. Requests must be
+`application/json` (415 otherwise), so a page on another origin cannot send one without the
+CORS preflight `--allow-origin` governs. With no token, the gateway answers only requests whose
+`Host` is loopback, which refuses a page that rebinds its own name to 127.0.0.1. Block lookups, `fromTime`, transaction lookups, simulations and views are not served.
+`where` and `decode` run in the client as usual.
+
+`GET /v1/status` lists each topic (descriptor, clients, last id, events held), the open
+stream count and the number of registered webhooks.
+
+**Webhooks.** With `--webhooks <file>`, clients register webhooks through the gateway's API, and
+the gateway POSTs every new event on each one's descriptor to its URL, as `streamd forward`
+does: a JSON array of events per POST, signed in `x-streamd-signature`, retried with backoff
+and `Retry-After`, at least once. `@streamd/receiver` or `verifyWebhook` reads them.
+
+```sh
+bun x streamd serve --webhooks ./webhooks.json
+
+curl -X POST http://127.0.0.1:8787/v1/webhooks -H "content-type: application/json" \
+  -d '{"url":"https://hooks.example/streamd","descriptor":{"kind":"module","eventType":"0x1::coin::CoinDeposit"}}'
+# {"id":"9c1e0b4f7a2d3e65","url":"https://hooks.example/streamd","descriptor":{...},"status":"active",
+#  "createdAt":"2026-11-19T12:00:00.000Z","delivered":0,"fromVersion":"4205513021","secret":"<64 hex characters>"}
+```
+
+| Route | |
+| --- | --- |
+| `POST /v1/webhooks` | `{ url, descriptor }`; 201 with the webhook and its `secret`, the only response that carries it |
+| `GET /v1/webhooks` | `{ webhooks: [...] }`, each with `status` (`active` or `failed`), `cursor`, `delivered` (events acknowledged, redeliveries included) and `lastError` |
+| `GET /v1/webhooks/<id>` | one webhook |
+| `DELETE /v1/webhooks/<id>` | 204; it stops at once, abandoning a POST in flight |
+| `POST /v1/webhooks/<id>/resume` | restarts a failed webhook from its cursor |
+
+The routes take the gateway's token like every other, and exist only with `--webhooks`.
+Without a token they refuse any request carrying an `Origin` header (403): a loopback gateway
+is reachable from every page its operator opens, so browsers are kept off the webhook API.
+
+- **Start and cursor.** A webhook starts at the head the gateway's node reports when it is
+  registered (`fromVersion`), and follows with a cursor of its own. The file holds every webhook, its secret and its cursor (mode 0600, replaced
+  whole on each write), and its cursor moves only after the target acknowledged the page
+  with a 2xx, so a restarted gateway carries on from there and may repeat a page, never skip
+  one. A file that cannot be read stops `serve` with exit code 1.
+- **Delivery.** `--retries` (default 5) per batch, `--timeout` (default 10000 ms) per POST,
+  `--batch-size` events per POST (default: each page). A 408, 429 or 5xx is retried, any other
+  status is not, and redirects are never followed.
+- **A target that keeps failing.** Once a batch fails past its retries, or polling gives up,
+  the webhook is marked `failed` with the reason in `lastError`, stops, and keeps its cursor.
+  `resume` delivers from that page on. A failed webhook stays failed across restarts.
+- **Targets.** `http` or `https`, no credentials in the URL. The gateway refuses a host that
+  is, or resolves to, a loopback, private, link-local, shared, multicast or reserved address,
+  checked at registration and again before every POST, unless `--webhook-allow-private` is
+  given (for a receiver on the same network). The address is not pinned for the request, so a
+  name that resolves to a public address at the check and a private one at the connect is not
+  stopped: give a gateway that registers untrusted URLs no route to what it must not reach.
+- **Limits.** At most 100 webhooks. Each polls on its own: webhooks on one descriptor share a
+  node read only while their cursors are equal, so many on a busy type cost the node one walk
+  each.
+
 ### Store events
 
 `streamd store` follows the same descriptors as `tail` into a SQLite file, through
@@ -5304,6 +5895,9 @@ events reference, fetched from whichever modules and accounts declare them.
 ```sh
 streamd codegen --out src/events.ts 0x1::fungible_asset 0x1::coin
 ```
+
+The generator is `generateEventTypes` in `@streamd/codegen`, which takes a function reading a
+module's ABI, so it runs anywhere, the [Playground](#playground) included.
 
 It also writes a typed `handle` descriptor builder for each legacy `0x1::event::EventHandle<T>`
 field of a resource (a struct with `key`) in the modules it reads, named `<Struct>_<Field>` and

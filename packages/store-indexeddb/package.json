@@ -1,0 +1,33 @@
+{
+  "name": "@streamd/store-indexeddb",
+  "version": "0.1.0",
+  "description": "Keep streamd's settled pages in the browser's IndexedDB, through CachingAdapter",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    }
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "bun build.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@streamd/core": "workspace:*"
+  },
+  "license": "MIT"
+}

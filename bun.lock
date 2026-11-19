@@ -10,6 +10,30 @@
         "typescript": "^5.5.0",
       },
     },
+    "apps/gateway": {
+      "name": "@streamd/gateway",
+      "version": "0.1.0",
+      "dependencies": {
+        "@streamd/core": "workspace:*",
+      },
+    },
+    "apps/playground": {
+      "name": "@streamd/playground",
+      "version": "0.1.0",
+      "dependencies": {
+        "@aptos-labs/ts-sdk": "^6.3.1",
+        "@streamd/aptos": "workspace:*",
+        "@streamd/codegen": "workspace:*",
+        "@streamd/core": "workspace:*",
+        "@streamd/react": "workspace:*",
+        "react": "^19.3.1",
+        "react-dom": "^19.3.1",
+      },
+      "devDependencies": {
+        "@types/react": "^19.3.0",
+        "@types/react-dom": "^19.3.0",
+      },
+    },
     "packages/aptos": {
       "name": "@streamd/aptos",
       "version": "0.1.0",
@@ -31,7 +55,9 @@
       },
       "dependencies": {
         "@streamd/aptos": "workspace:*",
+        "@streamd/codegen": "workspace:*",
         "@streamd/core": "workspace:*",
+        "@streamd/gateway": "workspace:*",
         "@streamd/store-postgres": "workspace:*",
         "@streamd/store-sqlite": "workspace:*",
         "@streamd/testing": "workspace:*",
@@ -61,6 +87,13 @@
         "pg",
       ],
     },
+    "packages/codegen": {
+      "name": "@streamd/codegen",
+      "version": "0.1.0",
+      "dependencies": {
+        "@streamd/core": "workspace:*",
+      },
+    },
     "packages/core": {
       "name": "@streamd/core",
       "version": "0.1.0",
@@ -89,6 +122,13 @@
     },
     "packages/receiver": {
       "name": "@streamd/receiver",
+      "version": "0.1.0",
+      "dependencies": {
+        "@streamd/core": "workspace:*",
+      },
+    },
+    "packages/store-indexeddb": {
+      "name": "@streamd/store-indexeddb",
       "version": "0.1.0",
       "dependencies": {
         "@streamd/core": "workspace:*",
@@ -202,11 +242,19 @@
 
     "@streamd/cli": ["@streamd/cli@workspace:packages/cli"],
 
+    "@streamd/codegen": ["@streamd/codegen@workspace:packages/codegen"],
+
     "@streamd/core": ["@streamd/core@workspace:packages/core"],
+
+    "@streamd/gateway": ["@streamd/gateway@workspace:apps/gateway"],
+
+    "@streamd/playground": ["@streamd/playground@workspace:apps/playground"],
 
     "@streamd/react": ["@streamd/react@workspace:packages/react"],
 
     "@streamd/receiver": ["@streamd/receiver@workspace:packages/receiver"],
+
+    "@streamd/store-indexeddb": ["@streamd/store-indexeddb@workspace:packages/store-indexeddb"],
 
     "@streamd/store-postgres": ["@streamd/store-postgres@workspace:packages/store-postgres"],
 

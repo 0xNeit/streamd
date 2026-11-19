@@ -9,10 +9,11 @@ export { adapterMetrics } from "./adapters/metrics.js";
 export { withTracing } from "./adapters/tracing.js";
 export { toPrometheus } from "./prometheus.js";
 export { MemoryAdapter } from "./adapters/memory.js";
-export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
+export { pageJson, parsePage, recordingAdapter, replayAdapter } from "./adapters/recording.js";
 export { RoutingAdapter } from "./adapters/routing.js";
+export { TabSharedAdapter } from "./adapters/tabs.js";
 export { EventPoller } from "./poller.js";
-export { EventQuery } from "./query.js";
+export { EventQuery, withRetries } from "./query.js";
 export { CursorManager, eventId } from "./cursor.js";
 export { checkAdapter } from "./conformance.js";
 export { compareAdapters } from "./compare.js";
@@ -22,7 +23,7 @@ export { RequestLimiter, markDescending, markSelfTimed, supportsDescending } fro
 export { SharedFetches } from "./shared.js";
 // Building blocks the chain packages use for their own client methods.
 export { UNSIGNED_INTEGER, fieldDecoder } from "./decode.js";
-export { descriptorKey, onAbort, raceAbort, resolveFromVersion, sleep } from "./utils.js";
+export { descriptorKey, onAbort, raceAbort, redactSecrets, resolveFromVersion, sleep } from "./utils.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
 export { STANDARD_COLUMNS, eventTableRows, requireEventTables } from "./tables.js";
 export type { EventTableRow } from "./tables.js";
@@ -30,7 +31,8 @@ export { count, groupBy, latest, sum } from "./reducers.js";
 export type { Fold } from "./reducers.js";
 export { startReduction } from "./reduce.js";
 export type { ReduceHost } from "./reduce.js";
-export { WEBHOOK_SIGNATURE_HEADER, verifyWebhook } from "./webhook.js";
+export { WEBHOOK_SIGNATURE_HEADER, deliver, signWebhook, verifyWebhook, webhookSink } from "./webhook.js";
+export type { DeliveryAttempt, DeliverySink, WebhookDelivery } from "./webhook.js";
 export { formatAmount, startBalances } from "./balances.js";
 export type { BalanceReader, BalancesHost } from "./balances.js";
 export { lazyResolve, ownedByPredicate } from "./ownership.js";
@@ -107,6 +109,11 @@ export type {
 } from "./compare.js";
 export type { CachingAdapterOptions, PageStore } from "./adapters/caching.js";
 export type {
+  BroadcastChannelLike,
+  LockManagerLike,
+  TabSharedAdapterOptions,
+} from "./adapters/tabs.js";
+export type {
   AdapterMethod,
   AdapterMetrics,
   AdapterMetricsSnapshot,
@@ -136,6 +143,7 @@ export type {
 
 export type {
   AccountEventDescriptor,
+  AssetValue,
   BalanceChange,
   Balances,
   BalancesOptions,

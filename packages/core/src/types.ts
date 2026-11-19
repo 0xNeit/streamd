@@ -1292,6 +1292,27 @@ export interface Transfer {
   symbol?: string;
   /** The asset's decimals, with `withAssetInfo`; use `formatAmount` to apply them. */
   decimals?: number;
+  /** The amount's value in the quote asset at the record's version, with `withValue`; absent when the asset has no price source. */
+  value?: AssetValue;
+}
+
+/**
+ * An amount priced in a quote asset at one version. `price` is exact;
+ * `amount` is the amount times `price`, rounded toward zero.
+ */
+export interface AssetValue {
+  /** The quote asset, in long form. */
+  quote: string;
+  /** The quote's decimals; `formatAmount(amount, decimals)` renders the value. */
+  decimals: number;
+  /** The value in the quote's base units, rounded toward zero, so a negative amount's value is negative. */
+  amount: bigint;
+  /** Quote base units per base unit of the asset, as a fraction in lowest terms. */
+  price: { numerator: bigint; denominator: bigint };
+  /** `pool` for a DEX pool's spot price, `oracle` for an oracle's, `par` for the quote asset itself. */
+  source: "pool" | "oracle" | "par";
+  /** The pool address or oracle feed id read; absent at par. */
+  reference?: string;
 }
 
 /** One asset's balance at a version; `balances()` delivers these to `onChange`. */
@@ -1300,6 +1321,8 @@ export interface BalanceChange {
   asset: string;
   /** Base units, read at or after the change's `version`. */
   balance: bigint;
+  /** The balance's value at the same version, with `withValue`; absent when the asset has no price source. */
+  value?: AssetValue;
 }
 
 /** Options for a chain client's `balances`. Balances are read at the head, so nothing moves the start. */
@@ -1310,6 +1333,12 @@ export interface BalancesOptions
   > {
   /** The assets to follow, one or a list (default: the chain's native coin). */
   asset?: string | readonly string[];
+  /**
+   * Values each balance in the chain client's quote asset at the version it
+   * was read, on the first read and whenever it changes; refused by a client
+   * that prices nothing.
+   */
+  withValue?: boolean;
   /** Called after a balance changes, with every balance known so far. A throw goes to `onError`. */
   onChange?: (balances: ReadonlyMap<string, bigint>, change: StreamdEvent<BalanceChange>) => void;
 }
@@ -1320,6 +1349,8 @@ export interface Balances {
   readonly value: ReadonlyMap<string, bigint>;
   /** One asset's balance, given in any form; `undefined` until it is known. */
   get(asset: string): bigint | undefined;
+  /** With `withValue`, a copy of each priced balance's value as last read; assets with no price source are absent. */
+  readonly values: ReadonlyMap<string, AssetValue>;
   /** Resolves once following has started; rejects if the first read fails or it is stopped first. */
   readonly ready: Promise<ReadonlyMap<string, bigint>>;
   /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */

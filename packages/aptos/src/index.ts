@@ -1,6 +1,6 @@
 export { FullnodeScanAdapter } from "./fullnode.js";
 export { IndexerAccountAdapter } from "./indexer.js";
-export type { IndexerAccountAdapterOptions } from "./indexer.js";
+export type { FungibleActivityRow, FungibleStoreRow, IndexerAccountAdapterOptions } from "./indexer.js";
 export { networks } from "./networks.js";
 export type { NetworkPreset } from "./networks.js";
 export { checkDescriptor } from "./preflight.js";
@@ -13,8 +13,11 @@ export { AptosClient } from "./client.js";
 export { formatExplanation } from "./explain.js";
 export type { AptosClientConfig } from "./client.js";
 export { primaryName, resolveName } from "./names.js";
+export { sendOnce } from "./send.js";
 export { formatAmount } from "./transfers.js";
 export { proposalState } from "./governance.js";
+export { MULTISIG_DESCRIPTOR } from "./multisig.js";
+export { AAVE_DESCRIPTOR, ECHELON_DESCRIPTOR } from "./lending.js";
 export { tracePath } from "./trace.js";
 export type {
   AbiChanges,
@@ -24,6 +27,7 @@ export type {
   ActivityListenerOptions,
   ActivityOptions,
   AptosTransactionSimulation,
+  AssetValue,
   BalanceDelta,
   BalanceChange,
   Balances,
@@ -40,8 +44,26 @@ export type {
   ExplainOptions,
   FunctionSignature,
   FundFlowGraph,
+  Fraction,
+  FungibleAssetIndexer,
+  FungibleHolder,
   GasUsage,
+  HolderSnapshot,
+  HoldersAtOptions,
+  HolderVerification,
+  LendingPosition,
+  LendingProtocol,
+  Multisig,
+  MultisigOptions,
+  MultisigPreview,
+  MultisigPreviewOptions,
+  MultisigState,
+  MultisigTimelock,
   PackageUpgrade,
+  PendingMultisigTransaction,
+  PositionAsset,
+  Positions,
+  PositionsOptions,
   PreviewEventsOptions,
   Price,
   PriceListenerOptions,
