@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { parseCommand, parseTime, UsageError } from "../src/args.js";
 import { parseKafkaUrl } from "../src/kafka.js";
-import type { AlertOptions, MonitorOptions, StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
+import type { AlertOptions, MonitorOptions, ServeOptions, StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
 const LONG_ADDR = `0x${"0".repeat(63)}1`;
@@ -10,6 +10,7 @@ const TYPE = "0x1::coin::DepositEvent";
 // Parsed options would carry a key from the developer's own environment.
 beforeAll(() => {
   delete process.env.APTOS_API_KEY;
+  delete process.env.STREAMD_GATEWAY_TOKEN;
 });
 
 function tail(...argv: string[]): TailOptions {
@@ -1779,4 +1780,62 @@ describe("parseCommand coverage", () => {
   it("shows help", () => {
     expect(parseCommand(["coverage", "--help"])).toEqual({ command: "help" });
   });
+});
+
+describe("parseCommand serve", () => {
+  function serve(...argv: string[]): ServeOptions {
+    const parsed = parseCommand(["serve", ...argv]);
+    if (parsed.command !== "serve") throw new Error("expected a serve command");
+    return parsed.options;
+  }
+
+  it("listens on loopback port 8787 with no token by default", () => {
+    const saved = process.env.STREAMD_GATEWAY_TOKEN;
+    delete process.env.STREAMD_GATEWAY_TOKEN;
+    try {
+      expect(serve()).toEqual({ network: "mainnet", listen: { host: "127.0.0.1", port: 8787 } });
+    } finally {
+      if (saved !== undefined) process.env.STREAMD_GATEWAY_TOKEN = saved;
+    }
+  });
+
+  it("takes the listen address, token, origins, poll interval and limits", () => {
+    expect(
+      serve(
+        "--listen", "0.0.0.0:9000", "--token", "t", "--allow-origin", "https://app.example", "--allow-origin", "*",
+        "--poll-interval", "500", "--max-topics", "8", "--max-connections", "50", "--network", "testnet",
+      ),
+    ).toEqual({
+      network: "testnet",
+      listen: { host: "0.0.0.0", port: 9000 },
+      token: "t",
+      allowOrigins: ["https://app.example", "*"],
+      pollInterval: 500,
+      maxTopics: 8,
+      maxConnections: 50,
+    });
+    expect(serve("--listen", "localhost:1").listen).toEqual({ host: "localhost", port: 1 });
+    expect(serve("--listen", "[::1]:1").listen).toEqual({ host: "::1", port: 1 });
+  });
+
+  it("reads the token from STREAMD_GATEWAY_TOKEN", () => {
+    const saved = process.env.STREAMD_GATEWAY_TOKEN;
+    process.env.STREAMD_GATEWAY_TOKEN = "from-env";
+    try {
+      expect(serve("--listen", "0.0.0.0:1").token).toBe("from-env");
+    } finally {
+      if (saved === undefined) delete process.env.STREAMD_GATEWAY_TOKEN;
+      else process.env.STREAMD_GATEWAY_TOKEN = saved;
+    }
+  });
+
+  it.each([
+    [["serve", "--listen", "0.0.0.0:9000"], /serve needs --token/],
+    [["serve", "--listen", "10.0.0.1:9000"], /serve needs --token/],
+    [["serve", "--token", ""], /--token must not be empty/],
+    [["serve", "--allow-origin", "https://app.example/"], /--allow-origin must be/],
+    [["serve", "--allow-origin", "app.example"], /--allow-origin must be/],
+    [["serve", "--max-topics", "0"], /--max-topics must be an integer/],
+    [["serve", TYPE], /serve takes no event types/],
+  ])("rejects %j", (argv, message) => rejects(argv, message));
 });
