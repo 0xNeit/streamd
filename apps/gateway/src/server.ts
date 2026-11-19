@@ -20,7 +20,10 @@ export interface GatewayOptions {
   maxUpstreamRequests?: number;
   /** After this many ms an upstream read fails with a `StreamdNetworkError` (default: 30000). */
   requestTimeout?: number;
-  /** When set, every request must carry it as `Authorization: Bearer` or `access_token`. */
+  /**
+   * When set, every request must carry it as `Authorization: Bearer` or
+   * `access_token`. Without it, only requests whose `Host` is loopback are served.
+   */
   token?: string;
   /** Browser origins answered with CORS headers and let open WebSockets; `"*"` for any. */
   allowOrigins?: readonly string[];
@@ -75,7 +78,7 @@ interface Connection {
 
 const MAX_DESCRIPTOR = 16 * 1024;
 const MAX_BODY = 64 * 1024;
-const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?$/;
+const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?$/i;
 const encoder = new TextEncoder();
 
 function digest(text: string): Buffer {
@@ -182,6 +185,12 @@ export function createGateway(options: GatewayOptions): Gateway {
     batchSize: options.batchSize,
     onError: options.onError,
   });
+  for (const name of ["maxTopics", "maxConnections", "buffer", "maxUpstreamRequests", "requestTimeout"] as const) {
+    const value = options[name];
+    if (value !== undefined && !(Number.isSafeInteger(value) && value > 0)) {
+      throw new StreamdError(`${name} must be a positive integer: ${value}`);
+    }
+  }
   const requestTimeout = options.requestTimeout ?? 30_000;
   const limited = options.adapter === undefined
     ? undefined

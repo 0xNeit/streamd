@@ -143,6 +143,14 @@ describe("requests", () => {
     expect(((await bad.json()) as { error: { name: string } }).error.name).toBe("StreamdError");
   });
 
+  it("refuses limits that are not positive integers", () => {
+    const client = new StreamdClient({ adapter: new CountingAdapter() });
+    for (const bad of [{ maxTopics: 0 }, { maxUpstreamRequests: -1 }, { buffer: 1.5 }]) {
+      expect(() => createGateway({ client, ...bad })).toThrow(/must be a positive integer/);
+    }
+    client.destroy();
+  });
+
   it("answers 404 for an unknown route", async () => {
     expect((await call(setup(), new Request("http://localhost/nope"))).status).toBe(404);
   });
