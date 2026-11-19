@@ -18,7 +18,7 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `proposals`, `stakePools`, `balances`, `balanceAt`,
+`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `proposals`, `stakePools`, `multisig`, `balances`, `balanceAt`,
 `eventsOf`, `eventsAt`, `explain`, `expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
@@ -2361,6 +2361,70 @@ for (const pool of pools.value.values()) {
   fields stops it, reported through `onError`. There is no cursor to resume from: a restart
   reads the history again. Like `reduce()`, it is not a listener for `off()` or
   `listenerCount()`; `unsubscribe()` or `destroy()` ends it.
+
+## Multisig accounts
+
+`multisig(address, options?)` keeps one `0x1::multisig_account` current and previews what its
+pending transactions would do. `value` is a `MultisigState { address, version, owners,
+threshold, timelock?, lastResolved, nextSequenceNumber, pending }`, `pending` a map by sequence
+number of `PendingMultisigTransaction { sequenceNumber, creator, createdAtSecs, payload?,
+payloadHash?, call?, approvals, rejections, executableAtSecs? }`:
+
+```ts
+const treasury = streamd.multisig("0x...", {
+  onChange: (state, event) => console.log(event.type, [...state.pending.keys()]),
+});
+await treasury.ready;
+for (const tx of treasury.value.pending.values()) {
+  console.log(tx.sequenceNumber, tx.call?.function, `${tx.approvals.length}/${treasury.value.threshold}`);
+  const preview = await treasury.preview(tx.sequenceNumber);
+  console.log(preview.partial ? "partial" : `as ${preview.sender}`, preview.events.map((e) => e.type));
+}
+```
+
+- **State from views.** Seven `0x1::multisig_account` views at one version: `owners`,
+  `num_signatures_required`, `last_resolved_sequence_number`, `next_sequence_number`,
+  `get_pending_transactions`, `timelock_period` and `timelock_override_threshold`, through
+  `EventAdapter.view`, so the adapter must implement it and `getHeadVersion`. Pending items are
+  numbered from `lastResolved + 1`, since the view returns them in order without their numbers.
+  `call` is the entry function a stored payload calls, decoded with the SDK's
+  `MultiSigTransactionPayload`, its arguments each a BCS value as `0x` hex (their types need the
+  function's ABI); an item stored by hash has `payloadHash` and no `call`. `executableAtSecs` is
+  the creation time plus the timelock period while the approvals are below the override
+  threshold.
+- **Live changes.** The account never signs (owners create and vote, an owner executes), so an
+  `account` walk sees nothing. Instead one scan over every `0x1::multisig_account` event type but
+  `MetadataUpdated` (metadata is not kept) is
+  narrowed by the events' `multisig_account` field, and the views are reread at the version of
+  each of the account's events, once per version and at most four at a time, outside
+  `maxConcurrentRequests`; the state is replaced field by field in place. The legacy
+  `EventHandle`s on `MultisigAccount` are not read: the framework no longer writes them.
+  `onChange(state, event)` fires after each live event of the account. `fromVersion` (an absolute
+  `bigint`) reads the state at the version before and folds every change after it before `ready`;
+  without it the state is read at the head. A `fromVersion` older than the timelock views fails.
+- **Previews.** `preview(sequenceNumber, { payload? })` simulates with no key through
+  `previewEvents`. The queue position is read again at the head, and a transaction resolved
+  there is refused. For the next transaction in the queue, the first owner (in `owners` order)
+  for whom `can_execute(owner, multisig, sequenceNumber)` is true at the head is the sender of a
+  multisig-wrapped transaction, as an execution would run; `can_execute` counts that owner's own
+  approval when they have not voted, so a transaction one approval short previews too. Otherwise
+  (further short, held by the timelock, or behind another pending transaction) the entry
+  function is simulated directly as the multisig, sponsored by the first owner so the multisig
+  needs no APT, and the preview is `partial`: it skips the multisig's checks and runs from the
+  current state, not after the transactions before it. The multisig's own `Vote`,
+  `TransactionExecutionSucceeded` and `TransactionExecutionFailed` go in `executorEvents`, since
+  they name the simulated executor rather than any vote cast; a payload that would abort shows
+  as `TransactionExecutionFailed` there, with only the fee statement in `events`.
+- **Payloads stored by hash.** Pass the payload (BCS `MultisigTransactionPayload` bytes or `0x`
+  hex); it is checked against `payloadHash` by SHA3-256 before anything is simulated, and a
+  payload passed for a transaction that stores its own is refused.
+- **Stops.** A failed start read rejects `ready` (an account that is not a multisig aborts the
+  views), as does `unsubscribe()`, `destroy()` or `signal` before the start read finishes; a
+  failed view on a live page fails the poll, which retries as for `on()`. Options:
+  `fromVersion`, `onChange`, `onError`, `signal`, `pollInterval`, `batchSize`, `maxErrors`,
+  `maxBackoff`, `maxPollInterval` and `retries`; anything else throws. `address` may be an
+  Aptos name. Like `reduce()`, it is not a listener for `off()` or `listenerCount()`;
+  `unsubscribe()` or `destroy()` ends it. Metadata is not kept, and nothing is submitted.
 
 ## Package upgrades
 

@@ -15,6 +15,7 @@ export type { AptosClientConfig } from "./client.js";
 export { primaryName, resolveName } from "./names.js";
 export { formatAmount } from "./transfers.js";
 export { proposalState } from "./governance.js";
+export { MULTISIG_DESCRIPTOR } from "./multisig.js";
 export { tracePath } from "./trace.js";
 export type {
   AbiChanges,
@@ -46,7 +47,14 @@ export type {
   HolderSnapshot,
   HoldersAtOptions,
   HolderVerification,
+  Multisig,
+  MultisigOptions,
+  MultisigPreview,
+  MultisigPreviewOptions,
+  MultisigState,
+  MultisigTimelock,
   PackageUpgrade,
+  PendingMultisigTransaction,
   PreviewEventsOptions,
   Price,
   PriceListenerOptions,
