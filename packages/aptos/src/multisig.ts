@@ -173,8 +173,8 @@ export const MULTISIG_DESCRIPTOR: ModuleEventDescriptor = {
  */
 export function multisigSource(adapter: EventAdapter, account: string, requestTimeout?: number): EventAdapter {
   if (typeof adapter.view !== "function") throw new StreamdError("multisig needs an adapter that implements view");
-  // Outside the client's limiter, which a history page holds a slot of while
-  // its views run. Each read is timed here instead, and the page marked
+  // Outside the client's limiter, whose slot the page asking holds while its
+  // views run. Each read is timed here instead, and the page marked
   // self-timed, so a page of many versions is not cut by one timeout.
   const timed = new RequestLimiter(4, Infinity, requestTimeout).wrap(adapter);
   const view: ViewAt = (request, version) => timed.view!(request, version);
@@ -267,6 +267,7 @@ export function startMultisig(
       return state;
     } catch (err) {
       stopped = true;
+      untrack();
       throw err;
     }
   })();
