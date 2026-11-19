@@ -2781,6 +2781,9 @@ formatAmount(transfers[0]!.data.value!.amount, 6); // "4.334712" USDC
   either way; otherwise there is no value. From the creation version on, only the pool is
   read, and any failed read fails, so a pool problem never turns into an oracle price. Pyth
   reads go through the client's `aptos`, so a pruned version needs `aptos` on an archive node.
+  In practice few records reach it: on mainnet, transfers before the pools mostly cannot be
+  built at all, since `0x1::object::owner` was not yet a view (checked at versions 2000000000
+  and 2321009010) and coin moves were legacy handle events, which `transfers()` does not read.
 - **Exact.** `price` is the exact fraction of quote base units per base unit of the asset;
   `amount` is the asset amount times `price`, rounded toward zero, so a negative balance
   change has a negative value. Nothing passes through a float.
