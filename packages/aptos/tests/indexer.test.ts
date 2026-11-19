@@ -527,6 +527,21 @@ describe("IndexerAccountAdapter fungible asset reads", () => {
     expect(row!.amount).toBe(18446744073709551615n);
   });
 
+  it("refuses an amount that cannot be read exactly as the runtime's error, not the Indexer's", async () => {
+    const original = JSON.parse;
+    // A runtime without source text access: the reviver sees only the double.
+    JSON.parse = ((text: string, reviver?: (k: string, v: unknown) => unknown) => original(text, reviver && ((k, v) => reviver(k, v)))) as typeof JSON.parse;
+    try {
+      const body = `{"data":{"current_fungible_asset_balances":[{"storage_id":"${long(2)}","owner_address":"0x1","amount":18446744073709551615,"last_transaction_version":7}]}}`;
+      const { adapter } = adapterWith(() => new Response(body));
+      const err = await adapter.listFungibleStores(ASSET, undefined, 1).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(StreamdError);
+      expect(err).not.toBeInstanceOf(StreamdNetworkError);
+    } finally {
+      JSON.parse = original;
+    }
+  });
+
   it.each([
     ["a row out of order", [store(3), store(2)]],
     ["a repeated store", [store(2), store(2)]],

@@ -136,12 +136,20 @@ function keepIntegers(_key: string, value: unknown, context?: { source?: string 
   return value;
 }
 
+/** Not retried: the runtime, not the reply, is what cannot read the amount. */
+function requireExact(value: unknown): void {
+  if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    throw new StreamdError("This runtime's JSON.parse gives no source text, so an Indexer amount above 2^53 cannot be read exactly");
+  }
+}
+
 function malformed(table: string): StreamdNetworkError {
   return new StreamdNetworkError(`Indexer returned a malformed ${table} row`);
 }
 
 function toStoreRow(row: unknown): FungibleStoreRow {
   if (!isObject(row)) throw malformed("current_fungible_asset_balances");
+  requireExact(row.amount);
   const amount = toVersion(row.amount);
   const lastVersion = toVersion(row.last_transaction_version);
   if (amount === undefined || lastVersion === undefined) throw malformed("current_fungible_asset_balances");
@@ -151,6 +159,7 @@ function toStoreRow(row: unknown): FungibleStoreRow {
 function toActivityRow(row: unknown): FungibleActivityRow {
   const table = "fungible_asset_activities";
   if (!isObject(row)) throw malformed(table);
+  requireExact(row.amount);
   const version = toVersion(row.transaction_version);
   const amount = row.amount === null || row.amount === undefined ? 0n : toVersion(row.amount);
   const { type, is_transaction_success: success, is_gas_fee: gasFee } = row;

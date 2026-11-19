@@ -343,8 +343,26 @@ describe("holdersAt checks", () => {
     expect(result.dispatchable).toBe(true);
   });
 
-  it("stops at maxRequests", async () => {
-    await expect(snapshot(state(), { verify: "none", maxRequests: 3 })).rejects.toThrow("maxRequests of 3");
+  it("stops at maxRequests, sending nothing past it", async () => {
+    const fake = fakeIndexer(state());
+    const { adapter, views } = viewAdapter();
+    const run = holdersAt({ indexer: fake.indexer, adapter, run: (task) => task() }, ASSET, 100n, { verify: "none", maxRequests: 4 });
+    await expect(run).rejects.toThrow("maxRequests of 4");
+    expect(fake.calls.length + views.length).toBe(4);
+  });
+
+  it("refuses the store check up front when the budget cannot cover it", async () => {
+    const { adapter, views } = viewAdapter({ "0x1::fungible_asset::supply": supply(60n) });
+    const run = snapshot(state(), { verify: "stores", maxRequests: 7 }, 100n, adapter);
+    await expect(run).rejects.toThrow("too few to check 2 stores");
+    expect(views.filter((v) => v.includes("::balance@"))).toEqual([]);
+  });
+
+  it("looks up stores seen only in activities in batches of 100", async () => {
+    const activities = Array.from({ length: 101 }, (_, i) => act(1000 + i, 120n, 1n, "Withdraw"));
+    const { result, calls } = await snapshot({ processed: [200n], stores: [], activities });
+    expect(calls.filter((c) => c === "lookup")).toHaveLength(2);
+    expect(result.holders).toHaveLength(101);
   });
 
   it("retries a rate-limited request under retries", async () => {

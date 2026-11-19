@@ -716,7 +716,9 @@ export interface HoldersAtOptions extends Pick<EventFilter, "retries" | "signal"
   /**
    * `"supply"` (the default) checks the total against
    * `0x1::fungible_asset::supply` at the version; `"stores"` also reads every
-   * holder's `0x1::fungible_asset::balance` there; `"none"` checks nothing.
+   * holder's `0x1::fungible_asset::balance` there (a store folded to 0 is
+   * covered only by the supply check, so not at all when supply is
+   * untracked); `"none"` checks nothing.
    */
   verify?: HolderVerification;
   /** Most requests the snapshot may make, Indexer reads and views alike, retries included; default 1000. */

@@ -51,7 +51,7 @@ function checkOptions(options: HoldersAtOptions): Checked {
 }
 
 /** Every request through the limiter, retried, and counted against `max`. */
-function counter(run: HoldersHost["run"], { maxRequests, retries, signal }: Checked) {
+function counter(run: Call, { maxRequests, retries, signal }: Checked) {
   let requests = 0;
   const call: Call = (task) =>
     withRetries(
@@ -65,7 +65,7 @@ function counter(run: HoldersHost["run"], { maxRequests, retries, signal }: Chec
       retries,
       signal,
     );
-  return { call, requests: () => requests };
+  return { call, requests: () => requests, left: () => maxRequests - requests };
 }
 
 async function currentStores(call: Call, indexer: FungibleAssetIndexer, asset: string): Promise<Map<string, FungibleStoreRow>> {
@@ -96,7 +96,7 @@ async function processedThrough(call: Call, indexer: FungibleAssetIndexer, newes
  * version, so its last version is read again from the start of the next
  * page; a version filling a whole page is read through by offset.
  */
-export async function activitiesIn(
+async function activitiesIn(
   call: Call,
   indexer: FungibleAssetIndexer,
   asset: string,
@@ -158,7 +158,11 @@ async function fold(
   const orphans = new Map<string, FungibleActivityRow[]>();
   for (const row of activities) {
     const current = stores.get(row.store);
-    if (current === undefined) orphans.set(row.store, [...(orphans.get(row.store) ?? []), row]);
+    if (current === undefined) {
+      const rows = orphans.get(row.store);
+      if (rows === undefined) orphans.set(row.store, [row]);
+      else rows.push(row);
+    }
     else if (row.version <= current.lastVersion) balances.get(row.store)!.balance += undo(row);
   }
   const ids = [...orphans.keys()];
@@ -233,6 +237,7 @@ async function verifyAt(
   holders: FungibleHolder[],
   total: bigint,
   verify: HolderVerification,
+  left: () => number,
 ): Promise<bigint | undefined> {
   if (verify === "none") return undefined;
   const fn = "0x1::fungible_asset::supply";
@@ -245,6 +250,9 @@ async function verifyAt(
     throw new StreamdError(`The fold of ${asset} sums to ${total} at version ${version}, but its supply there is ${supply}`);
   }
   if (verify !== "stores") return supply;
+  if (holders.length > left()) {
+    throw new StreamdError(`holdersAt has ${left()} of its maxRequests left, too few to check ${holders.length} stores`);
+  }
   for (const { store, balance } of holders) {
     const request: ViewRequest = { function: "0x1::fungible_asset::balance", typeArguments: ["0x1::fungible_asset::FungibleStore"], functionArguments: [store] };
     const [held] = await view(call, adapter, request, version);
@@ -271,7 +279,7 @@ export async function holdersAt(
   requireLedgerVersion(version);
   const { indexer, adapter } = host;
   if (typeof adapter.view !== "function") throw new StreamdError("holdersAt needs an adapter that implements view");
-  const { call, requests } = counter(host.run, checked);
+  const { call, requests, left } = counter(host.run, checked);
   const u0 = await call(() => indexer.getFungibleAssetVersion());
   if (version > u0) {
     throw new StreamdError(`The Indexer has processed fungible assets only through version ${u0}, before ${version}`);
@@ -285,7 +293,7 @@ export async function holdersAt(
   const activities = await activitiesIn(call, indexer, metadata, version + 1n, indexedVersion);
   const holders = ranked(await fold(call, indexer, metadata, u0, stores, activities), version);
   const total = holders.reduce((sum, holder) => sum + holder.balance, 0n);
-  const supply = await verifyAt(call, adapter, metadata, version, holders, total, checked.verify);
+  const supply = await verifyAt(call, adapter, metadata, version, holders, total, checked.verify, left);
   return {
     asset: metadata,
     version,
