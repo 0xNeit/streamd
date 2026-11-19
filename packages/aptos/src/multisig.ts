@@ -278,7 +278,7 @@ export function startMultisig(
 export interface PreviewHost {
   view: ViewAt;
   head: () => Promise<bigint>;
-  build: (sender: string, payload: TransactionPayloadMultiSig | TransactionPayloadEntryFunction) => Promise<SimpleTransaction>;
+  build: (sender: string, payload: TransactionPayloadMultiSig | TransactionPayloadEntryFunction, feePayer?: string) => Promise<SimpleTransaction>;
   simulate: (transaction: SimpleTransaction) => Promise<StreamdEvent[]>;
 }
 
@@ -319,6 +319,8 @@ function payloadOf(state: MultisigState, sequenceNumber: bigint, given: Uint8Arr
  * that owner's approval if they have not voted) sends it through the
  * multisig, as an execution would run; otherwise its entry function is
  * simulated directly with the multisig as sender, and the preview is partial.
+ * A partial preview is sponsored by the first owner, as an executor pays the
+ * gas of a real execution, so the multisig needs no APT for it.
  */
 export async function previewMultisig(
   host: PreviewHost,
@@ -346,6 +348,7 @@ export async function previewMultisig(
     partial
       ? new TransactionPayloadEntryFunction(payload.transaction_payload)
       : new TransactionPayloadMultiSig(new MultiSig(AccountAddress.from(state.address), payload)),
+    partial ? state.owners[0] : undefined,
   );
   const simulated = await host.simulate(transaction);
   const own = (e: StreamdEvent) => EXECUTOR_EVENTS.has(e.type) && address((e.data as Fields | null)?.multisig_account) === state.address;

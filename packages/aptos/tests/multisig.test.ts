@@ -202,7 +202,7 @@ describe("previewMultisig", () => {
       M,
       50n,
     );
-    const built: [string, unknown][] = [];
+    const built: [string, unknown, string?][] = [];
     const asked: string[] = [];
     const host: PreviewHost = {
       view: async (request) => {
@@ -210,7 +210,7 @@ describe("previewMultisig", () => {
         return [canExecute.includes(String(request.functionArguments![0]))];
       },
       head: async () => 60n,
-      build: async (sender, payload) => (built.push([sender, payload]), { sender } as unknown as SimpleTransaction),
+      build: async (sender, payload, feePayer) => (built.push([sender, payload, feePayer]), { sender } as unknown as SimpleTransaction),
       simulate: async () => simulated,
     };
     return { state, host, built, asked };
@@ -222,6 +222,7 @@ describe("previewMultisig", () => {
     expect(asked).toEqual([A, B]);
     expect(built[0]![0]).toBe(B);
     expect(built[0]![1]).toBeInstanceOf(TransactionPayloadMultiSig);
+    expect(built[0]![2]).toBeUndefined();
     expect(preview).toMatchObject({ sequenceNumber: 5n, sender: B, partial: false });
     expect(preview.events.map((e) => e.type)).toEqual(["0x1::fungible_asset::Withdraw", "0x1::multisig_account::Vote", "0x1::transaction_fee::FeeStatement"]);
     expect(preview.executorEvents.map((e) => e.type)).toEqual(["0x1::multisig_account::Vote", "0x1::multisig_account::TransactionExecutionSucceeded"]);
@@ -231,6 +232,7 @@ describe("previewMultisig", () => {
     const none = await setup([]);
     expect(await previewMultisig(none.host, none.state, 5n)).toMatchObject({ sender: M, partial: true });
     expect(none.built[0]![1]).toBeInstanceOf(TransactionPayloadEntryFunction);
+    expect(none.built[0]![2]).toBe(A);
     const later = await setup([A]);
     expect(await previewMultisig(later.host, later.state, 6n, { payload: transfer(5) })).toMatchObject({ sender: M, partial: true });
     expect(later.asked).toEqual([]);
