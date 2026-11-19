@@ -1333,6 +1333,12 @@ export interface BalancesOptions
   > {
   /** The assets to follow, one or a list (default: the chain's native coin). */
   asset?: string | readonly string[];
+  /**
+   * Values each balance in the chain client's quote asset at the version it
+   * was read, on the first read and whenever it changes; refused by a client
+   * that prices nothing.
+   */
+  withValue?: boolean;
   /** Called after a balance changes, with every balance known so far. A throw goes to `onError`. */
   onChange?: (balances: ReadonlyMap<string, bigint>, change: StreamdEvent<BalanceChange>) => void;
 }
@@ -1343,6 +1349,8 @@ export interface Balances {
   readonly value: ReadonlyMap<string, bigint>;
   /** One asset's balance, given in any form; `undefined` until it is known. */
   get(asset: string): bigint | undefined;
+  /** With `withValue`, a copy of each priced balance's value as last read; assets with no price source are absent. */
+  readonly values: ReadonlyMap<string, AssetValue>;
   /** Resolves once following has started; rejects if the first read fails or it is stopped first. */
   readonly ready: Promise<ReadonlyMap<string, bigint>>;
   /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */

@@ -333,3 +333,34 @@ describe("client.balanceAt", () => {
     expect(err).toBeInstanceOf(StreamdNetworkError);
   });
 });
+
+describe("client.balances withValue", () => {
+  it("values APT by its pool at the read's version, and leaves an unpriced asset out", async () => {
+    const { adapter, state } = chain();
+    const pools: bigint[] = [];
+    const priced: EventAdapter = {
+      ...adapter,
+      // sqrt price 2^60: 1/256 USDC base units per octa.
+      view: async (request, version, d) => {
+        if (!request.function.endsWith("::pool_v3::current_tick_and_price")) return adapter.view!(request, version, d);
+        pools.push(version);
+        return [0, (1n << 60n).toString()];
+      },
+    };
+    state.amounts.set(APT, "2560");
+    const client = testClient({ adapter: priced });
+    const changes: StreamdEvent<BalanceChange>[] = [];
+    const wallet = client.balances(ALICE, { ...FAST, asset: ["0xa", USDC], withValue: true, onChange: (_, c) => changes.push(c) });
+    await wallet.ready;
+    expect([...wallet.values.keys()]).toEqual([APT]);
+    expect(wallet.values.get(APT)).toMatchObject({ amount: 10n, source: "pool", decimals: 6 });
+    expect(pools).toEqual([50n]);
+    state.head = 70n;
+    state.amounts.set(APT, "5120");
+    await until(() => changes.length === 1);
+    expect(changes[0]!.data.value?.amount).toBe(20n);
+    expect(wallet.values.get(APT)!.amount).toBe(20n);
+    expect(pools).toEqual([50n, 70n]);
+    client.destroy();
+  });
+});

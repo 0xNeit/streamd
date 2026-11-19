@@ -1,6 +1,7 @@
 import { StreamdError } from "./errors.js";
 import { onAbort } from "./utils.js";
 import type {
+  AssetValue,
   BalanceChange,
   Balances,
   BalancesOptions,
@@ -40,6 +41,8 @@ export interface BalanceReader {
   type(asset: string): string;
   /** `owner`'s balance of `asset` at `version`, through `adapter`. A non-network error stops the poller. */
   read(adapter: EventAdapter, owner: string, asset: string, version: bigint): Promise<bigint>;
+  /** `amount` of `asset` valued at `version`, or `undefined` with no price source; absent on a chain that prices nothing. */
+  value?(adapter: EventAdapter, asset: string, amount: bigint, version: bigint): Promise<AssetValue | undefined>;
 }
 
 /** What `startBalances` needs from its client. */
@@ -70,6 +73,7 @@ function balancePoll(
   known: ReadonlyMap<string, bigint>,
   assets: readonly string[],
   from: bigint,
+  withValue: boolean,
 ): EventAdapter {
   let latest = from;
   return {
@@ -82,9 +86,12 @@ function balancePoll(
       for (const [eventIndex, asset] of assets.entries()) {
         const balance = await reader.read(adapter, who, asset, head);
         if (known.get(asset) !== balance) {
+          const data: BalanceChange = { asset, balance };
+          const value = withValue ? await reader.value!(adapter, asset, balance, head) : undefined;
+          if (value !== undefined) data.value = value;
           events.push({
             type: reader.type(asset),
-            data: { asset, balance } satisfies BalanceChange,
+            data,
             version: head,
             sequenceNumber: 0n,
             eventIndex,
@@ -98,6 +105,7 @@ function balancePoll(
 
 const ALLOWED: readonly string[] = [
   "asset",
+  "withValue",
   "onChange",
   "pollInterval",
   "batchSize",
@@ -119,6 +127,9 @@ function checkBalancesOptions(
     throw new StreamdError(`Unsupported balances option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
   }
   reader.check(host.adapter);
+  if (options.withValue && reader.value === undefined) {
+    throw new StreamdError("withValue is not served on this chain: its client prices no assets");
+  }
   if (typeof host.adapter.getHeadVersion !== "function") {
     throw new StreamdError("balances needs an adapter that implements getHeadVersion");
   }
@@ -130,6 +141,7 @@ function checkBalancesOptions(
 
 function applyBalanceBatch(
   amounts: Map<string, bigint>,
+  values: Map<string, AssetValue>,
   events: readonly StreamdEvent[],
   onChange: BalancesOptions["onChange"],
   report: (err: Error) => void,
@@ -138,8 +150,10 @@ function applyBalanceBatch(
   // Apply every balance change from this head version before notifying, so
   // `onChange` never observes a half-applied swap across assets.
   for (const event of events) {
-    const { asset, balance: next } = event.data as BalanceChange;
+    const { asset, balance: next, value } = event.data as BalanceChange;
     amounts.set(asset, next);
+    if (value === undefined) values.delete(asset);
+    else values.set(asset, value);
   }
   if (onChange === undefined) return;
   for (const event of events) {
@@ -160,7 +174,8 @@ interface BalanceRunConfig {
   reader: BalanceReader;
   assets: readonly string[];
   amounts: Map<string, bigint>;
-  listener: Omit<BalancesOptions, "asset" | "onChange">;
+  values: Map<string, AssetValue> | undefined;
+  listener: Omit<BalancesOptions, "asset" | "onChange" | "withValue">;
   onChange: BalancesOptions["onChange"];
   report: (err: Error) => void;
   signal: AbortSignal;
@@ -172,16 +187,24 @@ async function runBalances(cfg: BalanceRunConfig): Promise<ReadonlyMap<string, b
   if (cfg.signal.aborted) throw cfg.signal.reason;
   const who = await cfg.account();
   const head = await cfg.host.adapter.getHeadVersion!(cfg.host.descriptor);
-  const first: [string, bigint][] = [];
+  const first: [string, bigint, AssetValue | undefined][] = [];
   for (const asset of cfg.assets) {
-    first.push([asset, await cfg.reader.read(cfg.host.adapter, who, asset, head)]);
+    const balance = await cfg.reader.read(cfg.host.adapter, who, asset, head);
+    const value = cfg.values === undefined ? undefined : await cfg.reader.value!(cfg.host.adapter, asset, balance, head);
+    first.push([asset, balance, value]);
   }
   if (cfg.signal.aborted) throw cfg.signal.reason;
-  for (const [asset, balance] of first) cfg.amounts.set(asset, balance);
+  for (const [asset, balance, value] of first) {
+    cfg.amounts.set(asset, balance);
+    if (value !== undefined) cfg.values!.set(asset, value);
+  }
 
   let polling: Subscription | undefined;
   polling = cfg.host.subscribe(
-    { batch: (events) => applyBalanceBatch(cfg.amounts, events, cfg.onChange, cfg.report, () => cfg.signal.aborted) },
+    {
+      batch: (events) =>
+        applyBalanceBatch(cfg.amounts, cfg.values ?? new Map(), events, cfg.onChange, cfg.report, () => cfg.signal.aborted),
+    },
     {
       ...cfg.listener,
       fromVersion: 0n,
@@ -191,7 +214,7 @@ async function runBalances(cfg: BalanceRunConfig): Promise<ReadonlyMap<string, b
       },
     },
     (source) =>
-      balancePoll(source, cfg.host.descriptor, cfg.reader, who, cfg.amounts, cfg.assets, head),
+      balancePoll(source, cfg.host.descriptor, cfg.reader, who, cfg.amounts, cfg.assets, head, cfg.values !== undefined),
   );
   cfg.attachPolling(polling);
   return new Map(cfg.amounts);
@@ -213,6 +236,7 @@ function safeReporter(
 
 function balancesHandle(
   amounts: Map<string, bigint>,
+  values: Map<string, AssetValue>,
   reader: BalanceReader,
   ready: Promise<ReadonlyMap<string, bigint>>,
   isActive: () => boolean,
@@ -221,6 +245,9 @@ function balancesHandle(
   return {
     get value() {
       return new Map(amounts);
+    },
+    get values() {
+      return new Map(values);
     },
     get(asset: string) {
       return amounts.get(reader.canonical(asset));
@@ -242,8 +269,9 @@ export function startBalances(
   options: BalancesOptions = {},
 ): Balances {
   const assets = checkBalancesOptions(host, reader, options);
-  const { asset: _named, onChange, ...listener } = options;
+  const { asset: _named, onChange, withValue, ...listener } = options;
   const amounts = new Map<string, bigint>();
+  const values = new Map<string, AssetValue>();
   let polling: Subscription | undefined;
   let stopped = false;
   const abandon = new AbortController();
@@ -266,6 +294,7 @@ export function startBalances(
     reader,
     assets,
     amounts,
+    values: withValue ? values : undefined,
     listener,
     onChange,
     report,
@@ -280,5 +309,5 @@ export function startBalances(
   });
   ready.catch(() => {});
 
-  return balancesHandle(amounts, reader, ready, () => !stopped && polling?.active !== false, () => stop());
+  return balancesHandle(amounts, values, reader, ready, () => !stopped && polling?.active !== false, () => stop());
 }

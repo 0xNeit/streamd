@@ -30,7 +30,7 @@ import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
-import { assetPricer, type Pricer } from "./values.js";
+import { assetPricer, valueOf, type Pricer } from "./values.js";
 import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, Multisig, MultisigOptions, MultisigPreviewOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
@@ -427,7 +427,9 @@ export class AptosClient extends StreamdClient {
    * default interval makes 2 requests per second and needs an API key or a
    * higher `pollInterval` (such as 5000ms) on the anonymous fullnode. `asset`
    * names what to follow, one or a list, since no view lists a wallet's assets;
-   * without it, APT is followed. `address` may be an Aptos name. Like
+   * without it, APT is followed. `withValue` adds USDC values (one more view
+   * per priced asset whenever its balance is read and changed); a price
+   * move alone does not refresh them. `address` may be an Aptos name. Like
    * `reduce()`, it is not a listener for `off()` or `listenerCount()`;
    * `destroy()` ends it.
    */
@@ -443,7 +445,13 @@ export class AptosClient extends StreamdClient {
         track: this.reduceHost.track,
       },
       this.accountOf(address)!,
-      APTOS_BALANCES,
+      {
+        ...APTOS_BALANCES,
+        value: async (adapter, asset, amount, version) => {
+          const quote = await this.pagePricer(adapter)(asset, version);
+          return quote === undefined ? undefined : valueOf(quote, amount);
+        },
+      },
       options,
     );
   }
