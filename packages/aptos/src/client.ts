@@ -21,7 +21,8 @@ import { IndexerAccountAdapter } from "./indexer.js";
 import { provenanceDescriptor, provenanceSource } from "./provenance.js";
 import { governanceSource, startProposals } from "./governance.js";
 import { MULTISIG_DESCRIPTOR, multisigSource, previewMultisig, startMultisig } from "./multisig.js";
-import { AAVE_DESCRIPTOR, positionSource, refreshSource, startPositions } from "./lending.js";
+import { positionSource, refreshSource, startPositions } from "./lending.js";
+import type { LendingMarket, PositionReader } from "./lending.js";
 import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { PYTH_DESCRIPTOR, priceSource, pythPriceReader, requireFeedId } from "./prices.js";
@@ -323,16 +324,17 @@ export class AptosClient extends StreamdClient {
 
   /**
    * Keep lending positions current on `protocol` (`"aave"`, Aave V3 on Aptos
-   * mainnet): each account's supplies, debts, collateral and debt value and
-   * health factor, as the protocol's own views compute them with its own
-   * oracle at a version. `account` names the accounts, read at the head (or
-   * the version before `fromVersion`) first; without it every account an
-   * Aave event names is tracked from then on. Each position is reread at the
-   * version of every event naming it, from one scan over Aave's
+   * mainnet, or `"echelon"`, Echelon's vaults): each account's supplies,
+   * debts, collateral and debt value and health factor, as the protocol's own
+   * views compute them with its own oracle at a version. `account` names the
+   * accounts, read at the head (or the version before `fromVersion`) first;
+   * without it every account one of the protocol's events names is tracked
+   * from then on. Each position is reread at the
+   * version of every event naming it, from one scan over the protocol's
    * position-changing events, its views at most four at a time outside
    * `maxConcurrentRequests`. With `account`, every position is also reread at
    * the head every `refreshInterval` ms (60000 by default), since a price
-   * moves with no Aave event; if those reads give up, the monitor stops.
+   * moves with no event; if those reads give up, the monitor stops.
    * `threshold` sets the health `below` and `onCross` compare with. Views go through `EventAdapter.view`, so the adapter must
    * implement it. Like `reduce()`, it is not a listener for `off()` or
    * `listenerCount()`; `destroy()` ends it.
@@ -344,35 +346,37 @@ export class AptosClient extends StreamdClient {
     }
     const host = {
       view: (request: ViewRequest, version: bigint, drop: AbortSignal) => this.limiter.run(() => adapter.view!(request, version), drop),
-      head: () => this.limiter.run(() => adapter.getHeadVersion!(AAVE_DESCRIPTOR)),
+      head: (descriptor: EventDescriptor) => this.limiter.run(() => adapter.getHeadVersion!(descriptor)),
       track: this.reduceHost.track,
       onError: this.onError,
       refresh: (
+        market: LendingMarket,
+        read: PositionReader,
         tracked: () => Iterable<string>,
-        deliver: (read: LendingPosition[]) => void,
+        deliver: (positions: LendingPosition[]) => void,
         opts: { onError: (error: Error) => void },
         since: bigint | undefined,
         drop: AbortSignal,
       ) =>
         this.subscribe(
-          AAVE_DESCRIPTOR,
+          market.descriptor,
           { batch: (events) => deliver(events.map((e) => e.data as LendingPosition)) },
           opts,
           undefined,
           undefined,
-          (source) => refreshSource(source, tracked, opts.onError, since, this.requestTimeout, drop),
+          (source) => refreshSource(source, market, read, tracked, opts.onError, since, this.requestTimeout, drop),
         ),
     };
     return startPositions(
-      (only, drop, d, r, i, o) => {
-        const wrap = (source: EventAdapter) => positionSource(source, only, this.requestTimeout, drop);
+      (market, read, only, drop, r, i, o) => {
+        const wrap = (source: EventAdapter) => positionSource(source, read, only, this.requestTimeout, drop);
         const scoped = {
           ...this.reduceHost,
           query: new EventQuery(wrap(adapter), this.limiter, this.names),
           subscribe: (desc: EventDescriptor | readonly EventDescriptor[], callback: EventCallback, opts: object) =>
             this.subscribe(desc as EventDescriptor, callback, opts, undefined, undefined, wrap),
         };
-        return startReduction(scoped, d, r, i, o);
+        return startReduction(scoped, market.descriptor, r, i, o);
       },
       host,
       protocol,

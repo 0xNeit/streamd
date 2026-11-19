@@ -2435,7 +2435,8 @@ for (const tx of treasury.value.pending.values()) {
 
 `positions(protocol, options?)` keeps lending positions current, each as the protocol computes
 it at a version through its own views and its own oracle. `"aave"` reads Aave V3 on Aptos
-mainnet (package `AavePool` at `0x39ddcd9e...016fb`, priced by `AaveOracle` over Chainlink).
+mainnet (package `AavePool` at `0x39ddcd9e...016fb`, priced by `AaveOracle` over Chainlink), and
+`"echelon"` reads Echelon's vaults (`0xc6bc659f...21ba`, below).
 `value` maps each long-form account to a `LendingPosition { protocol, account, version, assets,
 collateralValue?, debtValue?, liquidationThreshold?, health?, below?, unknown? }`, `assets` the
 reserves it supplies or borrows as `PositionAsset { asset, decimals, supplied, borrowed,
@@ -2502,10 +2503,47 @@ for (const p of book.value.values()) {
   own, so one that throws (reported to `onError`) does not hide another.
 - **Options.** `account`, `threshold`, `refreshInterval`, `fromVersion`, `onChange`, `onCross`,
   `onError`, `signal`, `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`,
-  `maxPollInterval` and `retries`; anything else throws, as does a protocol other than `"aave"`.
+  `maxPollInterval` and `retries`; anything else throws, as does a protocol other than `"aave"` or `"echelon"`.
   Accounts are addresses, not names. Like `reduce()`, it is not a listener for `off()` or
   `listenerCount()`; `unsubscribe()`, `signal` or `destroy()` ends the scan and the refresh. A
   failed start read rejects `ready`. Mainnet only: the package address is mainnet's.
+
+### Echelon
+
+`positions("echelon", options)` takes the same options and keeps the same `LendingPosition`, one
+per vault. Echelon publishes no source; what follows was read from its `lending` module's
+bytecode, decompiled locally, and confirmed against its views on mainnet.
+
+- **Health is Echelon's own comparison.** `can_liquidate(account)` is
+  `account_liquidation_threshold < account_liability_value`, both `FixedPoint64` USD sums: the
+  threshold sums `price * coins / mantissa * threshold_bps / 10000` over collateral markets
+  (e-mode's threshold for e-mode markets), the liability `price * debt / mantissa` over
+  liability markets. A liquidation accrues the vault's interest before that check, and the plain
+  `account_liability_value` view does not, so it reads low by the interest since the vault last
+  accrued. With a debt, each read calls `preview_health_factor_given_repay(account, market, 0)`,
+  which accrues as the liquidation does and returns the same pair; `health` is their exact ratio,
+  reduced, so it is below 1 exactly when a liquidation at that version would pass.
+  `collateralValue` is `account_lend_value` and `debtValue` the accrued liability, both USD over
+  2^64; `liquidationThreshold` is the threshold over the collateral value, the collateral-weighted
+  ratio. An account with no vault, or no debt, has no `health` and `below` false.
+- **Prices** are Echelon's own: `0x92e95ed7...::oracle` (its `tiered_oracle`) for coin markets and
+  most fungible asset markets, an LP oracle or a linear discount oracle for some others. Several
+  markets' prices were refused on mainnet in November 2026 (Thala Token, StakeStone Ether and
+  Bitcoin, two Thala LP markets); a vault holding one has `unknown` with that abort, and its
+  balances.
+- **Assets.** One `PositionAsset` per market holding a supply or a debt: `asset` the coin type for
+  a coin market, as Echelon names it, or the fungible asset's metadata address; `decimals` from the
+  market's mantissa; `supplied` from `account_coins`, `borrowed` from `account_liability`
+  (accrued); `collateral` true for every supply, since Echelon keeps supplies in the vault's
+  collateral. Each market's asset is read once per monitor.
+- **Reads.** About five views per position, plus one per market supplied and one per market
+  borrowed, and three more the first time a market is seen. A head read of 100 tracked accounts
+  is several hundred views per interval from one IP.
+- **Live changes.** One scan over `lending::SupplyEvent`, `WithdrawEvent`, `BorrowEvent`,
+  `RepayEvent` (the borrower; a repayer pays from its wallet) and `LiquidateEvent` (the borrower,
+  and the liquidator, whose vault receives the seized shares). Entering or leaving an efficiency
+  mode, and the manager's `clear_bad_debt`, change a vault with no event, so only a head read
+  (with `account`) sees them.
 
 ## Package upgrades
 

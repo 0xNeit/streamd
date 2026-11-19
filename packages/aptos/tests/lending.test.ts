@@ -262,7 +262,7 @@ describe("positions", () => {
   it("refuses bad options and adapters at the call, and rejects ready when a start read fails", async () => {
     const { adapter } = aaveAdapter([], () => new StreamdNetworkError("503"));
     const client = testClient({ adapter });
-    expect(() => client.positions("echelon" as never)).toThrow("positions reads one of: aave");
+    expect(() => client.positions("aries" as never)).toThrow("positions reads one of: aave, echelon (got aries)");
     expect(() => client.positions("aave", { where: () => true } as never)).toThrow("Unsupported positions option: where");
     expect(() => client.positions("aave", { account: [] })).toThrow("account must be an address");
     expect(() => client.positions("aave", { account: "alice.apt" })).toThrow("account must be an address");
