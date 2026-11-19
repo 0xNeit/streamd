@@ -131,7 +131,7 @@ export class IndexedDbPageStore implements PageStore {
         // String keys sort after the numeric ids, so these are pages, oldest first.
         const oldest = store.getAllKeys(null, rows - max);
         oldest.onsuccess = () => {
-          for (const id of oldest.result) store.delete(id);
+          for (const id of oldest.result) if (typeof id === "number") store.delete(id);
         };
         rows = max;
       }
