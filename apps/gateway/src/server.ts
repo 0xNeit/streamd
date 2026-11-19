@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Server, WebSocketHandler } from "bun";
-import { DEFAULT_LIMIT, SharedFetches, StreamdError, StreamdNetworkError, isObject, pageJson, redactSecrets } from "@streamd/core";
+import { DEFAULT_LIMIT, RequestLimiter, SharedFetches, StreamdError, StreamdNetworkError, isObject, pageJson, redactSecrets } from "@streamd/core";
 import type { EventAdapter, EventDescriptor, FetchOptions, StreamdClient } from "@streamd/core";
 import { Topics } from "./topics.js";
 import type { Entry, Subscriber, Topic, TopicStatus } from "./topics.js";
@@ -12,10 +12,14 @@ export interface GatewayOptions {
   /**
    * The source of `GatewayAdapter` reads that no topic serves (a start, an
    * end, an offset, newest first), shared across identical requests within
-   * `pollInterval`. Without it those reads are refused. Its calls do not go
-   * through `client`'s limiter.
+   * `pollInterval`. Without it those reads are refused. Its calls go through
+   * a limiter of the gateway's own, not `client`'s.
    */
   adapter?: EventAdapter;
+  /** Upstream reads in flight at once; past it they wait (default: 4). */
+  maxUpstreamRequests?: number;
+  /** After this many ms an upstream read fails with a `StreamdNetworkError` (default: 30000). */
+  requestTimeout?: number;
   /** When set, every request must carry it as `Authorization: Bearer` or `access_token`. */
   token?: string;
   /** Browser origins answered with CORS headers and let open WebSockets; `"*"` for any. */
@@ -71,6 +75,7 @@ interface Connection {
 
 const MAX_DESCRIPTOR = 16 * 1024;
 const MAX_BODY = 64 * 1024;
+const LOOPBACK_HOST = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\])(?::\d+)?$/;
 const encoder = new TextEncoder();
 
 function digest(text: string): Buffer {
@@ -81,12 +86,12 @@ function sseEntry(topic: Topic, entry: Entry): string {
   return `id: ${topic.id(entry.seq)}\ndata: ${entry.line}\n\n`;
 }
 
-export function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
+function json(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(toJson(body), { status, headers: { "content-type": "application/json", ...headers } });
 }
 
 /** The response for `err`: 400 for bad input, a network error's own status, else 502 or 500. */
-export function errorResponse(err: unknown): Response {
+function errorResponse(err: unknown): Response {
   const body = { error: toWireError(err, redactSecrets) };
   if (err instanceof StreamdNetworkError) {
     const code = err.statusCode;
@@ -99,7 +104,7 @@ export function errorResponse(err: unknown): Response {
 }
 
 /** The descriptor a stream request names in its `descriptor` query parameter, as JSON. */
-export function descriptorParam(url: URL): EventDescriptor {
+function descriptorParam(url: URL): EventDescriptor {
   const raw = url.searchParams.get("descriptor");
   if (raw === null) throw new StreamdError('"descriptor" query parameter is required');
   if (raw.length > MAX_DESCRIPTOR) throw new StreamdError('"descriptor" is too long');
@@ -112,11 +117,26 @@ export function descriptorParam(url: URL): EventDescriptor {
   return parseDescriptor(value);
 }
 
-async function readBody(request: Request): Promise<{ descriptor: EventDescriptor; options: FetchOptions }> {
+/** The body as text, read no further than `MAX_BODY` bytes, whatever `content-length` claims. */
+async function boundedText(request: Request): Promise<string> {
   const tooLarge = () => new StreamdNetworkError(`Request bodies are limited to ${MAX_BODY} bytes`, 413);
   if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY) throw tooLarge();
-  const text = await request.text();
-  if (text.length > MAX_BODY) throw tooLarge();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of request.body ?? []) {
+    size += chunk.byteLength;
+    if (size > MAX_BODY) throw tooLarge();
+    chunks.push(chunk);
+  }
+  return new TextDecoder().decode(Buffer.concat(chunks));
+}
+
+async function readBody(request: Request): Promise<{ descriptor: EventDescriptor; options: FetchOptions }> {
+  // Anything else is a form a page on another origin could post without a preflight.
+  if (!request.headers.get("content-type")?.startsWith("application/json")) {
+    throw new StreamdNetworkError("Requests must be sent as application/json", 415);
+  }
+  const text = await boundedText(request);
   let body: unknown;
   try {
     body = JSON.parse(text);
@@ -137,7 +157,7 @@ function live(options: FetchOptions): boolean {
  * The topic and the entries a stream starts with: none at the newest event,
  * or everything after `lastEventId`, which must still be held.
  */
-export function resume(topics: Topics, descriptor: EventDescriptor, lastEventId: string | null) {
+function resume(topics: Topics, descriptor: EventDescriptor, lastEventId: string | null) {
   const topic = topics.open(descriptor);
   if (lastEventId === null || lastEventId === "") return { topic, backlog: [] as Entry[] };
   const backlog = topic.after(lastEventId);
@@ -162,14 +182,20 @@ export function createGateway(options: GatewayOptions): Gateway {
     batchSize: options.batchSize,
     onError: options.onError,
   });
-  const upstream = options.adapter === undefined
+  const requestTimeout = options.requestTimeout ?? 30_000;
+  const limited = options.adapter === undefined
     ? undefined
-    : new SharedFetches(options.adapter).view(options.pollInterval ?? 1000);
+    : new RequestLimiter(options.maxUpstreamRequests ?? 4, Infinity, requestTimeout).wrap(options.adapter);
+  const upstream = limited === undefined
+    ? undefined
+    : new SharedFetches(limited, requestTimeout).view(options.pollInterval ?? 1000);
   const maxConnections = options.maxConnections ?? 1000;
   const maxQueuedBytes = options.maxQueuedBytes ?? 1024 * 1024;
   const allowed = new Set(options.allowOrigins ?? []);
   const token = options.token === undefined ? undefined : digest(options.token);
   const connections = new Set<Connection>();
+  /** WebSockets upgraded and not yet open, counted against `maxConnections` too. */
+  let upgrading = 0;
   const keepAlive = new Set<() => void>();
   const ticker = setInterval(() => keepAlive.forEach((ping) => ping()), options.keepAlive ?? 15_000);
   ticker.unref?.();
@@ -182,14 +208,15 @@ export function createGateway(options: GatewayOptions): Gateway {
   }
 
   function authorized(request: Request, url: URL): boolean {
-    if (token === undefined) return true;
+    // With no token the gateway trusts loopback, so a page that rebinds its own name to 127.0.0.1 is refused.
+    if (token === undefined) return LOOPBACK_HOST.test(request.headers.get("host") ?? url.host);
     const header = request.headers.get("authorization");
     const given = header?.startsWith("Bearer ") ? header.slice(7) : url.searchParams.get("access_token");
     return given !== null && given !== undefined && timingSafeEqual(digest(given), token);
   }
 
   function reserve(): void {
-    if (connections.size >= maxConnections) {
+    if (connections.size + upgrading >= maxConnections) {
       throw new StreamdNetworkError(`The gateway holds at most ${maxConnections} streams`, 503);
     }
   }
@@ -201,14 +228,16 @@ export function createGateway(options: GatewayOptions): Gateway {
     const { topic, backlog } = resume(topics, descriptor, lastEventId);
     let controller!: ReadableStreamDefaultController<Uint8Array>;
     let open = true;
-    const close = () => {
+    const close = (reason?: Error) => {
       if (!open) return;
       open = false;
       topics.leave(topic, subscriber);
       connections.delete(connection);
       keepAlive.delete(ping);
       try {
-        controller.close();
+        // Erroring discards what is queued, so a dropped client holds no memory once out of the count.
+        if (reason === undefined) controller.close();
+        else controller.error(reason);
       } catch {
         // Already closed by the client going away.
       }
@@ -217,7 +246,7 @@ export function createGateway(options: GatewayOptions): Gateway {
       if (!open) return;
       controller.enqueue(encoder.encode(text));
       // A client this far behind is dropped rather than buffered without bound; it resumes from the topic.
-      if ((controller.desiredSize ?? 0) < 0) close();
+      if ((controller.desiredSize ?? 0) < 0) close(new Error("Too slow; resume from the last id"));
     };
     const subscriber: Subscriber = {
       deliver: (entries) => write(entries.map((entry) => sseEntry(topic, entry)).join("")),
@@ -226,22 +255,23 @@ export function createGateway(options: GatewayOptions): Gateway {
         close();
       },
     };
-    const connection: Connection = { close };
+    const connection: Connection = { close: () => close() };
     const ping = () => write(": keepalive\n\n");
     const body = new ReadableStream<Uint8Array>(
       {
         start(c) {
           controller = c;
         },
-        cancel: close,
+        cancel: () => close(),
       },
       new ByteLengthQueuingStrategy({ highWaterMark: maxQueuedBytes }),
     );
     connections.add(connection);
     keepAlive.add(ping);
     topics.join(topic, subscriber);
-    request.signal.addEventListener("abort", close, { once: true });
-    write(`: ${topic.id(topic.seq)}\n\n`);
+    request.signal.addEventListener("abort", () => close(), { once: true });
+    // An id with no data sets EventSource's last id, so a client that saw no event still resumes.
+    write(`id: ${topic.id(backlog[0] === undefined ? topic.seq : backlog[0].seq - 1)}\n\n`);
     if (backlog.length > 0) subscriber.deliver(backlog);
     return new Response(body, {
       headers: {
@@ -269,12 +299,15 @@ export function createGateway(options: GatewayOptions): Gateway {
     reserve();
     const { topic, backlog } = resume(topics, descriptorParam(url), url.searchParams.get("lastEventId"));
     const after = topic.id(backlog[0] === undefined ? topic.seq : backlog[0].seq - 1);
+    upgrading++;
     if (server.upgrade(request, { data: { topic, after } })) return undefined;
+    upgrading--;
     return json({ error: { name: "StreamdError", message: "Expected a WebSocket upgrade" } }, 400);
   }
 
   const websocket: WebSocketHandler<SocketData> = {
     open(ws) {
+      upgrading--;
       const { topic } = ws.data;
       const backlog = topic.after(ws.data.after);
       if (topics.get(topic.descriptor) !== topic || backlog === undefined) {
@@ -282,9 +315,9 @@ export function createGateway(options: GatewayOptions): Gateway {
         return;
       }
       const send = (text: string) => {
-        ws.send(text);
-        // As for SSE: a client this far behind is dropped, to resume from the topic.
-        if (ws.getBufferedAmount() > maxQueuedBytes) ws.close(1013, "Too slow; resume from the last id");
+        // As for SSE: a client this far behind is dropped, to resume from the topic. A send Bun
+        // dropped (0) past its own backpressure limit would leave a gap, so it closes too.
+        if (ws.send(text) === 0 || ws.getBufferedAmount() > maxQueuedBytes) ws.close(1013, "Too slow; resume from the last id");
       };
       const subscriber: Subscriber = {
         deliver: (entries) => {
@@ -302,6 +335,7 @@ export function createGateway(options: GatewayOptions): Gateway {
       };
       connections.add(connection);
       topics.join(topic, subscriber);
+      ws.send(JSON.stringify({ id: ws.data.after }));
       if (backlog.length > 0) subscriber.deliver(backlog);
     },
     message() {},
@@ -335,14 +369,14 @@ export function createGateway(options: GatewayOptions): Gateway {
     }
     if (cursor !== undefined && !cursor.startsWith("u:")) throw new StreamdError("Not a gateway cursor");
     if (upstream === undefined) throw new StreamdError("This gateway serves live topics only");
+    // The page may be shared with other callers, so it is copied, never prefixed in place.
     const page = await upstream.fetchEvents(descriptor, { ...options, cursor: cursor?.slice(2) });
-    if (page.nextCursor !== undefined) page.nextCursor = `u:${page.nextCursor}`;
-    return json(pageJson(page));
+    return json(pageJson({ ...page, nextCursor: page.nextCursor === undefined ? undefined : `u:${page.nextCursor}` }));
   }
 
   async function version(request: Request, method: "getHeadVersion" | "getEarliestVersion"): Promise<Response> {
     const { descriptor } = await readBody(request);
-    const read = options.adapter?.[method]?.bind(options.adapter);
+    const read = limited?.[method];
     if (read === undefined) throw new StreamdError(`This gateway's source has no ${method}`);
     return json({ version: await read(descriptor) });
   }

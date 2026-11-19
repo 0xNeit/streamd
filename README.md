@@ -5658,13 +5658,15 @@ as a decimal string:
 
 ```sh
 curl -N "http://127.0.0.1:8787/v1/events?descriptor=%7B%22kind%22%3A%22module%22%2C%22eventType%22%3A%220x1%3A%3Atransaction_fee%3A%3AFeeStatement%22%7D"
-# : 3f2a91c0:0
+# id: 3f2a91c0:0
 #
 # id: 3f2a91c0:1
 # data: {"type":"0x1::transaction_fee::FeeStatement","data":{...},"version":"4205513021",...}
 ```
 
 ```ts
+import { parseEvent } from "@streamd/core";
+
 const descriptor = encodeURIComponent(JSON.stringify({ kind: "module", eventType: "0x1::coin::CoinDeposit" }));
 
 const source = new EventSource(`http://127.0.0.1:8787/v1/events?descriptor=${descriptor}`);
@@ -5673,21 +5675,25 @@ source.addEventListener("end", (message) => source.close()); // the gateway gave
 
 const socket = new WebSocket(`ws://127.0.0.1:8787/v1/ws?descriptor=${descriptor}`);
 socket.onmessage = (message) => {
-  const { id, event } = JSON.parse(message.data); // or { end } before a 1011 close
-  console.log(id, parseEvent(JSON.stringify(event)));
+  const body = JSON.parse(message.data);
+  if (body.end !== undefined) return; // the gateway gave up; a 1011 close follows
+  if (body.event === undefined) return; // the opening { id }: where the socket starts
+  console.log(body.id, parseEvent(JSON.stringify(body.event)));
 };
 ```
 
 **Resuming.** Each event's id is `<epoch>:<seq>`, numbered by the gateway as its topic receives
-events. A stream starts at the newest event, or, given `Last-Event-ID` (which `EventSource`
+events. A stream opens with the id it starts after (an SSE `id:` with no data, or a WebSocket
+`{ "id" }` frame), so a client that has seen no event yet can still resume. It starts at the
+newest event, or, given `Last-Event-ID` (which `EventSource`
 sends by itself on reconnect) or `?lastEventId=` (for WebSockets), right after that id, with no
 gap and no repeat. Each topic keeps its last 1000 events, and lingers 60 seconds after its last
 client leaves. A resume point the topic no longer holds, or one from before the gateway
 restarted, answers 410: start the stream again, and read what was missed by version with a
 query.
 
-**Slow clients.** A stream more than 1 MiB behind is closed (WebSocket code 1013) rather than
-buffered without bound. Its client reconnects and resumes from its last id while the topic still
+**Slow clients.** A stream more than 1 MiB behind is dropped (WebSocket code 1013), its queue
+discarded, rather than buffered without bound. Its client reconnects and resumes from its last id while the topic still
 holds it.
 
 **`GatewayAdapter`.** In `@streamd/gateway`, an `EventAdapter` over the gateway's
@@ -5706,8 +5712,11 @@ const recent = await streamd.getEvents(descriptor, { fromVersion: -1000n }); // 
 A walk with no start follows the gateway's topic from its newest event, as its streams do,
 whatever the source would do with no start. A walk with a start, an end, an offset or
 newest-first order reads the gateway's node, identical requests within a poll interval sharing
-one read, and keeps following it on that node's cursors: backfill-then-follow walks are not
-shared. Block lookups, `fromTime`, transaction lookups, simulations and views are not served.
+one read, at most 4 in flight and each abandoned after 30 seconds, and keeps following it on
+that node's cursors: backfill-then-follow walks are not shared. Requests must be
+`application/json` (415 otherwise), so a page on another origin cannot send one without the
+CORS preflight `--allow-origin` governs. With no token, the gateway answers only requests whose
+`Host` is loopback, which refuses a page that rebinds its own name to 127.0.0.1. Block lookups, `fromTime`, transaction lookups, simulations and views are not served.
 `where` and `decode` run in the client as usual.
 
 `GET /v1/status` lists each topic (descriptor, clients, last id, events held) and the open

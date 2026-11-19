@@ -38,10 +38,7 @@ describe("Topics", () => {
     await waitFor(() => b.seen.length === 2);
     expect(a.seen.map((e) => parseEvent(e.line).version)).toEqual([1n, 2n]);
     expect(b.seen.map((e) => topic.id(e.seq))).toEqual([topic.id(1), topic.id(2)]);
-    const calls = adapter.calls.length;
-    await Bun.sleep(50);
-    // One poller: about one fetch per 10 ms interval, not two.
-    expect(adapter.calls.length - calls).toBeLessThanOrEqual(7);
+    expect(clients.at(-1)!.listSubscriptions()).toHaveLength(1);
     expect(topics.size).toBe(1);
     topics.close();
   });
@@ -67,14 +64,14 @@ describe("Topics", () => {
   });
 
   it("stops a topic its last client left once the linger passes, and restarts it with a new epoch", async () => {
-    const topics = setup(new CountingAdapter(), { linger: 30 });
+    const topics = setup(new CountingAdapter(), { linger: 300 });
     const topic = topics.open(PINGS);
     const a = collector();
     topics.join(topic, a.subscriber);
     topics.leave(topic, a.subscriber);
-    await Bun.sleep(10);
+    await Bun.sleep(100);
     topics.touch(topic);
-    await Bun.sleep(25);
+    await Bun.sleep(250);
     expect(topics.get(PINGS)).toBe(topic);
     await waitFor(() => topics.size === 0);
     expect(topic.subscription!.active).toBe(false);

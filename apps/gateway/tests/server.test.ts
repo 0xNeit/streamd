@@ -26,7 +26,7 @@ async function call(gateway: Gateway, request: Request): Promise<Response> {
 }
 
 function eventsUrl(descriptor: EventDescriptor = PINGS, extra = ""): string {
-  return `http://gw/v1/events?descriptor=${encodeURIComponent(JSON.stringify(descriptor))}${extra}`;
+  return `http://localhost/v1/events?descriptor=${encodeURIComponent(JSON.stringify(descriptor))}${extra}`;
 }
 
 /** Reads an SSE body as it arrives. */
@@ -122,9 +122,8 @@ describe("SSE streams", () => {
     const response = await call(gateway, new Request(eventsUrl()));
     adapter.push(ev(1), ev(2), ev(3));
     await waitFor(() => gateway.status().connections === 0);
-    // Nothing read the body, so the queue passed the bound and the stream closed; what was queued still reads.
-    const text = await response.text();
-    expect(text).toContain("id: ");
+    // Nothing read the body, so the queue passed the bound and the stream errored, dropping what was queued.
+    await expect(response.text()).rejects.toThrow();
   });
 
   it("sends keepalive comments", async () => {
@@ -137,36 +136,57 @@ describe("SSE streams", () => {
 describe("requests", () => {
   it("refuses a bad or missing descriptor with 400", async () => {
     const gateway = setup();
-    expect((await call(gateway, new Request("http://gw/v1/events"))).status).toBe(400);
-    expect((await call(gateway, new Request("http://gw/v1/events?descriptor=nope"))).status).toBe(400);
+    expect((await call(gateway, new Request("http://localhost/v1/events"))).status).toBe(400);
+    expect((await call(gateway, new Request("http://localhost/v1/events?descriptor=nope"))).status).toBe(400);
     const bad = await call(gateway, new Request(eventsUrl({ kind: "module", eventType: "x" } as never)));
     expect(bad.status).toBe(400);
     expect(((await bad.json()) as { error: { name: string } }).error.name).toBe("StreamdError");
   });
 
   it("answers 404 for an unknown route", async () => {
-    expect((await call(setup(), new Request("http://gw/nope"))).status).toBe(404);
+    expect((await call(setup(), new Request("http://localhost/nope"))).status).toBe(404);
+  });
+
+  it("with no token, refuses a Host that is not loopback, as a rebound name would be", async () => {
+    const gateway = setup();
+    expect((await call(gateway, new Request("http://evil.example:8787/v1/status"))).status).toBe(401);
+    expect((await call(gateway, new Request("http://127.0.0.1:8787/v1/status"))).status).toBe(200);
+    expect((await call(gateway, new Request("http://[::1]:8787/v1/status"))).status).toBe(200);
+    expect((await call(setup({ token: "t" }), new Request("http://evil.example/v1/status?access_token=t"))).status).toBe(200);
+  });
+
+  it("opens with the id it starts after, so a client that saw no event still resumes", async () => {
+    const adapter = new CountingAdapter();
+    const gateway = setup({}, adapter);
+    const quiet = reader(await call(gateway, new Request(eventsUrl())));
+    await waitFor(() => /^id: \S+\n\n/.test(quiet.text));
+    const id = /^id: (\S+)/.exec(quiet.text)![1]!;
+    await quiet.cancel();
+    adapter.push(ev(1));
+    const back = reader(await call(gateway, new Request(eventsUrl(), { headers: { "last-event-id": id } })));
+    await waitFor(() => back.frames().length === 1);
+    expect(back.frames()[0]!.version).toBe(1n);
   });
 
   it("needs the token as a bearer header or access_token when one is set", async () => {
     const gateway = setup({ token: "s3cret" });
-    expect((await call(gateway, new Request("http://gw/v1/status"))).status).toBe(401);
-    expect((await call(gateway, new Request("http://gw/v1/status", { headers: { authorization: "Bearer wrong" } }))).status).toBe(401);
-    expect((await call(gateway, new Request("http://gw/v1/status", { headers: { authorization: "Bearer s3cret" } }))).status).toBe(200);
-    expect((await call(gateway, new Request("http://gw/v1/status?access_token=s3cret"))).status).toBe(200);
+    expect((await call(gateway, new Request("http://localhost/v1/status"))).status).toBe(401);
+    expect((await call(gateway, new Request("http://localhost/v1/status", { headers: { authorization: "Bearer wrong" } }))).status).toBe(401);
+    expect((await call(gateway, new Request("http://localhost/v1/status", { headers: { authorization: "Bearer s3cret" } }))).status).toBe(200);
+    expect((await call(gateway, new Request("http://localhost/v1/status?access_token=s3cret"))).status).toBe(200);
   });
 
   it("answers allowed origins with CORS headers and preflights", async () => {
     const gateway = setup({ allowOrigins: ["https://app.example"] });
-    const ok = await call(gateway, new Request("http://gw/v1/status", { headers: { origin: "https://app.example" } }));
+    const ok = await call(gateway, new Request("http://localhost/v1/status", { headers: { origin: "https://app.example" } }));
     expect(ok.headers.get("access-control-allow-origin")).toBe("https://app.example");
-    const other = await call(gateway, new Request("http://gw/v1/status", { headers: { origin: "https://evil.example" } }));
+    const other = await call(gateway, new Request("http://localhost/v1/status", { headers: { origin: "https://evil.example" } }));
     expect(other.headers.get("access-control-allow-origin")).toBeNull();
-    const preflight = await call(gateway, new Request("http://gw/v1/fetch", { method: "OPTIONS", headers: { origin: "https://app.example" } }));
+    const preflight = await call(gateway, new Request("http://localhost/v1/fetch", { method: "OPTIONS", headers: { origin: "https://app.example" } }));
     expect(preflight.status).toBe(204);
     expect(preflight.headers.get("access-control-allow-headers")).toContain("authorization");
     const any = setup({ allowOrigins: ["*"] });
-    const star = await call(any, new Request("http://gw/v1/status", { headers: { origin: "https://x.example" } }));
+    const star = await call(any, new Request("http://localhost/v1/status", { headers: { origin: "https://x.example" } }));
     expect(star.headers.get("access-control-allow-origin")).toBe("*");
   });
 

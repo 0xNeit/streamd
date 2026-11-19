@@ -13,7 +13,7 @@ afterEach(() => {
 });
 
 function serve(options: Partial<GatewayOptions> = {}, adapter: EventAdapter = new CountingAdapter()) {
-  const client = new StreamdClient({ adapter, defaults: { maxBackoff: 1 } });
+  const client = new StreamdClient({ adapter, defaults: { maxBackoff: 1, maxErrors: 1 } });
   const gateway = createGateway({ client, pollInterval: 10, ...options });
   const server: Server<SocketData> = Bun.serve({
     port: 0,
@@ -26,15 +26,20 @@ function serve(options: Partial<GatewayOptions> = {}, adapter: EventAdapter = ne
     client.destroy();
     server.stop(true);
   });
-  return { gateway, url: `ws://127.0.0.1:${server.port}/v1/ws?descriptor=${encodeURIComponent(JSON.stringify(PINGS))}` };
+  return { gateway, http: `http://127.0.0.1:${server.port}/v1/ws?descriptor=${encodeURIComponent(JSON.stringify(PINGS))}`, url: `ws://127.0.0.1:${server.port}/v1/ws?descriptor=${encodeURIComponent(JSON.stringify(PINGS))}` };
 }
 
 function connect(url: string, headers?: Record<string, string>) {
   const ws = new WebSocket(url, { headers } as never);
   const messages: { id?: string; version?: bigint; end?: string }[] = [];
   let closed: { code: number; reason: string } | undefined;
+  let first: string | undefined;
   ws.onmessage = (m) => {
     const body = JSON.parse(String(m.data)) as { id?: string; event?: unknown; end?: string };
+    if (body.event === undefined && body.end === undefined) {
+      first = body.id;
+      return;
+    }
     messages.push(body.event === undefined ? { end: body.end } : { id: body.id, version: parseEvent(JSON.stringify(body.event)).version });
   };
   ws.onclose = (e) => (closed = { code: e.code, reason: e.reason });
@@ -44,6 +49,10 @@ function connect(url: string, headers?: Record<string, string>) {
     messages,
     get closed() {
       return closed;
+    },
+    /** The id the socket's opening frame named: where it starts. */
+    get first() {
+      return first;
     },
     opened: new Promise<void>((resolve, reject) => {
       ws.onopen = () => resolve();
@@ -72,23 +81,40 @@ describe("WebSocket streams", () => {
     expect(again.messages.map((m) => m.version)).toEqual([2n, 3n]);
   });
 
+  it("opens with the id it starts after, so a socket that saw no event can still resume", async () => {
+    const adapter = new CountingAdapter();
+    const { url } = serve({}, adapter);
+    const quiet = connect(url);
+    await quiet.opened;
+    await waitFor(() => quiet.first !== undefined);
+    quiet.ws.close();
+    adapter.push(ev(1));
+    const back = connect(`${url}&lastEventId=${quiet.first}`);
+    await back.opened;
+    await waitFor(() => back.messages.length === 1);
+    expect(back.messages[0]!.version).toBe(1n);
+  });
+
   it("refuses a resume point no longer held with 410 before upgrading", async () => {
-    const { url } = serve();
+    const { url, http } = serve();
     const refused = connect(`${url}&lastEventId=ffffffff:1`);
     await expect(refused.opened).rejects.toThrow();
+    expect((await fetch(`${http}&lastEventId=ffffffff:1`)).status).toBe(410);
   });
 
   it("refuses an Origin not allowed and not the gateway's own host", async () => {
-    const { url } = serve({ allowOrigins: ["https://app.example"] });
+    const { url, http } = serve({ allowOrigins: ["https://app.example"] });
     await expect(connect(url, { origin: "https://evil.example" }).opened).rejects.toThrow();
+    expect((await fetch(http, { headers: { origin: "https://evil.example" } })).status).toBe(403);
     await connect(url, { origin: "https://app.example" }).opened;
     const host = new URL(url).host;
     await connect(url, { origin: `http://${host}` }).opened;
   });
 
   it("needs the token when one is set", async () => {
-    const { url } = serve({ token: "s3cret" });
+    const { url, http } = serve({ token: "s3cret" });
     await expect(connect(url).opened).rejects.toThrow();
+    expect((await fetch(http)).status).toBe(401);
     await connect(`${url}&access_token=s3cret`).opened;
   });
 
@@ -100,7 +126,7 @@ describe("WebSocket streams", () => {
     await socket.opened;
     await waitFor(() => socket.closed !== undefined, 5000);
     expect(socket.closed!.code).toBe(1011);
-    expect(socket.messages).toEqual([{ end: "Polling failed (10/10): down" }]);
+    expect(socket.messages).toEqual([{ end: "Polling failed (1/1): down" }]);
   });
 
   it("closes every socket on close()", async () => {

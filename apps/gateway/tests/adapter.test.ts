@@ -24,7 +24,7 @@ function setup(options: Partial<GatewayOptions> = {}, source = new CountingAdapt
 
 function through(gateway: Gateway, token?: string): GatewayAdapter {
   return new GatewayAdapter({
-    url: "http://gw/",
+    url: "http://localhost/",
     token,
     fetch: async (url, init) => (await gateway.fetch(new Request(url, init)))!,
   });
@@ -54,8 +54,10 @@ describe("GatewayAdapter", () => {
     await waitFor(() => gateway.status().topics.length === 1);
     source.push(ev(1));
     await waitFor(() => a.length === 1);
-    clientOf(through(gateway)).on(PINGS, (e) => void b.push(e));
-    await Bun.sleep(30);
+    const second = through(gateway);
+    const started = second.fetchEvents(PINGS, {});
+    await started;
+    clientOf({ fetchEvents: (d, o) => (o.cursor === undefined ? started : second.fetchEvents(d, o)) }).on(PINGS, (e) => void b.push(e));
     source.push(ev(2), ev(3));
     await waitFor(() => a.length === 3 && b.length === 2);
     expect(a.map((e) => e.version)).toEqual([1n, 2n, 3n]);
@@ -122,11 +124,11 @@ describe("GatewayAdapter", () => {
   });
 
   it("turns a failed request into a retryable network error, and keeps a Retry-After", async () => {
-    const down = new GatewayAdapter({ url: "http://gw", fetch: () => Promise.reject(new Error("refused")) });
+    const down = new GatewayAdapter({ url: "http://localhost", fetch: () => Promise.reject(new Error("refused")) });
     const err = await failure(down.fetchEvents(PINGS, {}));
     expect(err).toBeInstanceOf(StreamdNetworkError);
     const limited = new GatewayAdapter({
-      url: "http://gw",
+      url: "http://localhost",
       fetch: async () => new Response("busy", { status: 503, headers: { "retry-after": "2" } }),
     });
     const busy = (await failure(limited.fetchEvents(PINGS, {}))) as StreamdNetworkError;
@@ -135,11 +137,33 @@ describe("GatewayAdapter", () => {
     expect(() => new GatewayAdapter({ url: "ftp://gw" })).toThrow(StreamdError);
   });
 
+  it("prefixes a page shared by identical upstream reads once per caller, never twice", async () => {
+    const source = new CountingAdapter([ev(5), ev(6)]);
+    const { gateway } = setup({}, source);
+    const [a, b] = await Promise.all([
+      through(gateway).fetchEvents(PINGS, { fromVersion: 5n }),
+      through(gateway).fetchEvents(PINGS, { fromVersion: 5n }),
+    ]);
+    const c = await through(gateway).fetchEvents(PINGS, { fromVersion: 5n });
+    expect(source.calls).toHaveLength(1);
+    for (const page of [a, b, c]) expect(page.nextCursor).toMatch(/^u:(?!u:)/);
+  });
+
   it("refuses an oversized body with 413 and a malformed one with 400", async () => {
     const { gateway } = setup();
-    const big = await gateway.fetch(new Request("http://gw/v1/fetch", { method: "POST", body: "x".repeat(70_000) }));
-    expect(big!.status).toBe(413);
-    const bad = await gateway.fetch(new Request("http://gw/v1/fetch", { method: "POST", body: "[]" }));
-    expect(bad!.status).toBe(400);
+    const post = (body: string | ReadableStream, type = "application/json") =>
+      gateway.fetch(new Request("http://localhost/v1/fetch", { method: "POST", headers: { "content-type": type }, body }));
+    expect((await post("x".repeat(70_000)))!.status).toBe(413);
+    // Counted in bytes, not characters, and without trusting a missing content-length.
+    const chunked = new ReadableStream({
+      start(c) {
+        c.enqueue(new TextEncoder().encode("\u20ac".repeat(30_000)));
+        c.close();
+      },
+    });
+    expect((await post(chunked))!.status).toBe(413);
+    expect((await post("[]"))!.status).toBe(400);
+    // A form another page could post without a preflight.
+    expect((await post(JSON.stringify({ descriptor: PINGS }), "text/plain"))!.status).toBe(415);
   });
 });
