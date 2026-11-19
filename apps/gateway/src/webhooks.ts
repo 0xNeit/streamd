@@ -1,7 +1,8 @@
-import { readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from "node:fs";
 import { StreamdError, StreamdNetworkError, deliver, isObject, redactSecrets, serializeEvent, webhookSink } from "@streamd/core";
 import type { DeliverySink, EventDescriptor, StreamdClient, Subscription } from "@streamd/core";
 import { checkTarget, parseTarget } from "./targets.js";
+import { describe as message } from "./topics.js";
 import type { Lookup } from "./targets.js";
 import { parseDescriptor, toJson } from "./wire.js";
 
@@ -15,6 +16,8 @@ export interface WebhookView {
   status: WebhookState;
   /** ISO 8601. */
   createdAt: string;
+  /** The head when it was registered, where it starts until a cursor is saved. */
+  fromVersion: bigint;
   /** The position after the last acknowledged page; absent until the first is saved. */
   cursor?: string;
   /** Events acknowledged, redeliveries included. */
@@ -30,6 +33,8 @@ interface WebhookRecord extends WebhookView {
 
 export interface WebhooksOptions {
   client: StreamdClient;
+  /** The source's head, read once per registration so its start survives a failure or restart before any cursor. */
+  headVersion(descriptor: EventDescriptor): Promise<bigint>;
   /** The JSON file subscriptions and their cursors are kept in, across restarts. */
   file: string;
   /** Let targets resolve to loopback, private and other non-public addresses. */
@@ -46,8 +51,8 @@ export interface WebhooksOptions {
   /** First retry wait in ms, doubling per attempt (default: 1000). */
   retryDelay?: number;
   lookup?: Lookup;
-  /** Delivery failures, polling errors and file write failures, by webhook id. */
-  onError?: (message: string, id: string) => void;
+  /** Delivery failures, polling errors and file write failures, with the webhook's id when there is one. */
+  onError?: (message: string, id?: string) => void;
 }
 
 interface Running {
@@ -58,14 +63,10 @@ interface Running {
 
 const ID = /^[0-9a-f]{16}$/;
 const SECRET = /^[0-9a-f]{64}$/;
+const VERSION = /^\d{1,20}$/;
 
 function hex(bytes: number): string {
   return Array.from(crypto.getRandomValues(new Uint8Array(bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function message(err: unknown): string {
-  if (!(err instanceof Error)) return String(err);
-  return err.cause instanceof Error ? `${err.message}: ${err.cause.message}` : err.message;
 }
 
 function view({ secret: _secret, ...rest }: WebhookRecord): WebhookView {
@@ -84,6 +85,7 @@ function parseRecord(value: unknown, index: number): WebhookRecord {
   if (v.status !== "active" && v.status !== "failed") bad("status");
   if (typeof v.createdAt !== "string") bad("createdAt");
   if (!Number.isSafeInteger(v.delivered) || (v.delivered as number) < 0) bad("delivered");
+  if (typeof v.fromVersion !== "string" || !VERSION.test(v.fromVersion)) bad("fromVersion");
   if (v.cursor !== undefined && (typeof v.cursor !== "string" || v.cursor === "")) bad("cursor");
   if (v.lastError !== undefined && typeof v.lastError !== "string") bad("lastError");
   const record: WebhookRecord = {
@@ -94,6 +96,7 @@ function parseRecord(value: unknown, index: number): WebhookRecord {
     status: v.status as WebhookState,
     createdAt: v.createdAt as string,
     delivered: v.delivered as number,
+    fromVersion: BigInt(v.fromVersion as string),
   };
   if (v.cursor !== undefined) record.cursor = v.cursor as string;
   if (v.lastError !== undefined) record.lastError = v.lastError as string;
@@ -113,7 +116,7 @@ function load(file: string): WebhookRecord[] {
     if (!isObject(body) || !Array.isArray(body.webhooks)) throw new StreamdError('expected { "webhooks": [...] }');
     return body.webhooks.map(parseRecord);
   } catch (err) {
-    throw new StreamdError(`webhook file ${file}: ${message(err)}`);
+    throw new StreamdError(`webhook file ${file}: ${err instanceof Error ? message(err) : String(err)}`);
   }
 }
 
@@ -153,9 +156,9 @@ export class Webhooks {
     const url = parseTarget(body.url);
     const descriptor = parseDescriptor(body.descriptor);
     await checkTarget(url, { allowPrivate: this.options.allowPrivateTargets, lookup: this.options.lookup });
-    if (this.running.size >= this.maxWebhooks) {
-      throw new StreamdNetworkError(`The gateway holds at most ${this.maxWebhooks} webhooks`, 503);
-    }
+    this.reserve();
+    const fromVersion = await this.options.headVersion(descriptor);
+    this.reserve();
     const record: WebhookRecord = {
       id: hex(8),
       url: url.href,
@@ -164,6 +167,7 @@ export class Webhooks {
       status: "active",
       createdAt: new Date().toISOString(),
       delivered: 0,
+      fromVersion,
     };
     const entry: Running = { record };
     this.running.set(record.id, entry);
@@ -175,6 +179,14 @@ export class Webhooks {
     }
     this.start(entry);
     return { ...view(record), secret: record.secret };
+  }
+
+  /** Throws once closed or full; checked again after each await in `create`. */
+  private reserve(): void {
+    if (this.closed) throw new StreamdNetworkError("The gateway is closing", 503);
+    if (this.running.size >= this.maxWebhooks) {
+      throw new StreamdNetworkError(`The gateway holds at most ${this.maxWebhooks} webhooks`, 503);
+    }
   }
 
   list(): WebhookView[] {
@@ -206,7 +218,7 @@ export class Webhooks {
   resume(id: string): WebhookView | undefined {
     const entry = this.running.get(id);
     if (entry === undefined) return undefined;
-    if (entry.record.status === "failed") {
+    if (entry.record.status === "failed" && !this.closed) {
       const { lastError } = entry.record;
       entry.record.status = "active";
       delete entry.record.lastError;
@@ -227,33 +239,22 @@ export class Webhooks {
     if (this.closed) return;
     this.closed = true;
     for (const entry of this.running.values()) this.stop(entry);
-    this.trySave("");
+    this.trySave();
   }
 
   private start(entry: Running): void {
+    if (this.closed) return;
     const { record } = entry;
     const { client, retries = 5, timeout = 10_000, batchSize, pollInterval, retryDelay } = this.options;
     const controller = new AbortController();
-    const target = parseTarget(record.url);
-    const post = webhookSink({ to: record.url, secret: record.secret, timeout });
-    // Checked on every attempt, so a name re-pointed at a private address after registration is refused when next used.
-    const sink: DeliverySink = {
-      send: async (body, signal) => {
-        try {
-          await checkTarget(target, { allowPrivate: this.options.allowPrivateTargets, lookup: this.options.lookup });
-        } catch (err) {
-          return { ok: false, failure: message(err), retryable: true };
-        }
-        return post.send(body, signal);
-      },
-    };
+    const sink = this.sink(record, timeout);
     let lastFailure = "delivery failed";
     const io = {
       signal: controller.signal,
       retryDelay,
       error: (text: string) => {
         lastFailure = text.replace(/^streamd: /, "");
-        this.options.onError?.(text, record.id);
+        this.options.onError?.(lastFailure, record.id);
       },
     };
     const sub = client.onBatch(
@@ -269,7 +270,7 @@ export class Webhooks {
           }
         } catch (err) {
           delivered = false;
-          lastFailure = message(err);
+          lastFailure = err instanceof Error ? message(err) : String(err);
         } finally {
           // Stopping before returning keeps the poller's cursor on this undelivered page.
           if (!delivered && !controller.signal.aborted) this.fail(entry, sub, lastFailure);
@@ -279,19 +280,35 @@ export class Webhooks {
         setTimeout(() => this.checkpoint(entry, sub), 0);
       },
       {
-        ...(record.cursor !== undefined && { cursor: record.cursor }),
+        ...(record.cursor === undefined ? { fromVersion: record.fromVersion } : { cursor: record.cursor }),
         ...(pollInterval !== undefined && { pollInterval }),
         ...(batchSize !== undefined && { batchSize }),
         // A start at the head saves its position once there, so a restart before any event does not skip ahead.
         onCaughtUp: () => this.checkpoint(entry, sub),
         onError: (err) => {
-          this.options.onError?.(`streamd: ${message(err)}`, record.id);
+          this.options.onError?.(message(err), record.id);
           if (!sub.active) this.fail(entry, sub, message(err));
         },
       },
     );
     entry.sub = sub;
     entry.controller = controller;
+  }
+
+  /** Checked on every attempt, so a name re-pointed at a private address after registration is refused when next used. */
+  private sink(record: WebhookRecord, timeout: number): DeliverySink {
+    const target = parseTarget(record.url);
+    const post = webhookSink({ to: record.url, secret: record.secret, timeout });
+    return {
+      send: async (body, signal) => {
+        try {
+          await checkTarget(target, { allowPrivate: this.options.allowPrivateTargets, lookup: this.options.lookup });
+        } catch (err) {
+          return { ok: false, failure: err instanceof Error ? err.message : String(err), retryable: true };
+        }
+        return post.send(body, signal);
+      },
+    };
   }
 
   private current(entry: Running, sub: Subscription): boolean {
@@ -325,22 +342,29 @@ export class Webhooks {
     controller?.abort();
   }
 
-  private trySave(id: string): void {
+  private trySave(id?: string): void {
     try {
       this.save();
     } catch (err) {
-      this.options.onError?.(`streamd: cannot write the webhook file: ${message(err)}`, id);
+      this.options.onError?.(`cannot write the webhook file: ${err instanceof Error ? err.message : String(err)}`, id);
     }
   }
 
-  // A rename replaces the file whole, so a crash mid-write never leaves a torn file.
+  // As the CLI's cursor file: a rename replaces the file whole, so a crash mid-write never leaves a torn
+  // file, and the fsync keeps a power loss from leaving the renamed file empty.
   private save(): void {
     const { file } = this.options;
     const temp = `${file}.${process.pid}.tmp`;
     const body = toJson({ webhooks: [...this.running.values()].map((entry) => entry.record) });
     // Exclusive create: a link planted at the predictable name fails the write instead of redirecting it.
     rmSync(temp, { force: true });
-    writeFileSync(temp, `${body}\n`, { flag: "wx", mode: 0o600 });
+    const fd = openSync(temp, "wx", 0o600);
+    try {
+      writeSync(fd, `${body}\n`);
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
     renameSync(temp, file);
   }
 }

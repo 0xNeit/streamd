@@ -5741,7 +5741,7 @@ bun x streamd serve --webhooks ./webhooks.json
 curl -X POST http://127.0.0.1:8787/v1/webhooks -H "content-type: application/json" \
   -d '{"url":"https://hooks.example/streamd","descriptor":{"kind":"module","eventType":"0x1::coin::CoinDeposit"}}'
 # {"id":"9c1e0b4f7a2d3e65","url":"https://hooks.example/streamd","descriptor":{...},"status":"active",
-#  "createdAt":"2026-11-19T12:00:00.000Z","delivered":0,"secret":"<64 hex characters>"}
+#  "createdAt":"2026-11-19T12:00:00.000Z","delivered":0,"fromVersion":"4205513021","secret":"<64 hex characters>"}
 ```
 
 | Route | |
@@ -5753,9 +5753,11 @@ curl -X POST http://127.0.0.1:8787/v1/webhooks -H "content-type: application/jso
 | `POST /v1/webhooks/<id>/resume` | restarts a failed webhook from its cursor |
 
 The routes take the gateway's token like every other, and exist only with `--webhooks`.
+Without a token they refuse any request carrying an `Origin` header (403): a loopback gateway
+is reachable from every page its operator opens, so browsers are kept off the webhook API.
 
-- **Start and cursor.** A webhook starts at the head when registered and follows with a cursor
-  of its own. The file holds every webhook, its secret and its cursor (mode 0600, replaced
+- **Start and cursor.** A webhook starts at the head the gateway's node reports when it is
+  registered (`fromVersion`), and follows with a cursor of its own. The file holds every webhook, its secret and its cursor (mode 0600, replaced
   whole on each write), and its cursor moves only after the target acknowledged the page
   with a 2xx, so a restarted gateway carries on from there and may repeat a page, never skip
   one. A file that cannot be read stops `serve` with exit code 1.

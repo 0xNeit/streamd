@@ -39,7 +39,7 @@ export async function runServe(options: ServeOptions, deps: ServeDeps): Promise<
       ...(options.webhooks !== undefined && {
         webhooks: {
           ...options.webhooks,
-          onError: (text, id) => deps.error(`streamd: webhook ${id}: ${redactSecrets(text.replace(/^streamd: /, ""))}`),
+          onError: (text, id) => deps.error(`streamd: ${id === undefined ? "webhooks" : `webhook ${id}`}: ${redactSecrets(text)}`),
         },
       }),
     });
