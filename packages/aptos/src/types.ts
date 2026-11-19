@@ -432,6 +432,120 @@ export interface Proposals {
   [Symbol.dispose](): void;
 }
 
+/** A multisig account's timelock: how long a transaction waits after creation, unless enough owners approve. */
+export interface MultisigTimelock {
+  periodSecs: bigint;
+  /** Approvals that let a transaction run before the period ends; none when every transaction waits. */
+  overrideThreshold?: bigint;
+}
+
+/** One transaction waiting in a `0x1::multisig_account` queue, as `get_pending_transactions` reported it. */
+export interface PendingMultisigTransaction {
+  sequenceNumber: bigint;
+  /** Long form. */
+  creator: string;
+  createdAtSecs: bigint;
+  /** The stored BCS `MultisigTransactionPayload`, `0x` hex; absent when only its hash was stored. */
+  payload?: string;
+  /** SHA3-256 of the payload, `0x` hex, when the creator stored the hash instead. */
+  payloadHash?: string;
+  /**
+   * The entry function `payload` calls, its arguments each a BCS value as
+   * `0x` hex, since their types need the function's ABI. Absent without a
+   * payload, or when the bytes do not decode.
+   */
+  call?: EntryFunctionCall;
+  /** Owners who approved, long form, in the order the view listed them. */
+  approvals: string[];
+  /** Owners who rejected. */
+  rejections: string[];
+  /**
+   * When the timelock lets it run (creation plus the period, Unix seconds),
+   * while its approvals are below the override threshold; absent with no
+   * timelock or once the override is met.
+   */
+  executableAtSecs?: bigint;
+}
+
+/** A multisig account read from its views at one version. */
+export interface MultisigState {
+  /** Long form. */
+  address: string;
+  /** The version the views were read at. */
+  version: bigint;
+  /** Long form, in the account's order. */
+  owners: string[];
+  /** `num_signatures_required`. */
+  threshold: bigint;
+  timelock?: MultisigTimelock;
+  /** The last executed or rejected sequence number; the next to run is one above it. */
+  lastResolved: bigint;
+  nextSequenceNumber: bigint;
+  /** By sequence number, from `lastResolved + 1`. */
+  pending: ReadonlyMap<bigint, PendingMultisigTransaction>;
+}
+
+/** Options for `AptosClient.multisig`: the live options tune its one scan, as for `reduce()`. */
+export interface MultisigOptions
+  extends Pick<
+    ReduceOptions,
+    "pollInterval" | "batchSize" | "maxErrors" | "maxBackoff" | "maxPollInterval" | "retries" | "signal" | "onError"
+  > {
+  /**
+   * An absolute version to read changes from: the state is read at the
+   * version before, and every later change is folded before `ready`. The
+   * head when omitted.
+   */
+  fromVersion?: bigint;
+  /** Called after each live event of the account, with the state reread at its version. A throw goes to `onError`. */
+  onChange?: (state: MultisigState, event: StreamdEvent) => void;
+}
+
+/** Options for `Multisig.preview`. */
+export interface MultisigPreviewOptions {
+  /** The payload of a transaction stored by hash: BCS `MultisigTransactionPayload` bytes or `0x` hex, checked against the hash. */
+  payload?: Uint8Array | string;
+}
+
+/** What a pending multisig transaction would emit if it ran now. */
+export interface MultisigPreview {
+  sequenceNumber: bigint;
+  /** The owner simulated as executor, or the multisig itself when `partial`. */
+  sender: string;
+  /**
+   * True when no owner could execute it now (more than one approval short,
+   * timelocked, or not next in the queue), so the entry function was
+   * simulated directly as the multisig: no multisig checks or events, and
+   * from the current state rather than after the transactions before it.
+   */
+  partial: boolean;
+  /** The simulated version. */
+  version: bigint;
+  /** The payload's events, fee statement included. */
+  events: StreamdEvent[];
+  /**
+   * The multisig's own `Vote`, `TransactionExecutionSucceeded` and
+   * `TransactionExecutionFailed` from the simulation: they name the simulated
+   * executor, not votes anyone cast.
+   */
+  executorEvents: StreamdEvent[];
+}
+
+/** A running `multisig()`: the account's state, reread as its events arrive. */
+export interface Multisig {
+  /** The latest state; replaced field by field in place, so a held reference stays current. */
+  readonly value: MultisigState;
+  get(sequenceNumber: bigint): PendingMultisigTransaction | undefined;
+  /** Resolves once the state is read and any history from `fromVersion` folded; rejects if that fails or it is stopped first. */
+  readonly ready: Promise<MultisigState>;
+  /** False once stopped: unsubscribed, aborted, failed, or polling gave up. */
+  readonly active: boolean;
+  /** Simulate a pending transaction with no key; waits for `ready`. */
+  preview(sequenceNumber: bigint, options?: MultisigPreviewOptions): Promise<MultisigPreview>;
+  unsubscribe(): void;
+  [Symbol.dispose](): void;
+}
+
 /** What one pool was paid at one epoch change, in octas. */
 export interface EpochRewards {
   /** The epoch the rewards were earned in: the one this change ended. */
