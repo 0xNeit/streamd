@@ -9,6 +9,7 @@ import type {
   StreamdEvent,
   Subscription,
   SubscriptionOptions,
+  ViewRequest,
 } from "@streamd/core";
 import { activityDescriptor, activitySource } from "./activity.js";
 import { APTOS_BALANCES } from "./balances.js";
@@ -19,6 +20,7 @@ import { holdersAt } from "./holders.js";
 import { IndexerAccountAdapter } from "./indexer.js";
 import { provenanceDescriptor, provenanceSource } from "./provenance.js";
 import { governanceSource, startProposals } from "./governance.js";
+import { MULTISIG_DESCRIPTOR, multisigSource, startMultisig } from "./multisig.js";
 import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { PYTH_DESCRIPTOR, priceSource, pythPriceReader, requireFeedId } from "./prices.js";
@@ -28,7 +30,7 @@ import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
-import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, Multisig, MultisigOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -249,6 +251,48 @@ export class AptosClient extends StreamdClient {
       this.onError,
       options,
     );
+  }
+
+  /**
+   * Keep one `0x1::multisig_account` current: owners, threshold, timelock and
+   * every pending transaction with its approvals, rejections and decoded
+   * call, read from the module's views at the head (or at the version before
+   * `fromVersion`), then reread at the version of each of the account's
+   * events from one scan over the module's events, narrowed by their
+   * `multisig_account` field; the account never signs, so an `account` walk
+   * would see nothing. Views go through `EventAdapter.view`, so the adapter
+   * must implement it; a `fromVersion` older than the timelock views fails.
+   * `address` may be an Aptos name, resolved once. `preview` simulates a
+   * pending transaction with no key. Like `reduce()`, it is not a listener
+   * for `off()` or `listenerCount()`; `destroy()` ends it.
+   */
+  multisig(address: string, options?: MultisigOptions): Multisig {
+    if (typeof address !== "string") throw new StreamdError("multisig needs an address or Aptos name");
+    const who = this.accountOf(address)!;
+    const adapter = this.adapter;
+    if (typeof adapter.view !== "function" || typeof adapter.getHeadVersion !== "function") {
+      throw new StreamdError("multisig needs an adapter that implements view and getHeadVersion");
+    }
+    const host = {
+      view: (request: ViewRequest, version: bigint) => this.limiter.run(() => adapter.view!(request, version)),
+      head: () => this.limiter.run(() => adapter.getHeadVersion!(MULTISIG_DESCRIPTOR)),
+    };
+    const handle = startMultisig(
+      (account, d, r, i, o) => {
+        const wrap = (source: EventAdapter) => multisigSource(source, account, this.requestTimeout);
+        const scoped = {
+          ...this.reduceHost,
+          query: new EventQuery(wrap(adapter), this.limiter, this.names),
+          subscribe: (desc: EventDescriptor | readonly EventDescriptor[], callback: EventCallback, opts: object) =>
+            this.subscribe(desc as EventDescriptor, callback, opts, undefined, undefined, wrap),
+        };
+        return startReduction(scoped, d, r, i, o);
+      },
+      host,
+      who,
+      options,
+    );
+    return Object.assign(handle, { preview: () => Promise.reject(new StreamdError("not yet")) }) as Multisig;
   }
 
   /**

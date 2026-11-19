@@ -1,10 +1,13 @@
 import { describe, expect, it } from "bun:test";
 import { AccountAddress, EntryFunction, MultiSigTransactionPayload, U64 } from "@aptos-labs/ts-sdk";
-import type { ViewRequest } from "@streamd/core";
+import { MemoryAdapter } from "@streamd/core";
+import type { StreamdEvent, ViewRequest } from "@streamd/core";
 import { decodeCall, readMultisig } from "../src/multisig.js";
+import type { MultisigState } from "../src/types.js";
+import { testClient } from "./helpers.js";
 
 const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
-const M = long("m0");
+const M = long("e0");
 const [A, B, C] = [long("a"), long("b"), long("c")];
 
 const transfer = (amount: number) =>
@@ -91,5 +94,82 @@ describe("readMultisig", () => {
     await expect(readMultisig(views({ ...base, get_pending_transactions: [item({ payload: { vec: ["zz"] } })] }), M, 1n)).rejects.toThrow("pending transaction 5");
     const { owners: _, ...none } = base;
     await expect(readMultisig(views(none), M, 1n)).rejects.toThrow("unexpected view owners");
+  });
+});
+
+const ev = (version: number, eventIndex: number, name: string, account: string): StreamdEvent => ({
+  type: `0x1::multisig_account::${name}`,
+  data: { multisig_account: account, sequence_number: "5" },
+  version: BigInt(version),
+  sequenceNumber: 0n,
+  eventIndex,
+});
+
+/** A memory adapter whose views answer `base`, with the version read as `next_sequence_number`. */
+function multisigAdapter(events: StreamdEvent[], asked: [string, bigint][] = []) {
+  const memory = new MemoryAdapter(events);
+  const view = async (request: ViewRequest, version: bigint) => {
+    const name = request.function.split("::")[2]!;
+    asked.push([name, version]);
+    if (request.functionArguments[0] !== M) throw new Error("not a multisig");
+    return [name === "next_sequence_number" ? String(version) : base[name as keyof typeof base]];
+  };
+  return { adapter: Object.assign(memory, { view }), memory, asked };
+}
+
+const waitFor = async (check: () => boolean) => {
+  for (let i = 0; i < 100 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
+  if (!check()) throw new Error("timed out waiting");
+};
+
+describe("multisig", () => {
+  const history = [ev(10, 0, "CreateTransaction", long("other")), ev(11, 0, "CreateTransaction", "0xe0"), ev(11, 1, "Vote", M), ev(20, 0, "TransactionExecutionSucceeded", M)];
+
+  it("reads the state before fromVersion, then rereads it once per version of the account's own events", async () => {
+    const { adapter, asked } = multisigAdapter(history);
+    const client = testClient({ adapter });
+    const changes: bigint[] = [];
+    const multisig = client.multisig(M, { fromVersion: 5n, onChange: (s) => changes.push(s.version) });
+    expect(client.listenerCount()).toBe(0);
+    const state = await multisig.ready;
+    expect(state).toBe(multisig.value);
+    expect(state).toMatchObject({ address: M, version: 20n, nextSequenceNumber: 20n, owners: [A, B, C] });
+    expect(multisig.get(5n)?.approvals).toEqual([A]);
+    expect([...new Set(asked.map(([, v]) => v))]).toEqual([4n, 11n, 20n]);
+    expect(asked).toHaveLength(21);
+    expect(changes).toEqual([]);
+    expect(multisig.active).toBe(true);
+    multisig.unsubscribe();
+    expect(multisig.active).toBe(false);
+    client.destroy();
+  });
+
+  it("starts at the head and calls onChange with the reread state after each live event", async () => {
+    const { adapter, memory } = multisigAdapter(history);
+    const client = testClient({ adapter, defaults: { pollInterval: 5 } });
+    const changes: [bigint, string][] = [];
+    const multisig = client.multisig("0xe0", { onChange: (s: MultisigState, e) => changes.push([s.version, e.type]) });
+    expect((await multisig.ready).version).toBe(20n);
+    memory.push(ev(30, 0, "Vote", long("other")), ev(31, 0, "Vote", M), ev(31, 1, "TransactionExecutionSucceeded", M));
+    await waitFor(() => changes.length === 2);
+    expect(changes).toEqual([
+      [31n, "0x1::multisig_account::Vote"],
+      [31n, "0x1::multisig_account::TransactionExecutionSucceeded"],
+    ]);
+    expect(multisig.value.version).toBe(31n);
+    client.destroy();
+  });
+
+  it("refuses bad options and adapters at the call, and rejects ready when the start read fails", async () => {
+    const { adapter } = multisigAdapter([]);
+    const client = testClient({ adapter });
+    expect(() => client.multisig(M, { where: () => true } as never)).toThrow("Unsupported multisig option: where");
+    expect(() => client.multisig(M, { fromVersion: -1n })).toThrow("fromVersion must be a bigint");
+    expect(() => client.multisig(M, { fromVersion: 3 as never })).toThrow("fromVersion must be a bigint");
+    expect(() => testClient({ adapter: new MemoryAdapter() }).multisig(M)).toThrow("implements view and getHeadVersion");
+    const other = client.multisig(long("beef"), { fromVersion: 1n });
+    await expect(other.ready).rejects.toThrow("not a multisig");
+    expect(other.active).toBe(false);
+    client.destroy();
   });
 });

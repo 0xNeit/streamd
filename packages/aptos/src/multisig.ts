@@ -1,9 +1,9 @@
 import { Deserializer, Hex, MultiSigTransactionPayload } from "@aptos-labs/ts-sdk";
-import { StreamdError } from "@streamd/core";
-import type { EntryFunctionCall, ViewRequest } from "@streamd/core";
-import { address, amount } from "./records.js";
+import { RequestLimiter, StreamdError } from "@streamd/core";
+import type { EntryFunctionCall, EventAdapter, ModuleEventDescriptor, ReduceOptions, Reducer, Reduction, StreamdEvent, ViewRequest } from "@streamd/core";
+import { address, amount, pageSource } from "./records.js";
 import type { Fields } from "./records.js";
-import type { MultisigState, MultisigTimelock, PendingMultisigTransaction } from "./types.js";
+import type { Multisig, MultisigOptions, MultisigState, MultisigTimelock, PendingMultisigTransaction } from "./types.js";
 
 const MODULE = "0x1::multisig_account";
 
@@ -119,4 +119,137 @@ export async function readMultisig(view: ViewAt, account: string, version: bigin
       return [seq, pendingAt(item, seq, timelock, account)];
     })),
   };
+}
+
+/**
+ * Every event `0x1::multisig_account` emits. Each names its account in a
+ * `multisig_account` field, and the account never signs (owners create and
+ * vote, an owner executes), so this one scan, narrowed by that field, is how
+ * an account's changes are seen.
+ */
+export const MULTISIG_DESCRIPTOR: ModuleEventDescriptor = {
+  kind: "module",
+  eventType: [
+    "AddOwners",
+    "RemoveOwners",
+    "UpdateSignaturesRequired",
+    "MetadataUpdated",
+    "TimelockUpdated",
+    "TimelockRemoved",
+    "CreateTransaction",
+    "Vote",
+    "ExecuteRejectedTransaction",
+    "TransactionExecutionSucceeded",
+    "TransactionExecutionFailed",
+  ].map((name) => `${MODULE}::${name}` as const),
+};
+
+/**
+ * The scan's source for one account: other accounts' events are dropped, and
+ * each kept event carries the state reread at its version as `state[0]`, the
+ * views read once per version and at most four at a time.
+ */
+export function multisigSource(adapter: EventAdapter, account: string, requestTimeout?: number): EventAdapter {
+  if (typeof adapter.view !== "function") throw new StreamdError("multisig needs an adapter that implements view");
+  // Outside the client's limiter, as governance's views are: the page asking
+  // holds a slot. Timed, so a view that never settles fails the page.
+  const views = new RequestLimiter(4, Infinity, requestTimeout).wrap(adapter);
+  const view: ViewAt = (request, version) => views.view!(request, version);
+  return pageSource(adapter, (events) => {
+    const kept = events.filter((e) => address((e.data as Fields | null)?.multisig_account) === account);
+    const read = new Map<bigint, Promise<MultisigState>>();
+    for (const { version } of kept) if (!read.has(version)) read.set(version, readMultisig(view, account, version));
+    return Promise.all(kept.map(async (e) => ({ ...e, state: [await read.get(e.version)!] })));
+  });
+}
+
+/** `client.reduce()` over the account's source, as the companion calls it. */
+export type ReduceMultisig = (
+  account: string,
+  descriptor: ModuleEventDescriptor,
+  reducer: Reducer<null>,
+  initial: null,
+  options: ReduceOptions<null>,
+) => Reduction<null>;
+
+const ALLOWED: readonly string[] = [
+  "fromVersion",
+  "pollInterval",
+  "batchSize",
+  "maxErrors",
+  "maxBackoff",
+  "maxPollInterval",
+  "retries",
+  "signal",
+  "onError",
+  "onChange",
+] satisfies readonly (keyof MultisigOptions)[];
+
+function replace(state: MultisigState, next: MultisigState): void {
+  delete (state as { timelock?: MultisigTimelock }).timelock;
+  Object.assign(state, next);
+}
+
+/**
+ * `AptosClient.multisig()` without `preview`: the state read at the start
+ * (the head, or the version before `fromVersion`) once `account` resolves,
+ * then one reduction from
+ * the version after, each event replacing the state with the one its source
+ * read at its version.
+ */
+export function startMultisig(
+  reduce: ReduceMultisig,
+  host: { view: ViewAt; head: () => Promise<bigint> },
+  account: () => Promise<string>,
+  options: MultisigOptions = {},
+): Omit<Multisig, "preview"> {
+  const refused = Object.keys(options).find((k) => !ALLOWED.includes(k));
+  if (refused !== undefined) {
+    throw new StreamdError(`Unsupported multisig option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
+  }
+  const { fromVersion, onChange, ...rest } = options;
+  if (fromVersion !== undefined && (typeof fromVersion !== "bigint" || fromVersion < 1n)) {
+    throw new StreamdError("multisig fromVersion must be a bigint version of at least 1");
+  }
+  const state: MultisigState = { address: "", version: 0n, owners: [], threshold: 0n, lastResolved: 0n, nextSequenceNumber: 0n, pending: new Map() };
+  let walk: Reduction<null> | undefined;
+  let stopped = false;
+  const stop = () => {
+    stopped = true;
+    walk?.unsubscribe();
+  };
+  const ready = (async () => {
+    try {
+      const at = fromVersion === undefined ? await host.head() : fromVersion - 1n;
+      const resolved = await account();
+      replace(state, await readMultisig(host.view, resolved, at));
+      if (stopped) throw new StreamdError("multisig was stopped before it was ready");
+      walk = reduce(
+        resolved,
+        MULTISIG_DESCRIPTOR,
+        (s, event) => {
+          replace(state, (event.state as MultisigState[])[0]!);
+          return s;
+        },
+        null,
+        { ...rest, fromVersion: at + 1n, onChange: (_, event: StreamdEvent) => onChange?.(state, event) },
+      );
+      await walk.ready;
+      return state;
+    } catch (err) {
+      stopped = true;
+      throw err;
+    }
+  })();
+  ready.catch(() => {});
+  return {
+    value: state,
+    get: (sequenceNumber) => state.pending.get(sequenceNumber),
+    ready,
+    get active() {
+      return !stopped && (walk === undefined || walk.active);
+    },
+    unsubscribe: stop,
+    [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: stop,
+  } as Omit<Multisig, "preview">;
 }
