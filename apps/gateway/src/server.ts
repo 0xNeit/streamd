@@ -1,14 +1,21 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Server, WebSocketHandler } from "bun";
-import { StreamdError, StreamdNetworkError, redactSecrets } from "@streamd/core";
-import type { EventDescriptor, StreamdClient } from "@streamd/core";
+import { DEFAULT_LIMIT, SharedFetches, StreamdError, StreamdNetworkError, isObject, pageJson, redactSecrets } from "@streamd/core";
+import type { EventAdapter, EventDescriptor, FetchOptions, StreamdClient } from "@streamd/core";
 import { Topics } from "./topics.js";
 import type { Entry, Subscriber, Topic, TopicStatus } from "./topics.js";
-import { parseDescriptor, toJson, toWireError } from "./wire.js";
+import { parseDescriptor, parseFetchOptions, toJson, toWireError } from "./wire.js";
 
 export interface GatewayOptions {
   /** Every topic polls through this client, so its limits and defaults apply. */
   client: StreamdClient;
+  /**
+   * The source of `GatewayAdapter` reads that no topic serves (a start, an
+   * end, an offset, newest first), shared across identical requests within
+   * `pollInterval`. Without it those reads are refused. Its calls do not go
+   * through `client`'s limiter.
+   */
+  adapter?: EventAdapter;
   /** When set, every request must carry it as `Authorization: Bearer` or `access_token`. */
   token?: string;
   /** Browser origins answered with CORS headers and let open WebSockets; `"*"` for any. */
@@ -63,6 +70,7 @@ interface Connection {
 }
 
 const MAX_DESCRIPTOR = 16 * 1024;
+const MAX_BODY = 64 * 1024;
 const encoder = new TextEncoder();
 
 function digest(text: string): Buffer {
@@ -104,6 +112,27 @@ export function descriptorParam(url: URL): EventDescriptor {
   return parseDescriptor(value);
 }
 
+async function readBody(request: Request): Promise<{ descriptor: EventDescriptor; options: FetchOptions }> {
+  const tooLarge = () => new StreamdNetworkError(`Request bodies are limited to ${MAX_BODY} bytes`, 413);
+  if (Number(request.headers.get("content-length") ?? 0) > MAX_BODY) throw tooLarge();
+  const text = await request.text();
+  if (text.length > MAX_BODY) throw tooLarge();
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new StreamdError("The request body must be JSON");
+  }
+  if (!isObject(body)) throw new StreamdError("The request body must be an object");
+  return { descriptor: parseDescriptor(body.descriptor), options: parseFetchOptions(body.options) };
+}
+
+/** A request the topic serves: no start, end, offset or newest-first order. */
+function live(options: FetchOptions): boolean {
+  const { cursor, fromVersion, toVersion, offset, orderBy } = options;
+  return cursor === undefined && fromVersion === undefined && toVersion === undefined && offset === undefined && orderBy !== "desc";
+}
+
 /**
  * The topic and the entries a stream starts with: none at the newest event,
  * or everything after `lastEventId`, which must still be held.
@@ -133,6 +162,9 @@ export function createGateway(options: GatewayOptions): Gateway {
     batchSize: options.batchSize,
     onError: options.onError,
   });
+  const upstream = options.adapter === undefined
+    ? undefined
+    : new SharedFetches(options.adapter).view(options.pollInterval ?? 1000);
   const maxConnections = options.maxConnections ?? 1000;
   const maxQueuedBytes = options.maxQueuedBytes ?? 1024 * 1024;
   const allowed = new Set(options.allowOrigins ?? []);
@@ -278,10 +310,52 @@ export function createGateway(options: GatewayOptions): Gateway {
     },
   };
 
+  /**
+   * A page for `GatewayAdapter`. Topic pages carry `t:<id>` cursors and
+   * upstream pages `u:<cursor>`, so each walk stays on the source it began on.
+   */
+  async function fetchPage(descriptor: EventDescriptor, options: FetchOptions): Promise<Response> {
+    const { cursor } = options;
+    if (live(options)) {
+      const topic = topics.open(descriptor);
+      topics.touch(topic);
+      return json({ events: [], nextCursor: `t:${topic.id(topic.seq)}`, hasMore: false });
+    }
+    if (cursor?.startsWith("t:")) {
+      const topic = topics.get(descriptor);
+      const entries = topic?.after(cursor.slice(2));
+      if (topic === undefined || entries === undefined) {
+        throw new StreamdNetworkError("This topic cursor is no longer held; start the walk again", 410);
+      }
+      topics.touch(topic);
+      const page = entries.slice(0, options.limit ?? DEFAULT_LIMIT);
+      const next = page.length === 0 ? cursor : `t:${topic.id(page.at(-1)!.seq)}`;
+      const body = `{"events":[${page.map((e) => e.line).join(",")}],"nextCursor":${JSON.stringify(next)},"hasMore":${entries.length > page.length}}`;
+      return new Response(body, { headers: { "content-type": "application/json" } });
+    }
+    if (cursor !== undefined && !cursor.startsWith("u:")) throw new StreamdError("Not a gateway cursor");
+    if (upstream === undefined) throw new StreamdError("This gateway serves live topics only");
+    const page = await upstream.fetchEvents(descriptor, { ...options, cursor: cursor?.slice(2) });
+    if (page.nextCursor !== undefined) page.nextCursor = `u:${page.nextCursor}`;
+    return json(pageJson(page));
+  }
+
+  async function version(request: Request, method: "getHeadVersion" | "getEarliestVersion"): Promise<Response> {
+    const { descriptor } = await readBody(request);
+    const read = options.adapter?.[method]?.bind(options.adapter);
+    if (read === undefined) throw new StreamdError(`This gateway's source has no ${method}`);
+    return json({ version: await read(descriptor) });
+  }
+
   function route(request: Request, url: URL, server?: Server<SocketData>): Response | undefined | Promise<Response> {
     if (url.pathname === "/v1/events" && request.method === "GET") return events(request, url);
     if (url.pathname === "/v1/ws" && request.method === "GET") return upgrade(request, url, server);
     if (url.pathname === "/v1/status" && request.method === "GET") return json(status());
+    if (request.method === "POST") {
+      if (url.pathname === "/v1/fetch") return readBody(request).then(({ descriptor, options }) => fetchPage(descriptor, options));
+      if (url.pathname === "/v1/head") return version(request, "getHeadVersion");
+      if (url.pathname === "/v1/earliest") return version(request, "getEarliestVersion");
+    }
     return json({ error: { name: "Error", message: "Not found" } }, 404);
   }
 
