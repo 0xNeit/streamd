@@ -93,7 +93,7 @@ async function blockAt(
  * fails the same way every time, so it is never retried. A Retry-After hint
  * replaces the exponential wait, under the same cap.
  */
-async function withRetries<T>(
+export async function withRetries<T>(
   call: () => Promise<T>,
   retries: number,
   signal: AbortSignal | undefined,
