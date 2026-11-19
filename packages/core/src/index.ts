@@ -12,7 +12,7 @@ export { MemoryAdapter } from "./adapters/memory.js";
 export { recordingAdapter, replayAdapter } from "./adapters/recording.js";
 export { RoutingAdapter } from "./adapters/routing.js";
 export { EventPoller } from "./poller.js";
-export { EventQuery } from "./query.js";
+export { EventQuery, withRetries } from "./query.js";
 export { CursorManager, eventId } from "./cursor.js";
 export { checkAdapter } from "./conformance.js";
 export { compareAdapters } from "./compare.js";

@@ -15,6 +15,7 @@ import { APTOS_BALANCES } from "./balances.js";
 import { expectPreview } from "./expect.js";
 import { explain } from "./explain.js";
 import { FullnodeScanAdapter } from "./fullnode.js";
+import { holdersAt } from "./holders.js";
 import { IndexerAccountAdapter } from "./indexer.js";
 import { provenanceDescriptor, provenanceSource } from "./provenance.js";
 import { governanceSource, startProposals } from "./governance.js";
@@ -27,7 +28,7 @@ import { swapDescriptor, swapSource } from "./swaps.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
-import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, PackageUpgrade, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -399,6 +400,40 @@ export class AptosClient extends StreamdClient {
     if (typeof adapter.view !== "function") throw new StreamdError("balanceAt needs an adapter that implements view");
     const owner = this.accountOf(address)!;
     return APTOS_BALANCES.read(adapter, await owner(), key!, version);
+  }
+
+  /**
+   * Every fungible store holding `asset` (a metadata address) at `version`,
+   * with its owner and exact balance, folded backward from the Aptos Indexer:
+   * the asset's current store balances, then each deposit and withdraw after
+   * `version` undone. The total is checked against
+   * `0x1::fungible_asset::supply` at `version` unless `verify` is `"none"`,
+   * and `verify: "stores"` also reads every holder's balance there, so a
+   * fold that does not hold rejects rather than resolving. APT and
+   * coin-paired assets are refused, and a dispatchable asset needs
+   * `verify: "stores"`. Costs about one Indexer request per 100 stores and
+   * per 100 activity rows after `version`, plus the views; every request goes
+   * through the client's limiter and `requestTimeout`, retried under
+   * `retries` and capped by `maxRequests`. The views at `version` need it
+   * inside the fullnode's window, or an `ArchiveFallbackAdapter`.
+   */
+  async holdersAt(asset: string, version: bigint, options: HoldersAtOptions = {}): Promise<HolderSnapshot> {
+    const indexer = options?.indexer;
+    const methods = ["getFungibleAssetVersion", "listFungibleStores", "getFungibleStores", "listFungibleActivities"] as const;
+    if (indexer !== undefined && methods.some((method) => typeof (indexer as Partial<FungibleAssetIndexer>)?.[method] !== "function")) {
+      throw new StreamdError(`indexer must implement ${methods.join(", ")}`);
+    }
+    const signal = options?.signal;
+    return holdersAt(
+      {
+        indexer: indexer ?? new IndexerAccountAdapter(this.aptos),
+        adapter: this.adapter,
+        run: (task) => this.limiter.run(task, signal, signal),
+      },
+      asset,
+      version,
+      options,
+    );
   }
 
   /**

@@ -12,6 +12,7 @@ import { readLedgerInfo, toStreamdEvents, type TransactionWithEvents } from "./f
 import { DEFAULT_LIMIT, isObject, parseCursor, requireAddress } from "@streamd/core";
 
 const PROCESSOR = "account_transactions_processor";
+const FUNGIBLE_PROCESSOR = "fungible_asset_processor";
 const DEFAULT_MAX_SCAN = 100;
 /** Rows per `account_transactions` request. */
 const INDEXER_PAGE = 100;
@@ -36,6 +37,59 @@ const TRANSACTIONS_DESC_QUERY = `query AccountTransactionsDesc($address: String!
   ) { transaction_version }
 }`;
 
+const STORE_FIELDS = "storage_id owner_address amount last_transaction_version";
+
+const STORES_QUERY = `query FungibleStores($asset: String!, $after: String!, $limit: Int!) {
+  current_fungible_asset_balances(
+    where: { asset_type: { _eq: $asset }, storage_id: { _gt: $after } }
+    order_by: { storage_id: asc }
+    limit: $limit
+  ) { ${STORE_FIELDS} }
+}`;
+
+const STORES_BY_ID_QUERY = `query FungibleStoresById($asset: String!, $stores: [String!]!) {
+  current_fungible_asset_balances(
+    where: { asset_type: { _eq: $asset }, storage_id: { _in: $stores } }
+    order_by: { storage_id: asc }
+  ) { ${STORE_FIELDS} }
+}`;
+
+const ACTIVITIES_QUERY = `query FungibleActivities($asset: String!, $from: bigint!, $to: bigint!, $limit: Int!, $offset: Int!) {
+  fungible_asset_activities(
+    where: { asset_type: { _eq: $asset }, transaction_version: { _gte: $from, _lte: $to } }
+    order_by: [{ transaction_version: asc }, { event_index: asc }]
+    limit: $limit
+    offset: $offset
+  ) { transaction_version event_index storage_id owner_address amount type is_transaction_success is_gas_fee }
+}`;
+
+/** One store's current balance of one asset, as the Indexer holds it. */
+export interface FungibleStoreRow {
+  /** Long form. */
+  store: string;
+  /** Long form. */
+  owner: string;
+  amount: bigint;
+  /** The newest version this row reflects. */
+  lastVersion: bigint;
+}
+
+/** One `fungible_asset_activities` row: a deposit, withdraw, gas fee or other store change. */
+export interface FungibleActivityRow {
+  version: bigint;
+  eventIndex: number;
+  /** Long form. */
+  store: string;
+  /** Long form. */
+  owner: string;
+  /** The event type as the Indexer names it. */
+  type: string;
+  /** Base units; 0 when the row carries none. */
+  amount: bigint;
+  success: boolean;
+  gasFee: boolean;
+}
+
 export interface IndexerAccountAdapterOptions {
   /** GraphQL endpoint (default: the Indexer of the `Aptos` instance's network). */
   indexerUrl?: string;
@@ -47,7 +101,7 @@ export interface IndexerAccountAdapterOptions {
   maxScan?: number;
 }
 
-/** A ledger version as the Indexer (number) or fullnode (decimal string) sends it. */
+/** A non-negative integer as the Indexer (number) or fullnode (decimal string) sends it; an unsafe number is refused. */
 function toVersion(value: unknown): bigint | undefined {
   if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0) return BigInt(value);
   if (typeof value === "string" && /^\d+$/.test(value)) return BigInt(value);
@@ -70,6 +124,83 @@ function resolveUrl(aptos: Aptos, indexerUrl: unknown): string {
     if (/^https?:$/.test(new URL(url).protocol)) return url;
   } catch {}
   throw new StreamdError("indexerUrl must be an http(s) URL");
+}
+
+/**
+ * Keeps an integer token's source text, since the Indexer sends amounts as
+ * JSON numbers and a double holds only 53 bits. Runtimes without source text
+ * access leave the number, which `toVersion` refuses when it is not safe.
+ */
+function keepIntegers(_key: string, value: unknown, context?: { source?: string }): unknown {
+  if (typeof value === "number" && typeof context?.source === "string" && /^\d+$/.test(context.source)) return context.source;
+  return value;
+}
+
+/** Not retried: the runtime, not the reply, is what cannot read the amount. */
+function requireExact(value: unknown): void {
+  if (typeof value === "number" && Number.isInteger(value) && !Number.isSafeInteger(value)) {
+    throw new StreamdError("This runtime's JSON.parse gives no source text, so an Indexer amount above 2^53 cannot be read exactly");
+  }
+}
+
+function malformed(table: string): StreamdNetworkError {
+  return new StreamdNetworkError(`Indexer returned a malformed ${table} row`);
+}
+
+function toStoreRow(row: unknown): FungibleStoreRow {
+  if (!isObject(row)) throw malformed("current_fungible_asset_balances");
+  requireExact(row.amount);
+  const amount = toVersion(row.amount);
+  const lastVersion = toVersion(row.last_transaction_version);
+  if (amount === undefined || lastVersion === undefined) throw malformed("current_fungible_asset_balances");
+  return { store: rowAddress(row.storage_id, "current_fungible_asset_balances"), owner: rowAddress(row.owner_address, "current_fungible_asset_balances"), amount, lastVersion };
+}
+
+function toActivityRow(row: unknown): FungibleActivityRow {
+  const table = "fungible_asset_activities";
+  if (!isObject(row)) throw malformed(table);
+  requireExact(row.amount);
+  const version = toVersion(row.transaction_version);
+  const amount = row.amount === null || row.amount === undefined ? 0n : toVersion(row.amount);
+  const { type, is_transaction_success: success, is_gas_fee: gasFee } = row;
+  // `keepIntegers` leaves a non-negative index as its source text.
+  const eventIndex = typeof row.event_index === "string" ? Number(row.event_index) : row.event_index;
+  if (
+    version === undefined ||
+    amount === undefined ||
+    !Number.isSafeInteger(eventIndex) ||
+    typeof type !== "string" ||
+    typeof success !== "boolean" ||
+    typeof gasFee !== "boolean"
+  ) {
+    throw malformed(table);
+  }
+  return {
+    version,
+    eventIndex: eventIndex as number,
+    store: rowAddress(row.storage_id, table),
+    owner: rowAddress(row.owner_address, table),
+    type,
+    amount,
+    success,
+    gasFee,
+  };
+}
+
+function rowAddress(value: unknown, table: string): string {
+  if (typeof value !== "string") throw malformed(table);
+  try {
+    return requireAddress(value);
+  } catch {
+    throw malformed(table);
+  }
+}
+
+function requireRange(limit: number, offset = 0): void {
+  if (!Number.isSafeInteger(limit) || limit < 1 || limit > INDEXER_PAGE) {
+    throw new StreamdError(`limit must be an integer from 1 to ${INDEXER_PAGE}`);
+  }
+  if (!Number.isSafeInteger(offset) || offset < 0) throw new StreamdError("offset must be a non-negative integer");
 }
 
 /** Checks the fields `toStreamdEvents` reads, so a malformed transaction is refused rather than mapped. */
@@ -295,12 +426,96 @@ export class IndexerAccountAdapter implements EventAdapter {
    * through, whatever the descriptor. Above it, listings are incomplete.
    */
   async getHeadVersion(): Promise<bigint> {
-    const data = await this.query(INDEXED_QUERY, { processor: PROCESSOR });
+    return this.processedVersion(PROCESSOR);
+  }
+
+  /**
+   * The newest version the Indexer has processed fungible asset balances and
+   * activities through. Rows can run ahead of it, but above it they are not
+   * known to be complete.
+   */
+  async getFungibleAssetVersion(): Promise<bigint> {
+    return this.processedVersion(FUNGIBLE_PROCESSOR);
+  }
+
+  /** Up to `limit` (1 to 100) of `asset`'s current stores, by `storage_id` above `after`. */
+  async listFungibleStores(asset: string, after: string | undefined, limit: number): Promise<FungibleStoreRow[]> {
+    const metadata = requireAddress(asset);
+    const from = after === undefined ? "" : requireAddress(after);
+    requireRange(limit);
+    const data = await this.query(STORES_QUERY, { asset: metadata, after: from, limit });
+    const rows = data.current_fungible_asset_balances;
+    if (!Array.isArray(rows) || rows.length > limit) throw malformed("current_fungible_asset_balances");
+    let prev = from;
+    return rows.map((row) => {
+      const parsed = toStoreRow(row);
+      if (parsed.store <= prev) throw malformed("current_fungible_asset_balances");
+      prev = parsed.store;
+      return parsed;
+    });
+  }
+
+  /** The current rows of the named stores (at most 100) that hold `asset`; a store without one is left out. */
+  async getFungibleStores(asset: string, stores: readonly string[]): Promise<FungibleStoreRow[]> {
+    const metadata = requireAddress(asset);
+    if (!Array.isArray(stores) || stores.length > INDEXER_PAGE) {
+      throw new StreamdError(`stores must be a list of at most ${INDEXER_PAGE} addresses`);
+    }
+    const wanted = new Set(stores.map((store) => requireAddress(store)));
+    if (wanted.size === 0) return [];
+    const data = await this.query(STORES_BY_ID_QUERY, { asset: metadata, stores: [...wanted] });
+    const rows = data.current_fungible_asset_balances;
+    if (!Array.isArray(rows) || rows.length > wanted.size) throw malformed("current_fungible_asset_balances");
+    const parsed = rows.map(toStoreRow);
+    if (parsed.some((row) => !wanted.delete(row.store))) throw malformed("current_fungible_asset_balances");
+    return parsed;
+  }
+
+  /**
+   * Up to `limit` (1 to 100) of `asset`'s activity rows in `[fromVersion,
+   * toVersion]`, skipping `offset`, ordered by version and event index.
+   */
+  async listFungibleActivities(
+    asset: string,
+    fromVersion: bigint,
+    toVersion: bigint,
+    limit: number,
+    offset = 0,
+  ): Promise<FungibleActivityRow[]> {
+    const metadata = requireAddress(asset);
+    if (typeof fromVersion !== "bigint" || typeof toVersion !== "bigint" || fromVersion < 0n || toVersion < fromVersion) {
+      throw new StreamdError("listFungibleActivities needs 0 <= fromVersion <= toVersion, as bigints");
+    }
+    requireRange(limit, offset);
+    const data = await this.query(ACTIVITIES_QUERY, {
+      asset: metadata,
+      from: fromVersion.toString(),
+      to: toVersion.toString(),
+      limit,
+      offset,
+    });
+    const rows = data.fungible_asset_activities;
+    if (!Array.isArray(rows) || rows.length > limit) throw malformed("fungible_asset_activities");
+    let prev: FungibleActivityRow | undefined;
+    return rows.map((row) => {
+      const parsed = toActivityRow(row);
+      const ordered =
+        prev === undefined ||
+        parsed.version > prev.version ||
+        (parsed.version === prev.version && parsed.eventIndex > prev.eventIndex);
+      if (!ordered || parsed.version < fromVersion || parsed.version > toVersion) throw malformed("fungible_asset_activities");
+      prev = parsed;
+      return parsed;
+    });
+  }
+
+  private async processedVersion(processor: string): Promise<bigint> {
+    const data = await this.query(INDEXED_QUERY, { processor });
     const rows = data.processor_status;
     const row = Array.isArray(rows) && rows.length === 1 && isObject(rows[0]) ? rows[0] : undefined;
     const version = toVersion(row?.last_success_version);
     if (version === undefined) {
-      throw new StreamdNetworkError(`Indexer reported no processed version for ${PROCESSOR}`);
+      throw new StreamdNetworkError(`Indexer reported no processed version for ${processor}`);
     }
     return version;
   }
@@ -351,7 +566,7 @@ export class IndexerAccountAdapter implements EventAdapter {
     }
     let body: unknown;
     try {
-      body = await response.json();
+      body = JSON.parse(await response.text(), keepIntegers);
     } catch {
       // A gateway's error page sent as 200 is a passing fault, so it is retried like one.
       throw new StreamdNetworkError(

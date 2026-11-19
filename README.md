@@ -2562,6 +2562,65 @@ const usdcThen = await streamd.balanceAt("alice.apt", usdc, 8038000000n);
 - **Aptos only.** Sui reads a balance only at its latest state, so `SuiClient` has no
   `balanceAt`.
 
+### Token holders at a version
+
+`holdersAt(asset, version, options?)` lists every fungible store holding one asset at a past
+version, with its owner and exact balance, and checks the result against the chain there:
+
+```ts
+const sol = "0x0d829a23c3a3760e2fed60ca24d83cee8943f7c61859608ae0726fdb2e4f2784";
+const snapshot = await streamd.holdersAt(sol, 8120000000n);
+// { asset, version, indexedVersion, holders: [{ store, owner, balance }, ...], total, supply,
+//   verified: "supply", dispatchable: false, requests }
+```
+
+- **Source.** No view lists an asset's holders, and `Deposit` and `Withdraw` name only a store,
+  so the fold runs backward over the Aptos Indexer: every row of
+  `current_fungible_asset_balances` for the asset, then each `fungible_asset_activities` row
+  after `version` undone (a deposit subtracted, a withdraw added back), up to the newest
+  version the fungible asset processor has finished. A store's row is undone only through its
+  own `last_transaction_version`, so a store that changes while the walk runs stays exact. A
+  store seen only in activities is looked up: one deleted before the walk folds from zero, and
+  one created during it is left out.
+- **Checks.** `verify` is `"supply"` by default: the total must equal
+  `0x1::fungible_asset::supply` at `version`, and an asset with no tracked supply rejects.
+  `"stores"` also reads every holder's `0x1::fungible_asset::balance` at `version`, one view
+  each, and rejects up front when `maxRequests` cannot cover them. A store the fold puts at 0
+  is covered only by the supply check, so not at all for an asset with no tracked supply.
+  `"none"` checks nothing and trusts the Indexer. A failed check, a balance that folds below zero, and an
+  activity type that moves an amount the fold does not know reject with a `StreamdError`
+  rather than resolving a wrong list.
+- **Refused.** APT, since gas fees and storage refunds move it in ways the fold was never
+  checked against; an asset paired with a coin (`0x1::coin::paired_coin`), since balances still
+  in a `CoinStore` are not in fungible stores; coin types and legacy tokens. A dispatchable
+  asset (`is_asset_type_dispatchable`) needs `verify: "stores"`, since its hooks are not proven
+  to move balance only through the events the Indexer records, and the snapshot carries
+  `dispatchable: true`.
+- **Owner.** `owner` is the Indexer's: the current owner of a store that still exists, or the
+  owner on its first activity row after `version` for one since deleted. It is not read at
+  `version`, so a secondary store whose object changed hands without moving balance reports
+  its later owner.
+- **Cost.** About one Indexer request per 100 stores and one per 100 activity rows after
+  `version`, plus two views at the processed version, the supply view and, under `"stores"`,
+  one view per holder. Every request goes through the client's limiter (`maxRequestsPerSecond`,
+  `requestTimeout`), retries under `retries` with any `Retry-After`, and counts toward
+  `maxRequests` (default 1000), past which the call rejects. The anonymous Indexer and
+  fullnode share a budget of roughly 40 requests per 5 minutes per IP, so a busy asset over a
+  wide window needs an `indexer` built with an API key,
+  `new IndexerAccountAdapter(aptos, { apiKey })`, and a fullnode key.
+- **Window.** The views at `version` need it inside the fullnode's window, or an
+  `ArchiveFallbackAdapter`; `verify: "none"` reads no view at `version`. A version the
+  Indexer has not processed yet is refused.
+- **Measured.** For SOL (above) 200,000 versions back, the snapshot made 43 requests over
+  about 3 minutes anonymously: 55 current stores, 517 activity rows, 31 holders, the total
+  equal to the supply at `version`, and every holder equal to its balance view there.
+- **Not checked on mainnet:** dispatchable assets, stores deleted after `version`, frozen
+  transfers, and mints or burns inside the window. The supply check covers the total in each
+  case, and `"stores"` every holder.
+- **Large amounts.** The Indexer sends amounts as JSON numbers. They are read exactly where
+  `JSON.parse` gives a reviver the source text (Bun, Node 21 and later, current browsers);
+  elsewhere an amount above 2^53 rejects with a `StreamdError` rather than being rounded.
+
 ## Oracle prices
 
 `prices(feedId, callback, options?)` follows Pyth price updates for one feed or a list, and

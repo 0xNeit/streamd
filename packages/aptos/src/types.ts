@@ -695,3 +695,63 @@ export interface FundFlowGraph {
   /** Adapter calls made. */
   requests: number;
 }
+
+/** The Indexer reads `AptosClient.holdersAt` folds; `IndexerAccountAdapter` implements them. */
+export type FungibleAssetIndexer = Pick<
+  IndexerAccountAdapter,
+  "getFungibleAssetVersion" | "listFungibleStores" | "getFungibleStores" | "listFungibleActivities"
+>;
+
+/** How much of a `HolderSnapshot` was checked against the chain at its version. */
+export type HolderVerification = "none" | "supply" | "stores";
+
+/** Options for `AptosClient.holdersAt`. */
+export interface HoldersAtOptions extends Pick<EventFilter, "retries" | "signal"> {
+  /**
+   * The Indexer to fold (default: an `IndexerAccountAdapter` over the
+   * client's `aptos`, anonymous). Pass one built with an `apiKey` for more
+   * than the anonymous rate.
+   */
+  indexer?: FungibleAssetIndexer;
+  /**
+   * `"supply"` (the default) checks the total against
+   * `0x1::fungible_asset::supply` at the version; `"stores"` also reads every
+   * holder's `0x1::fungible_asset::balance` there (a store folded to 0 is
+   * covered only by the supply check, so not at all when supply is
+   * untracked); `"none"` checks nothing.
+   */
+  verify?: HolderVerification;
+  /** Most requests the snapshot may make, Indexer reads and views alike, retries included; default 1000. */
+  maxRequests?: number;
+}
+
+/** One store holding the asset at the snapshot's version. */
+export interface FungibleHolder {
+  /** The fungible store's address, long form. */
+  store: string;
+  /** The store's owner as the Indexer reports it, long form; not read at the version. */
+  owner: string;
+  /** Base units. */
+  balance: bigint;
+}
+
+/** What `AptosClient.holdersAt` resolves with. */
+export interface HolderSnapshot {
+  /** The metadata address, long form. */
+  asset: string;
+  version: bigint;
+  /** The Indexer version the fold started from: every change in `(version, indexedVersion]` was undone. */
+  indexedVersion: bigint;
+  /** Every store with a positive balance, largest first, ties by store. */
+  holders: FungibleHolder[];
+  /** The sum of `holders`' balances. */
+  total: bigint;
+  /** `0x1::fungible_asset::supply` at the version, when it was checked. */
+  supply?: bigint;
+  /** The checks that ran and passed. */
+  verified: HolderVerification;
+  /** Whether the asset has custom deposit and withdraw hooks. */
+  dispatchable: boolean;
+  /** Requests made. */
+  requests: number;
+}
