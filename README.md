@@ -2490,8 +2490,9 @@ for (const p of book.value.values()) {
   run at most four at a time outside `maxConcurrentRequests` and `maxRequestsPerSecond`, as the
   scan's do: about two views plus one per reserve held, per account, per interval. An account
   whose read fails goes to `onError` and is read again at the next head; when every read fails
-  the poll retries with backoff, and once it gives up after `maxErrors` the whole monitor stops,
-  so a stale health is never shown as live. A read replaces a position only when it is not older
+  the poll retries with backoff, and once it gives up after `maxErrors` the whole monitor stops
+  rather than show stale health as live. One account whose reads keep failing is reported each
+  interval and keeps its last read; its `version` says when that was. A read replaces a position only when it is not older
   than the one held, so a scan that lags the head never overwrites a newer read.
 - **Callbacks.** `onChange(position, event?)` fires after `ready` when a read changes any figure
   (the event is absent for a head read); `onCross(position, event?)` when `below` changes between
