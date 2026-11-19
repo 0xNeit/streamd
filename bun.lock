@@ -10,6 +10,13 @@
         "typescript": "^5.5.0",
       },
     },
+    "apps/gateway": {
+      "name": "@streamd/gateway",
+      "version": "0.1.0",
+      "dependencies": {
+        "@streamd/core": "workspace:*",
+      },
+    },
     "packages/aptos": {
       "name": "@streamd/aptos",
       "version": "0.1.0",
@@ -32,6 +39,7 @@
       "dependencies": {
         "@streamd/aptos": "workspace:*",
         "@streamd/core": "workspace:*",
+        "@streamd/gateway": "workspace:*",
         "@streamd/store-postgres": "workspace:*",
         "@streamd/store-sqlite": "workspace:*",
         "@streamd/testing": "workspace:*",
@@ -210,6 +218,8 @@
     "@streamd/cli": ["@streamd/cli@workspace:packages/cli"],
 
     "@streamd/core": ["@streamd/core@workspace:packages/core"],
+
+    "@streamd/gateway": ["@streamd/gateway@workspace:apps/gateway"],
 
     "@streamd/react": ["@streamd/react@workspace:packages/react"],
 

@@ -63,6 +63,8 @@ TypeScript types:
 - `@streamd/receiver` (`packages/receiver`) - receive `streamd forward` webhooks: the signature
   checked, the events parsed and repeats dropped. See
   [Forward events to a webhook](#forward-events-to-a-webhook).
+- `@streamd/gateway` (`apps/gateway`) - the gateway behind `streamd serve`, and
+  `GatewayAdapter`, which reads through one. See [Serve a gateway](#serve-a-gateway).
 - `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents`, `useSubmitTransaction` and
   `useTransfers` take an `AptosClient`. See [React hooks](#react-hooks).
@@ -5623,6 +5625,102 @@ measures. The defaults cost each node about four reads per 10 seconds, and node 
 per other node, within the anonymous Aptos fullnode limit for a few nodes. Exit codes: `0` on Ctrl-C, `SIGTERM`, or after `--limit` rounds; `1` when
 `--listen` cannot bind or stdout fails; `2` for invalid arguments. A node that is down never ends
 the command.
+
+### Serve a gateway
+
+`streamd serve` runs a gateway that many clients follow at once. It polls each descriptor its
+clients ask for once, from the head, and streams every event to all of them as Server-Sent
+Events or WebSocket messages. Browsers get live events without an API key or a node of their
+own, and a hundred tabs on one event type cost the node one walk.
+
+```sh
+# loopback only, port 8787
+bun x streamd serve --network mainnet
+
+# reachable from elsewhere: a token is required
+STREAMD_GATEWAY_TOKEN=... bun x streamd serve --listen 0.0.0.0:8787 --allow-origin https://app.example
+```
+
+It needs Bun, for its WebSocket server; under Node it exits 1. It takes the endpoint flags of
+the commands that read events (`--network`, `--node-url`, `--api-key`, `--archive`, `--stats`,
+`--chain sui`), `--poll-interval` for every topic, and these:
+
+| Flag | Default | |
+| --- | --- | --- |
+| `--listen [host:]port` | `127.0.0.1:8787` | any host but loopback needs a token |
+| `--token` or `STREAMD_GATEWAY_TOKEN` | none | required on every request as `Authorization: Bearer <t>`, or `?access_token=<t>` where a browser cannot set headers (`EventSource`, `WebSocket`); query strings can end up in logs |
+| `--allow-origin <origin>` | none | browser origins sent CORS headers and allowed to open WebSockets, repeatable, or `*` |
+| `--max-topics <n>` | 32 | descriptors followed at once; a new one past it answers 503 |
+| `--max-connections <n>` | 1000 | open SSE and WebSocket streams; past it, 503 |
+
+Clients name the descriptor as JSON in a `descriptor` query parameter, with `creationNumber`
+as a decimal string:
+
+```sh
+curl -N "http://127.0.0.1:8787/v1/events?descriptor=%7B%22kind%22%3A%22module%22%2C%22eventType%22%3A%220x1%3A%3Atransaction_fee%3A%3AFeeStatement%22%7D"
+# id: 3f2a91c0:0
+#
+# id: 3f2a91c0:1
+# data: {"type":"0x1::transaction_fee::FeeStatement","data":{...},"version":"4205513021",...}
+```
+
+```ts
+import { parseEvent } from "@streamd/core";
+
+const descriptor = encodeURIComponent(JSON.stringify({ kind: "module", eventType: "0x1::coin::CoinDeposit" }));
+
+const source = new EventSource(`http://127.0.0.1:8787/v1/events?descriptor=${descriptor}`);
+source.onmessage = (message) => console.log(parseEvent(message.data));
+source.addEventListener("end", (message) => source.close()); // the gateway gave up on this descriptor
+
+const socket = new WebSocket(`ws://127.0.0.1:8787/v1/ws?descriptor=${descriptor}`);
+socket.onmessage = (message) => {
+  const body = JSON.parse(message.data);
+  if (body.end !== undefined) return; // the gateway gave up; a 1011 close follows
+  if (body.event === undefined) return; // the opening { id }: where the socket starts
+  console.log(body.id, parseEvent(JSON.stringify(body.event)));
+};
+```
+
+**Resuming.** Each event's id is `<epoch>:<seq>`, numbered by the gateway as its topic receives
+events. A stream opens with the id it starts after (an SSE `id:` with no data, or a WebSocket
+`{ "id" }` frame), so a client that has seen no event yet can still resume. It starts at the
+newest event, or, given `Last-Event-ID` (which `EventSource`
+sends by itself on reconnect) or `?lastEventId=` (for WebSockets), right after that id, with no
+gap and no repeat. Each topic keeps its last 1000 events, and lingers 60 seconds after its last
+client leaves. A resume point the topic no longer holds, or one from before the gateway
+restarted, answers 410: start the stream again, and read what was missed by version with a
+query.
+
+**Slow clients.** A stream more than 1 MiB behind is dropped (WebSocket code 1013), its queue
+discarded, rather than buffered without bound. Its client reconnects and resumes from its last id while the topic still
+holds it.
+
+**`GatewayAdapter`.** In `@streamd/gateway`, an `EventAdapter` over the gateway's
+`POST /v1/fetch`, `/v1/head` and `/v1/earliest`, so a `StreamdClient` in the browser reads
+through it:
+
+```ts
+import { StreamdClient } from "@streamd/core";
+import { GatewayAdapter } from "@streamd/gateway";
+
+const streamd = new StreamdClient({ adapter: new GatewayAdapter({ url: "http://127.0.0.1:8787", token }) });
+streamd.on(descriptor, (event) => console.log(event));                    // the shared topic
+const recent = await streamd.getEvents(descriptor, { fromVersion: -1000n }); // the gateway's node
+```
+
+A walk with no start follows the gateway's topic from its newest event, as its streams do,
+whatever the source would do with no start. A walk with a start, an end, an offset or
+newest-first order reads the gateway's node, identical requests within a poll interval sharing
+one read, at most 4 in flight and each abandoned after 30 seconds, and keeps following it on
+that node's cursors: backfill-then-follow walks are not shared. Requests must be
+`application/json` (415 otherwise), so a page on another origin cannot send one without the
+CORS preflight `--allow-origin` governs. With no token, the gateway answers only requests whose
+`Host` is loopback, which refuses a page that rebinds its own name to 127.0.0.1. Block lookups, `fromTime`, transaction lookups, simulations and views are not served.
+`where` and `decode` run in the client as usual.
+
+`GET /v1/status` lists each topic (descriptor, clients, last id, events held) and the open
+stream count. Webhook subscriptions are not served yet.
 
 ### Store events
 
