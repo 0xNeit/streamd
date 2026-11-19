@@ -21,7 +21,7 @@ import { IndexerAccountAdapter } from "./indexer.js";
 import { provenanceDescriptor, provenanceSource } from "./provenance.js";
 import { governanceSource, startProposals } from "./governance.js";
 import { MULTISIG_DESCRIPTOR, multisigSource, previewMultisig, startMultisig } from "./multisig.js";
-import { AAVE_DESCRIPTOR, positionSource, startPositions } from "./lending.js";
+import { AAVE_DESCRIPTOR, positionSource, refreshSource, startPositions } from "./lending.js";
 import { startStakePools } from "./staking.js";
 import { addressOrName, primaryName, resolveName } from "./names.js";
 import { PYTH_DESCRIPTOR, priceSource, pythPriceReader, requireFeedId } from "./prices.js";
@@ -32,7 +32,7 @@ import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import { trace } from "./trace.js";
 import { UPGRADE_DESCRIPTOR, moduleReader, upgradeSource } from "./upgrades.js";
 import { assetPricer, toAssetValue, type Pricer } from "./values.js";
-import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, LendingProtocol, Multisig, MultisigOptions, MultisigPreviewOptions, PackageUpgrade, Positions, PositionsOptions, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
+import type { Activity, ActivityFilter, FundFlowGraph, TraceOptions, ActivityListenerOptions, Balances, BalancesOptions, EventExpectation, EventsAtOptions, EventsOfOptions, ExpectEventsOptions, ExplainOptions, ExpectPreviewOptions, FungibleAssetIndexer, HolderSnapshot, HoldersAtOptions, LendingPosition, LendingProtocol, Multisig, MultisigOptions, MultisigPreviewOptions, PackageUpgrade, Positions, PositionsOptions, PreviewEventsOptions, Price, PriceListenerOptions, Provenance, ProvenanceFilter, ProvenanceListenerOptions, TransactionLister, Proposals, ProposalsOptions, Sale, SaleFilter, SaleListenerOptions, StakePools, StakePoolsOptions, Swap, SwapFilter, SwapListenerOptions, TransactionExplanation, Transfer, TransferFilter, TransferListenerOptions } from "./types.js";
 
 /** `StreamdClient`'s config, with the Aptos SDK the Aptos methods read through; `adapter` defaults to a fullnode over it. */
 export type AptosClientConfig = Omit<StreamdConfig, "adapter"> & {
@@ -344,6 +344,16 @@ export class AptosClient extends StreamdClient {
       view: (request: ViewRequest, version: bigint) => this.limiter.run(() => adapter.view!(request, version)),
       head: () => this.limiter.run(() => adapter.getHeadVersion!(AAVE_DESCRIPTOR)),
       track: this.reduceHost.track,
+      onError: this.onError,
+      refresh: (tracked: () => Iterable<string>, deliver: (read: LendingPosition[]) => void, opts: object) =>
+        this.subscribe(
+          AAVE_DESCRIPTOR,
+          { batch: (events) => deliver(events.map((e) => e.data as LendingPosition)) },
+          opts,
+          undefined,
+          undefined,
+          (source) => refreshSource(source, tracked, this.requestTimeout),
+        ),
     };
     return startPositions(
       (only, d, r, i, o) => {

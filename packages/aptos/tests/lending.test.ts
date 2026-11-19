@@ -168,7 +168,7 @@ describe("positions", () => {
     const { adapter, reads } = aaveAdapter(history);
     const client = testClient({ adapter });
     const changed: string[] = [];
-    const positions = client.positions("aave", { account: ["0xa1", B], fromVersion: 5n, onChange: (p) => changed.push(p.account) });
+    const positions = client.positions("aave", { account: ["0xa1", B], fromVersion: 5n, refreshInterval: 0, onChange: (p) => changed.push(p.account) });
     expect(client.listenerCount()).toBe(0);
     const value = await positions.ready;
     expect(value).toBe(positions.value);
@@ -182,16 +182,16 @@ describe("positions", () => {
   });
 
   it("tracks every account an event names without account, and calls onChange for live events only", async () => {
-    const { adapter, memory } = aaveAdapter(history);
+    const { adapter, memory } = aaveAdapter(history, (_, version) => 2n * WAD + version);
     const client = testClient({ adapter, defaults: { pollInterval: 5 } });
     const changed: [string, bigint][] = [];
-    const positions = client.positions("aave", { fromVersion: 1n, onChange: (p, e) => changed.push([p.account, e!.version]) });
+    const positions = client.positions("aave", { fromVersion: 1n, refreshInterval: 0, onChange: (p, e) => changed.push([p.account, e!.version]) });
     await positions.ready;
     expect([...positions.value.keys()].sort()).toEqual([A, B, C]);
-    memory.push(ev(30, "borrow_logic::Repay", { user: C, repayer: A }));
-    await waitFor(() => changed.length === 1);
-    expect(changed).toEqual([[C, 30n]]);
-    expect(positions.get(C)!.version).toBe(30n);
+    memory.push(ev(30, "borrow_logic::Repay", { user: C, repayer: A }), ev(31, "borrow_logic::Repay", { user: C, repayer: A }));
+    await waitFor(() => changed.length === 2);
+    expect(changed).toEqual([[C, 30n], [C, 31n]]);
+    expect(positions.get(C)!.version).toBe(31n);
     client.destroy();
     expect(positions.active).toBe(false);
   });
@@ -205,6 +205,7 @@ describe("positions", () => {
     const positions = client.positions("aave", {
       account: [A, B],
       threshold: { numerator: 11n, denominator: 10n },
+      refreshInterval: 0,
       onCross: (p) => crossed.push([p.account, p.below]),
       onChange: (p) => changed.push(p.version),
     });
@@ -241,6 +242,79 @@ describe("positions", () => {
     const failed = client.positions("aave", { account: A });
     await expect(failed.ready).rejects.toThrow("503");
     expect(failed.active).toBe(false);
+    client.destroy();
+  });
+});
+
+describe("positions refresh", () => {
+  const other = (version: number) => ev(version, "supply_logic::Supply", { user: long("ff"), on_behalf_of: long("ff") });
+
+  it("rereads tracked positions at the head, so a price move alone is seen and crosses", async () => {
+    let hf = 2n * WAD;
+    const { adapter, memory, reads } = aaveAdapter([other(10)], () => hf);
+    const client = testClient({ adapter, defaults: { pollInterval: 5 } });
+    const seen: [bigint, boolean | undefined, boolean][] = [];
+    const positions = client.positions("aave", {
+      account: A,
+      refreshInterval: 10,
+      onChange: (p, e) => seen.push([p.version, p.below, e === undefined]),
+      onCross: (p, e) => seen.push([p.version, p.below, e === undefined]),
+    });
+    await positions.ready;
+    hf = WAD / 2n;
+    memory.push(other(20));
+    await waitFor(() => seen.length === 2);
+    expect(seen).toEqual([[20n, true, true], [20n, true, true]]);
+    expect(reads).toContain("a1@20");
+    positions.unsubscribe();
+    const after = reads.length;
+    memory.push(other(30));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(reads.length).toBe(after);
+    client.destroy();
+  });
+
+  it("keeps a newer head read over an older event read that lands after it", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { adapter, memory } = aaveAdapter([other(10)], (_, version) => 2n * WAD + version);
+    const view = adapter.view;
+    const slow = Object.assign(adapter, {
+      view: async (request: ViewRequest, version: bigint) => (version === 40n && (await gate), view(request, version)),
+    });
+    const client = testClient({ adapter: slow, defaults: { pollInterval: 5 } });
+    const changed: bigint[] = [];
+    const positions = client.positions("aave", { account: A, refreshInterval: 10, onChange: (p) => changed.push(p.version) });
+    await positions.ready;
+    memory.push(ev(40, "supply_logic::Withdraw", { user: A }), other(50));
+    await waitFor(() => changed.includes(50n));
+    release();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(positions.get(A)!.version).toBe(50n);
+    expect(changed).toEqual([50n]);
+    client.destroy();
+  });
+
+  it("reads nothing at the head with refreshInterval 0, and reports a failed refresh without stopping", async () => {
+    let fail = false;
+    const { adapter, memory, reads } = aaveAdapter([other(10)], () => (fail ? new StreamdNetworkError("503") : 2n * WAD));
+    const client = testClient({ adapter, defaults: { pollInterval: 5 } });
+    const none = client.positions("aave", { account: A, refreshInterval: 0 });
+    await none.ready;
+    memory.push(other(20));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(reads).toEqual(["a1@10"]);
+    none.unsubscribe();
+    const errors: string[] = [];
+    const failing = client.positions("aave", { account: B, refreshInterval: 10, maxErrors: 100, onError: (e) => errors.push(`${e.message} ${String((e as { cause?: unknown }).cause)}`) });
+    await failing.ready;
+    fail = true;
+    memory.push(other(30));
+    await waitFor(() => errors.length > 0);
+    expect(errors[0]).toContain("503");
+    expect(failing.active).toBe(true);
+    expect(() => client.positions("aave", { refreshInterval: -1 })).toThrow("refreshInterval must be");
+    expect(() => client.positions("aave", { refreshInterval: "1" as never })).toThrow("refreshInterval must be");
     client.destroy();
   });
 });

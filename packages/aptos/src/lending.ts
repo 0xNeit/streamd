@@ -1,5 +1,5 @@
 import { RequestLimiter, StreamdError, markSelfTimed } from "@streamd/core";
-import type { EventAdapter, ModuleEventDescriptor, ReduceOptions, Reducer, Reduction, StreamdEvent, ViewRequest } from "@streamd/core";
+import type { EventAdapter, ModuleEventDescriptor, ReduceOptions, Reducer, Reduction, StreamdEvent, Subscription, ViewRequest } from "@streamd/core";
 import { addr, address, amount, malformed, pageSource } from "./records.js";
 import type { Fields } from "./records.js";
 import { isViewAbort } from "./transfers.js";
@@ -164,6 +164,36 @@ export function positionSource(adapter: EventAdapter, only: ReadonlySet<string> 
   }));
 }
 
+/**
+ * A source whose every fetch reads each `tracked` account at the head, at
+ * most four at a time, and returns the positions as events at that version,
+ * so `EventPoller` supplies the interval, backoff and error budget. A head
+ * not past the last one read returns nothing.
+ */
+export function refreshSource(adapter: EventAdapter, tracked: () => Iterable<string>, requestTimeout?: number): EventAdapter {
+  if (typeof adapter.view !== "function" || typeof adapter.getHeadVersion !== "function") {
+    throw new StreamdError("positions needs an adapter that implements view and getHeadVersion");
+  }
+  const timed = new RequestLimiter(4, Infinity, requestTimeout).wrap(adapter);
+  const view: ViewAt = (request, version) => timed.view!(request, version);
+  let latest = -1n;
+  return markSelfTimed({
+    fetchEvents: async (descriptor) => {
+      const head = await timed.getHeadVersion!(descriptor);
+      // Set only once every read succeeded, so a failed head is read again.
+      if (head <= latest) return { events: [], nextCursor: String(latest), hasMore: false };
+      const read = await Promise.all([...tracked()].map((a) => readAavePosition(view, a, head)));
+      latest = head;
+      return {
+        events: read.map((data, eventIndex) => ({ type: `${AAVE}::position`, data, version: head, sequenceNumber: 0n, eventIndex })),
+        nextCursor: String(head),
+        hasMore: false,
+        throughVersion: head,
+      };
+    },
+  });
+}
+
 /** `client.reduce()` over the scan's source narrowed to `only`, as `positions()` calls it. */
 export type ReducePositions = (
   only: ReadonlySet<string> | undefined,
@@ -176,6 +206,7 @@ export type ReducePositions = (
 const ALLOWED: readonly string[] = [
   "account",
   "threshold",
+  "refreshInterval",
   "fromVersion",
   "pollInterval",
   "batchSize",
@@ -213,6 +244,25 @@ export interface PositionsHost {
   view: ViewAt;
   head: () => Promise<bigint>;
   track: (stop: () => void) => () => void;
+  onError: ((error: Error) => void) | undefined;
+  /** Follows `refreshSource` over `tracked`, delivering each fetch's positions. */
+  refresh: (
+    tracked: () => Iterable<string>,
+    deliver: (positions: LendingPosition[]) => void,
+    options: Pick<PositionsOptions, "maxErrors" | "maxBackoff" | "signal" | "onError"> & { pollInterval: number },
+  ) => Subscription;
+}
+
+/** A position without its version, so two reads of the same figures compare equal. */
+const figures = (p: LendingPosition) =>
+  JSON.stringify({ ...p, version: undefined }, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v));
+
+function checkInterval(interval: unknown): number {
+  if (interval === undefined) return 60_000;
+  if (typeof interval !== "number" || !Number.isFinite(interval) || interval < 0) {
+    throw new StreamdError("refreshInterval must be a number of milliseconds, 0 for none");
+  }
+  return interval;
 }
 
 /**
@@ -227,39 +277,69 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
   if (refused !== undefined) {
     throw new StreamdError(`Unsupported positions option: ${refused} (allowed: ${ALLOWED.join(", ")})`);
   }
-  const { account, threshold: given, fromVersion, onChange, onCross, ...rest } = options;
+  const { account, threshold: given, refreshInterval, fromVersion, onChange, onCross, ...rest } = options;
   const only = accountSet(account);
   const threshold = checkThreshold(given);
+  const interval = checkInterval(refreshInterval);
   if (fromVersion !== undefined && (typeof fromVersion !== "bigint" || fromVersion < 1n)) {
     throw new StreamdError("positions fromVersion must be a bigint version of at least 1");
   }
   const positions = new Map<string, LendingPosition>();
   const sides = new Map<string, boolean>();
 
-  /** Holds `next` unless a newer read is held; returns whether it was held and whether it crossed. */
+  /**
+   * Holds `next` unless a newer read is held; returns whether any figure
+   * changed (a first read included) and whether it crossed the threshold.
+   */
   const apply = (next: LendingPosition): [boolean, boolean] => {
     const held = positions.get(next.account);
     if (held !== undefined && held.version > next.version) return [false, false];
     const below = isBelow(next, threshold);
     const position = below === undefined ? next : { ...next, below };
     positions.set(next.account, position);
-    if (below === undefined) return [true, false];
+    const changed = held === undefined || figures(held) !== figures(position);
+    if (below === undefined) return [changed, false];
     const before = sides.get(next.account);
     sides.set(next.account, below);
-    return [true, before !== undefined && before !== below];
+    return [changed, before !== undefined && before !== below];
   };
 
   let walk: Reduction<null> | undefined;
+  let refresh: Subscription | undefined;
   let stopped = false;
   const stop = () => {
     stopped = true;
     untrack();
     walk?.unsubscribe();
+    refresh?.unsubscribe();
   };
   // Tracked until the reduction exists and tracks itself, so destroy() also
   // stops a start read in flight.
   const untrack = host.track(stop);
   const halted = () => stopped || rest.signal?.aborted === true;
+  const report = (err: Error) => (rest.onError ?? host.onError)?.(err);
+  const startRefresh = () => {
+    const { maxErrors, maxBackoff, signal, onError } = rest;
+    refresh = host.refresh(
+      () => positions.keys(),
+      (read) => {
+        if (walk?.active !== true) return stop();
+        for (const p of read) {
+          const [changed, crossed] = apply(p);
+          if (!changed) continue;
+          const position = positions.get(p.account)!;
+          try {
+            onChange?.(position);
+            if (crossed) onCross?.(position);
+          } catch (err) {
+            report(new StreamdError(`positions handler threw for ${p.account} at ${p.version}`, err));
+          }
+        }
+      },
+      { pollInterval: interval, maxErrors, maxBackoff, signal, onError },
+    );
+  };
+
   let notify: [LendingPosition, boolean][] = [];
   const ready = (async () => {
     try {
@@ -276,8 +356,8 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
         (s, event) => {
           notify = [];
           for (const p of event.state as LendingPosition[]) {
-            const [held, crossed] = apply(p);
-            if (held) notify.push([positions.get(p.account)!, crossed]);
+            const [changed, crossed] = apply(p);
+            if (changed) notify.push([positions.get(p.account)!, crossed]);
           }
           return s;
         },
@@ -295,6 +375,7 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
       );
       untrack();
       await walk.ready;
+      if (interval > 0 && !halted()) startRefresh();
       return positions as ReadonlyMap<string, LendingPosition>;
     } catch (err) {
       stopped = true;
@@ -303,6 +384,7 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
     }
   })();
   ready.catch(() => {});
+
   return {
     value: positions,
     get: (at) => {
