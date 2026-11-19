@@ -1,5 +1,7 @@
 import { RequestLimiter, StreamdError, markSelfTimed } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, ReduceOptions, Reducer, Reduction, StreamdEvent, Subscription } from "@streamd/core";
+import { ECHELON, ECHELON_EVENTS, readEchelonPosition } from "./echelon.js";
+import type { EchelonMarkets } from "./echelon.js";
 import type { ViewAt } from "./multisig.js";
 import { addr, address, amount, malformed, pageSource } from "./records.js";
 import type { Fields } from "./records.js";
@@ -111,14 +113,19 @@ const AAVE_EVENTS: Record<string, readonly string[]> = {
   // An aToken moving between accounts, a liquidator taking the collateral included.
   "events::BalanceTransfer": ["from", "to"],
 };
+
+function scanOf(address: string, events: Record<string, readonly string[]>): ModuleEventDescriptor {
+  return { kind: "module", eventType: Object.keys(events).map((name) => `${address}::${name}`) as `${string}::${string}::${string}`[] };
+}
+
 /**
  * The one scan `positions("aave")` follows. Only the module defining an event
  * type can emit it, so every event here is Aave's own.
  */
-export const AAVE_DESCRIPTOR: ModuleEventDescriptor = {
-  kind: "module",
-  eventType: Object.keys(AAVE_EVENTS).map((name) => `${AAVE}::${name}`) as `${string}::${string}::${string}`[],
-};
+export const AAVE_DESCRIPTOR = scanOf(AAVE, AAVE_EVENTS);
+
+/** The one scan `positions("echelon")` follows, over Echelon's own event types. */
+export const ECHELON_DESCRIPTOR = scanOf(ECHELON, ECHELON_EVENTS);
 
 /** Reads one account's position at a version. */
 export type PositionReader = (view: ViewAt, account: string, version: bigint) => Promise<LendingPosition>;
@@ -141,6 +148,15 @@ const fieldsOf = (address: string, events: Record<string, readonly string[]>) =>
 /** Every protocol `positions()` reads. */
 export const LENDING: Record<LendingProtocol, LendingMarket> = {
   aave: { address: AAVE, descriptor: AAVE_DESCRIPTOR, fields: fieldsOf(AAVE, AAVE_EVENTS), reader: () => readAavePosition },
+  echelon: {
+    address: ECHELON,
+    descriptor: ECHELON_DESCRIPTOR,
+    fields: fieldsOf(ECHELON, ECHELON_EVENTS),
+    reader: () => {
+      const markets: EchelonMarkets = new Map();
+      return (view, account, version) => readEchelonPosition(view, account, version, markets);
+    },
+  },
 };
 
 const ACCOUNT_FIELDS = new Map(Object.values(LENDING).flatMap((m) => [...m.fields]));

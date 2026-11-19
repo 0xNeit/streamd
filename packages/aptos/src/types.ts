@@ -648,7 +648,7 @@ export interface StakePools {
 }
 
 /** A lending market `positions()` reads. */
-export type LendingProtocol = "aave";
+export type LendingProtocol = "aave" | "echelon";
 
 /** An exact ratio, reduced, with a positive denominator, shaped as `AssetValue.price`. */
 export type Fraction = AssetValue["price"];
