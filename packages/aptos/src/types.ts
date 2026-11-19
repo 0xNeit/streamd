@@ -650,11 +650,8 @@ export interface StakePools {
 /** A lending market `positions()` reads. */
 export type LendingProtocol = "aave";
 
-/** An exact ratio, reduced, with a positive denominator. */
-export interface Fraction {
-  numerator: bigint;
-  denominator: bigint;
-}
+/** An exact ratio, reduced, with a positive denominator, shaped as `AssetValue.price`. */
+export type Fraction = AssetValue["price"];
 
 /** One reserve an account supplies or borrows, in the asset's base units. */
 export interface PositionAsset {
@@ -697,7 +694,6 @@ export interface PositionsOptions
   extends Pick<
     ReduceOptions,
     | "fromVersion"
-    | "fromTime"
     | "pollInterval"
     | "batchSize"
     | "maxErrors"
@@ -711,9 +707,9 @@ export interface PositionsOptions
   account?: string | readonly string[];
   /** The health `below` and `onCross` compare with; 1 (the liquidation line) when omitted. */
   threshold?: Fraction;
-  /** Milliseconds between head reads of every tracked position, which see price moves no event shows; 60000 when omitted, 0 for none. */
+  /** Milliseconds between head reads of every tracked position, which see price moves no event shows; 60000 when omitted with `account`, otherwise 0 (none). */
   refreshInterval?: number;
-  /** Called after `ready` for each position a read replaced, with its event, or none for a head read. A throw goes to `onError`. */
+  /** Called after `ready` for each position a read changed (any figure but the version), with its event, or none for a head read. A throw goes to `onError`. */
   onChange?: (position: LendingPosition, event?: StreamdEvent) => void;
   /** Called when a position's `below` changes between two known values; an account's first read is not a crossing. A throw goes to `onError`. */
   onCross?: (position: LendingPosition, event?: StreamdEvent) => void;

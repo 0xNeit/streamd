@@ -2467,7 +2467,8 @@ for (const p of book.value.values()) {
   `below` false.
 - **Unknown, never guessed.** When the account data view aborts (an oracle refusing a price aborts
   the whole calculation), the position keeps its balances, which are read without prices, and has
-  no values, no `health` and no `below`; `unknown` holds the node's reason. A network failure fails
+  no values, no `health` and no `below`; `unknown` holds the Move abort the node reported,
+  without its URL or the version. A network failure fails
   the read instead, and the poll retries.
 - **Reads.** Three views per position at one version: `get_user_account_data`,
   `ui_pool_data_provider_v3::get_user_reserves_data` (which reserves hold a balance), and
@@ -2477,22 +2478,27 @@ for (const p of book.value.values()) {
   `LiquidationCall`, `DeficitCreated`, `ReserveUsedAsCollateralEnabled`/`Disabled`,
   `UserEModeSet` and `BalanceTransfer` (both sides, so a liquidator taking aTokens is read too)
   rereads each account the event names at its version, once per account and version and at most
-  four at a time, outside `maxConcurrentRequests`. `account` (an address or a list) reads those
+  four at a time, outside `maxConcurrentRequests` and `maxRequestsPerSecond`. `account` (an address or a list) reads those
   accounts at the head first, or at the version before `fromVersion`, and ignores the rest;
   without it every account an event names is tracked from the start version on. A
   `FullnodeScanAdapter` scan walks every transaction, so from the head through an anonymous IP it
   can fall behind; Aave's own events are rare.
 - **Price moves.** Health moves with prices and a price moves with no Aave event, so after `ready`
-  every tracked position is also read at the head every `refreshInterval` ms (60000 by default,
-  0 for none), through the client's limiter: about two views plus one per reserve held, per
-  account, per interval. A failed refresh goes to `onError` and is retried with backoff, as a
-  poll is. A read replaces a position only when it is not older than the one held, so a scan that
-  lags the head never overwrites a newer read.
+  every tracked position is also read at the head every `refreshInterval` ms: 60000 by default
+  with `account`, and none by default without it, since that map holds every account any event
+  named (0 turns it off). Each head read is one poll through the client's limiter whose views
+  run at most four at a time outside `maxConcurrentRequests` and `maxRequestsPerSecond`, as the
+  scan's do: about two views plus one per reserve held, per account, per interval. An account
+  whose read fails goes to `onError` and is read again at the next head; when every read fails
+  the poll retries with backoff, and once it gives up after `maxErrors` the whole monitor stops,
+  so a stale health is never shown as live. A read replaces a position only when it is not older
+  than the one held, so a scan that lags the head never overwrites a newer read.
 - **Callbacks.** `onChange(position, event?)` fires after `ready` when a read changes any figure
   (the event is absent for a head read); `onCross(position, event?)` when `below` changes between
   two known values against `threshold` (a `Fraction`, 1 when omitted, compared exactly). An
   account's first read is not a crossing: after `ready`, `value` shows who is already below.
-  An unknown read between two known ones keeps the last known side.
+  An unknown read between two known ones keeps the last known side. Each callback runs on its
+  own, so one that throws (reported to `onError`) does not hide another.
 - **Options.** `account`, `threshold`, `refreshInterval`, `fromVersion`, `onChange`, `onCross`,
   `onError`, `signal`, `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`,
   `maxPollInterval` and `retries`; anything else throws, as does a protocol other than `"aave"`.

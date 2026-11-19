@@ -60,6 +60,11 @@ describe("readAavePosition", () => {
     expect(isBelow(position, { numerator: 13n, denominator: 10n })).toBe(true);
   });
 
+  it("reads the collateral flag from the reserve reply", async () => {
+    const position = await readAavePosition(views({ ...HEAD, get_user_reserve_data: ["5", "0", "0", "0", false] }), USER, 1n);
+    expect(position.assets[0]!.collateral).toBe(false);
+  });
+
   it("has no health with no debt, and is never below then", async () => {
     const position = await readAavePosition(
       views({ ...HEAD, get_user_account_data: ["0", "0", "0", "0", "0", MAX], get_user_reserves_data: [[reserve(USDC, "6", "0", "0")], 0] }),
@@ -72,10 +77,12 @@ describe("readAavePosition", () => {
     expect(isBelow(position, { numerator: 1n, denominator: 1n })).toBe(false);
   });
 
-  it("keeps the balances and says why when the account data view aborts", async () => {
-    const abort = new StreamdError("Fullnode view failed: Move abort in 0x249676f3::oracle: E_ORACLE_STALE");
+  it("keeps the balances and says why when the account data view aborts, without the node's URL or the version", async () => {
+    const abort = new StreamdError(
+      'Fullnode view 0x39dd::user_logic::get_user_account_data at version 7 failed: Request to [Fullnode]: POST https://node.example/v1/view failed with: {"message":"Move abort in 0x249676f3::oracle: E_ORACLE_STALE(0x1): stale","error_code":"invalid_input"}',
+    );
     const position = await readAavePosition(views({ ...HEAD, get_user_account_data: abort }), USER, 1n);
-    expect(position.unknown).toContain("E_ORACLE_STALE");
+    expect(position.unknown).toBe("Move abort in 0x249676f3::oracle: E_ORACLE_STALE(0x1): stale");
     expect(position.assets).toHaveLength(1);
     expect(position.health).toBeUndefined();
     expect(position.collateralValue).toBeUndefined();
@@ -143,7 +150,7 @@ function aaveAdapter(events: StreamdEvent[], health: (account: string, version: 
 }
 
 const waitFor = async (check: () => boolean) => {
-  for (let i = 0; i < 100 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
+  for (let i = 0; i < 400 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
   if (!check()) throw new Error("timed out waiting");
 };
 
@@ -156,6 +163,22 @@ describe("AAVE_DESCRIPTOR", () => {
 });
 
 describe("accountsOf", () => {
+  it("reads the account field of each event type", () => {
+    const cases: [string, Record<string, unknown>, string[]][] = [
+      ["supply_logic::Supply", { user: A, on_behalf_of: B, reserve: C }, [B]],
+      ["supply_logic::Withdraw", { user: A, to: B, reserve: C }, [A]],
+      ["borrow_logic::Borrow", { user: A, on_behalf_of: B, reserve: C }, [B]],
+      ["borrow_logic::Repay", { user: A, repayer: B, reserve: C }, [A]],
+      ["liquidation_logic::LiquidationCall", { user: A, liquidator: B, collateral_asset: C, debt_asset: C }, [A]],
+      ["liquidation_logic::DeficitCreated", { user: A, debt_asset: C }, [A]],
+      ["events::ReserveUsedAsCollateralEnabled", { user: A, reserve: C }, [A]],
+      ["events::ReserveUsedAsCollateralDisabled", { user: A, reserve: C }, [A]],
+      ["emode_logic::UserEModeSet", { user: A, category_id: 1 }, [A]],
+      ["events::BalanceTransfer", { from: `0x${"0".repeat(64)}`, to: A, a_token_address: C }, [A]],
+    ];
+    for (const [name, data, accounts] of cases) expect(accountsOf(ev(1, name, data))).toEqual(accounts);
+  });
+
   it("names each account an event changes, both sides of a transfer, and refuses one without its fields", () => {
     expect(accountsOf(ev(1, "supply_logic::Supply", { user: A, on_behalf_of: B }))).toEqual([B]);
     expect(accountsOf(ev(1, "events::BalanceTransfer", { from: A, to: "0xc1" }))).toEqual([A, C]);
@@ -227,12 +250,12 @@ describe("positions", () => {
     await waitFor(() => changed.length === 2);
     expect(positions.get(B)).toMatchObject({ version: 30n, unknown: "Move abort in oracle: E_STALE" });
     expect(positions.get(B)!.below).toBeUndefined();
-    hf[B] = WAD;
+    hf[B] = 2n * WAD;
     memory.push(ev(40, "supply_logic::Withdraw", { user: B }));
     hf[A] = 3n * WAD;
     memory.push(ev(50, "supply_logic::Withdraw", { user: A }));
     await waitFor(() => changed.length === 4);
-    expect(crossed).toEqual([[A, true], [A, false]]);
+    expect(crossed).toEqual([[A, true], [B, false], [A, false]]);
     client.destroy();
   });
 
@@ -288,8 +311,11 @@ describe("positions refresh", () => {
     const gate = new Promise<void>((r) => (release = r));
     const { adapter, memory } = aaveAdapter([other(10)], (_, version) => 2n * WAD + version);
     const view = adapter.view;
+    const fetch = adapter.fetchEvents.bind(adapter);
+    let fetches = 0;
     const slow = Object.assign(adapter, {
       view: async (request: ViewRequest, version: bigint) => (version === 40n && (await gate), view(request, version)),
+      fetchEvents: (...args: Parameters<typeof fetch>) => (fetches++, fetch(...args)),
     });
     const client = testClient({ adapter: slow, defaults: { pollInterval: 5 } });
     const changed: bigint[] = [];
@@ -297,8 +323,10 @@ describe("positions refresh", () => {
     await positions.ready;
     memory.push(ev(40, "supply_logic::Withdraw", { user: A }), other(50));
     await waitFor(() => changed.includes(50n));
+    const before = fetches;
     release();
-    await new Promise((r) => setTimeout(r, 50));
+    // Two more scan pages mean the page holding version 40 was folded.
+    await waitFor(() => fetches >= before + 2);
     expect(positions.get(A)!.version).toBe(50n);
     expect(changed).toEqual([50n]);
     client.destroy();
@@ -324,6 +352,147 @@ describe("positions refresh", () => {
     expect(failing.active).toBe(true);
     expect(() => client.positions("aave", { refreshInterval: -1 })).toThrow("refreshInterval must be");
     expect(() => client.positions("aave", { refreshInterval: "1" as never })).toThrow("refreshInterval must be");
+    client.destroy();
+  });
+});
+
+describe("positions callbacks", () => {
+  const other = (version: number) => ev(version, "supply_logic::Supply", { user: long("ff"), on_behalf_of: long("ff") });
+
+  it("compares with 1 by default, and reports a first read below as a change, not a crossing", async () => {
+    const hf: Record<string, bigint> = { [A]: (3n * WAD) / 2n, [B]: WAD / 2n };
+    const { adapter, memory } = aaveAdapter([other(10)], (account) => hf[account] ?? 2n * WAD);
+    const client = testClient({ adapter, defaults: { pollInterval: 5 } });
+    const changed: string[] = [];
+    const crossed: string[] = [];
+    const positions = client.positions("aave", { onChange: (p) => changed.push(p.account), onCross: (p) => crossed.push(p.account) });
+    await positions.ready;
+    memory.push(ev(20, "supply_logic::Withdraw", { user: A }), ev(21, "supply_logic::Withdraw", { user: B }));
+    await waitFor(() => changed.length === 2);
+    expect(positions.get(A)!.below).toBe(false);
+    expect(positions.get(B)!.below).toBe(true);
+    expect(crossed).toEqual([]);
+    client.destroy();
+  });
+
+  it("keeps calling the other callbacks when one throws", async () => {
+    let hf = 2n * WAD;
+    const { adapter, memory } = aaveAdapter([other(10)], () => hf);
+    const errors: string[] = [];
+    const client = testClient({ adapter, defaults: { pollInterval: 5 }, onError: (e) => errors.push(e.message) });
+    const crossed: string[] = [];
+    const positions = client.positions("aave", {
+      account: [A, B],
+      refreshInterval: 0,
+      onChange: (p) => {
+        if (p.account === A) throw new Error("boom");
+      },
+      onCross: (p) => crossed.push(p.account),
+    });
+    await positions.ready;
+    hf = WAD / 2n;
+    memory.push(ev(20, "events::BalanceTransfer", { from: A, to: B }));
+    await waitFor(() => crossed.length === 2);
+    expect(crossed).toEqual([A, B]);
+    expect(errors.some((m) => m.includes("positions handler threw"))).toBe(true);
+    client.destroy();
+  });
+
+  it("calls nothing when a head read finds the same figures, and crosses only when the side changes", async () => {
+    let hf = 2n * WAD;
+    const { adapter, memory, reads } = aaveAdapter([other(10)], () => hf);
+    const client = testClient({ adapter, defaults: { pollInterval: 5 } });
+    const seen: string[] = [];
+    const positions = client.positions("aave", {
+      account: A,
+      refreshInterval: 10,
+      onChange: (p) => seen.push(`change@${p.version}`),
+      onCross: (p) => seen.push(`cross@${p.version}`),
+    });
+    await positions.ready;
+    expect(reads).toEqual(["a1@10"]);
+    memory.push(other(20));
+    await waitFor(() => reads.includes("a1@20"));
+    hf = 3n * WAD;
+    memory.push(other(30));
+    await waitFor(() => seen.length === 1);
+    expect(seen).toEqual(["change@30"]);
+    expect(reads.filter((r) => r === "a1@10")).toHaveLength(1);
+    client.destroy();
+  });
+
+  it("delivers the reads that succeeded and reports the others", async () => {
+    let failB = false;
+    const { adapter, memory } = aaveAdapter([other(10)], (account, version) =>
+      failB && account === B ? new StreamdNetworkError("503") : 2n * WAD + version,
+    );
+    const errors: string[] = [];
+    const client = testClient({ adapter, defaults: { pollInterval: 5 } });
+    const positions = client.positions("aave", { account: [A, B], refreshInterval: 10, onError: (e) => errors.push(e.message) });
+    await positions.ready;
+    failB = true;
+    memory.push(other(20));
+    await waitFor(() => positions.get(A)!.version === 20n && errors.length > 0);
+    expect(positions.get(B)!.version).toBe(10n);
+    expect(errors[0]).toContain("503");
+    expect(positions.active).toBe(true);
+    client.destroy();
+  });
+
+  it("stops everything once the head reads give up, so a stale health is not shown as live", async () => {
+    let fail = false;
+    const { adapter, memory, reads } = aaveAdapter([other(10)], () => (fail ? new StreamdNetworkError("503") : 2n * WAD));
+    const client = testClient({ adapter, defaults: { pollInterval: 5 } });
+    const errors: string[] = [];
+    const positions = client.positions("aave", { account: A, refreshInterval: 5, maxErrors: 2, maxBackoff: 5, onError: (e) => errors.push(e.message) });
+    await positions.ready;
+    fail = true;
+    memory.push(other(20));
+    await waitFor(() => !positions.active);
+    expect(client.listSubscriptions()).toEqual([]);
+    const after = reads.length;
+    memory.push(other(30));
+    await waitFor(() => errors.length >= 2);
+    expect(reads.length).toBe(after);
+    client.destroy();
+  });
+
+  it("follows no head reads by default without account", async () => {
+    const { adapter, memory, reads } = aaveAdapter([other(10)]);
+    const client = testClient({ adapter, defaults: { pollInterval: 5 } });
+    const positions = client.positions("aave", { fromVersion: 1n });
+    await positions.ready;
+    expect(reads).toEqual(["ff@10"]);
+    expect(client.listSubscriptions()).toHaveLength(1);
+    memory.push(other(20));
+    await waitFor(() => reads.length === 2);
+    expect(reads).toEqual(["ff@10", "ff@20"]);
+    client.destroy();
+  });
+
+  it("rejects ready and starts no walk when stopped during the start read", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { adapter } = aaveAdapter([other(10)]);
+    const view = adapter.view;
+    let fetches = 0;
+    const fetch = adapter.fetchEvents.bind(adapter);
+    const slow = Object.assign(adapter, {
+      view: async (request: ViewRequest, version: bigint) => (await gate, view(request, version)),
+      fetchEvents: (...args: Parameters<typeof fetch>) => (fetches++, fetch(...args)),
+    });
+    const client = testClient({ adapter: slow });
+    const controller = new AbortController();
+    const unsubscribed = client.positions("aave", { account: A });
+    const aborted = client.positions("aave", { account: A, signal: controller.signal });
+    unsubscribed.unsubscribe();
+    controller.abort();
+    release();
+    for (const p of [unsubscribed, aborted]) {
+      await expect(p.ready).rejects.toThrow();
+      expect(p.active).toBe(false);
+    }
+    expect(fetches).toBe(0);
     client.destroy();
   });
 });

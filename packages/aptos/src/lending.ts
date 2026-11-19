@@ -1,13 +1,13 @@
 import { RequestLimiter, StreamdError, markSelfTimed } from "@streamd/core";
-import type { EventAdapter, ModuleEventDescriptor, ReduceOptions, Reducer, Reduction, StreamdEvent, Subscription, ViewRequest } from "@streamd/core";
+import type { EventAdapter, ModuleEventDescriptor, ReduceOptions, Reducer, Reduction, StreamdEvent, Subscription } from "@streamd/core";
+import type { ViewAt } from "./multisig.js";
 import { addr, address, amount, malformed, pageSource } from "./records.js";
 import type { Fields } from "./records.js";
 import { isViewAbort } from "./transfers.js";
 import type { Fraction, LendingPosition, Positions, PositionsOptions, PositionAsset } from "./types.js";
 import { fraction } from "./values.js";
 
-/** A view read at a version, as `EventAdapter.view` reads one. */
-export type ViewAt = (request: ViewRequest, version: bigint) => Promise<unknown[]>;
+export type { ViewAt };
 
 /** Aave V3's pool package on Aptos mainnet, whose source is published with it. */
 export const AAVE = "0x39ddcd9e1a39fa14f25e3f9ec8a86074d05cc0881cbf667df8a6ee70942016fb";
@@ -15,6 +15,15 @@ const WAD = 10n ** 18n;
 const BPS = 10_000n;
 
 const bad = (account: string, what: string) => new StreamdError(`aave position ${account}: ${what} is not what the view returns`);
+
+/**
+ * The Move abort a failed view reports, without the node's URL or the
+ * version, so two reads refused for one reason compare equal.
+ */
+function abortReason(err: unknown): string {
+  const found = /Move abort[^"\n]*/.exec(err instanceof Error ? err.message : String(err));
+  return found === null ? "the account data view aborted" : found[0].trim();
+}
 
 function int(value: unknown, account: string, what: string): bigint {
   const n = amount(value);
@@ -57,7 +66,7 @@ export async function readAavePosition(view: ViewAt, account: string, version: b
     call("user_logic::get_user_account_data", [account]).then(
       (reply) => ({ reply }),
       (err: unknown) => {
-        if (isViewAbort(err)) return { unknown: (err as Error).message };
+        if (isViewAbort(err)) return { unknown: abortReason(err) };
         throw err;
       },
     ),
@@ -140,11 +149,17 @@ export function accountsOf(event: StreamdEvent): string[] {
  * carries the positions of the accounts it names as `state`, read at its
  * version once per account and version, at most four at a time.
  */
-export function positionSource(adapter: EventAdapter, only: ReadonlySet<string> | undefined, requestTimeout?: number): EventAdapter {
+export function positionSource(
+  adapter: EventAdapter,
+  only: ReadonlySet<string> | undefined,
+  requestTimeout?: number,
+  drop?: AbortSignal,
+): EventAdapter {
   if (typeof adapter.view !== "function") throw new StreamdError("positions needs an adapter that implements view");
   // Outside the client's limiter, whose slot the page asking holds while its
   // views run; each read is timed here and the page marked self-timed.
-  const timed = new RequestLimiter(4, Infinity, requestTimeout).wrap(adapter);
+  // `drop` sheds reads still waiting once the monitor stops.
+  const timed = new RequestLimiter(4, Infinity, requestTimeout).wrap(adapter, drop);
   const view: ViewAt = (request, version) => timed.view!(request, version);
   return markSelfTimed(pageSource(timed, (events) => {
     const read = new Map<string, Promise<LendingPosition>>();
@@ -167,22 +182,36 @@ export function positionSource(adapter: EventAdapter, only: ReadonlySet<string> 
 /**
  * A source whose every fetch reads each `tracked` account at the head, at
  * most four at a time, and returns the positions as events at that version,
- * so `EventPoller` supplies the interval, backoff and error budget. A head
- * not past the last one read returns nothing.
+ * so `EventPoller` supplies the interval, backoff and error budget. A head not
+ * past the last one read, or past `since` (where the start read them), returns
+ * nothing. An account whose read fails goes to
+ * `failed` and is read again at the next head; the fetch fails only when
+ * every read did.
  */
-export function refreshSource(adapter: EventAdapter, tracked: () => Iterable<string>, requestTimeout?: number): EventAdapter {
+export function refreshSource(
+  adapter: EventAdapter,
+  tracked: () => Iterable<string>,
+  failed: (err: Error) => void,
+  since: bigint | undefined,
+  requestTimeout?: number,
+  drop?: AbortSignal,
+): EventAdapter {
   if (typeof adapter.view !== "function" || typeof adapter.getHeadVersion !== "function") {
     throw new StreamdError("positions needs an adapter that implements view and getHeadVersion");
   }
-  const timed = new RequestLimiter(4, Infinity, requestTimeout).wrap(adapter);
+  const timed = new RequestLimiter(4, Infinity, requestTimeout).wrap(adapter, drop);
   const view: ViewAt = (request, version) => timed.view!(request, version);
-  let latest = -1n;
+  let latest = since ?? -1n;
   return markSelfTimed({
     fetchEvents: async (descriptor) => {
       const head = await timed.getHeadVersion!(descriptor);
-      // Set only once every read succeeded, so a failed head is read again.
       if (head <= latest) return { events: [], nextCursor: String(latest), hasMore: false };
-      const read = await Promise.all([...tracked()].map((a) => readAavePosition(view, a, head)));
+      const settled = await Promise.allSettled([...tracked()].map((a) => readAavePosition(view, a, head)));
+      const read = settled.flatMap((r) => (r.status === "fulfilled" ? [r.value] : []));
+      const errors = settled.flatMap((r) => (r.status === "rejected" ? [r.reason as Error] : []));
+      // Left unset when nothing was read, so the poller retries this head.
+      if (read.length === 0 && errors.length > 0) throw errors[0];
+      errors.forEach(failed);
       latest = head;
       return {
         events: read.map((data, eventIndex) => ({ type: `${AAVE}::position`, data, version: head, sequenceNumber: 0n, eventIndex })),
@@ -197,6 +226,7 @@ export function refreshSource(adapter: EventAdapter, tracked: () => Iterable<str
 /** `client.reduce()` over the scan's source narrowed to `only`, as `positions()` calls it. */
 export type ReducePositions = (
   only: ReadonlySet<string> | undefined,
+  drop: AbortSignal,
   descriptor: ModuleEventDescriptor,
   reducer: Reducer<null>,
   initial: null,
@@ -241,7 +271,7 @@ function checkThreshold(threshold: unknown): Fraction {
 
 /** What `startPositions` reads through besides the reduction. */
 export interface PositionsHost {
-  view: ViewAt;
+  view: (request: Parameters<ViewAt>[0], version: bigint, drop: AbortSignal) => Promise<unknown[]>;
   head: () => Promise<bigint>;
   track: (stop: () => void) => () => void;
   onError: ((error: Error) => void) | undefined;
@@ -249,7 +279,9 @@ export interface PositionsHost {
   refresh: (
     tracked: () => Iterable<string>,
     deliver: (positions: LendingPosition[]) => void,
-    options: Pick<PositionsOptions, "maxErrors" | "maxBackoff" | "signal" | "onError"> & { pollInterval: number },
+    options: Pick<PositionsOptions, "maxErrors" | "maxBackoff" | "signal"> & { pollInterval: number; onError: (error: Error) => void },
+    since: bigint | undefined,
+    drop: AbortSignal,
   ) => Subscription;
 }
 
@@ -257,8 +289,11 @@ export interface PositionsHost {
 const figures = (p: LendingPosition) =>
   JSON.stringify({ ...p, version: undefined }, (_k, v: unknown) => (typeof v === "bigint" ? v.toString() : v));
 
-function checkInterval(interval: unknown): number {
-  if (interval === undefined) return 60_000;
+function checkInterval(interval: unknown, tracking: boolean): number {
+  // ponytail: without `account` the map keeps every account any event names,
+  // so a head read of all of them is off unless asked for; add eviction if
+  // following the whole protocol for long becomes a use.
+  if (interval === undefined) return tracking ? 60_000 : 0;
   if (typeof interval !== "number" || !Number.isFinite(interval) || interval < 0) {
     throw new StreamdError("refreshInterval must be a number of milliseconds, 0 for none");
   }
@@ -280,7 +315,7 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
   const { account, threshold: given, refreshInterval, fromVersion, onChange, onCross, ...rest } = options;
   const only = accountSet(account);
   const threshold = checkThreshold(given);
-  const interval = checkInterval(refreshInterval);
+  const interval = checkInterval(refreshInterval, only !== undefined);
   if (fromVersion !== undefined && (typeof fromVersion !== "bigint" || fromVersion < 1n)) {
     throw new StreamdError("positions fromVersion must be a bigint version of at least 1");
   }
@@ -307,8 +342,10 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
   let walk: Reduction<null> | undefined;
   let refresh: Subscription | undefined;
   let stopped = false;
+  const dropped = new AbortController();
   const stop = () => {
     stopped = true;
+    dropped.abort(new StreamdError("positions was stopped"));
     untrack();
     walk?.unsubscribe();
     refresh?.unsubscribe();
@@ -318,40 +355,64 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
   const untrack = host.track(stop);
   const halted = () => stopped || rest.signal?.aborted === true;
   const report = (err: Error) => (rest.onError ?? host.onError)?.(err);
+  /** Each callback on its own, so one that throws cannot hide another's crossing. */
+  const call = (handler: PositionsOptions["onChange"], p: LendingPosition, event?: StreamdEvent) => {
+    try {
+      handler?.(p, event);
+    } catch (err) {
+      report(new StreamdError(`positions handler threw for ${p.account} at ${p.version}`, err));
+    }
+  };
+  const notifyAll = (changes: [LendingPosition, boolean][], event?: StreamdEvent) => {
+    for (const [p, crossed] of changes) {
+      call(onChange, p, event);
+      if (crossed) call(onCross, p, event);
+    }
+  };
   const startRefresh = () => {
-    const { maxErrors, maxBackoff, signal, onError } = rest;
+    const { maxErrors, maxBackoff, signal } = rest;
     refresh = host.refresh(
-      () => positions.keys(),
+      // Health only stays live while both run, so one ending ends both.
+      () => (walk?.active === true ? positions.keys() : (stop(), [])),
       (read) => {
-        if (walk?.active !== true) return stop();
+        const changes: [LendingPosition, boolean][] = [];
         for (const p of read) {
           const [changed, crossed] = apply(p);
-          if (!changed) continue;
-          const position = positions.get(p.account)!;
-          try {
-            onChange?.(position);
-            if (crossed) onCross?.(position);
-          } catch (err) {
-            report(new StreamdError(`positions handler threw for ${p.account} at ${p.version}`, err));
-          }
+          if (changed) changes.push([positions.get(p.account)!, crossed]);
         }
+        notifyAll(changes);
       },
-      { pollInterval: interval, maxErrors, maxBackoff, signal, onError },
+      {
+        pollInterval: interval,
+        maxErrors,
+        maxBackoff,
+        signal,
+        onError: (err) => {
+          if (refresh !== undefined && !refresh.active) stop();
+          report(err);
+        },
+      },
+      startedAt,
+      dropped.signal,
     );
   };
 
   let notify: [LendingPosition, boolean][] = [];
+  let startedAt: bigint | undefined;
   const ready = (async () => {
     try {
       let from = fromVersion;
       if (only !== undefined) {
         const at = fromVersion === undefined ? await host.head() : fromVersion - 1n;
-        for (const p of await Promise.all([...only].map((a) => readAavePosition(host.view, a, at)))) apply(p);
+        const view: ViewAt = (request, version) => host.view(request, version, dropped.signal);
+        for (const p of await Promise.all([...only].map((a) => readAavePosition(view, a, at)))) apply(p);
+        startedAt = at;
         from = at + 1n;
       }
       if (halted()) throw new StreamdError("positions was stopped before it was ready");
       walk = reduce(
         only,
+        dropped.signal,
         AAVE_DESCRIPTOR,
         (s, event) => {
           notify = [];
@@ -365,12 +426,7 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
         {
           ...rest,
           ...(from !== undefined && { fromVersion: from }),
-          onChange: (_, event: StreamdEvent) => {
-            for (const [p, crossed] of notify) {
-              onChange?.(p, event);
-              if (crossed) onCross?.(p, event);
-            }
-          },
+          onChange: (_, event: StreamdEvent) => notifyAll(notify, event),
         },
       );
       untrack();
@@ -393,7 +449,7 @@ export function startPositions(reduce: ReducePositions, host: PositionsHost, pro
     },
     ready,
     get active() {
-      return !halted() && (walk === undefined || walk.active);
+      return !halted() && (walk === undefined || walk.active) && (refresh === undefined || refresh.active);
     },
     unsubscribe: stop,
     [Symbol.dispose ?? Symbol.for("Symbol.dispose")]: stop,

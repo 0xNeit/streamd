@@ -330,8 +330,10 @@ export class AptosClient extends StreamdClient {
    * Aave event names is tracked from then on. Each position is reread at the
    * version of every event naming it, from one scan over Aave's
    * position-changing events, its views at most four at a time outside
-   * `maxConcurrentRequests`. `threshold` sets the health `below` and `onCross`
-   * compare with. Views go through `EventAdapter.view`, so the adapter must
+   * `maxConcurrentRequests`. With `account`, every position is also reread at
+   * the head every `refreshInterval` ms (60000 by default), since a price
+   * moves with no Aave event; if those reads give up, the monitor stops.
+   * `threshold` sets the health `below` and `onCross` compare with. Views go through `EventAdapter.view`, so the adapter must
    * implement it. Like `reduce()`, it is not a listener for `off()` or
    * `listenerCount()`; `destroy()` ends it.
    */
@@ -341,23 +343,29 @@ export class AptosClient extends StreamdClient {
       throw new StreamdError("positions needs an adapter that implements view and getHeadVersion");
     }
     const host = {
-      view: (request: ViewRequest, version: bigint) => this.limiter.run(() => adapter.view!(request, version)),
+      view: (request: ViewRequest, version: bigint, drop: AbortSignal) => this.limiter.run(() => adapter.view!(request, version), drop),
       head: () => this.limiter.run(() => adapter.getHeadVersion!(AAVE_DESCRIPTOR)),
       track: this.reduceHost.track,
       onError: this.onError,
-      refresh: (tracked: () => Iterable<string>, deliver: (read: LendingPosition[]) => void, opts: object) =>
+      refresh: (
+        tracked: () => Iterable<string>,
+        deliver: (read: LendingPosition[]) => void,
+        opts: { onError: (error: Error) => void },
+        since: bigint | undefined,
+        drop: AbortSignal,
+      ) =>
         this.subscribe(
           AAVE_DESCRIPTOR,
           { batch: (events) => deliver(events.map((e) => e.data as LendingPosition)) },
           opts,
           undefined,
           undefined,
-          (source) => refreshSource(source, tracked, this.requestTimeout),
+          (source) => refreshSource(source, tracked, opts.onError, since, this.requestTimeout, drop),
         ),
     };
     return startPositions(
-      (only, d, r, i, o) => {
-        const wrap = (source: EventAdapter) => positionSource(source, only, this.requestTimeout);
+      (only, drop, d, r, i, o) => {
+        const wrap = (source: EventAdapter) => positionSource(source, only, this.requestTimeout, drop);
         const scoped = {
           ...this.reduceHost,
           query: new EventQuery(wrap(adapter), this.limiter, this.names),
