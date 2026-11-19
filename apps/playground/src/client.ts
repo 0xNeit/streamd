@@ -1,5 +1,5 @@
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
-import { AptosClient } from "@streamd/aptos";
+import { AptosClient, sendOnce } from "@streamd/aptos";
 
 /** The networks the playground offers, mainnet first as the default. */
 export const NETWORKS = {
@@ -12,12 +12,18 @@ export type PlaygroundNetwork = keyof typeof NETWORKS;
 // The public fullnodes share one anonymous quota per IP, and a module scan
 // reads every transaction, so a keyless tab paces itself to leave room.
 export const ANONYMOUS_REQUESTS_PER_SECOND = 2;
+const REQUEST_TIMEOUT = 30_000;
 
 /** An `Aptos` instance and an `AptosClient` over it; a blank key means anonymous. */
 export function clientFor(network: PlaygroundNetwork, apiKey: string): { aptos: Aptos; client: AptosClient } {
   const key = apiKey.trim();
   const aptos = new Aptos(
-    new AptosConfig({ network: NETWORKS[network].network, ...(key !== "" && { clientConfig: { API_KEY: key } }) }),
+    new AptosConfig({
+      network: NETWORKS[network].network,
+      // The SDK's browser client turns a plain-text 429 into a JSON syntax error.
+      client: sendOnce(REQUEST_TIMEOUT),
+      ...(key !== "" && { clientConfig: { API_KEY: key } }),
+    }),
   );
   const client = new AptosClient({
     aptos,

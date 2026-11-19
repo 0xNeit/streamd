@@ -1,7 +1,7 @@
 import type { Aptos } from "@aptos-labs/ts-sdk";
 import { generateEventTypes, parseModuleAbi } from "@streamd/codegen";
 import type { LoadModule, ModuleRef } from "@streamd/codegen";
-import { StreamdError } from "@streamd/core";
+import { StreamdError, toStreamdError } from "@streamd/core";
 
 /** The module an event type is declared in, type arguments ignored; the type must already be checked. */
 export function moduleOf(eventType: string): ModuleRef {
@@ -17,7 +17,7 @@ export function moduleLoader(aptos: Aptos): LoadModule {
       response = await aptos.getAccountModule({ accountAddress: address, moduleName: module });
     } catch (err) {
       if ((err as { status?: unknown } | null)?.status === 404) throw new StreamdError(`Module ${address}::${module} not found`);
-      throw new StreamdError(`Fullnode request for module ${address}::${module} failed: ${(err as Error)?.message ?? String(err)}`, err);
+      throw toStreamdError(err, `module ${address}::${module}`);
     }
     return parseModuleAbi(response);
   };

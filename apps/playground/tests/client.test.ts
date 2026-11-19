@@ -14,6 +14,19 @@ describe("clientFor", () => {
     keyed.client.destroy();
     anonymous.client.destroy();
   });
+
+  it("keeps a rate limit's status through the SDK, with a plain-text body", async () => {
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("Per anonymous IP rate limit exceeded", { status: 429 })) as unknown as typeof fetch;
+    try {
+      const { aptos, client } = clientFor("mainnet", "");
+      const err = await aptos.getLedgerInfo().catch((e) => e);
+      expect(err.status).toBe(429);
+      client.destroy();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
 });
 
 describe("describeError", () => {

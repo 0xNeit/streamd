@@ -46,7 +46,7 @@ export function snippet({ network, eventType, name }: SnippetInput): string {
     "const client = new AptosClient({ aptos });",
     "",
     `client.on(${descriptor}, (event) => {`,
-    "  console.log(event.version, JSON.stringify(event.data));",
+    "  console.log(event.version.toString(), JSON.stringify(event.data));",
     "});",
     "",
   ].join("\n");

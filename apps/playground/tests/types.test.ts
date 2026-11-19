@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { Aptos } from "@aptos-labs/ts-sdk";
-import { StreamdError } from "@streamd/core";
+import { StreamdError, StreamdNetworkError } from "@streamd/core";
 import { generateFor, moduleLoader, moduleOf } from "../src/types.js";
 
 const struct = (name: string, isEvent: boolean, fields: { name: string; type: string }[], params = 0) => ({
@@ -63,11 +63,12 @@ describe("generateFor", () => {
     expect(err.message).toBe("Module 0xcafe::gone not found");
   });
 
-  it("wraps any other failure with the module and keeps the cause", async () => {
+  it("wraps any other failure with the module and keeps its status", async () => {
     const cause = Object.assign(new Error("Too Many Requests"), { status: 429 });
     const err = await moduleLoader(fakeAptos(cause).aptos)("0xcafe", "pool").catch((e) => e);
+    expect(err).toBeInstanceOf(StreamdNetworkError);
     expect(err.message).toBe("Fullnode request for module 0xcafe::pool failed: Too Many Requests");
-    expect(err.cause).toBe(cause);
+    expect(err.statusCode).toBe(429);
   });
 
   it("refuses a response with no ABI", async () => {
