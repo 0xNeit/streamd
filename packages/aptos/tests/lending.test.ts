@@ -4,6 +4,7 @@ import type { StreamdEvent, ViewRequest } from "@streamd/core";
 import { AAVE, accountsOf, isBelow, readAavePosition } from "../src/lending.js";
 import type { ViewAt } from "../src/lending.js";
 import type { LendingPosition } from "../src/types.js";
+import { AAVE_DESCRIPTOR } from "../src/index.js";
 import { testClient } from "./helpers.js";
 
 const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
@@ -145,6 +146,14 @@ const waitFor = async (check: () => boolean) => {
   for (let i = 0; i < 100 && !check(); i++) await new Promise((r) => setTimeout(r, 10));
   if (!check()) throw new Error("timed out waiting");
 };
+
+describe("AAVE_DESCRIPTOR", () => {
+  it("is exported, one scan over the ten position-changing event types", () => {
+    expect(AAVE_DESCRIPTOR.kind).toBe("module");
+    expect(AAVE_DESCRIPTOR.eventType).toHaveLength(10);
+    expect([AAVE_DESCRIPTOR.eventType].flat().every((t) => t.startsWith(`${AAVE}::`))).toBe(true);
+  });
+});
 
 describe("accountsOf", () => {
   it("names each account an event changes, both sides of a transfer, and refuses one without its fields", () => {

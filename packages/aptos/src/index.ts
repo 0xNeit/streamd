@@ -16,6 +16,7 @@ export { primaryName, resolveName } from "./names.js";
 export { formatAmount } from "./transfers.js";
 export { proposalState } from "./governance.js";
 export { MULTISIG_DESCRIPTOR } from "./multisig.js";
+export { AAVE_DESCRIPTOR } from "./lending.js";
 export { tracePath } from "./trace.js";
 export type {
   AbiChanges,
@@ -42,12 +43,15 @@ export type {
   ExplainOptions,
   FunctionSignature,
   FundFlowGraph,
+  Fraction,
   FungibleAssetIndexer,
   FungibleHolder,
   GasUsage,
   HolderSnapshot,
   HoldersAtOptions,
   HolderVerification,
+  LendingPosition,
+  LendingProtocol,
   Multisig,
   MultisigOptions,
   MultisigPreview,
@@ -56,6 +60,9 @@ export type {
   MultisigTimelock,
   PackageUpgrade,
   PendingMultisigTransaction,
+  PositionAsset,
+  Positions,
+  PositionsOptions,
   PreviewEventsOptions,
   Price,
   PriceListenerOptions,

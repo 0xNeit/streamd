@@ -18,7 +18,7 @@ streamd.on(
 ```
 
 `AptosClient` is `StreamdClient` from `@streamd/core` plus the Aptos-only methods:
-`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `proposals`, `stakePools`, `multisig`, `balances`, `balanceAt`,
+`transfers`, `getTransfers`, `activity`, `getActivity`, `swaps`, `getSwaps`, `sales`, `getSales`, `proposals`, `stakePools`, `multisig`, `positions`, `balances`, `balanceAt`,
 `eventsOf`, `eventsAt`, `explain`, `expectEvents`, `previewEvents` and `expectPreview`. It takes every `StreamdClient` option, with `aptos` (an `Aptos` or
 `AptosConfig`) required and `adapter` defaulting to a `FullnodeScanAdapter` over it. The
 examples below call it `streamd`; on another chain, build a `StreamdClient` with that chain's
@@ -2430,6 +2430,75 @@ for (const tx of treasury.value.pending.values()) {
   `maxBackoff`, `maxPollInterval` and `retries`; anything else throws. `address` may be an
   Aptos name. Like `reduce()`, it is not a listener for `off()` or `listenerCount()`;
   `unsubscribe()` or `destroy()` ends it. Metadata is not kept, and nothing is submitted.
+
+## Lending positions
+
+`positions(protocol, options?)` keeps lending positions current, each as the protocol computes
+it at a version through its own views and its own oracle. `"aave"` reads Aave V3 on Aptos
+mainnet (package `AavePool` at `0x39ddcd9e...016fb`, priced by `AaveOracle` over Chainlink).
+`value` maps each long-form account to a `LendingPosition { protocol, account, version, assets,
+collateralValue?, debtValue?, liquidationThreshold?, health?, below?, unknown? }`, `assets` the
+reserves it supplies or borrows as `PositionAsset { asset, decimals, supplied, borrowed,
+collateral }` in base units:
+
+```ts
+const book = streamd.positions("aave", {
+  account: ["0x...", "0x..."],
+  threshold: { numerator: 11n, denominator: 10n },
+  onCross: (p) => console.log(p.account, p.below ? "below 1.1" : "back above 1.1"),
+});
+await book.ready;
+for (const p of book.value.values()) {
+  if (p.health) console.log(p.account, Number(p.health.numerator) / Number(p.health.denominator));
+}
+```
+
+- **Health is Aave's own number.** Every figure is `user_logic::get_user_account_data`'s, which
+  `generic_logic::calculate_user_account_data` computes (the package publishes its source):
+  collateral sums `ray_mul_down(scaled aToken balance, normalized income) * price / 10^decimals`
+  over reserves used as collateral, debt sums `ceil_div(price * ray_mul_up(scaled debt,
+  normalized debt), 10^decimals)`, the liquidation threshold is the collateral-weighted average
+  (e-mode's for e-mode assets), and the health factor is `wad_div(percent_mul(collateral,
+  threshold), debt)`. Prices are `oracle::get_asset_price`, USD with 18 decimals. `health` is
+  that WAD as an exact `Fraction { numerator, denominator }` over 10^18, reduced, so `health` is
+  below 1 exactly when `validation_logic` would allow a liquidation at that version
+  (`health_factor < 1e18`). `collateralValue` and `debtValue` are USD over 10^18 and
+  `liquidationThreshold` basis points over 10^4, all reduced. No debt means no `health` and
+  `below` false.
+- **Unknown, never guessed.** When the account data view aborts (an oracle refusing a price aborts
+  the whole calculation), the position keeps its balances, which are read without prices, and has
+  no values, no `health` and no `below`; `unknown` holds the node's reason. A network failure fails
+  the read instead, and the poll retries.
+- **Reads.** Three views per position at one version: `get_user_account_data`,
+  `ui_pool_data_provider_v3::get_user_reserves_data` (which reserves hold a balance), and
+  `pool_data_provider::get_user_reserve_data` for each of those (current balances, interest
+  included). The adapter must implement `view` and `getHeadVersion`.
+- **Live changes.** One scan over Aave's `Supply`, `Withdraw`, `Borrow`, `Repay`,
+  `LiquidationCall`, `DeficitCreated`, `ReserveUsedAsCollateralEnabled`/`Disabled`,
+  `UserEModeSet` and `BalanceTransfer` (both sides, so a liquidator taking aTokens is read too)
+  rereads each account the event names at its version, once per account and version and at most
+  four at a time, outside `maxConcurrentRequests`. `account` (an address or a list) reads those
+  accounts at the head first, or at the version before `fromVersion`, and ignores the rest;
+  without it every account an event names is tracked from the start version on. A
+  `FullnodeScanAdapter` scan walks every transaction, so from the head through an anonymous IP it
+  can fall behind; Aave's own events are rare.
+- **Price moves.** Health moves with prices and a price moves with no Aave event, so after `ready`
+  every tracked position is also read at the head every `refreshInterval` ms (60000 by default,
+  0 for none), through the client's limiter: about two views plus one per reserve held, per
+  account, per interval. A failed refresh goes to `onError` and is retried with backoff, as a
+  poll is. A read replaces a position only when it is not older than the one held, so a scan that
+  lags the head never overwrites a newer read.
+- **Callbacks.** `onChange(position, event?)` fires after `ready` when a read changes any figure
+  (the event is absent for a head read); `onCross(position, event?)` when `below` changes between
+  two known values against `threshold` (a `Fraction`, 1 when omitted, compared exactly). An
+  account's first read is not a crossing: after `ready`, `value` shows who is already below.
+  An unknown read between two known ones keeps the last known side.
+- **Options.** `account`, `threshold`, `refreshInterval`, `fromVersion`, `onChange`, `onCross`,
+  `onError`, `signal`, `pollInterval`, `batchSize`, `maxErrors`, `maxBackoff`,
+  `maxPollInterval` and `retries`; anything else throws, as does a protocol other than `"aave"`.
+  Accounts are addresses, not names. Like `reduce()`, it is not a listener for `off()` or
+  `listenerCount()`; `unsubscribe()`, `signal` or `destroy()` ends the scan and the refresh. A
+  failed start read rejects `ready`. Mainnet only: the package address is mainnet's.
 
 ## Package upgrades
 
