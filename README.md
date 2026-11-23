@@ -5555,6 +5555,49 @@ a bound stopped it early (`stoppedBy` says which), `1` when the trace or the wri
 invalid arguments, and `130` on Ctrl-C before it printed. Aptos only: `--chain sui` exits `2`,
 since `SuiClient` has neither method.
 
+### Token holders
+
+`streamd holders <asset> --at <version>` lists every fungible store holding an asset at a past
+version through [`holdersAt`](#token-holders-at-a-version), largest first, as JSON lines or CSV:
+
+```sh
+# every holder of one asset, checked against its supply at the version
+streamd holders 0xac21d74053633a030281bd0311361442eb2c4f2f95b19c4599b741c439cff77f --at 8178740000
+# as a spreadsheet, every holder also checked by its balance view
+streamd holders 0x0d82... --at 8120000000 --format csv --verify stores > holders.csv
+```
+
+```text
+store,owner,balance
+0x09f85b35...,0x237798b7...,51640255740
+0xac21d740...,0x4bf51972...,1000
+{"snapshot":{"asset":"0xac21...","version":"8178740000","indexedVersion":"8178747823","total":"51640256740","supply":"51640256740","verified":"supply","dispatchable":false,"requests":9,"holders":2}}
+```
+
+- **Rows.** With `--format json` (the default) each line is `{"store","owner","balance"}`, the
+  balance a decimal string. `--format csv` writes a `store,owner,balance` header, then one record
+  per holder, following RFC 4180: records end in CRLF and a field holding a comma, quote, CR or LF
+  is quoted with its quotes doubled (addresses and decimals never need it).
+- **Summary.** Once every row is written, one JSON line on stderr, in either format:
+  `{"snapshot":{...}}` with the snapshot's `asset`, `version`, `indexedVersion`, `total`,
+  `supply` (only when checked), `verified`, `dispatchable` and `requests`, plus `holders`, the
+  row count, bigints as decimal strings. stdout stays the table alone.
+- **Flags.** `--at <version>` is required. `--verify none | supply | stores` picks the checks
+  (default `supply`), `--max-requests <n>` caps the requests (default `1000`), and
+  `--indexer <url>` and the API key rules are `activity`'s: the fungible-store reads come
+  from the Indexer, the views from the fullnode stack, with several `--node-url`s and `--archive`.
+  Each request is retried up to 5 times. `--stats` counts the fullnode's views but not the
+  Indexer's fungible reads, which `requests` includes.
+- **Cost.** One snapshot near the Indexer's processed version made 9 requests above; a busy
+  asset or a version far back costs one request per 100 stores and per 100 activity rows after
+  it, which the anonymous rate limit soon stops, so pass `--api-key`.
+
+Exit codes: `0` once the rows and the summary are printed (or stdout closes), `1` when the
+snapshot is refused or fails (APT, a coin type, a coin-paired asset, a dispatchable one without
+`--verify stores`, a failed check, `--max-requests` spent, a version the Indexer has not reached),
+`2` for invalid arguments, and `130` on Ctrl-C before it printed. Aptos only: `--chain sui` exits
+`2`.
+
 ### Follow balances
 
 `streamd balances <address>` follows one wallet's [balances](#live-balances) through the chain

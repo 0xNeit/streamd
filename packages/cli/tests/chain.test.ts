@@ -103,6 +103,17 @@ describe("Chain.indexed", () => {
     expect((await requests(activity(keyed, "https://i.example/graphql")))[0]).toEqual({ url: "https://i.example/graphql", auth: null });
   });
 
+  it("gives holders the same Indexer and key policy through indexer()", async () => {
+    const keyed = await chainFor({ network: "mainnet", apiKey: "k" });
+    expect((await requests(() => keyed.indexer!().getFungibleAssetVersion()))[0])
+      .toEqual({ url: "https://api.mainnet.aptoslabs.com/v1/graphql", auth: "Bearer k" });
+    expect((await requests(() => keyed.indexer!("https://i.example/graphql").getFungibleAssetVersion()))[0])
+      .toEqual({ url: "https://i.example/graphql", auth: null });
+    const custom = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1", apiKey: "k" });
+    expect((await requests(() => custom.indexer!().getFungibleAssetVersion()))[0])
+      .toEqual({ url: "https://api.mainnet.aptoslabs.com/v1/graphql", auth: null });
+  });
+
   it("keeps every other read on the fullnode stack", async () => {
     const chain = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1" });
     const seen = await requests(() => chain.indexed!().getEvents({ kind: "module", eventType: "0x1::coin::DepositEvent" }, { fromVersion: 0n, toVersion: 10n }));

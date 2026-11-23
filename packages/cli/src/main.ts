@@ -18,6 +18,7 @@ import type {
   Endpoint,
   ExplainCommandOptions,
   ForwardOptions,
+  HoldersCommandOptions,
   HandlesOptions,
   InspectOptions,
   MonitorOptions,
@@ -67,6 +68,7 @@ import { sqlTables } from "./sql.js";
 import { RequestStats, onStatsSignal } from "./stats.js";
 import { connectPostgres, openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
+import { runHolders } from "./holders.js";
 import { runTrace } from "./trace.js";
 import { runTransfers } from "./transfers.js";
 import { runTx } from "./tx.js";
@@ -338,6 +340,33 @@ async function indexed<O extends ActivityCommandOptions | TraceCommandOptions>(
   }
 }
 
+async function holders(options: HoldersCommandOptions): Promise<number> {
+  const { chain, client, controller } = await setup(options);
+  let indexer;
+  try {
+    // The parser refuses --chain sui, so the chain is Aptos's, which has indexer().
+    indexer = chain.indexer!(options.indexer);
+  } catch (err) {
+    client.destroy();
+    process.stderr.write(`streamd: ${message(err)}\n`);
+    return 1;
+  }
+  const out = stdout(controller);
+  try {
+    const code = await runHolders(options, {
+      client: client as AptosClient,
+      indexer,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      summary: (line) => process.stderr.write(`${line}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
 async function balances(options: BalancesCommandOptions): Promise<number> {
   const { client, controller } = await setup(options);
   const out = stdout(controller);
@@ -566,6 +595,7 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "sales") return records(parsed.options, runSales);
   if (parsed.command === "activity") return indexed(parsed.options, runActivity);
   if (parsed.command === "trace") return indexed(parsed.options, runTrace);
+  if (parsed.command === "holders") return holders(parsed.options);
   if (parsed.command === "balances") return balances(parsed.options);
   if (parsed.command === "watch") return watch(parsed.options);
   if (parsed.command === "inspect") return inspect(parsed.options);

@@ -196,6 +196,17 @@ export interface TraceCommandOptions extends Endpoint {
   target?: string;
 }
 
+/** Aptos only; the asset is validated by the client. */
+export interface HoldersCommandOptions extends Endpoint {
+  asset: string;
+  at: bigint;
+  /** `--indexer`: the Indexer's GraphQL URL (default: the network's). */
+  indexer?: string;
+  format: "json" | "csv";
+  verify?: "none" | "supply" | "stores";
+  maxRequests?: number;
+}
+
 /** Named apart from core's `BalancesOptions`, which the runner builds from it. */
 export interface BalancesCommandOptions extends Endpoint {
   /** An address or name; validated and resolved by the chain's client. */
@@ -353,6 +364,7 @@ export type ParsedCommand =
   | { command: "sales"; options: SalesCommandOptions }
   | { command: "activity"; options: ActivityCommandOptions }
   | { command: "trace"; options: TraceCommandOptions }
+  | { command: "holders"; options: HoldersCommandOptions }
   | { command: "balances"; options: BalancesCommandOptions }
   | { command: "watch"; options: WatchCommandOptions }
   | { command: "inspect"; options: InspectOptions }
@@ -581,6 +593,16 @@ const TRACE_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const HOLDERS_OPTIONS = {
+  ...READ_OPTIONS,
+  indexer: { type: "string" },
+  at: { type: "string" },
+  verify: { type: "string" },
+  "max-requests": { type: "string" },
+  format: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const BALANCES_OPTIONS = {
   ...READ_OPTIONS,
   asset: { type: "string", multiple: true },
@@ -684,6 +706,7 @@ export const USAGE = `Usage:
   streamd sales [--marketplace <name>]... [--token <token>] [--to-version <n | head>] [options]
   streamd activity <address | name> [--to-version <n | head>] [--indexer <url>] [options]
   streamd trace <address | name> [--hops <n>] [--format <json|dot>] [--indexer <url>] [options]
+  streamd holders <asset> --at <version> [--verify <none|supply|stores>] [--format <json|csv>] [options]
   streamd balances <address | name> [--asset <asset>]... [options]
   streamd watch <address>... [--cursor-file <path>] [options]
   streamd inspect <address> --resource <type> --from-version <n> [--to-version <n | head>] [options]
@@ -722,6 +745,9 @@ activity prints each transaction an Aptos account sent or received as a JSON
 line of its direction, transfers, balance changes and events, and trace the
 counterparty graph around it as one JSON line or Graphviz DOT; both read the
 account's transactions from the Indexer and everything else from the fullnode.
+holders prints every fungible store holding an Aptos asset at a past version,
+largest first, as JSON lines or CSV, folded back from the Indexer and checked
+against the chain there, then the snapshot's summary as one JSON line on stderr.
 balances prints a wallet's balance of each asset once, then a JSON line each
 time one changes, read at the head every --poll-interval.
 watch follows the transactions each address sent, one walk per address, and
@@ -757,7 +783,7 @@ from a funded account, runs the command against it (with STREAMD_NODE_URL,
 STREAMD_FAUCET_URL, STREAMD_PACKAGE_ADDRESS and STREAMD_PUBLISHER_KEY set), then
 prints one JSON line per #[event] struct of the package: whether the run emitted
 it, how often, and the call that first did. It exits 1 if the command failed.
-Every command but handles, inspect, explain, swaps, sales, activity, trace and coverage takes --chain sui
+Every command but handles, inspect, explain, swaps, sales, activity, trace, holders and coverage takes --chain sui
 to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
@@ -775,7 +801,7 @@ Options:
   --protocol <name>      swaps: only this DEX, repeatable: hyperion, thala-clamm, thala-v2,
                          cellana, tapp, liquidswap, pancakeswap or thala-v1
   --marketplace <name>   sales: only this marketplace, repeatable: wapal or tradeport
-  --indexer <url>        activity, trace: the Indexer's GraphQL URL (default: the network's),
+  --indexer <url>        activity, trace, holders: the Indexer's GraphQL URL (default: the network's),
                          which gets the API key only when it is the network's and there is
                          no --node-url
   --hops <n>             trace: hops to follow from the address, 1 to 6 (default: 1)
@@ -783,7 +809,10 @@ Options:
                          (default: both)
   --min-amount <n>       trace: ignore transfers below this many base units
   --max-nodes <n>        trace: most addresses in the graph, root included (default: 100)
-  --max-requests <n>     trace: most adapter calls (default: 1000)
+  --max-requests <n>     trace: most adapter calls; holders: most requests, Indexer and
+                         fullnode alike (default: 1000)
+  --verify <check>       holders: supply checks the total against the supply at the version
+                         (default), stores also every holder's balance, none nothing
   --stop <address>       trace: keep this address but never expand it, repeatable
   --target <address>     trace: stop once this address joins, and add the path to it
   --token <token>        sales: only this token, an object address or legacy token id
@@ -792,7 +821,8 @@ Options:
   --creation-number <n>  event handle by creation number (with --account)
   --resource <type>      every change to this resource (with --account); inspect: the
                          resource to inspect (required)
-  --at <n>               inspect: print the resource's value at this version, null if absent
+  --at <n>               inspect: print the resource's value at this version, null if absent;
+                         holders: the version to list holders at (required)
   --network <name>       mainnet, testnet, devnet, movement-mainnet, or movement-testnet
                          (default: mainnet)
   --node-url <url>       fullnode URL, overriding the network's default; repeatable on
@@ -840,7 +870,8 @@ Options:
   --format <name>        tail: json, or pretty for aligned lines in UTC (default: json);
                          inspect: json, or pretty for one line per changed path;
                          coverage: json, or pretty for one line per event struct;
-                         trace: json, or dot for Graphviz
+                         trace: json, or dot for Graphviz;
+                         holders: json, or csv with a header row (default: json)
   --retries <n>          forward, alert, serve: retries per batch or alert (default: ${DEFAULT_RETRIES})
   --timeout <ms>         forward, alert, serve: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx, explain: wait for commit (default: 20000)
@@ -1815,12 +1846,14 @@ function parseSales(args: string[]): ParsedCommand {
 }
 
 /** The one address or name `activity` and `trace` take, and their Indexer; Aptos only. */
-function indexedTarget(command: "activity" | "trace", values: { chain?: string; indexer?: string }, positionals: string[]) {
+function indexedTarget(command: "activity" | "trace" | "holders", values: { chain?: string; indexer?: string }, positionals: string[]) {
   if (chain(values.chain)) {
     throw new UsageError(`${command} is not available with --chain sui: SuiClient has no ${command} yet`);
   }
   const [address, ...rest] = positionals;
-  if (address === undefined || address === "" || rest.length > 0) throw new UsageError(`${command} needs one address or name`);
+  if (address === undefined || address === "" || rest.length > 0) {
+    throw new UsageError(`${command} needs one ${command === "holders" ? "asset" : "address or name"}`);
+  }
   if (values.indexer !== undefined && httpUrl(values.indexer) === undefined) {
     throw new UsageError(`--indexer must be an http or https URL: ${values.indexer}`);
   }
@@ -1878,6 +1911,27 @@ function parseTrace(args: string[]): ParsedCommand {
   const stop = names("stop", values.stop);
   if (stop !== undefined) options.stop = stop;
   return { command: "trace", options };
+}
+
+function parseHolders(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: HOLDERS_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const { address: asset, ...indexer } = indexedTarget("holders", values, positionals);
+  const at = version(values.at, "at");
+  if (at === undefined) throw new UsageError("holders needs --at <version>");
+  const format = values.format ?? "json";
+  if (format !== "json" && format !== "csv") throw new UsageError(`--format must be json or csv: ${format}`);
+  const options: HoldersCommandOptions = { asset, at, ...indexer, format, ...withKey(endpoint(values, false), values["api-key"]) };
+  const { verify } = values;
+  if (verify !== undefined) {
+    if (verify !== "none" && verify !== "supply" && verify !== "stores") throw new UsageError(`--verify must be none, supply or stores: ${verify}`);
+    options.verify = verify;
+  }
+  const maxRequests = integer("max-requests", values["max-requests"], 1, Number.MAX_SAFE_INTEGER);
+  if (maxRequests !== undefined) options.maxRequests = maxRequests;
+  return { command: "holders", options };
 }
 
 const TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/;
@@ -2014,6 +2068,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "sales") return parseSales(rest);
   if (command === "activity") return parseActivity(rest);
   if (command === "trace") return parseTrace(rest);
+  if (command === "holders") return parseHolders(rest);
   if (command === "balances") return parseBalances(rest);
   if (command === "watch") return parseWatch(rest);
   if (command === "inspect") return parseInspect(rest);
