@@ -548,6 +548,52 @@ const { groups, cursor } = JSON.parse(storage.get());
 const resumed = streamd.reduce(Deposit, perStore, new Map(groups.map(([key, n]) => [key, BigInt(n)])), { cursor });
 ```
 
+#### Points and quests
+
+`points(options)` folds events into a score per address, for leaderboards, quests and loyalty
+programs. Each rule awards the address it names whenever an event matches; thresholds record
+when a score first reaches them, and decay shrinks idle scores over chain time:
+
+```ts
+import { points } from "@streamd/core";
+
+const quest = points({
+  rules: [
+    { id: "swap", points: 10n, firstTime: 50n },
+    { id: "big", where: (e) => BigInt((e.data as { amount: string }).amount) >= 1_000_000n, points: 100n, limit: 3 },
+    { id: "referral", address: "referrer", points: 25n },
+  ],
+  thresholds: [{ id: "bronze", points: 100n }, { id: "gold", points: 1_000n }],
+  decay: { interval: 7n * 86_400_000_000n, keep: { numerator: 9n, denominator: 10n } }, // keep 90% a week
+});
+const board = streamd.reduce(Deposit, quest, quest.initial, { fromVersion: -100_000n });
+await board.ready;
+quest.standings(board.value, { limit: 10 }); // the top ten, highest first
+```
+
+- **Rules.** Every rule that matches awards on its own. `id` names the rule (unique, non-empty).
+  `where` is a synchronous predicate, since a reducer is; a returned promise throws. `address`
+  is `"sender"` (the default, the transaction's signer) or a `whereField` path in `event.data`;
+  a missing or `null` address skips the rule, anything else that is not an address string
+  throws. `points` is a `bigint` or a function of the event returning one, `1n` by default, and
+  may be negative. `firstTime` is added once, on an address's first award by that rule, and
+  `limit` caps the awards one address gets from it.
+- **Scores.** The state is a `Map` from long-form address to `Score { address, points, awards,
+  reached, version, updatedAt? }`: `awards` counts each rule's awards, `reached` holds the
+  version at which each threshold was first reached (kept even if the score later falls),
+  `version` is the last event that changed it. A fold returns a new `Map`, copying only the
+  scores it changed, so earlier values and `initial` stay as they were.
+- **Decay.** `interval` is in microseconds, the unit of `event.timestamp`, and `keep` is a
+  fraction from 0 to 1. Before an award, the whole intervals since the score's `updatedAt` are
+  applied at once as `points * numerator^k / denominator^k`, rounded toward zero, and the clock
+  moves on by those intervals. With decay set, an awarding event without a `timestamp` throws.
+- **Standings.** `quest.standings(state, { at, limit })` sorts by points, highest first, ties
+  by address in byte order. `at` applies decay up to that timestamp on copies, leaving the state
+  unchanged, and is refused when earlier than a score's `updatedAt`.
+- **Saving.** `scoreToJson(score)` writes a score as JSON text with bigints as decimal strings,
+  and `scoreFromJson(text)` reads it back, refusing a malformed field by name. `storePoints` in
+  both store packages keeps the whole leaderboard and its cursor for you.
+
 ### Replay history
 
 `replay()` feeds a past range through an `on()` callback, so a handler written for live
@@ -4073,6 +4119,30 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   written, which ends the subscription as a failed write does. `store.writeTransfers(records,
   { name, cursor })` is there for wiring your own, and `prune` deletes transfers below its edge
   with the events.
+- **Stored points.** `storePoints(client, store, descriptor, fold, options)` runs
+  `client.reduce()` over a `points()` fold and keeps the leaderboard in `streamd_points`, one
+  row per `name` and address: `points` (exact decimal text), `version` (zero-padded) and
+  `score`, the whole score as `scoreToJson` writes it. `options` are `reduce()`'s, but `cursor`,
+  plus `name`. The first run folds the history from the given start, then writes every row and
+  the cursor (under `points:<name>`) in one transaction; each live change then writes the rows
+  it changed and the cursor in one transaction. A restart with a saved cursor reads the rows back
+  as the initial value and follows on from the cursor, without folding the history again (the
+  history options are ignored). It returns the `Reduction`. A failed write stops it and reaches
+  `onError`, and a failed first write also rejects `ready`.
+
+  ```ts
+  import { points } from "@streamd/core";
+  import { SqliteEventStore, storePoints } from "@streamd/store-sqlite";
+
+  const quest = points({ rules: [{ id: "swap", points: 10n }] });
+  const board = storePoints(streamd, store, Deposit, quest, { name: "quest", fromVersion: -100_000n });
+  await board.ready;
+  quest.standings(store.readPoints("quest"), { limit: 10 });
+  ```
+
+  `store.writePoints(name, scores, { name, cursor })` and `store.readPoints(name)` are there for
+  wiring your own. The table is created by the first points write; `prune` leaves it, as it
+  leaves cursors.
 - **Resource changes.** A change carries its resource type but not the address holding it, so
   `storeEvents` over a `resource` descriptor stores the descriptor's address with each change,
   in the `account_address` column (long form, `0x` and 64 lowercase hex digits; null on every
@@ -4249,6 +4319,12 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   stay within Postgres's btree index limit, while `transfer` keeps the full strings).
   It is created on the first transfer write or prune, apart from the event tables, and `prune`
   deletes transfers below the edge in its one statement.
+- **Stored points.** `await storePoints(client, store, descriptor, fold, options)`,
+  `await store.writePoints(name, scores, checkpoint)` and `await store.readPoints(name)` work as
+  on the SQLite store, resolving once the saved cursor and rows are read. `streamd_points` holds
+  `points` as `numeric` (exact, so `ORDER BY points DESC` ranks it), `version` as
+  `numeric(20, 0)` and `score` as JSON text. Each write, the first one with every row included,
+  is one statement with the cursor, and live writes run one at a time in event order.
 - **Saved cursors.** `await store.cursors()` and `await store.deleteCursor(name)` work as they
   do on the SQLite store, the delete itself a single statement. Names sort in byte order
   (`COLLATE "C"`) whatever the database's collation, so in a UTF-8 database both stores list
