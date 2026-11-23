@@ -1,6 +1,6 @@
 /**
  * A string equal for values that are equal by value: object keys in any order,
- * a `Map` by its entries in order, `bigint` distinct from numbers and strings,
+ * a `Map` or `Set` by its entries in order, `bigint` distinct from numbers and strings,
  * and functions keyed by presence only, since hooks call the latest function
  * through a ref.
  */
@@ -9,6 +9,7 @@ export function valueKey(value: unknown): string {
     if (typeof v === "bigint") return { $bigint: String(v) };
     if (typeof v === "function") return { $function: true };
     if (v instanceof Map) return { $map: [...v] };
+    if (v instanceof Set) return { $set: [...v] };
     if (v !== null && typeof v === "object" && !Array.isArray(v)) {
       return Object.fromEntries(
         Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),

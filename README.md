@@ -501,12 +501,13 @@ gives up. `signal`, `unsubscribe()` and `destroy()` stop it at any stage without
 
 #### Ready-made reducers
 
-`count()`, `sum(path)`, `latest()` and `groupBy(path, inner)` cover the common folds. Each is
+`count()`, `sum(path)`, `min(path)`, `max(path)`, `latest()`, `distinct(path)`,
+`groupBy(path, inner)` and `buckets(interval, inner)` cover the common folds. Each is
 a plain reducer with the value it starts from attached as `.initial`, so it goes in the same
 place as a hand-written one, and the `initial` argument stays yours for a saved value:
 
 ```ts
-import { count, groupBy, latest, sum } from "@streamd/core";
+import { buckets, count, distinct, groupBy, latest, max, min, sum } from "@streamd/core";
 
 const deposits = streamd.reduce(Deposit, count(), 0n, { fromVersion: -10_000n });
 const volume = streamd.reduce(Deposit, sum("amount"), 0n, { fromVersion: -10_000n });
@@ -515,6 +516,14 @@ const newest = streamd.reduce(Deposit, latest(), undefined);
 const perStore = groupBy("store", count());
 const byStore = streamd.reduce(Deposit, perStore, perStore.initial, { fromVersion: -10_000n });
 byStore.value.get(store); // a bigint, or undefined for a store not seen yet
+
+const largest = streamd.reduce(Deposit, max("amount"), undefined, { fromVersion: -10_000n });
+const stores = distinct("store");
+const seen = streamd.reduce(Deposit, stores, stores.initial); // seen.value.values.size
+
+const hourly = buckets(3_600_000_000n, sum("amount"), { keep: 24 });
+const perHour = streamd.reduce(Deposit, hourly, hourly.initial, { fromVersion: -10_000n });
+perHour.value.get(hourStart); // the hour's volume, keyed by its start in microseconds
 ```
 
 - **`count()`** - the number of events folded, a `bigint` from `0n`.
@@ -524,7 +533,16 @@ byStore.value.get(store); // a bigint, or undefined for a store not seen yet
   array. A missing or `null` field adds nothing, so a list of descriptors whose types lack it
   still sums, and a mistyped path sums to `0n`. Any other value that is not an integer throws,
   which stops the reduction as any reducer throw does, rather than leave the total wrong.
+- **`min(path)`** and **`max(path)`** - the smallest and largest integer at `path`, a `bigint`
+  read as `sum` reads it, `undefined` until the first. A missing or `null` field is passed
+  over; any other non-integer throws.
 - **`latest()`** - the most recently folded event, `undefined` before the first.
+- **`distinct(path, { max })`** - `{ values, capped }`: a `Set` of the values seen at `path`,
+  keyed as `groupBy` keys them (so addresses as reported), a missing or `null` field skipped
+  and an object or array thrown. At most `max` values are kept (default 10,000); once full,
+  new values are not added and `capped` turns `true`, so `values.size` is then a lower bound.
+  A new value returns a new state with a new `Set`; one already held returns the state as it
+  was.
 - **`groupBy(path, inner)`** - a `Map` from the value at `path` to `inner` folded over that
   key's events, each new key starting from `inner.initial`. Keys are strings: a string as the
   source reports it, and a number, `bigint` or boolean through `String`. Addresses are not
@@ -532,11 +550,22 @@ byStore.value.get(store); // a bigint, or undefined for a store not seen yet
   always written the same way. A missing or `null` field skips the event, an object or array
   throws. Every event returns a new `Map`, so the previous value and `initial` are never
   changed. Groups nest: `groupBy("pool", groupBy("store", sum("amount")))`.
+- **`buckets(interval, inner, { keep })`** - a `Map` from the start of each window of
+  `interval` microseconds of the event's `timestamp` (a positive `bigint`, windows aligned to
+  the Unix epoch, so an hour starts on the hour UTC) to `inner` folded over that window's
+  events, each from `inner.initial`. Windows are chain time, not wall clock, and an event with
+  no `timestamp` throws, so the source must stamp events (`FullnodeScanAdapter` does on the
+  `module` and `account` paths). `keep` holds at most that many windows, dropping the
+  earliest, and an event older than every kept window once full is dropped with it; without
+  `keep` the map gains one entry per window for as long as the reduction runs. Every event
+  returns a new `Map`, and `buckets` nests with `groupBy` either way round.
 
 Pass `fold.initial`, or a typed literal such as `new Map<string, bigint>()`, rather than a bare
 `new Map()`, which TypeScript reads as `Map<any, any>`. To resume, save the value in a
 JSON-safe form beside `cursor`: a `bigint` as `value.toString()` and back with `BigInt(...)`, a
-`groupBy` map as its entries, and `latest()`'s event with `serializeEvent` and `parseEvent`.
+`groupBy` or `buckets` map as its entries (a `buckets` key through `toString()` too), a
+`distinct` state as `{ values: [...state.values], capped }`, and `latest()`'s event with
+`serializeEvent` and `parseEvent`.
 
 ```ts
 const save = () => storage.set(JSON.stringify({
@@ -4508,7 +4537,8 @@ function Feed() {
   calls the latest `reducer` without restarting. `initial` is compared by value, a `Map` by its
   entries, so a fresh `new Map()` each render does not restart it; a class instance compares as
   empty. The ready-made reducers work here as they do with `client.reduce`:
-  `useReduction(Deposit, perStore, perStore.initial)` returns a `Map<string, bigint>`.
+  `useReduction(Deposit, perStore, perStore.initial)` returns a `Map<string, bigint>`, and a
+  `distinct` state's `Set` compares by its entries as a `Map` does.
 - **`useBalances(address, options?)`** runs `client.balances` and returns
   `{ balances, error, status }`. `balances` is a `ReadonlyMap` of every balance read so far, keyed
   by asset in long form as the client keys it (APT as `0x000...00a`), empty until the first read

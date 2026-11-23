@@ -20,6 +20,13 @@ describe("valueKey", () => {
     expect(valueKey({ where: () => true })).not.toBe(valueKey({}));
   });
 
+  it("keys a Set by its entries, apart from a Map or array of the same", () => {
+    expect(valueKey({ values: new Set(["0xa"]), capped: false })).toBe(valueKey({ capped: false, values: new Set(["0xa"]) }));
+    expect(valueKey(new Set(["0xa"]))).not.toBe(valueKey(new Set(["0xb"])));
+    expect(valueKey(new Set(["0xa"]))).not.toBe(valueKey(new Set()));
+    expect(valueKey(new Set(["0xa"]))).not.toBe(valueKey(["0xa"]));
+  });
+
   it("keys a Map by its entries", () => {
     expect(valueKey(new Map([["0xa", 1n]]))).toBe(valueKey(new Map([["0xa", 1n]])));
     expect(valueKey(new Map([["0xa", 1n]]))).not.toBe(valueKey(new Map([["0xa", 2n]])));
