@@ -5188,8 +5188,9 @@ streamd alert --rules rules.json --to https://hooks.example.com/alerts --cursor-
 | Rule field | Meaning |
 | --- | --- |
 | `name` | unique, non-empty; names the rule in alerts and in the cursor file (required) |
-| `descriptor` | `eventType` (a type or a list), `account` and `resource`, combined as the `tail` flags of those names are (required) |
-| `where`, `sender`, `function`, `decode` | arrays of strings, exactly as the repeatable `--where`, `--sender`, `--function` and `--decode` flags |
+| `descriptor` | `eventType` (a type or a list), `account` and `resource`, combined as the `tail` flags of those names are (this or `source` required) |
+| `source` | a record source in place of `descriptor`, below (Aptos only) |
+| `where`, `sender`, `function`, `decode` | arrays of strings, exactly as the repeatable `--where`, `--sender`, `--function` and `--decode` flags; no `decode` with a `source` |
 | `window` | `<n>s`, `<n>m`, `<n>h` or `<n>d` (required) |
 | `threshold` | `{ "count": n }`, at least `n` matching events, or `{ "sum": "<path>", "gte": "<integer>" }`, the field at that path summed at full precision (`gte` a decimal string or a safe integer), or `{ "anomaly": { ... } }`, below (required) |
 
@@ -5197,6 +5198,30 @@ The file is read once, before anything reaches the chain. Any other key, a missi
 value the flags would refuse exits `1` with a message naming the file, the rule and the field, such
 as `rules.json: rule "fee-burst" (#1): window: must be a duration such as 30s, 5m, 1h or 1d`.
 Handle descriptors are refused: their events carry no timestamp.
+
+**Record sources** count and sum the records `streamd transfers`, `swaps` and `sales` print
+rather than raw events, so a sum reads paired, decoded amounts:
+
+```json
+{
+  "name": "apt-outflow",
+  "source": { "kind": "transfers", "asset": "0x1::aptos_coin::AptosCoin", "account": "alice.apt" },
+  "where": ["amount>=100000000"],
+  "window": "1h",
+  "threshold": { "sum": "amount", "gte": "1000000000000" }
+}
+```
+
+| `kind` | Narrowing fields, as the command's flags | Fields `sum` may read |
+| --- | --- | --- |
+| `transfers` | `asset`, `account` (an address or name) | `amount` |
+| `swaps` | `protocol` (a name or a list), `asset` | `amountIn`, `amountOut` |
+| `sales` | `marketplace` (a name or a list), `token` | `price`, `royalty`, `fee` |
+
+Every field is optional. `where`, `sender` and `function` test the record, which keeps its
+event's version, sender and timestamp, so windows are placed as for events. Names, assets and
+accounts are checked by the client as each rule starts, before anything is read, and a refused
+one exits `1` naming the rule. `--chain sui` refuses a rule with a `source`.
 
 | Option | Meaning |
 | --- | --- |
@@ -5211,7 +5236,7 @@ position.
 
 **Windows** are fixed and back to back, in chain time: an event belongs to the window of
 `window` length, aligned to the Unix epoch, that holds its `timestamp`. The same history always
-gives the same windows and the same alerts, whenever it is read. An event with no timestamp stops
+gives the same windows and the same alerts, whenever it is read. An event or record with no timestamp stops
 the command with exit `1`.
 
 **Firing** happens once per window and rule, on the event that first takes the count or sum to the
@@ -5289,7 +5314,7 @@ The window saved is always the one as of the end of the page the cursor follows,
 only after that page's alerts were acknowledged, so a restart resumes the window without losing an
 alert. Delivery is at least once: a crash, a failed delivery, or a stop while a page's alerts are
 being sent replays that page, resending its alerts with the same `id`. A stop between pages
-repeats nothing. An entry records what its rule counts; changing a rule's descriptor, filter,
+repeats nothing. An entry records what its rule counts; changing a rule's descriptor or source, filter,
 decode, window or threshold (any `anomaly` field included) makes the next run exit `1` naming it, until its entry is removed or
 another cursor file is used. Entries for rules no longer in the file are kept.
 

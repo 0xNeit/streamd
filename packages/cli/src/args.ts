@@ -758,7 +758,8 @@ forward POSTs each batch of matching events to a webhook as a JSON array, or
 adds it to a Redis stream, publishes it to a NATS JetStream subject or produces
 it to a Kafka topic, saving
 its position to a cursor file once the destination acknowledges it.
-alert follows the rules in a JSON file, each a descriptor, filter, window and
+alert follows the rules in a JSON file, each a descriptor or a transfers, swaps
+or sales record source, a filter, window and
 count, sum or anomaly threshold, and POSTs a signed alert to a webhook the first
 time a window of chain time crosses its threshold or leaves its baseline's
 band, saving each rule's position and open window to a cursor file.
