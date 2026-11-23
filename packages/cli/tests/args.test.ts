@@ -1242,6 +1242,55 @@ describe("parseCommand transfers", () => {
   });
 });
 
+describe("parseCommand swaps and sales", () => {
+  const options = (...argv: string[]) => {
+    const parsed = parseCommand(argv);
+    if (parsed.command !== "swaps" && parsed.command !== "sales") throw new Error("expected swaps or sales");
+    return parsed.options;
+  };
+
+  it("follows by default, with repeatable names and only the flags given", () => {
+    expect(options("swaps")).toEqual({ network: "mainnet" });
+    expect(options("swaps", "--protocol", "hyperion", "--protocol", "tapp", "--asset", "0xa")).toEqual({
+      network: "mainnet", protocol: ["hyperion", "tapp"], asset: "0xa",
+    });
+    expect(options("sales", "--marketplace", "wapal", "--token", "0xk", "--from-version", "5", "--limit", "3",
+      "--poll-interval", "200", "--batch-size", "500", "--cursor-file", "s.cursor")).toEqual({
+      network: "mainnet", marketplace: ["wapal"], token: "0xk", fromVersion: 5n, limit: 3, pollInterval: 200, batchSize: 500, cursorFile: "s.cursor",
+    });
+  });
+
+  it("reads a range with --to-version, and takes the read options", () => {
+    expect(options("swaps", "--from-version", "5", "--to-version", "9", "--order", "desc"))
+      .toEqual({ network: "mainnet", fromVersion: 5n, toVersion: 9n, order: "desc" });
+    expect(options("sales", "--from-version", "5", "--to-version", "head").toVersion).toBe("head");
+    expect(options("sales", "--api-key", "k", "--archive", "default").apiKey).toBe("k");
+  });
+
+  it.each(["swaps", "sales"])("%s refuses --chain sui", (command) => {
+    rejects([command, "--chain", "sui"], new RegExp(`${command} is not available with --chain sui: SuiClient has no ${command} yet`));
+  });
+
+  it.each([
+    [["swaps", "0x1::coin::CoinDeposit"], /swaps takes no event types/],
+    [["swaps", "--protocol", ""], /--protocol must not be empty/],
+    [["swaps", "--asset", ""], /--asset must not be empty/],
+    [["sales", "--marketplace", "wapal", "--marketplace", ""], /--marketplace must not be empty/],
+    [["sales", "--token", ""], /--token must not be empty/],
+    [["sales", "--cursor-file", ""], /--cursor-file must not be empty/],
+    [["swaps", "--order", "desc"], /--order needs --to-version/],
+    [["sales", "--to-version", "9"], /--to-version needs --from-version or --from-time/],
+    [["swaps", "--from-version", "9", "--to-version", "5"], /--to-version must not be below --from-version/],
+    [["sales", "--from-version", "1", "--to-version", "head", "--cursor-file", "c"], /--cursor-file follows live/],
+    [["swaps", "--from-version", "1", "--from-time", "1h"], /set --from-time or --from-version, not both/],
+    [["swaps", "--token", "0xk"], /Unknown option '--token'/],
+    [["sales", "--asset", "0xa"], /Unknown option '--asset'/],
+    [["swaps", "--account", "0x1"], /Unknown option '--account'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(args, message);
+  });
+});
+
 describe("parseCommand balances", () => {
   const balances = (...argv: string[]) => {
     const parsed = parseCommand(["balances", ...argv]);
@@ -1469,6 +1518,8 @@ describe("several nodes", () => {
     ["tx", HASH],
     ["explain", HASH],
     ["transfers"],
+    ["swaps"],
+    ["sales"],
     ["balances", ADDR],
     ["watch", ADDR],
   ];
@@ -1517,6 +1568,8 @@ describe("--archive", () => {
     ["tx", HASH],
     ["explain", HASH],
     ["transfers"],
+    ["swaps"],
+    ["sales"],
     ["balances", ADDR],
     ["watch", ADDR],
   ];
@@ -1586,6 +1639,8 @@ describe("--stats", () => {
     ["query", "--from-version", "1", TYPE],
     ["record", "--from-version", "1", "--to-version", "2", TYPE],
     ["transfers"],
+    ["swaps"],
+    ["sales"],
     ["balances", "0x1"],
     ["watch", "0x1"],
     ["tx", `0x${"a".repeat(64)}`],
