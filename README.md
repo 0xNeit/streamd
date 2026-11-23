@@ -71,9 +71,9 @@ TypeScript types:
   See [Serve a gateway](#serve-a-gateway).
 - `@streamd/playground` (`apps/playground`) - a browser page to check an event type, watch it
   live and copy its generated types and a snippet. Not published. See [Playground](#playground).
-- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
+- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers`, `useReduction`, `useActivity`, `useSwaps`, `useSales`, `usePositions` and `useExplain` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents`, `useSubmitTransaction` and
-  `useTransfers` take an `AptosClient`. See [React hooks](#react-hooks).
+  `useTransfers` take an `AptosClient`, and the record and position hooks need one. See [React hooks](#react-hooks).
 
 ## Usage
 
@@ -4519,6 +4519,41 @@ function Feed() {
   takes `balances`' options, without `signal`; `onChange` is called in its latest form. A
   `null`, `undefined` or empty address waits. It needs a client with `balances`
   (`BalancesClient`): an `AptosClient`, or a `SuiClient`, keyed by coin type.
+- **`useActivity(address, options?)`**, **`useSwaps(options?)`** and **`useSales(options?)`**
+  follow `client.activity`, `client.swaps` and `client.sales` with `useTransfers`' result and
+  lifetime, each event's `data` an `Activity`, a `Swap` or a `Sale`. They take those methods'
+  options without `signal`, plus `maxEvents` (default 100): `withAssetInfo` on `useActivity`,
+  `protocol` and `asset` on `useSwaps`, `marketplace` and `token` on `useSales`. Pass `null` to
+  `useSwaps` or `useSales`, or a `null`, `undefined` or empty address to `useActivity`, to wait.
+  A malformed address, protocol or marketplace shows as `status: "stopped"` with `error`.
+  `useActivity` needs an adapter serving `account` with `received: true`, as `activity` does.
+
+  ```tsx
+  const { events } = useSwaps({ protocol: "hyperion", maxEvents: 20 });
+  ```
+- **`usePositions(protocol, options?)`** runs `client.positions` and returns
+  `{ positions, error, status }`, shaped as `useBalances`: `positions` is a `ReadonlyMap` of
+  `LendingPosition` by long-form account, empty until the start reads finish, and a fresh map on
+  every change, so it can be compared by identity. `status` is `"idle"` (no protocol),
+  `"loading"`, `"live"`, or `"stopped"` once the start reads fail, the monitor stops or the
+  input is refused. It restarts only when the protocol or options (`account`, `threshold`,
+  `refreshInterval` and the rest, without `signal`) change by value; `onChange` and `onCross` are
+  called in their latest form.
+
+  ```tsx
+  const { positions } = usePositions("aave", { account: wallet });
+  const health = positions.get(wallet)?.health;
+  ```
+- **`useExplain(hash, options?)`** runs `client.explain` for a committed transaction and returns
+  `{ data, error, loading }`, as `useTransactionEvents` does: `data` is the
+  `TransactionExplanation`, a failed transaction included (`success: false`), and `error` is a
+  lookup that failed or timed out. It reads again when the hash or options (`timeout`,
+  `withAssetInfo`, `withValue`, `withNames`) change by value, aborting the read it replaces; a
+  `null` or `undefined` hash reads nothing. To explain an unsigned transaction, call
+  `client.explain` directly.
+- These five need an `AptosClient` (`ActivityClient`, `SwapsClient`, `SalesClient`,
+  `PositionsClient`, `ExplainClient`); given another client they throw a `StreamdError` naming
+  the method.
 - **Keyed by value.** Inline descriptors and options are compared by value (bigints
   included), so a re-render with an equal one keeps the subscription or result. A different
   one resubscribes, starting `events` empty, or refetches, aborting the request it replaces.
