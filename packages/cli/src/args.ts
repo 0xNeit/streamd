@@ -196,6 +196,17 @@ export interface TraceCommandOptions extends Endpoint {
   target?: string;
 }
 
+/** Aptos only; the asset is validated by the client. */
+export interface HoldersCommandOptions extends Endpoint {
+  asset: string;
+  at: bigint;
+  /** `--indexer`: the Indexer's GraphQL URL (default: the network's). */
+  indexer?: string;
+  format: "json" | "csv";
+  verify?: "none" | "supply" | "stores";
+  maxRequests?: number;
+}
+
 /** Named apart from core's `BalancesOptions`, which the runner builds from it. */
 export interface BalancesCommandOptions extends Endpoint {
   /** An address or name; validated and resolved by the chain's client. */
