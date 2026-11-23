@@ -1391,6 +1391,62 @@ describe("parseCommand holders", () => {
   });
 });
 
+describe("parseCommand positions", () => {
+  const A = `0x${"a".repeat(64)}`;
+  const positions = (...argv: string[]) => {
+    const parsed = parseCommand(["positions", ...argv]);
+    if (parsed.command !== "positions") throw new Error("expected a positions command");
+    return parsed.options;
+  };
+
+  it("defaults to no webhook and leaves the rest to the client", () => {
+    expect(positions("aave")).toEqual({ network: "mainnet", protocol: "aave", retries: 5, timeout: 10_000, headers: {} });
+  });
+
+  it("takes every flag, the threshold exactly and accounts in long form", () => {
+    expect(positions("echelon", "--account", "0xa", "--account", A, "--threshold", "1.05", "--refresh-interval", "0",
+      "--from-version", "7", "--to", "https://hook.example/p", "--retries", "2", "--timeout", "500",
+      "--header", "X-Team: risk", "--secret", "s", "--node-url", "https://n.example/v1", "--api-key", "k", "--stats")).toEqual({
+      network: "mainnet", protocol: "echelon", account: [`0x${"0".repeat(63)}a`, A],
+      threshold: { numerator: 105n, denominator: 100n }, refreshInterval: 0, fromVersion: 7n,
+      to: "https://hook.example/p", retries: 2, timeout: 500, headers: { "x-team": "risk" }, secret: "s",
+      nodeUrl: "https://n.example/v1", apiKey: "k", stats: true,
+    });
+    expect(positions("aave", "--threshold", "2").threshold).toEqual({ numerator: 2n, denominator: 1n });
+  });
+
+  it("signs from the environment only with a webhook", () => {
+    process.env.STREAMD_WEBHOOK_SECRET = "from-env";
+    try {
+      expect(positions("aave", "--to", "http://127.0.0.1:9/").secret).toBe("from-env");
+      expect(positions("aave").secret).toBeUndefined();
+    } finally {
+      delete process.env.STREAMD_WEBHOOK_SECRET;
+    }
+  });
+
+  it.each([
+    [["positions"], /positions needs one protocol/],
+    [["positions", "aave", "echelon"], /positions needs one protocol/],
+    [["positions", "aries"], /positions reads aave or echelon: aries/],
+    [["positions", "aave", "--account", "alice.apt"], /Not a valid Aptos address/],
+    [["positions", "aave", "--threshold", "1e3"], /--threshold must be a non-negative decimal/],
+    [["positions", "aave", "--threshold=-1"], /--threshold must be a non-negative decimal/],
+    [["positions", "aave", "--threshold", ".5"], /--threshold must be a non-negative decimal/],
+    [["positions", "aave", "--refresh-interval=-1"], /--refresh-interval must be an integer from 0/],
+    [["positions", "aave", "--from-version", "0"], /--from-version must be at least 1/],
+    [["positions", "aave", "--from-version", "x"], /--from-version must be a non-negative integer/],
+    [["positions", "aave", "--secret", "s"], /--secret needs --to <url>/],
+    [["positions", "aave", "--retries", "1"], /--retries needs --to <url>/],
+    [["positions", "aave", "--header", "A: b"], /--header needs --to <url>/],
+    [["positions", "aave", "--to", "ftp://hook.example"], /--to must be an http or https URL/],
+    [["positions", "aave", "--cursor-file", "c"], /Unknown option '--cursor-file'/],
+    [["positions", "--chain", "sui", "aave"], /positions is not available with --chain sui/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(args, message);
+  });
+});
+
 describe("parseCommand balances", () => {
   const balances = (...argv: string[]) => {
     const parsed = parseCommand(["balances", ...argv]);
