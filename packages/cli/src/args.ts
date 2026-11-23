@@ -322,6 +322,8 @@ export type ParsedCommand =
   | { command: "tx"; options: TxOptions }
   | { command: "explain"; options: ExplainCommandOptions }
   | { command: "transfers"; options: TransfersOptions }
+  | { command: "swaps"; options: SwapsCommandOptions }
+  | { command: "sales"; options: SalesCommandOptions }
   | { command: "balances"; options: BalancesCommandOptions }
   | { command: "watch"; options: WatchCommandOptions }
   | { command: "inspect"; options: InspectOptions }
@@ -488,12 +490,9 @@ const QUERY_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
-const TRANSFERS_OPTIONS = {
-  ...READ_OPTIONS,
+/** What `transfers`, `swaps` and `sales` share. */
+const WALK_OPTIONS = {
   ...FROM_TIME,
-  asset: { type: "string" },
-  account: { type: "string" },
-  "with-asset-info": { type: "boolean" },
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -501,6 +500,30 @@ const TRANSFERS_OPTIONS = {
   "poll-interval": { type: "string" },
   "batch-size": { type: "string" },
   "cursor-file": { type: "string" },
+} as const;
+
+const TRANSFERS_OPTIONS = {
+  ...READ_OPTIONS,
+  ...WALK_OPTIONS,
+  asset: { type: "string" },
+  account: { type: "string" },
+  "with-asset-info": { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const SWAPS_OPTIONS = {
+  ...READ_OPTIONS,
+  ...WALK_OPTIONS,
+  protocol: { type: "string", multiple: true },
+  asset: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const SALES_OPTIONS = {
+  ...READ_OPTIONS,
+  ...WALK_OPTIONS,
+  marketplace: { type: "string", multiple: true },
+  token: { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -603,6 +626,8 @@ export const USAGE = `Usage:
   streamd tx <hash | digest>
   streamd explain <hash> [--json] [options]
   streamd transfers [--asset <asset>] [--account <address | name>] [--to-version <n | head>] [options]
+  streamd swaps [--protocol <name>]... [--asset <asset>] [--to-version <n | head>] [options]
+  streamd sales [--marketplace <name>]... [--token <token>] [--to-version <n | head>] [options]
   streamd balances <address | name> [--asset <asset>]... [options]
   streamd watch <address>... [--cursor-file <path>] [options]
   streamd inspect <address> --resource <type> --from-version <n> [--to-version <n | head>] [options]
@@ -635,6 +660,8 @@ balance changes, swaps and sales as text, or as one JSON line with --json,
 exiting 1 if it failed.
 transfers prints asset transfers as JSON lines: followed live, or with
 --to-version read over a closed range, then exits.
+swaps and sales print DEX swaps and NFT marketplace sales on Aptos the same
+way, one JSON line per pool hop or token sold.
 balances prints a wallet's balance of each asset once, then a JSON line each
 time one changes, read at the head every --poll-interval.
 watch follows the transactions each address sent, one walk per address, and
@@ -670,7 +697,8 @@ from a funded account, runs the command against it (with STREAMD_NODE_URL,
 STREAMD_FAUCET_URL, STREAMD_PACKAGE_ADDRESS and STREAMD_PUBLISHER_KEY set), then
 prints one JSON line per #[event] struct of the package: whether the run emitted
 it, how often, and the call that first did. It exits 1 if the command failed.
-Every command but handles, inspect, explain and coverage takes --chain sui to read Sui instead of Aptos.
+Every command but handles, inspect, explain, swaps, sales and coverage takes --chain sui
+to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
 --decode, which checks integer fields before --where runs.
@@ -681,7 +709,12 @@ Options:
   --asset <asset>        transfers: only this asset, a fungible-asset or token object address,
                          a coin type or a legacy token id (a coin type with --chain sui)
                          balances: an asset to follow, repeatable (default: APT, or SUI)
+                         swaps: only swaps with this asset on either side
   --with-asset-info      transfers: add each asset's symbol and decimals
+  --protocol <name>      swaps: only this DEX, repeatable: hyperion, thala-clamm, thala-v2,
+                         cellana, tapp, liquidswap, pancakeswap or thala-v1
+  --marketplace <name>   sales: only this marketplace, repeatable: wapal or tradeport
+  --token <token>        sales: only this token, an object address or legacy token id
   --handle <struct>      legacy event handle struct (with --account and --field)
   --field <name>         event handle field name
   --creation-number <n>  event handle by creation number (with --account)
@@ -712,8 +745,9 @@ Options:
                          (legs.*.amount); output and matches are unchanged, but a present
                          field that is not an unsigned integer is an error: query exits 1,
                          tail, forward, store and watch report it and skip the event
-  --limit <n>            tail, transfers, watch: exit after printing n; balances: after n changes;
-                         record, query, inspect: stop after n; compare: page size; monitor: rounds
+  --limit <n>            tail, transfers, swaps, sales, watch: exit after printing n;
+                         balances: after n changes; record, query, inspect: stop after n;
+                         compare: page size; monitor: rounds
   --rules <file>         alert: the rules file (required)
   --to <url>             forward, alert: webhook URL (http or https, required); forward also
                          takes redis://[user:password@]host[:port][/db] or rediss:// (TLS),
@@ -727,9 +761,9 @@ Options:
                          JetStream stream must capture (with nats://)
   --topic <name>         forward: the Kafka topic each batch is produced to, which must exist
                          (with kafka:// or kafkas://)
-  --cursor-file <path>   tail, transfers (following): save and resume from here; watch: each
-                         address's position, as one JSON object; forward: cursor file
-                         (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
+  --cursor-file <path>   tail, transfers, swaps, sales (following): save and resume from
+                         here; watch: each address's position, as one JSON object;
+                         forward: cursor file (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
                          and open window (default: ${DEFAULT_ALERT_CURSOR_FILE})
   --format <name>        tail: json, or pretty for aligned lines in UTC (default: json);
                          inspect: json, or pretty for one line per changed path;
@@ -748,13 +782,14 @@ Options:
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
   --to-version <n>       record: end of the range (required); query: default the head;
                          inspect: a version or head (default: head);
-                         forward: deliver up to here, then exit 0; transfers: a version or
-                         head, read the range instead of following (needs a start)
+                         forward: deliver up to here, then exit 0; transfers, swaps, sales: a
+                         version or head, read the range instead of following (needs a start)
   --batch-size <n>       forward: most events per POST (default: 25); serve: per webhook POST
-                         (default: each page); transfers (following):
+                         (default: each page); transfers, swaps, sales (following):
                          transactions per page (default: 25)
-  --order <asc|desc>     query, transfers with --to-version: oldest or newest first (default: asc;
-                         desc without --limit buffers the range to reverse it)
+  --order <asc|desc>     query; transfers, swaps, sales with --to-version: oldest or newest
+                         first (default: asc; desc without --limit buffers the range to
+                         reverse it)
   --out <file>           codegen, record: write to this file instead of stdout
   --cache <file>         query, record: keep settled pages in this SQLite file and read them
                          from it on the next run of the same range (Aptos only)
@@ -1608,18 +1643,14 @@ function parseName(args: string[]): ParsedCommand {
   return { command: "name", options: withKey(options, values["api-key"]) };
 }
 
-function parseTransfers(args: string[]): ParsedCommand {
-  const { values, positionals } = wrap(() =>
-    parseArgs({ args, options: TRANSFERS_OPTIONS, allowPositionals: true, strict: true }),
-  );
-  if (values.help) return { command: "help" };
-  if (positionals.length > 0) throw new UsageError(`transfers takes no event types: ${positionals[0]}`);
-  for (const flag of ["asset", "account", "cursor-file"] as const) {
-    if (values[flag] === "") throw new UsageError(`--${flag} must not be empty`);
-  }
-  const sui = chain(values.chain);
-  const options: TransfersOptions = endpoint(values, sui);
-  withKey(options, values["api-key"]);
+type WalkFlags = { [K in keyof typeof WALK_OPTIONS]?: string };
+
+/**
+ * The flags `transfers`, `swaps` and `sales` share: where the walk starts,
+ * whether it follows or reads a range, and how.
+ */
+function recordWalk<T extends RecordWalkOptions>(options: T, values: WalkFlags): T {
+  if (values["cursor-file"] === "") throw new UsageError("--cursor-file must not be empty");
   const fromVersion = version(values["from-version"]);
   const fromTime = startTime(values);
   const raw = values["to-version"];
@@ -1641,9 +1672,6 @@ function parseTransfers(args: string[]): ParsedCommand {
     options.toVersion = toVersion;
     options.order = order;
   }
-  if (values.asset !== undefined) options.asset = values.asset;
-  if (values.account !== undefined) options.account = values.account;
-  if (values["with-asset-info"]) options.withAssetInfo = true;
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
   if (fromTime !== undefined) options.fromTime = fromTime;
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
@@ -1653,7 +1681,63 @@ function parseTransfers(args: string[]): ParsedCommand {
   const batchSize = integer("batch-size", values["batch-size"], 1, 1000);
   if (batchSize !== undefined) options.batchSize = batchSize;
   if (values["cursor-file"] !== undefined) options.cursorFile = values["cursor-file"];
+  return options;
+}
+
+function parseTransfers(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: TRANSFERS_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (positionals.length > 0) throw new UsageError(`transfers takes no event types: ${positionals[0]}`);
+  for (const flag of ["asset", "account"] as const) {
+    if (values[flag] === "") throw new UsageError(`--${flag} must not be empty`);
+  }
+  const options: TransfersOptions = recordWalk(withKey(endpoint(values, chain(values.chain)), values["api-key"]), values);
+  if (values.asset !== undefined) options.asset = values.asset;
+  if (values.account !== undefined) options.account = values.account;
+  if (values["with-asset-info"]) options.withAssetInfo = true;
   return { command: "transfers", options };
+}
+
+/** `swaps` and `sales`: Aptos only, a repeatable name flag and one narrowing value. */
+function aptosRecords(command: "swaps" | "sales", values: WalkFlags & EndpointFlags & { chain?: string; "api-key"?: string; help?: boolean }, positionals: string[]) {
+  if (chain(values.chain)) {
+    throw new UsageError(`${command} is not available with --chain sui: SuiClient has no ${command} yet`);
+  }
+  if (positionals.length > 0) throw new UsageError(`${command} takes no event types: ${positionals[0]}`);
+  return recordWalk(withKey(endpoint(values, false), values["api-key"]), values);
+}
+
+function names(flag: string, raw: string[] | undefined): string[] | undefined {
+  if (raw?.some((name) => name === "")) throw new UsageError(`--${flag} must not be empty`);
+  return raw;
+}
+
+function parseSwaps(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: SWAPS_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (values.asset === "") throw new UsageError("--asset must not be empty");
+  const protocol = names("protocol", values.protocol);
+  const options: SwapsCommandOptions = aptosRecords("swaps", values, positionals);
+  if (protocol !== undefined) options.protocol = protocol;
+  if (values.asset !== undefined) options.asset = values.asset;
+  return { command: "swaps", options };
+}
+
+function parseSales(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: SALES_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (values.token === "") throw new UsageError("--token must not be empty");
+  const marketplace = names("marketplace", values.marketplace);
+  const options: SalesCommandOptions = aptosRecords("sales", values, positionals);
+  if (marketplace !== undefined) options.marketplace = marketplace;
+  if (values.token !== undefined) options.token = values.token;
+  return { command: "sales", options };
 }
 
 const TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/;
@@ -1786,6 +1870,8 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "tx") return parseTx(rest);
   if (command === "explain") return parseExplain(rest);
   if (command === "transfers") return parseTransfers(rest);
+  if (command === "swaps") return parseSwaps(rest);
+  if (command === "sales") return parseSales(rest);
   if (command === "balances") return parseBalances(rest);
   if (command === "watch") return parseWatch(rest);
   if (command === "inspect") return parseInspect(rest);

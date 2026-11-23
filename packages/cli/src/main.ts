@@ -24,8 +24,10 @@ import type {
   ParsedCommand,
   QueryOptions,
   RecordOptions,
+  SalesCommandOptions,
   ServeOptions,
   StoreOptions,
+  SwapsCommandOptions,
   TailOptions,
   TransfersOptions,
   TxOptions,
@@ -56,6 +58,8 @@ import { runMonitor, serveMetrics } from "./monitor.js";
 import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
+import { runSales, runSwaps } from "./records.js";
+import type { RecordsIO } from "./records.js";
 import { runServe } from "./serve.js";
 import { sqlTables } from "./sql.js";
 import { RequestStats, onStatsSignal } from "./stats.js";
@@ -270,6 +274,27 @@ async function transfers(options: TransfersOptions): Promise<number> {
   const out = stdout(controller);
   try {
     const code = await runTransfers(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function records<O extends SwapsCommandOptions | SalesCommandOptions>(
+  options: O,
+  run: (options: O, io: RecordsIO<AptosClient>) => Promise<number>,
+): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    // The parser refuses --chain sui, so this is always an AptosClient.
+    if (!(client instanceof AptosClient)) throw new Error("swaps and sales read Aptos only");
+    const code = await run(options, {
       client,
       write: out.write,
       error: (message) => process.stderr.write(`${message}\n`),
@@ -505,6 +530,8 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "tx") return tx(parsed.options);
   if (parsed.command === "explain") return explain(parsed.options);
   if (parsed.command === "transfers") return transfers(parsed.options);
+  if (parsed.command === "swaps") return records(parsed.options, runSwaps);
+  if (parsed.command === "sales") return records(parsed.options, runSales);
   if (parsed.command === "balances") return balances(parsed.options);
   if (parsed.command === "watch") return watch(parsed.options);
   if (parsed.command === "inspect") return inspect(parsed.options);
