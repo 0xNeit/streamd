@@ -5598,6 +5598,49 @@ snapshot is refused or fails (APT, a coin type, a coin-paired asset, a dispatcha
 `2` for invalid arguments, and `130` on Ctrl-C before it printed. Aptos only: `--chain sui` exits
 `2`.
 
+### Watch lending positions
+
+`streamd positions aave|echelon` follows [lending positions](#lending-positions) through
+`AptosClient.positions()`: each tracked position once the start read finishes, then a line each
+time a read changes one. With `--to` it also POSTs a signed alert to a webhook each time a
+position's health crosses `--threshold`.
+
+```sh
+# two Aave accounts, alerting below a health of 1.1
+streamd positions aave --account 0x5229... --account 0x1ffb... --threshold 1.1 \
+  --to https://hooks.example/liquidations --secret "$SECRET"
+# every Echelon account an event names from now on, printed only
+streamd positions echelon
+```
+
+```json
+{"protocol":"aave","account":"0x9d05...1449","version":"8178864820","assets":[],"collateralValue":"0/1","debtValue":"0/1","liquidationThreshold":"0/1","below":false}
+```
+
+- **Lines.** Each stdout line is the `LendingPosition` as the client keeps it: bigints as decimal
+  strings, and every `Fraction` (`collateralValue`, `debtValue`, `liquidationThreshold`,
+  `health`) as the exact string `"<numerator>/<denominator>"`, so a health of 1.25 is `"5/4"`.
+  The opening lines are the start read, one per account; each later line is one `onChange`.
+- **Alerts.** One POST per `onCross`, after that change's line:
+  `{"id","protocol","account","side","threshold","version","position"}`, `side` `below` or
+  `above` (the side the position crossed to), `threshold` and `position` in the line's form, and
+  `id` `<account>:<side>:<version>`, the same on every redelivery so a receiver can drop
+  repeats. Bodies are signed in `x-streamd-signature` with `--secret` or `STREAMD_WEBHOOK_SECRET`
+  ([`verifyWebhook`](#forward-events-to-a-webhook) checks them), retried as `alert`'s are with
+  `--retries`, `--timeout` and `--header`, which all need `--to`. There is no cursor file:
+  `positions()` keeps none, so a crossing while the command is down is not sent, and the first
+  read after a restart is never a crossing.
+- **Flags.** `--account <address>` is repeatable, addresses only; without it every account one
+  of the protocol's events names is tracked from the start on. `--threshold` is a decimal parsed
+  exactly (`1.05` is `105/100`; default `1`, the liquidation line). `--refresh-interval <ms>`
+  sets the head reads that see price moves (default `60000` with `--account`, otherwise none),
+  `--from-version` starts the scan there (at least `1`), and the read flags are `holders`'s.
+  Mainnet only, like `positions()`.
+
+Exit codes: `0` on Ctrl-C (or when stdout closes), `1` when the start read fails, the monitor
+stops after `maxErrors`, a write fails or an alert is not delivered past its retries, and `2`
+for invalid arguments. Aptos only: `--chain sui` exits `2`.
+
 ### Follow balances
 
 `streamd balances <address>` follows one wallet's [balances](#live-balances) through the chain

@@ -19,6 +19,7 @@ import type {
   ExplainCommandOptions,
   ForwardOptions,
   HoldersCommandOptions,
+  PositionsCommandOptions,
   HandlesOptions,
   InspectOptions,
   MonitorOptions,
@@ -69,6 +70,7 @@ import { RequestStats, onStatsSignal } from "./stats.js";
 import { connectPostgres, openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
 import { runHolders } from "./holders.js";
+import { runPositions } from "./positions.js";
 import { runTrace } from "./trace.js";
 import { runTransfers } from "./transfers.js";
 import { runTx } from "./tx.js";
@@ -367,6 +369,23 @@ async function holders(options: HoldersCommandOptions): Promise<number> {
   }
 }
 
+async function positions(options: PositionsCommandOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runPositions(options, {
+      // The parser refuses --chain sui, so this is always an AptosClient.
+      client: client as AptosClient,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
 async function balances(options: BalancesCommandOptions): Promise<number> {
   const { client, controller } = await setup(options);
   const out = stdout(controller);
@@ -596,6 +615,7 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "activity") return indexed(parsed.options, runActivity);
   if (parsed.command === "trace") return indexed(parsed.options, runTrace);
   if (parsed.command === "holders") return holders(parsed.options);
+  if (parsed.command === "positions") return positions(parsed.options);
   if (parsed.command === "balances") return balances(parsed.options);
   if (parsed.command === "watch") return watch(parsed.options);
   if (parsed.command === "inspect") return inspect(parsed.options);

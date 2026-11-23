@@ -207,6 +207,22 @@ export interface HoldersCommandOptions extends Endpoint {
   maxRequests?: number;
 }
 
+/** Aptos only; the webhook fields are set only with `to`. */
+export interface PositionsCommandOptions extends Endpoint {
+  protocol: "aave" | "echelon";
+  /** Long-form addresses; without them every account an event names is tracked. */
+  account?: string[];
+  threshold?: { numerator: bigint; denominator: bigint };
+  refreshInterval?: number;
+  fromVersion?: bigint;
+  /** Webhook URL for crossing alerts; may carry a token, so it is never printed. */
+  to?: string;
+  retries: number;
+  timeout: number;
+  headers: Record<string, string>;
+  secret?: string;
+}
+
 /** Named apart from core's `BalancesOptions`, which the runner builds from it. */
 export interface BalancesCommandOptions extends Endpoint {
   /** An address or name; validated and resolved by the chain's client. */
@@ -365,6 +381,7 @@ export type ParsedCommand =
   | { command: "activity"; options: ActivityCommandOptions }
   | { command: "trace"; options: TraceCommandOptions }
   | { command: "holders"; options: HoldersCommandOptions }
+  | { command: "positions"; options: PositionsCommandOptions }
   | { command: "balances"; options: BalancesCommandOptions }
   | { command: "watch"; options: WatchCommandOptions }
   | { command: "inspect"; options: InspectOptions }
@@ -603,6 +620,20 @@ const HOLDERS_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const POSITIONS_OPTIONS = {
+  ...READ_OPTIONS,
+  to: { type: "string" },
+  retries: { type: "string" },
+  timeout: { type: "string" },
+  header: { type: "string", multiple: true },
+  secret: { type: "string" },
+  account: { type: "string", multiple: true },
+  threshold: { type: "string" },
+  "refresh-interval": { type: "string" },
+  "from-version": { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const BALANCES_OPTIONS = {
   ...READ_OPTIONS,
   asset: { type: "string", multiple: true },
@@ -707,6 +738,7 @@ export const USAGE = `Usage:
   streamd activity <address | name> [--to-version <n | head>] [--indexer <url>] [options]
   streamd trace <address | name> [--hops <n>] [--format <json|dot>] [--indexer <url>] [options]
   streamd holders <asset> --at <version> [--verify <none|supply|stores>] [--format <json|csv>] [options]
+  streamd positions <aave|echelon> [--account <address>]... [--threshold <d>] [--to <url>] [options]
   streamd balances <address | name> [--asset <asset>]... [options]
   streamd watch <address>... [--cursor-file <path>] [options]
   streamd inspect <address> --resource <type> --from-version <n> [--to-version <n | head>] [options]
@@ -748,6 +780,9 @@ account's transactions from the Indexer and everything else from the fullnode.
 holders prints every fungible store holding an Aptos asset at a past version,
 largest first, as JSON lines or CSV, folded back from the Indexer and checked
 against the chain there, then the snapshot's summary as one JSON line on stderr.
+positions prints each Aave or Echelon lending position on Aptos mainnet as a
+JSON line once read, then again each time a read changes it, and with --to
+POSTs a signed alert to a webhook each time one's health crosses --threshold.
 balances prints a wallet's balance of each asset once, then a JSON line each
 time one changes, read at the head every --poll-interval.
 watch follows the transactions each address sent, one walk per address, and
@@ -783,7 +818,7 @@ from a funded account, runs the command against it (with STREAMD_NODE_URL,
 STREAMD_FAUCET_URL, STREAMD_PACKAGE_ADDRESS and STREAMD_PUBLISHER_KEY set), then
 prints one JSON line per #[event] struct of the package: whether the run emitted
 it, how often, and the call that first did. It exits 1 if the command failed.
-Every command but handles, inspect, explain, swaps, sales, activity, trace, holders and coverage takes --chain sui
+Every command but handles, inspect, explain, swaps, sales, activity, trace, holders, positions and coverage takes --chain sui
 to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
@@ -791,7 +826,13 @@ filter after fetching, so --limit counts the events that match; they also take
 
 Options:
   --account <address>    events from transactions this account sent; transfers: what this
-                         address or name (ANS, or SuiNS with --chain sui) sent or received
+                         address or name (ANS, or SuiNS with --chain sui) sent or received;
+                         positions: an account to follow, repeatable (default: every account
+                         the protocol's events name)
+  --threshold <d>        positions: the health factor alerts cross, a decimal (default: 1)
+  --refresh-interval <ms>
+                         positions: delay between head reads of every position (default:
+                         60000 with --account, otherwise 0, none)
   --asset <asset>        transfers: only this asset, a fungible-asset or token object address,
                          a coin type or a legacy token id (a coin type with --chain sui)
                          balances: an asset to follow, repeatable (default: APT, or SUI)
@@ -851,7 +892,8 @@ Options:
                          balances: after n changes; record, query, inspect: stop after n;
                          compare: page size; monitor: rounds
   --rules <file>         alert: the rules file (required)
-  --to <url>             forward, alert: webhook URL (http or https, required); forward also
+  --to <url>             forward, alert: webhook URL (http or https, required); positions:
+                         webhook for crossing alerts (optional); forward also
                          takes redis://[user:password@]host[:port][/db] or rediss:// (TLS),
                          Bun's own client under Bun, ioredis under Node (npm i ioredis);
                          or nats://[user:password@ | token@]host[:port], plaintext only;
@@ -872,11 +914,11 @@ Options:
                          coverage: json, or pretty for one line per event struct;
                          trace: json, or dot for Graphviz;
                          holders: json, or csv with a header row (default: json)
-  --retries <n>          forward, alert, serve: retries per batch or alert (default: ${DEFAULT_RETRIES})
-  --timeout <ms>         forward, alert, serve: per-request timeout (default: ${DEFAULT_TIMEOUT});
+  --retries <n>          forward, alert, positions, serve: retries per batch or alert (default: ${DEFAULT_RETRIES})
+  --timeout <ms>         forward, alert, positions, serve: per-request timeout (default: ${DEFAULT_TIMEOUT});
                          tx, explain: wait for commit (default: 20000)
-  --header <h>           forward, alert: request header 'Name: value', repeatable
-  --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
+  --header <h>           forward, alert, positions: request header 'Name: value', repeatable
+  --secret <s>           forward, alert, positions: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
                          a Redis entry's signature field or a NATS or Kafka header (or set
                          ${SECRET_ENV}, which keeps it out of ps)
   --db <file>            store: SQLite file to write (this or --postgres)
@@ -1367,14 +1409,18 @@ interface DeliveryFlags {
  * already checked another kind.
  */
 function delivery(command: string, values: DeliveryFlags, cursorFile: string, to = webhookUrl(values.to, command)) {
-  const options: Pick<ForwardOptions, "to" | "cursorFile" | "retries" | "timeout" | "headers" | "secret"> = {
-    to,
-    cursorFile: values["cursor-file"] ?? cursorFile,
+  const file = values["cursor-file"] ?? cursorFile;
+  if (file === "") throw new UsageError("--cursor-file must not be empty");
+  return { to, cursorFile: file, ...webhookFlags(values) };
+}
+
+/** `delivery` without the destination or cursor file: retries, timeout, headers and signing. */
+function webhookFlags(values: DeliveryFlags) {
+  const options: Pick<ForwardOptions, "retries" | "timeout" | "headers" | "secret"> = {
     retries: integer("retries", values.retries, 0, MAX_RETRIES) ?? DEFAULT_RETRIES,
     timeout: integer("timeout", values.timeout, 1, MAX_TIMEOUT) ?? DEFAULT_TIMEOUT,
     headers: headers(values.header),
   };
-  if (options.cursorFile === "") throw new UsageError("--cursor-file must not be empty");
   if (values.secret === "") throw new UsageError("--secret must not be empty");
   const secret = values.secret ?? (process.env[SECRET_ENV] || undefined);
   if (secret !== undefined) {
@@ -1934,6 +1980,42 @@ function parseHolders(args: string[]): ParsedCommand {
   return { command: "holders", options };
 }
 
+const DECIMAL = /^(\d+)(?:\.(\d+))?$/;
+
+function parsePositions(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: POSITIONS_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (chain(values.chain)) throw new UsageError("positions is not available with --chain sui: SuiClient has no positions yet");
+  const [protocol, ...rest] = positionals;
+  if (protocol === undefined || rest.length > 0) throw new UsageError("positions needs one protocol: aave or echelon");
+  if (protocol !== "aave" && protocol !== "echelon") throw new UsageError(`positions reads aave or echelon: ${protocol}`);
+  const options: PositionsCommandOptions = { protocol, ...withKey(endpoint(values, false), values["api-key"]), ...webhookFlags(values) };
+  if (values.to !== undefined) {
+    options.to = webhookUrl(values.to, "positions");
+  } else {
+    const flag = (["retries", "timeout", "header", "secret"] as const).find((f) => values[f] !== undefined);
+    if (flag !== undefined) throw new UsageError(`--${flag} needs --to <url>, where alerts are sent`);
+    delete options.secret;
+  }
+  if (values.account !== undefined) options.account = values.account.map((a) => checkedAddress(a, false));
+  if (values.threshold !== undefined) {
+    const parts = DECIMAL.exec(values.threshold);
+    if (parts === null) throw new UsageError(`--threshold must be a non-negative decimal such as 1.05: ${values.threshold}`);
+    const fraction = parts[2] ?? "";
+    options.threshold = { numerator: BigInt(parts[1]! + fraction), denominator: 10n ** BigInt(fraction.length) };
+  }
+  const refreshInterval = integer("refresh-interval", values["refresh-interval"], 0, MAX_TIMEOUT);
+  if (refreshInterval !== undefined) options.refreshInterval = refreshInterval;
+  const fromVersion = version(values["from-version"]);
+  if (fromVersion !== undefined) {
+    if (fromVersion < 1n) throw new UsageError("--from-version must be at least 1 for positions");
+    options.fromVersion = fromVersion;
+  }
+  return { command: "positions", options };
+}
+
 const TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/;
 // Base58 of 32 bytes; SuiClient checks the exact length.
 const SUI_DIGEST = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -2069,6 +2151,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "activity") return parseActivity(rest);
   if (command === "trace") return parseTrace(rest);
   if (command === "holders") return parseHolders(rest);
+  if (command === "positions") return parsePositions(rest);
   if (command === "balances") return parseBalances(rest);
   if (command === "watch") return parseWatch(rest);
   if (command === "inspect") return parseInspect(rest);
