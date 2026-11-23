@@ -18,9 +18,17 @@ export interface Anomaly {
 
 export type Threshold = { count: bigint } | { sum: string; gte: bigint } | { anomaly: Anomaly };
 
+/** A record source in place of a descriptor; names and values are checked by the client. */
+export type AlertSource =
+  | { kind: "transfers"; asset?: string; account?: string }
+  | { kind: "swaps"; protocol?: string[]; asset?: string }
+  | { kind: "sales"; marketplace?: string[]; token?: string };
+
 export interface AlertRule {
   name: string;
-  descriptor: EventDescriptor;
+  /** Exactly one of `descriptor` and `source` is set. */
+  descriptor?: EventDescriptor;
+  source?: AlertSource;
   filter?: CliFilter;
   decode?: string[];
   /** Window length in microseconds of chain time. */
@@ -32,9 +40,15 @@ export interface AlertRule {
 
 const ANOMALY_KEYS = new Set(["metric", "sum", "k", "baseline", "minBaseline", "direction"]);
 const DIRECTIONS = new Set(["above", "below", "both"]);
-const RULE_KEYS = new Set(["name", "descriptor", "where", "sender", "function", "decode", "window", "threshold"]);
+const RULE_KEYS = new Set(["name", "descriptor", "source", "where", "sender", "function", "decode", "window", "threshold"]);
 const DESCRIPTOR_KEYS = new Set(["eventType", "account", "resource"]);
 const HANDLE_KEYS = new Set(["handle", "field", "creationNumber"]);
+/** Each source's narrowing fields, and whether the field takes a list; then the record fields a sum may read. */
+const SOURCES: Record<AlertSource["kind"], { fields: Record<string, boolean>; sums: string[] }> = {
+  transfers: { fields: { asset: false, account: false }, sums: ["amount"] },
+  swaps: { fields: { protocol: true, asset: false }, sums: ["amountIn", "amountOut"] },
+  sales: { fields: { marketplace: true, token: false }, sums: ["price", "royalty", "fee"] },
+};
 const WINDOW = /^([1-9]\d*)([smhd])$/;
 const US_PER: Record<string, bigint> = { s: 1_000_000n, m: 60_000_000n, h: 3_600_000_000n, d: 86_400_000_000n };
 
@@ -76,6 +90,25 @@ function ruleDescriptor(raw: unknown, sui: boolean): EventDescriptor {
   } catch (err) {
     throw new Error(`descriptor: ${reason(err).replace(/--(\w)/g, "$1")}`);
   }
+}
+
+function ruleSource(raw: unknown, sui: boolean): AlertSource {
+  if (sui) throw new Error("source: record sources are Aptos only, so not available with --chain sui");
+  if (!isObject(raw)) throw new Error("source: must be an object");
+  const { kind } = raw;
+  if (typeof kind !== "string" || !Object.hasOwn(SOURCES, kind)) throw new Error('source: kind must be "transfers", "swaps" or "sales"');
+  const { fields } = SOURCES[kind as AlertSource["kind"]];
+  const source: Record<string, unknown> = { kind };
+  for (const [key, value] of Object.entries(raw)) {
+    if (key === "kind") continue;
+    if (!Object.hasOwn(fields, key)) throw new Error(`source: unknown field ${JSON.stringify(key)} for ${kind}`);
+    const list = fields[key]! && Array.isArray(value) ? value : [value];
+    if (list.length === 0 || !list.every((v) => typeof v === "string" && v !== "")) {
+      throw new Error(`source: ${key} must be a non-empty string${fields[key] ? " or a non-empty array of them" : ""}`);
+    }
+    source[key] = fields[key] ? list : list[0];
+  }
+  return source as AlertSource;
 }
 
 function window(raw: unknown): bigint {
@@ -162,15 +195,27 @@ function rule(raw: unknown, sui: boolean): AlertRule {
   for (const key of Object.keys(raw)) {
     if (!RULE_KEYS.has(key)) throw new Error(`unknown field ${JSON.stringify(key)}`);
   }
-  for (const key of ["descriptor", "window", "threshold"]) {
+  if ((raw.descriptor === undefined) === (raw.source === undefined)) throw new Error("needs exactly one of descriptor and source");
+  for (const key of ["window", "threshold"]) {
     if (raw[key] === undefined) throw new Error(`${key}: is required`);
   }
+  // `source` takes the descriptor's place, so a descriptor rule's fingerprint is unchanged.
   const parsed: Omit<AlertRule, "fingerprint"> = {
     name: raw.name as string,
-    descriptor: ruleDescriptor(raw.descriptor, sui),
+    ...(raw.source === undefined ? { descriptor: ruleDescriptor(raw.descriptor, sui) } : { source: ruleSource(raw.source, sui) }),
     window: window(raw.window),
     threshold: threshold(raw.threshold),
   };
+  if (parsed.source !== undefined) {
+    const { threshold: t } = parsed;
+    const summed = "anomaly" in t ? t.anomaly.sum : "sum" in t ? t.sum : undefined;
+    const { sums } = SOURCES[parsed.source.kind];
+    if (summed !== undefined && !sums.includes(summed)) {
+      const at = "anomaly" in t ? "threshold: anomaly: sum" : "threshold: sum";
+      throw new Error(`${at}: ${parsed.source.kind} records sum ${sums.map((f) => JSON.stringify(f)).join(" or ")}, not ${JSON.stringify(summed)}`);
+    }
+    if (raw.decode !== undefined) throw new Error("decode: not for a source, whose record amounts are already integers");
+  }
   const flags = { sender: strings(raw.sender, "sender"), function: strings(raw.function, "function"), where: strings(raw.where, "where") };
   const decodeRaw = strings(raw.decode, "decode");
   try {

@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
-import { MemoryAdapter, StreamdClient, eventId } from "@streamd/core";
-import type { EventAdapter, EventCallback, EventDescriptor, FetchOptions, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
-import { SqliteEventStore, StoreAdapter, storeEvents, storeTransfers } from "../src/index.js";
+import { MemoryAdapter, StreamdClient, eventId, points } from "@streamd/core";
+import type { EventAdapter, EventCallback, EventDescriptor, FetchOptions, PointsState, Reduction, Score, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
+import { SqliteEventStore, StoreAdapter, storeEvents, storePoints, storeTransfers } from "../src/index.js";
 import type { TransferClient } from "../src/index.js";
 
 const SWAP = "0x1::dex::Swap";
@@ -400,6 +400,150 @@ describe("storeTransfers", () => {
     storeTransfers(client, store, { name: "t", asset: 5 }).unsubscribe();
     // @ts-expect-error name is required
     expect(() => storeTransfers(client, store, { asset: "0xa" })).toThrow("needs a name");
+    client.destroy();
+  });
+});
+
+describe("storePoints", () => {
+  const A = `0x${"a".padStart(64, "0")}`;
+  const B = `0x${"b".padStart(64, "0")}`;
+  const deed = (version: number, sender: string): StreamdEvent => ({
+    type: SWAP,
+    data: {},
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 0,
+    sender,
+  });
+  const deeds = [deed(1, "0xa"), deed(2, "0xb"), deed(3, "0xa")];
+  const board = () => points({ rules: [{ id: "swap", points: 10n, firstTime: 5n }] });
+  const rows = (db: Database) =>
+    db.prepare("SELECT name, address, points, version FROM streamd_points ORDER BY address").all();
+
+  it("writes and reads a leaderboard with its cursor in one write", () => {
+    const store = new SqliteEventStore(new Database(":memory:"));
+    expect(store.readPoints("p")).toEqual(new Map());
+    const f = board();
+    const state = deeds.reduce(f, f.initial);
+    store.writePoints("p", state.values(), { name: "points:p", cursor: "c" });
+    expect(store.readPoints("p")).toEqual(state);
+    expect(store.readPoints("other")).toEqual(new Map());
+    expect(store.readCursor("points:p")).toBe("c");
+    expect(() => store.writePoints("", [])).toThrow("non-empty name");
+  });
+
+  it("folds the history into rows, then writes only a live event's row with the cursor", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    const adapter = new MemoryAdapter(deeds);
+    const client = new StreamdClient({ adapter });
+    let spy: ReturnType<typeof vi.spyOn> | undefined;
+    let result: Reduction<PointsState> | undefined;
+    let atChange: string | undefined;
+    const changed = new Promise<void>((resolve) => {
+      const reduction = storePoints(client, store, swaps, board(), {
+        name: "p",
+        pollInterval: 5,
+        onChange: () => {
+          atChange = reduction.cursor;
+          resolve();
+        },
+      });
+      void reduction.ready.then(() => {
+        expect(rows(db)).toEqual([
+          { name: "p", address: A, points: "25", version: "00000000000000000003" },
+          { name: "p", address: B, points: "15", version: "00000000000000000002" },
+        ]);
+        expect(store.readCursor("points:p")).toBe(reduction.cursor);
+        spy = vi.spyOn(store, "writePoints");
+        adapter.push(deed(4, "0xb"));
+      });
+      result = reduction;
+    });
+    await changed;
+    expect(spy).toHaveBeenCalledTimes(1);
+    const [name, scores, checkpoint] = spy!.mock.calls[0] as [string, Score[], { name: string; cursor: string }];
+    expect(name).toBe("p");
+    expect(scores.map((s) => s.address)).toEqual([B]);
+    expect(checkpoint).toEqual({ name: "points:p", cursor: atChange! });
+    expect(store.readCursor("points:p")).toBe(atChange);
+    expect(rows(db)).toEqual([
+      { name: "p", address: A, points: "25", version: "00000000000000000003" },
+      { name: "p", address: B, points: "25", version: "00000000000000000004" },
+    ]);
+    result!.unsubscribe();
+    client.destroy();
+  });
+
+  it("resumes from the saved rows and cursor without folding the history again", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    const first = new StreamdClient({ adapter: new MemoryAdapter(deeds) });
+    const r1 = storePoints(first, store, swaps, board(), { name: "p" });
+    await r1.ready;
+    r1.unsubscribe();
+    first.destroy();
+
+    const seen: string[] = [];
+    const later = [...deeds, deed(4, "0xb"), deed(5, "0xa")];
+    const second = new StreamdClient({ adapter: new MemoryAdapter(later) });
+    let r2: Reduction<PointsState> | undefined;
+    await new Promise<void>((resolve) => {
+      r2 = storePoints(second, store, swaps, board(), {
+        name: "p",
+        pollInterval: 5,
+        fromVersion: 0n,
+        where: (e) => (seen.push(eventId(e)), true),
+        onChange: (state) => state.get(A)?.version === 5n && resolve(),
+      });
+    });
+    r2!.unsubscribe();
+    second.destroy();
+    expect(seen).toEqual(["4:0", "5:0"]);
+    const f = board();
+    expect(store.readPoints("p")).toEqual(later.reduce(f, f.initial));
+  });
+
+  it("stops and reports a failed live write", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    const adapter = new MemoryAdapter(deeds);
+    const client = new StreamdClient({ adapter });
+    let reduction: Reduction<PointsState> | undefined;
+    const error = await new Promise<Error>((resolve) => {
+      reduction = storePoints(client, store, swaps, board(), { name: "p", pollInterval: 5, onError: resolve });
+      void reduction.ready.then(() => {
+        db.exec("CREATE TRIGGER boom BEFORE UPDATE ON streamd_points BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+        adapter.push(deed(4, "0xa"));
+      });
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    client.destroy();
+    expect((error.cause as Error).message).toContain("disk full");
+    expect(reduction!.active).toBe(false);
+    expect(store.readPoints("p").get(A)?.version).toBe(3n);
+  });
+
+  it("rejects ready and reports a failed backfill write", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.writePoints("p", []);
+    db.exec("CREATE TRIGGER boom BEFORE INSERT ON streamd_points BEGIN SELECT RAISE(ABORT, 'disk full'); END");
+    const client = new StreamdClient({ adapter: new MemoryAdapter(deeds) });
+    const reported: Error[] = [];
+    const reduction = storePoints(client, store, swaps, board(), { name: "p", onError: (e) => reported.push(e) });
+    await expect(reduction.ready).rejects.toThrow("disk full");
+    client.destroy();
+    expect(reported.map((e) => e.message)).toEqual([expect.stringContaining("disk full")]);
+    expect(reduction.active).toBe(false);
+    expect(store.readCursor("points:p")).toBeUndefined();
+  });
+
+  it("refuses a missing name or a cursor", () => {
+    const store = new SqliteEventStore(new Database(":memory:"));
+    const client = new StreamdClient({ adapter: new MemoryAdapter([]) });
+    expect(() => storePoints(client, store, swaps, board(), { name: "" })).toThrow("needs a name");
+    expect(() => storePoints(client, store, swaps, board(), { name: "p", cursor: "x" } as never)).toThrow("from the store");
     client.destroy();
   });
 });

@@ -1,9 +1,9 @@
 import { Aptos, AptosConfig, Network, getAptosFullNode } from "@aptos-labs/ts-sdk";
 import type { Client } from "@aptos-labs/ts-sdk";
-import { AptosClient, FullnodeScanAdapter, checkDescriptor, networks, primaryName, resolveName, sendOnce } from "@streamd/aptos";
+import { AptosClient, FullnodeScanAdapter, IndexerAccountAdapter, checkDescriptor, networks, primaryName, resolveName, sendOnce } from "@streamd/aptos";
 import { parseModuleAbi } from "@streamd/codegen";
 import type { ListModules, LoadModule, ModuleAbi } from "@streamd/codegen";
-import { ArchiveFallbackAdapter, CachingAdapter, PoolAdapter, StreamdError, StreamdNetworkError, toStreamdError } from "@streamd/core";
+import { ArchiveFallbackAdapter, CachingAdapter, PoolAdapter, RoutingAdapter, StreamdError, StreamdNetworkError, toStreamdError } from "@streamd/core";
 import type { CachingAdapterOptions, EventAdapter, ModuleEventDescriptor, StreamdClient } from "@streamd/core";
 import type { Endpoint } from "./args.js";
 import type { TypeChecks } from "./check.js";
@@ -14,6 +14,14 @@ import { suiChain } from "./sui.js";
 /** What the commands read through, so each is written once for both chains. */
 export interface Chain {
   client(): StreamdClient & Pick<AptosClient, "eventsOf" | "transfers" | "getTransfers" | "iterateTransfers" | "balances">;
+  /**
+   * Aptos only: a client whose `account` reads go to the Indexer at
+   * `indexerUrl` (default: the network's) and everything else to `client()`'s
+   * nodes. Throws a `StreamdError` when the network has no Indexer.
+   */
+  indexed?(indexerUrl?: string): AptosClient;
+  /** Aptos only: the Indexer `indexed()` routes to, keyed the same way and not counted by `--stats`. */
+  indexer?(indexerUrl?: string): IndexerAccountAdapter;
   /** An adapter over the endpoint's nodes, or over `nodeUrl` alone, which gets no API key. */
   adapter(nodeUrl?: string): HeadAdapter;
   /**
@@ -140,8 +148,23 @@ function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: R
     // Outermost, so a cached page reaches neither the pool nor the archive; the head passes through.
     return (shared = cache === undefined ? adapter : (new CachingAdapter(adapter, cache) as unknown as HeadAdapter));
   };
+  const indexerFor = (indexerUrl?: string) => {
+    // A key meant for a custom node, or a custom Indexer's own, never reaches the network's Indexer.
+    const apiKey = indexerUrl === undefined && endpoint.nodeUrl === undefined ? endpoint.apiKey : undefined;
+    return new IndexerAccountAdapter(new Aptos(config), {
+      ...(indexerUrl !== undefined && { indexerUrl }),
+      ...(apiKey !== undefined && { apiKey }),
+    });
+  };
+  const indexed = (indexerUrl?: string) => {
+    const indexer = indexerFor(indexerUrl);
+    const account = stats === undefined ? indexer : stats.track(indexer, "indexer");
+    return new AptosClient({ aptos: new Aptos(config), adapter: new RoutingAdapter({ account, default: reads() }) });
+  };
   return {
     client: () => new AptosClient({ aptos: new Aptos(config), adapter: reads() }),
+    indexed,
+    indexer: indexerFor,
     adapter: (nodeUrl) => (nodeUrl === undefined ? reads() : node(nodeUrl)),
     nodes: (timeout) => nodes(sendOnce(timeout)),
     check: (descriptor) => checkDescriptor(new Aptos(config), descriptor),

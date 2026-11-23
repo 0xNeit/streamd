@@ -154,4 +154,73 @@ describe("parseRules", () => {
       parseRules(JSON.stringify({ rules: [{ ...base, descriptor: { account: "0x2", resource: "0x2::a::A" } }] }), "f", true),
     ).toThrow('f: rule "fees" (#1): descriptor: resource is not available with chain sui');
   });
+  it("keeps a descriptor rule's fingerprint as it was, so saved positions resume", () => {
+    const [rule] = parse([{ ...base, where: ["amount>=10"] }]);
+    expect(rule!.fingerprint).toBe(
+      '{"descriptor":{"kind":"module","eventType":["0x1::transaction_fee::FeeStatement"]},"window":"60000000","threshold":{"count":"3"},"filter":{"senders":[],"functions":[],"where":[{"path":"amount","op":">=","value":"10"}]}}',
+    );
+  });
+
+  describe("record sources", () => {
+    const { descriptor: _, ...bare } = base;
+    const sourced = (source: unknown, extra: Record<string, unknown> = {}) => ({ ...bare, source, ...extra });
+    const at = 'rules.json: rule "fees" (#1): ';
+    const refused = (source: unknown, extra: Record<string, unknown> = {}) => () => parse([sourced(source, extra)]);
+
+    it("reads each source with its narrowing, lists from one name or many", () => {
+      const [transfers, swaps, sales, plain] = parse([
+        sourced({ kind: "transfers", asset: "0xa", account: "alice.apt" }, { threshold: { sum: "amount", gte: "18446744073709551617" } }),
+        sourced({ kind: "swaps", protocol: "hyperion", asset: "0xa" }, { name: "s", threshold: { sum: "amountIn", gte: 1 } }),
+        sourced({ kind: "sales", marketplace: ["wapal", "tradeport"], token: "0x1" }, { name: "n", threshold: { anomaly: { metric: "sum", sum: "price" } } }),
+        sourced({ kind: "swaps" }, { name: "p", where: ["amountOut>=5"], sender: ["0x1"] }),
+      ]);
+      expect(transfers!.source).toEqual({ kind: "transfers", asset: "0xa", account: "alice.apt" });
+      expect(transfers!.descriptor).toBeUndefined();
+      expect(transfers!.threshold).toEqual({ sum: "amount", gte: 18446744073709551617n });
+      expect(swaps!.source).toEqual({ kind: "swaps", protocol: ["hyperion"], asset: "0xa" });
+      expect(sales!.source).toEqual({ kind: "sales", marketplace: ["wapal", "tradeport"], token: "0x1" });
+      expect(plain!.source).toEqual({ kind: "swaps" });
+      expect(plain!.filter).toMatchObject({ senders: [LONG_ONE], where: [{ path: "amountOut", op: ">=", value: "5" }] });
+      expect(transfers!.fingerprint).toContain('"source":{"kind":"transfers"');
+    });
+
+    it("sums every integer field of each source", () => {
+      const fields = { transfers: ["amount"], swaps: ["amountIn", "amountOut"], sales: ["price", "royalty", "fee"] };
+      for (const [kind, sums] of Object.entries(fields)) {
+        for (const field of sums) {
+          expect(parse([sourced({ kind }, { threshold: { sum: field, gte: 1 } })])[0]!.threshold).toEqual({ sum: field, gte: 1n });
+        }
+      }
+    });
+
+    it("names the rule and field of every refusal", () => {
+      expect(() => parse([{ ...base, source: { kind: "transfers" } }])).toThrow(`${at}needs exactly one of descriptor and source`);
+      expect(() => parse([bare])).toThrow(`${at}needs exactly one of descriptor and source`);
+      expect(refused("transfers")).toThrow(`${at}source: must be an object`);
+      for (const kind of [undefined, "activity", "toString", 1]) {
+        expect(refused({ kind })).toThrow(`${at}source: kind must be "transfers", "swaps" or "sales"`);
+      }
+      expect(refused({ kind: "transfers", token: "0x1" })).toThrow(`${at}source: unknown field "token" for transfers`);
+      expect(refused({ kind: "sales", protocol: "hyperion" })).toThrow(`${at}source: unknown field "protocol" for sales`);
+      for (const asset of ["", 1, ["0xa"], null]) {
+        expect(refused({ kind: "transfers", asset })).toThrow(`${at}source: asset must be a non-empty string`);
+      }
+      for (const protocol of ["", [], [""], ["hyperion", 1], 1]) {
+        expect(refused({ kind: "swaps", protocol })).toThrow(`${at}source: protocol must be a non-empty string or a non-empty array of them`);
+      }
+      expect(refused({ kind: "transfers" }, { threshold: { sum: "amountIn", gte: 1 } })).toThrow(
+        `${at}threshold: sum: transfers records sum "amount", not "amountIn"`,
+      );
+      expect(refused({ kind: "swaps" }, { threshold: { anomaly: { metric: "sum", sum: "amount" } } })).toThrow(
+        `${at}threshold: anomaly: sum: swaps records sum "amountIn" or "amountOut", not "amount"`,
+      );
+      expect(refused({ kind: "sales" }, { decode: ["price"] })).toThrow(`${at}decode: not for a source, whose record amounts are already integers`);
+    });
+
+    it("refuses a source under --chain sui", () => {
+      expect(() => parseRules(JSON.stringify({ rules: [sourced({ kind: "transfers" })] }), "f", true)).toThrow(
+        'f: rule "fees" (#1): source: record sources are Aptos only, so not available with --chain sui',
+      );
+    });
+  });
 });

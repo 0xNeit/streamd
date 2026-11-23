@@ -5,9 +5,10 @@ import { readFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { writeFile } from "node:fs/promises";
 import { Aptos } from "@aptos-labs/ts-sdk";
-import { listEventHandles } from "@streamd/aptos";
+import { AptosClient, listEventHandles } from "@streamd/aptos";
 import { parseCommand, USAGE, UsageError } from "./args.js";
 import type {
+  ActivityCommandOptions,
   AlertOptions,
   BalancesCommandOptions,
   CheckOptions,
@@ -15,7 +16,10 @@ import type {
   CompareOptions,
   CoverageOptions,
   Endpoint,
+  ExplainCommandOptions,
   ForwardOptions,
+  HoldersCommandOptions,
+  PositionsCommandOptions,
   HandlesOptions,
   InspectOptions,
   MonitorOptions,
@@ -23,9 +27,12 @@ import type {
   ParsedCommand,
   QueryOptions,
   RecordOptions,
+  SalesCommandOptions,
   ServeOptions,
   StoreOptions,
+  SwapsCommandOptions,
   TailOptions,
+  TraceCommandOptions,
   TransfersOptions,
   TxOptions,
   WatchCommandOptions,
@@ -41,12 +48,14 @@ import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
 import { runCoverage } from "./coverage.js";
 import { checkGenerated } from "./codegen-check.js";
+import { runCodegenWatch } from "./codegen-watch.js";
 import { SUI_DIALECT, suiCodegen } from "./sui-abi.js";
 import { loadSui } from "./sui.js";
 import { generateEventTypes } from "@streamd/codegen";
 import type { SuiNetworkPreset } from "@streamd/sui";
 import { startLocalnet } from "@streamd/testing";
 import { message } from "./format.js";
+import { runExplain } from "./explain.js";
 import { runForward } from "./forward.js";
 import { runHandles } from "./handles.js";
 import { runInspect } from "./inspect.js";
@@ -54,11 +63,16 @@ import { runMonitor, serveMetrics } from "./monitor.js";
 import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
+import { runActivity, runSales, runSwaps } from "./records.js";
+import type { RecordsIO } from "./records.js";
 import { runServe } from "./serve.js";
 import { sqlTables } from "./sql.js";
 import { RequestStats, onStatsSignal } from "./stats.js";
 import { connectPostgres, openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
+import { runHolders } from "./holders.js";
+import { runPositions } from "./positions.js";
+import { runTrace } from "./trace.js";
 import { runTransfers } from "./transfers.js";
 import { runTx } from "./tx.js";
 import { runWatch } from "./watch.js";
@@ -245,12 +259,124 @@ async function tx(options: TxOptions): Promise<number> {
   }
 }
 
+async function explain(options: ExplainCommandOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    // The parser refuses --chain sui, so this is always an AptosClient.
+    if (!(client instanceof AptosClient)) throw new Error("explain reads Aptos only");
+    const code = await runExplain(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
 async function transfers(options: TransfersOptions): Promise<number> {
   const { client, controller } = await setup(options);
   const out = stdout(controller);
   try {
     const code = await runTransfers(options, {
       client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function records<O extends SwapsCommandOptions | SalesCommandOptions>(
+  options: O,
+  run: (options: O, io: RecordsIO<AptosClient>) => Promise<number>,
+): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    // The parser refuses --chain sui, so this is always an AptosClient.
+    if (!(client instanceof AptosClient)) throw new Error("swaps and sales read Aptos only");
+    const code = await run(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+/** `activity` and `trace`: an `AptosClient` whose account reads go to the Indexer. */
+async function indexed<O extends ActivityCommandOptions | TraceCommandOptions>(
+  options: O,
+  run: (options: O, io: { client: AptosClient; write(line: string): Promise<void>; error(message: string): void; signal: AbortSignal }) => Promise<number>,
+): Promise<number> {
+  const { chain, client: plain, controller } = await setup(options);
+  plain.destroy();
+  let client: AptosClient;
+  try {
+    // The parser refuses --chain sui, so the chain is Aptos's, which has indexed().
+    client = chain.indexed!(options.indexer);
+  } catch (err) {
+    process.stderr.write(`streamd: ${message(err)}\n`);
+    return 1;
+  }
+  const out = stdout(controller);
+  try {
+    const code = await run(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function holders(options: HoldersCommandOptions): Promise<number> {
+  const { chain, client, controller } = await setup(options);
+  let indexer;
+  try {
+    // The parser refuses --chain sui, so the chain is Aptos's, which has indexer().
+    indexer = chain.indexer!(options.indexer);
+  } catch (err) {
+    client.destroy();
+    process.stderr.write(`streamd: ${message(err)}\n`);
+    return 1;
+  }
+  const out = stdout(controller);
+  try {
+    const code = await runHolders(options, {
+      client: client as AptosClient,
+      indexer,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      summary: (line) => process.stderr.write(`${line}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function positions(options: PositionsCommandOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    const code = await runPositions(options, {
+      // The parser refuses --chain sui, so this is always an AptosClient.
+      client: client as AptosClient,
       write: out.write,
       error: (message) => process.stderr.write(`${message}\n`),
       signal: controller.signal,
@@ -428,12 +554,31 @@ async function write(options: CodegenOptions, source: string): Promise<number> {
 async function codegen(options: CodegenOptions): Promise<number> {
   if (options.chain === "sui") return write(options, await suiSource(options));
   const { load, list } = aptosCodegenLoader(aptosConfig(options));
-  return write(options, await generateEventTypes(options.modules, load, {
-    list,
-    validators: options.validators === true,
-    arbitraries: options.arbitraries === true,
-    ...(options.sql !== undefined && { tables: sqlTables(options.sql) }),
-  }));
+  const generate = () =>
+    generateEventTypes(options.modules, load, {
+      list,
+      validators: options.validators === true,
+      arbitraries: options.arbitraries === true,
+      ...(options.sql !== undefined && { tables: sqlTables(options.sql) }),
+    });
+  if (options.watch === true && options.out !== undefined) return codegenWatch({ ...options, out: options.out }, generate);
+  return write(options, await generate());
+}
+
+async function codegenWatch(options: CodegenOptions & { out: string }, generate: () => Promise<string>): Promise<number> {
+  const { client, controller } = await setup(options);
+  try {
+    // The parser refuses --watch with --chain sui, so this is always an AptosClient.
+    if (!(client instanceof AptosClient)) throw new Error("codegen --watch reads Aptos only");
+    return await runCodegenWatch(options, {
+      client,
+      generate,
+      report: (line) => process.stderr.write(`${line}\n`),
+      signal: controller.signal,
+    });
+  } finally {
+    client.destroy();
+  }
 }
 
 async function coverage(options: CoverageOptions): Promise<number> {
@@ -483,7 +628,14 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "record") return withCache(parsed.options, (cache) => record(parsed.options, cache));
   if (parsed.command === "query") return withCache(parsed.options, (cache) => query(parsed.options, cache));
   if (parsed.command === "tx") return tx(parsed.options);
+  if (parsed.command === "explain") return explain(parsed.options);
   if (parsed.command === "transfers") return transfers(parsed.options);
+  if (parsed.command === "swaps") return records(parsed.options, runSwaps);
+  if (parsed.command === "sales") return records(parsed.options, runSales);
+  if (parsed.command === "activity") return indexed(parsed.options, runActivity);
+  if (parsed.command === "trace") return indexed(parsed.options, runTrace);
+  if (parsed.command === "holders") return holders(parsed.options);
+  if (parsed.command === "positions") return positions(parsed.options);
   if (parsed.command === "balances") return balances(parsed.options);
   if (parsed.command === "watch") return watch(parsed.options);
   if (parsed.command === "inspect") return inspect(parsed.options);

@@ -108,6 +108,15 @@ export interface TxOptions extends Endpoint {
   timeout?: number;
 }
 
+/** Aptos only; named apart from the library's `ExplainOptions`. */
+export interface ExplainCommandOptions extends Endpoint {
+  hash: string;
+  /** Print the explanation as one JSON line instead of text. */
+  json?: true;
+  /** How long to wait for the transaction to commit, in ms. */
+  timeout?: number;
+}
+
 export interface QueryOptions extends Endpoint {
   descriptor: EventDescriptor;
   /** Exactly one of `fromVersion` and `fromTime` is set. */
@@ -123,13 +132,8 @@ export interface QueryOptions extends Endpoint {
   cache?: string;
 }
 
-/** Bounded when `toVersion` is set, through `iterateTransfers` or `getTransfers`; otherwise followed, through `transfers`. */
-export interface TransfersOptions extends Endpoint {
-  /** An asset as the chain's client takes it; validated there. */
-  asset?: string;
-  /** An address or name; validated and resolved by the chain's client. */
-  account?: string;
-  withAssetInfo?: true;
+/** A record command's walk: bounded when `toVersion` is set, otherwise followed. */
+export interface RecordWalkOptions extends Endpoint {
   fromVersion?: bigint;
   fromTime?: bigint;
   toVersion?: bigint | "head";
@@ -140,6 +144,83 @@ export interface TransfersOptions extends Endpoint {
   pollInterval?: number;
   batchSize?: number;
   cursorFile?: string;
+}
+
+/** Bounded through `iterateTransfers` or `getTransfers`; followed through `transfers`. */
+export interface TransfersOptions extends RecordWalkOptions {
+  /** An asset as the chain's client takes it; validated there. */
+  asset?: string;
+  /** An address or name; validated and resolved by the chain's client. */
+  account?: string;
+  withAssetInfo?: true;
+}
+
+/** Aptos only; names and the asset are validated by the client. */
+export interface SwapsCommandOptions extends RecordWalkOptions {
+  /** Non-empty when set. */
+  protocol?: string[];
+  asset?: string;
+}
+
+/** Aptos only; names and the token are validated by the client. */
+export interface SalesCommandOptions extends RecordWalkOptions {
+  /** Non-empty when set. */
+  marketplace?: string[];
+  token?: string;
+}
+
+/** Aptos only, read over the Indexer route; the address or name is validated by the client. */
+export interface ActivityCommandOptions extends RecordWalkOptions {
+  address: string;
+  withAssetInfo?: true;
+  /** `--indexer`: the Indexer's GraphQL URL (default: the network's). */
+  indexer?: string;
+}
+
+/** Aptos only, read over the Indexer route; addresses, names and the asset are validated by the client. */
+export interface TraceCommandOptions extends Endpoint {
+  address: string;
+  /** `--indexer`: the Indexer's GraphQL URL (default: the network's). */
+  indexer?: string;
+  format: "json" | "dot";
+  hops?: number;
+  direction?: "out" | "in" | "both";
+  fromVersion?: bigint;
+  toVersion?: bigint | "head";
+  minAmount?: bigint;
+  asset?: string;
+  maxNodes?: number;
+  maxRequests?: number;
+  /** Non-empty when set. */
+  stop?: string[];
+  target?: string;
+}
+
+/** Aptos only; the asset is validated by the client. */
+export interface HoldersCommandOptions extends Endpoint {
+  asset: string;
+  at: bigint;
+  /** `--indexer`: the Indexer's GraphQL URL (default: the network's). */
+  indexer?: string;
+  format: "json" | "csv";
+  verify?: "none" | "supply" | "stores";
+  maxRequests?: number;
+}
+
+/** Aptos only; the webhook fields are set only with `to`. */
+export interface PositionsCommandOptions extends Endpoint {
+  protocol: "aave" | "echelon";
+  /** Long-form addresses; without them every account an event names is tracked. */
+  account?: string[];
+  threshold?: { numerator: bigint; denominator: bigint };
+  refreshInterval?: number;
+  fromVersion?: bigint;
+  /** Webhook URL for crossing alerts; may carry a token, so it is never printed. */
+  to?: string;
+  retries: number;
+  timeout: number;
+  headers: Record<string, string>;
+  secret?: string;
 }
 
 /** Named apart from core's `BalancesOptions`, which the runner builds from it. */
@@ -281,6 +362,8 @@ export interface CodegenOptions extends Endpoint {
   sql?: "sqlite" | "postgres";
   /** Compare with `out` instead of writing it; set only with `out`. */
   check?: boolean;
+  /** Keep `out` current as publishes land; set only with `out`, never with `check` or Sui. */
+  watch?: true;
 }
 
 export type ParsedCommand =
@@ -293,7 +376,14 @@ export type ParsedCommand =
   | { command: "record"; options: RecordOptions }
   | { command: "query"; options: QueryOptions }
   | { command: "tx"; options: TxOptions }
+  | { command: "explain"; options: ExplainCommandOptions }
   | { command: "transfers"; options: TransfersOptions }
+  | { command: "swaps"; options: SwapsCommandOptions }
+  | { command: "sales"; options: SalesCommandOptions }
+  | { command: "activity"; options: ActivityCommandOptions }
+  | { command: "trace"; options: TraceCommandOptions }
+  | { command: "holders"; options: HoldersCommandOptions }
+  | { command: "positions"; options: PositionsCommandOptions }
   | { command: "balances"; options: BalancesCommandOptions }
   | { command: "watch"; options: WatchCommandOptions }
   | { command: "inspect"; options: InspectOptions }
@@ -460,12 +550,9 @@ const QUERY_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
-const TRANSFERS_OPTIONS = {
-  ...READ_OPTIONS,
+/** What `transfers`, `swaps` and `sales` share. */
+const WALK_OPTIONS = {
   ...FROM_TIME,
-  asset: { type: "string" },
-  account: { type: "string" },
-  "with-asset-info": { type: "boolean" },
   "from-version": { type: "string" },
   "to-version": { type: "string" },
   limit: { type: "string" },
@@ -473,6 +560,79 @@ const TRANSFERS_OPTIONS = {
   "poll-interval": { type: "string" },
   "batch-size": { type: "string" },
   "cursor-file": { type: "string" },
+} as const;
+
+const TRANSFERS_OPTIONS = {
+  ...READ_OPTIONS,
+  ...WALK_OPTIONS,
+  asset: { type: "string" },
+  account: { type: "string" },
+  "with-asset-info": { type: "boolean" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const SWAPS_OPTIONS = {
+  ...READ_OPTIONS,
+  ...WALK_OPTIONS,
+  protocol: { type: "string", multiple: true },
+  asset: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const SALES_OPTIONS = {
+  ...READ_OPTIONS,
+  ...WALK_OPTIONS,
+  marketplace: { type: "string", multiple: true },
+  token: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const ACTIVITY_OPTIONS = {
+  ...READ_OPTIONS,
+  ...WALK_OPTIONS,
+  "with-asset-info": { type: "boolean" },
+  indexer: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const TRACE_OPTIONS = {
+  ...READ_OPTIONS,
+  indexer: { type: "string" },
+  format: { type: "string" },
+  hops: { type: "string" },
+  direction: { type: "string" },
+  "from-version": { type: "string" },
+  "to-version": { type: "string" },
+  "min-amount": { type: "string" },
+  asset: { type: "string" },
+  "max-nodes": { type: "string" },
+  "max-requests": { type: "string" },
+  stop: { type: "string", multiple: true },
+  target: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const HOLDERS_OPTIONS = {
+  ...READ_OPTIONS,
+  indexer: { type: "string" },
+  at: { type: "string" },
+  verify: { type: "string" },
+  "max-requests": { type: "string" },
+  format: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const POSITIONS_OPTIONS = {
+  ...READ_OPTIONS,
+  to: { type: "string" },
+  retries: { type: "string" },
+  timeout: { type: "string" },
+  header: { type: "string", multiple: true },
+  secret: { type: "string" },
+  account: { type: "string", multiple: true },
+  threshold: { type: "string" },
+  "refresh-interval": { type: "string" },
+  "from-version": { type: "string" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -518,6 +678,11 @@ const TX_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const EXPLAIN_OPTIONS = {
+  ...TX_OPTIONS,
+  json: { type: "boolean" },
+} as const;
+
 const CHECK_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   help: { type: "boolean", short: "h" },
@@ -535,6 +700,7 @@ const CODEGEN_OPTIONS = {
   arbitraries: { type: "boolean" },
   sql: { type: "string" },
   check: { type: "boolean" },
+  watch: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -568,7 +734,14 @@ export const USAGE = `Usage:
   streamd store --postgres <url> [options] <eventType>...
   streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
   streamd tx <hash | digest>
+  streamd explain <hash> [--json] [options]
   streamd transfers [--asset <asset>] [--account <address | name>] [--to-version <n | head>] [options]
+  streamd swaps [--protocol <name>]... [--asset <asset>] [--to-version <n | head>] [options]
+  streamd sales [--marketplace <name>]... [--token <token>] [--to-version <n | head>] [options]
+  streamd activity <address | name> [--to-version <n | head>] [--indexer <url>] [options]
+  streamd trace <address | name> [--hops <n>] [--format <json|dot>] [--indexer <url>] [options]
+  streamd holders <asset> --at <version> [--verify <none|supply|stores>] [--format <json|csv>] [options]
+  streamd positions <aave|echelon> [--account <address>]... [--threshold <d>] [--to <url>] [options]
   streamd balances <address | name> [--asset <asset>]... [options]
   streamd watch <address>... [--cursor-file <path>] [options]
   streamd inspect <address> --resource <type> --from-version <n> [--to-version <n | head>] [options]
@@ -577,7 +750,7 @@ export const USAGE = `Usage:
   streamd name <name | address>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] [--cache <file>] <eventType>...
-  streamd codegen [--out <file> [--check]] [--validators] [--arbitraries] [--sql <sqlite|postgres>] (<address> | <address>::<module>)...
+  streamd codegen [--out <file> [--check | --watch]] [--validators] [--arbitraries] [--sql <sqlite|postgres>] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
   streamd monitor --node-url <url> --node-url <url>... [options] [<eventType>...]
   streamd serve [--listen <[host:]port>] [--token <t>] [--allow-origin <origin>]... [options]
@@ -588,7 +761,8 @@ forward POSTs each batch of matching events to a webhook as a JSON array, or
 adds it to a Redis stream, publishes it to a NATS JetStream subject or produces
 it to a Kafka topic, saving
 its position to a cursor file once the destination acknowledges it.
-alert follows the rules in a JSON file, each a descriptor, filter, window and
+alert follows the rules in a JSON file, each a descriptor or a transfers, swaps
+or sales record source, a filter, window and
 count, sum or anomaly threshold, and POSTs a signed alert to a webhook the first
 time a window of chain time crosses its threshold or leaves its baseline's
 band, saving each rule's position and open window to a cursor file.
@@ -596,8 +770,23 @@ store follows matching events into a SQLite file, or a Postgres database
 with --postgres, resuming from the cursor saved there when run again.
 query reads a closed range of history as JSON lines, then exits.
 tx waits for a transaction and prints its events, exiting 1 if it failed.
+explain waits for an Aptos transaction and prints its status, gas, transfers,
+balance changes, swaps and sales as text, or as one JSON line with --json,
+exiting 1 if it failed.
 transfers prints asset transfers as JSON lines: followed live, or with
 --to-version read over a closed range, then exits.
+swaps and sales print DEX swaps and NFT marketplace sales on Aptos the same
+way, one JSON line per pool hop or token sold.
+activity prints each transaction an Aptos account sent or received as a JSON
+line of its direction, transfers, balance changes and events, and trace the
+counterparty graph around it as one JSON line or Graphviz DOT; both read the
+account's transactions from the Indexer and everything else from the fullnode.
+holders prints every fungible store holding an Aptos asset at a past version,
+largest first, as JSON lines or CSV, folded back from the Indexer and checked
+against the chain there, then the snapshot's summary as one JSON line on stderr.
+positions prints each Aave or Echelon lending position on Aptos mainnet as a
+JSON line once read, then again each time a read changes it, and with --to
+POSTs a signed alert to a webhook each time one's health crosses --threshold.
 balances prints a wallet's balance of each asset once, then a JSON line each
 time one changes, read at the head every --poll-interval.
 watch follows the transactions each address sent, one walk per address, and
@@ -625,7 +814,10 @@ posts to webhooks registered at /v1/webhooks, signed and at least once.
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
 With --check it compares what it would write with --out instead, and exits 1
-if the file differs or is missing.
+if the file differs or is missing. With --watch it keeps running after the
+first write, follows package publishes at each address from the head, and
+rewrites --out atomically when a publish changes the output, printing one
+JSON line {"rewrite":...} per rewrite on stderr (Aptos only).
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
 coverage starts an Aptos localnet with the aptos CLI, publishes the Move package
@@ -633,24 +825,52 @@ from a funded account, runs the command against it (with STREAMD_NODE_URL,
 STREAMD_FAUCET_URL, STREAMD_PACKAGE_ADDRESS and STREAMD_PUBLISHER_KEY set), then
 prints one JSON line per #[event] struct of the package: whether the run emitted
 it, how often, and the call that first did. It exits 1 if the command failed.
-Every command but handles, inspect and coverage takes --chain sui to read Sui instead of Aptos.
+Every command but handles, inspect, explain, swaps, sales, activity, trace, holders, positions and coverage takes --chain sui
+to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
 --decode, which checks integer fields before --where runs.
 
 Options:
   --account <address>    events from transactions this account sent; transfers: what this
-                         address or name (ANS, or SuiNS with --chain sui) sent or received
+                         address or name (ANS, or SuiNS with --chain sui) sent or received;
+                         positions: an account to follow, repeatable (default: every account
+                         the protocol's events name)
+  --threshold <d>        positions: the health factor alerts cross, a decimal (default: 1)
+  --refresh-interval <ms>
+                         positions: delay between head reads of every position (default:
+                         60000 with --account, otherwise 0, none)
   --asset <asset>        transfers: only this asset, a fungible-asset or token object address,
                          a coin type or a legacy token id (a coin type with --chain sui)
                          balances: an asset to follow, repeatable (default: APT, or SUI)
-  --with-asset-info      transfers: add each asset's symbol and decimals
+                         swaps: only swaps with this asset on either side; trace: only
+                         transfers of this asset
+  --with-asset-info      transfers, activity: add each asset's symbol and decimals
+  --protocol <name>      swaps: only this DEX, repeatable: hyperion, thala-clamm, thala-v2,
+                         cellana, tapp, liquidswap, pancakeswap or thala-v1
+  --marketplace <name>   sales: only this marketplace, repeatable: wapal or tradeport
+  --indexer <url>        activity, trace, holders: the Indexer's GraphQL URL (default: the network's),
+                         which gets the API key only when it is the network's and there is
+                         no --node-url
+  --hops <n>             trace: hops to follow from the address, 1 to 6 (default: 1)
+  --direction <d>        trace: follow what each address sent (out), received (in) or both
+                         (default: both)
+  --min-amount <n>       trace: ignore transfers below this many base units
+  --max-nodes <n>        trace: most addresses in the graph, root included (default: 100)
+  --max-requests <n>     trace: most adapter calls; holders: most requests, Indexer and
+                         fullnode alike (default: 1000)
+  --verify <check>       holders: supply checks the total against the supply at the version
+                         (default), stores also every holder's balance, none nothing
+  --stop <address>       trace: keep this address but never expand it, repeatable
+  --target <address>     trace: stop once this address joins, and add the path to it
+  --token <token>        sales: only this token, an object address or legacy token id
   --handle <struct>      legacy event handle struct (with --account and --field)
   --field <name>         event handle field name
   --creation-number <n>  event handle by creation number (with --account)
   --resource <type>      every change to this resource (with --account); inspect: the
                          resource to inspect (required)
-  --at <n>               inspect: print the resource's value at this version, null if absent
+  --at <n>               inspect: print the resource's value at this version, null if absent;
+                         holders: the version to list holders at (required)
   --network <name>       mainnet, testnet, devnet, movement-mainnet, or movement-testnet
                          (default: mainnet)
   --node-url <url>       fullnode URL, overriding the network's default; repeatable on
@@ -675,10 +895,12 @@ Options:
                          (legs.*.amount); output and matches are unchanged, but a present
                          field that is not an unsigned integer is an error: query exits 1,
                          tail, forward, store and watch report it and skip the event
-  --limit <n>            tail, transfers, watch: exit after printing n; balances: after n changes;
-                         record, query, inspect: stop after n; compare: page size; monitor: rounds
+  --limit <n>            tail, transfers, swaps, sales, activity, watch: exit after printing n;
+                         balances: after n changes; record, query, inspect: stop after n;
+                         compare: page size; monitor: rounds
   --rules <file>         alert: the rules file (required)
-  --to <url>             forward, alert: webhook URL (http or https, required); forward also
+  --to <url>             forward, alert: webhook URL (http or https, required); positions:
+                         webhook for crossing alerts (optional); forward also
                          takes redis://[user:password@]host[:port][/db] or rediss:// (TLS),
                          Bun's own client under Bun, ioredis under Node (npm i ioredis);
                          or nats://[user:password@ | token@]host[:port], plaintext only;
@@ -690,18 +912,20 @@ Options:
                          JetStream stream must capture (with nats://)
   --topic <name>         forward: the Kafka topic each batch is produced to, which must exist
                          (with kafka:// or kafkas://)
-  --cursor-file <path>   tail, transfers (following): save and resume from here; watch: each
-                         address's position, as one JSON object; forward: cursor file
-                         (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
+  --cursor-file <path>   tail, transfers, swaps, sales, activity (following): save and
+                         resume from here; watch: each address's position, as one JSON object;
+                         forward: cursor file (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
                          and open window (default: ${DEFAULT_ALERT_CURSOR_FILE})
   --format <name>        tail: json, or pretty for aligned lines in UTC (default: json);
                          inspect: json, or pretty for one line per changed path;
-                         coverage: json, or pretty for one line per event struct
-  --retries <n>          forward, alert, serve: retries per batch or alert (default: ${DEFAULT_RETRIES})
-  --timeout <ms>         forward, alert, serve: per-request timeout (default: ${DEFAULT_TIMEOUT});
-                         tx: wait for commit (default: 20000)
-  --header <h>           forward, alert: request header 'Name: value', repeatable
-  --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
+                         coverage: json, or pretty for one line per event struct;
+                         trace: json, or dot for Graphviz;
+                         holders: json, or csv with a header row (default: json)
+  --retries <n>          forward, alert, positions, serve: retries per batch or alert (default: ${DEFAULT_RETRIES})
+  --timeout <ms>         forward, alert, positions, serve: per-request timeout (default: ${DEFAULT_TIMEOUT});
+                         tx, explain: wait for commit (default: 20000)
+  --header <h>           forward, alert, positions: request header 'Name: value', repeatable
+  --secret <s>           forward, alert, positions: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
                          a Redis entry's signature field or a NATS or Kafka header (or set
                          ${SECRET_ENV}, which keeps it out of ps)
   --db <file>            store: SQLite file to write (this or --postgres)
@@ -711,13 +935,15 @@ Options:
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
   --to-version <n>       record: end of the range (required); query: default the head;
                          inspect: a version or head (default: head);
-                         forward: deliver up to here, then exit 0; transfers: a version or
-                         head, read the range instead of following (needs a start)
+                         forward: deliver up to here, then exit 0; transfers, swaps, sales,
+                         activity: a version or head, read the range instead of following
+                         (needs a start); trace: end of every address's range (default: head)
   --batch-size <n>       forward: most events per POST (default: 25); serve: per webhook POST
-                         (default: each page); transfers (following):
+                         (default: each page); transfers, swaps, sales, activity (following):
                          transactions per page (default: 25)
-  --order <asc|desc>     query, transfers with --to-version: oldest or newest first (default: asc;
-                         desc without --limit buffers the range to reverse it)
+  --order <asc|desc>     query; transfers, swaps, sales, activity with --to-version: oldest
+                         or newest first (default: asc; desc without --limit buffers the
+                         range to reverse it)
   --out <file>           codegen, record: write to this file instead of stdout
   --cache <file>         query, record: keep settled pages in this SQLite file and read them
                          from it on the next run of the same range (Aptos only)
@@ -726,6 +952,8 @@ Options:
                          as one JSON line {"stats":...} on exit and on SIGUSR1 (not Windows);
                          reads made outside the adapter, such as name lookups and inspect's
                          resource reads, are not counted
+  --json                 explain: print the explanation as one JSON line, bigints as
+                         decimal strings
   --validators           codegen: also write an is<Type> runtime check per type
   --arbitraries          codegen: also write an arbitrary<Type>(rng) random payload generator
                          per type, a seeded streamdRng and streamdEvent for MemoryAdapter
@@ -734,6 +962,9 @@ Options:
                          storeTables in @streamd/store-sqlite or -postgres fills them
   --check                codegen: compare with the --out file, writing nothing; exit 1 if
                          it differs or is missing, naming the first line that differs
+  --watch                codegen: keep --out current, regenerating on each package publish
+                         at the target addresses and rewriting it when the bytes change;
+                         exits 0 on SIGINT, 1 when following gives up (Aptos only)
   --chain <name>         aptos or sui (default: aptos); with sui, --network is mainnet,
                          testnet or devnet, --node-url and --against are Sui gRPC URLs,
                          tx takes a base58 digest, and --handle, --field,
@@ -1188,14 +1419,18 @@ interface DeliveryFlags {
  * already checked another kind.
  */
 function delivery(command: string, values: DeliveryFlags, cursorFile: string, to = webhookUrl(values.to, command)) {
-  const options: Pick<ForwardOptions, "to" | "cursorFile" | "retries" | "timeout" | "headers" | "secret"> = {
-    to,
-    cursorFile: values["cursor-file"] ?? cursorFile,
+  const file = values["cursor-file"] ?? cursorFile;
+  if (file === "") throw new UsageError("--cursor-file must not be empty");
+  return { to, cursorFile: file, ...webhookFlags(values) };
+}
+
+/** `delivery` without the destination or cursor file: retries, timeout, headers and signing. */
+function webhookFlags(values: DeliveryFlags) {
+  const options: Pick<ForwardOptions, "retries" | "timeout" | "headers" | "secret"> = {
     retries: integer("retries", values.retries, 0, MAX_RETRIES) ?? DEFAULT_RETRIES,
     timeout: integer("timeout", values.timeout, 1, MAX_TIMEOUT) ?? DEFAULT_TIMEOUT,
     headers: headers(values.header),
   };
-  if (options.cursorFile === "") throw new UsageError("--cursor-file must not be empty");
   if (values.secret === "") throw new UsageError("--secret must not be empty");
   const secret = values.secret ?? (process.env[SECRET_ENV] || undefined);
   if (secret !== undefined) {
@@ -1569,18 +1804,14 @@ function parseName(args: string[]): ParsedCommand {
   return { command: "name", options: withKey(options, values["api-key"]) };
 }
 
-function parseTransfers(args: string[]): ParsedCommand {
-  const { values, positionals } = wrap(() =>
-    parseArgs({ args, options: TRANSFERS_OPTIONS, allowPositionals: true, strict: true }),
-  );
-  if (values.help) return { command: "help" };
-  if (positionals.length > 0) throw new UsageError(`transfers takes no event types: ${positionals[0]}`);
-  for (const flag of ["asset", "account", "cursor-file"] as const) {
-    if (values[flag] === "") throw new UsageError(`--${flag} must not be empty`);
-  }
-  const sui = chain(values.chain);
-  const options: TransfersOptions = endpoint(values, sui);
-  withKey(options, values["api-key"]);
+type WalkFlags = { [K in keyof typeof WALK_OPTIONS]?: string };
+
+/**
+ * The flags `transfers`, `swaps` and `sales` share: where the walk starts,
+ * whether it follows or reads a range, and how.
+ */
+function recordWalk<T extends RecordWalkOptions>(options: T, values: WalkFlags): T {
+  if (values["cursor-file"] === "") throw new UsageError("--cursor-file must not be empty");
   const fromVersion = version(values["from-version"]);
   const fromTime = startTime(values);
   const raw = values["to-version"];
@@ -1602,9 +1833,6 @@ function parseTransfers(args: string[]): ParsedCommand {
     options.toVersion = toVersion;
     options.order = order;
   }
-  if (values.asset !== undefined) options.asset = values.asset;
-  if (values.account !== undefined) options.account = values.account;
-  if (values["with-asset-info"]) options.withAssetInfo = true;
   if (fromVersion !== undefined) options.fromVersion = fromVersion;
   if (fromTime !== undefined) options.fromTime = fromTime;
   const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
@@ -1614,7 +1842,188 @@ function parseTransfers(args: string[]): ParsedCommand {
   const batchSize = integer("batch-size", values["batch-size"], 1, 1000);
   if (batchSize !== undefined) options.batchSize = batchSize;
   if (values["cursor-file"] !== undefined) options.cursorFile = values["cursor-file"];
+  return options;
+}
+
+function parseTransfers(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: TRANSFERS_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (positionals.length > 0) throw new UsageError(`transfers takes no event types: ${positionals[0]}`);
+  for (const flag of ["asset", "account"] as const) {
+    if (values[flag] === "") throw new UsageError(`--${flag} must not be empty`);
+  }
+  const options: TransfersOptions = recordWalk(withKey(endpoint(values, chain(values.chain)), values["api-key"]), values);
+  if (values.asset !== undefined) options.asset = values.asset;
+  if (values.account !== undefined) options.account = values.account;
+  if (values["with-asset-info"]) options.withAssetInfo = true;
   return { command: "transfers", options };
+}
+
+/** `swaps` and `sales`: Aptos only, a repeatable name flag and one narrowing value. */
+function aptosRecords(command: "swaps" | "sales", values: WalkFlags & EndpointFlags & { chain?: string; "api-key"?: string; help?: boolean }, positionals: string[]) {
+  if (chain(values.chain)) {
+    throw new UsageError(`${command} is not available with --chain sui: SuiClient has no ${command} yet`);
+  }
+  if (positionals.length > 0) throw new UsageError(`${command} takes no event types: ${positionals[0]}`);
+  return recordWalk(withKey(endpoint(values, false), values["api-key"]), values);
+}
+
+function names(flag: string, raw: string[] | undefined): string[] | undefined {
+  if (raw?.some((name) => name === "")) throw new UsageError(`--${flag} must not be empty`);
+  return raw;
+}
+
+function parseSwaps(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: SWAPS_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (values.asset === "") throw new UsageError("--asset must not be empty");
+  const protocol = names("protocol", values.protocol);
+  const options: SwapsCommandOptions = aptosRecords("swaps", values, positionals);
+  if (protocol !== undefined) options.protocol = protocol;
+  if (values.asset !== undefined) options.asset = values.asset;
+  return { command: "swaps", options };
+}
+
+function parseSales(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: SALES_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (values.token === "") throw new UsageError("--token must not be empty");
+  const marketplace = names("marketplace", values.marketplace);
+  const options: SalesCommandOptions = aptosRecords("sales", values, positionals);
+  if (marketplace !== undefined) options.marketplace = marketplace;
+  if (values.token !== undefined) options.token = values.token;
+  return { command: "sales", options };
+}
+
+/** The one address or name `activity` and `trace` take, and their Indexer; Aptos only. */
+function indexedTarget(command: "activity" | "trace" | "holders", values: { chain?: string; indexer?: string }, positionals: string[]) {
+  if (chain(values.chain)) {
+    throw new UsageError(`${command} is not available with --chain sui: SuiClient has no ${command} yet`);
+  }
+  const [address, ...rest] = positionals;
+  if (address === undefined || address === "" || rest.length > 0) {
+    throw new UsageError(`${command} needs one ${command === "holders" ? "asset" : "address or name"}`);
+  }
+  if (values.indexer !== undefined && httpUrl(values.indexer) === undefined) {
+    throw new UsageError(`--indexer must be an http or https URL: ${values.indexer}`);
+  }
+  return { address, ...(values.indexer !== undefined && { indexer: values.indexer }) };
+}
+
+function parseActivity(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: ACTIVITY_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const target = indexedTarget("activity", values, positionals);
+  const options: ActivityCommandOptions = recordWalk({ ...target, ...withKey(endpoint(values, false), values["api-key"]) }, values);
+  if (values["with-asset-info"]) options.withAssetInfo = true;
+  return { command: "activity", options };
+}
+
+function parseTrace(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: TRACE_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const target = indexedTarget("trace", values, positionals);
+  const format = values.format ?? "json";
+  if (format !== "json" && format !== "dot") throw new UsageError(`--format must be json or dot: ${format}`);
+  const options: TraceCommandOptions = { ...target, format, ...withKey(endpoint(values, false), values["api-key"]) };
+  const hops = integer("hops", values.hops, 1, 6);
+  if (hops !== undefined) options.hops = hops;
+  const { direction } = values;
+  if (direction !== undefined) {
+    if (direction !== "out" && direction !== "in" && direction !== "both") throw new UsageError(`--direction must be out, in or both: ${direction}`);
+    options.direction = direction;
+  }
+  const fromVersion = version(values["from-version"]);
+  if (fromVersion !== undefined) options.fromVersion = fromVersion;
+  const raw = values["to-version"];
+  const toVersion = raw === "head" ? "head" : version(raw, "to-version");
+  if (toVersion !== undefined) {
+    if (toVersion !== "head" && fromVersion !== undefined && toVersion < fromVersion) {
+      throw new UsageError("--to-version must not be below --from-version");
+    }
+    options.toVersion = toVersion;
+  }
+  const minAmount = version(values["min-amount"], "min-amount");
+  if (minAmount !== undefined) options.minAmount = minAmount;
+  for (const flag of ["asset", "target"] as const) {
+    if (values[flag] === "") throw new UsageError(`--${flag} must not be empty`);
+  }
+  if (values.asset !== undefined) options.asset = values.asset;
+  if (values.target !== undefined) options.target = values.target;
+  const maxNodes = integer("max-nodes", values["max-nodes"], 1, Number.MAX_SAFE_INTEGER);
+  if (maxNodes !== undefined) options.maxNodes = maxNodes;
+  const maxRequests = integer("max-requests", values["max-requests"], 1, Number.MAX_SAFE_INTEGER);
+  if (maxRequests !== undefined) options.maxRequests = maxRequests;
+  const stop = names("stop", values.stop);
+  if (stop !== undefined) options.stop = stop;
+  return { command: "trace", options };
+}
+
+function parseHolders(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: HOLDERS_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const { address: asset, ...indexer } = indexedTarget("holders", values, positionals);
+  const at = version(values.at, "at");
+  if (at === undefined) throw new UsageError("holders needs --at <version>");
+  const format = values.format ?? "json";
+  if (format !== "json" && format !== "csv") throw new UsageError(`--format must be json or csv: ${format}`);
+  const options: HoldersCommandOptions = { asset, at, ...indexer, format, ...withKey(endpoint(values, false), values["api-key"]) };
+  const { verify } = values;
+  if (verify !== undefined) {
+    if (verify !== "none" && verify !== "supply" && verify !== "stores") throw new UsageError(`--verify must be none, supply or stores: ${verify}`);
+    options.verify = verify;
+  }
+  const maxRequests = integer("max-requests", values["max-requests"], 1, Number.MAX_SAFE_INTEGER);
+  if (maxRequests !== undefined) options.maxRequests = maxRequests;
+  return { command: "holders", options };
+}
+
+const DECIMAL = /^(\d+)(?:\.(\d+))?$/;
+
+function parsePositions(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: POSITIONS_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (chain(values.chain)) throw new UsageError("positions is not available with --chain sui: SuiClient has no positions yet");
+  const [protocol, ...rest] = positionals;
+  if (protocol === undefined || rest.length > 0) throw new UsageError("positions needs one protocol: aave or echelon");
+  if (protocol !== "aave" && protocol !== "echelon") throw new UsageError(`positions reads aave or echelon: ${protocol}`);
+  const options: PositionsCommandOptions = { protocol, ...withKey(endpoint(values, false), values["api-key"]), ...webhookFlags(values) };
+  if (values.to !== undefined) {
+    options.to = webhookUrl(values.to, "positions");
+  } else {
+    const flag = (["retries", "timeout", "header", "secret"] as const).find((f) => values[f] !== undefined);
+    if (flag !== undefined) throw new UsageError(`--${flag} needs --to <url>, where alerts are sent`);
+    delete options.secret;
+  }
+  if (values.account !== undefined) options.account = values.account.map((a) => checkedAddress(a, false));
+  if (values.threshold !== undefined) {
+    const parts = DECIMAL.exec(values.threshold);
+    if (parts === null) throw new UsageError(`--threshold must be a non-negative decimal such as 1.05: ${values.threshold}`);
+    const fraction = parts[2] ?? "";
+    options.threshold = { numerator: BigInt(parts[1]! + fraction), denominator: 10n ** BigInt(fraction.length) };
+  }
+  const refreshInterval = integer("refresh-interval", values["refresh-interval"], 0, MAX_TIMEOUT);
+  if (refreshInterval !== undefined) options.refreshInterval = refreshInterval;
+  const fromVersion = version(values["from-version"]);
+  if (fromVersion !== undefined) {
+    if (fromVersion < 1n) throw new UsageError("--from-version must be at least 1 for positions");
+    options.fromVersion = fromVersion;
+  }
+  return { command: "positions", options };
 }
 
 const TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/;
@@ -1636,6 +2045,23 @@ function parseTx(args: string[]): ParsedCommand {
   withKey(options, values["api-key"]);
   if (timeout !== undefined) options.timeout = timeout;
   return { command: "tx", options };
+}
+
+function parseExplain(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: EXPLAIN_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (chain(values.chain)) throw new UsageError("explain is not available with --chain sui: Sui has no transaction explainer yet");
+  const [hash, ...rest] = positionals;
+  if (hash === undefined || rest.length > 0) throw new UsageError("explain needs one transaction hash");
+  if (!TRANSACTION_HASH.test(hash)) throw new UsageError(`not a transaction hash: ${hash}`);
+  const options: ExplainCommandOptions = { hash, ...endpoint(values, false) };
+  withKey(options, values["api-key"]);
+  const timeout = integer("timeout", values.timeout, 0, MAX_TIMEOUT);
+  if (timeout !== undefined) options.timeout = timeout;
+  if (values.json) options.json = true;
+  return { command: "explain", options };
 }
 
 function parseCheck(args: string[]): ParsedCommand {
@@ -1693,6 +2119,12 @@ function parseCodegen(args: string[]): ParsedCommand {
     if (options.out === undefined) throw new UsageError("--check needs --out <file> to compare with");
     options.check = true;
   }
+  if (values.watch) {
+    if (options.out === undefined) throw new UsageError("--watch needs --out <file> to rewrite");
+    if (options.check === true) throw new UsageError("--watch cannot be combined with --check");
+    if (sui) throw new UsageError("--watch reads Aptos package publishes only, not --chain sui");
+    options.watch = true;
+  }
   return { command: "codegen", options };
 }
 
@@ -1728,7 +2160,14 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "record") return parseRecord(rest);
   if (command === "query") return parseQuery(rest);
   if (command === "tx") return parseTx(rest);
+  if (command === "explain") return parseExplain(rest);
   if (command === "transfers") return parseTransfers(rest);
+  if (command === "swaps") return parseSwaps(rest);
+  if (command === "sales") return parseSales(rest);
+  if (command === "activity") return parseActivity(rest);
+  if (command === "trace") return parseTrace(rest);
+  if (command === "holders") return parseHolders(rest);
+  if (command === "positions") return parsePositions(rest);
   if (command === "balances") return parseBalances(rest);
   if (command === "watch") return parseWatch(rest);
   if (command === "inspect") return parseInspect(rest);

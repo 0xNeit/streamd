@@ -122,6 +122,18 @@ CREATE INDEX IF NOT EXISTS streamd_transfers_to ON streamd_transfers (to_address
   WHERE to_address IS NOT NULL;
 `;
 
+// Created only by what writes points, as the transfers table is.
+export const POINTS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS streamd_points (
+  name TEXT NOT NULL,
+  address TEXT NOT NULL,
+  points TEXT NOT NULL,
+  version TEXT NOT NULL,
+  score TEXT NOT NULL,
+  PRIMARY KEY (name, address)
+) WITHOUT ROWID;
+`;
+
 // Kept among the cursors so that a database written before pruning existed
 // needs no new table, and stays readable on a read-only connection.
 export const PRUNED_BEFORE = "streamd:pruned-before";

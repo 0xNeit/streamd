@@ -71,9 +71,9 @@ TypeScript types:
   See [Serve a gateway](#serve-a-gateway).
 - `@streamd/playground` (`apps/playground`) - a browser page to check an event type, watch it
   live and copy its generated types and a snippet. Not published. See [Playground](#playground).
-- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers` and `useReduction` hooks. `react` (>= 18) and
+- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers`, `useReduction`, `useActivity`, `useSwaps`, `useSales`, `usePositions` and `useExplain` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents`, `useSubmitTransaction` and
-  `useTransfers` take an `AptosClient`. See [React hooks](#react-hooks).
+  `useTransfers` take an `AptosClient`, and the record and position hooks need one. See [React hooks](#react-hooks).
 
 ## Usage
 
@@ -501,12 +501,13 @@ gives up. `signal`, `unsubscribe()` and `destroy()` stop it at any stage without
 
 #### Ready-made reducers
 
-`count()`, `sum(path)`, `latest()` and `groupBy(path, inner)` cover the common folds. Each is
+`count()`, `sum(path)`, `min(path)`, `max(path)`, `latest()`, `distinct(path)`,
+`groupBy(path, inner)` and `buckets(interval, inner)` cover the common folds. Each is
 a plain reducer with the value it starts from attached as `.initial`, so it goes in the same
 place as a hand-written one, and the `initial` argument stays yours for a saved value:
 
 ```ts
-import { count, groupBy, latest, sum } from "@streamd/core";
+import { buckets, count, distinct, groupBy, latest, max, min, sum } from "@streamd/core";
 
 const deposits = streamd.reduce(Deposit, count(), 0n, { fromVersion: -10_000n });
 const volume = streamd.reduce(Deposit, sum("amount"), 0n, { fromVersion: -10_000n });
@@ -515,6 +516,14 @@ const newest = streamd.reduce(Deposit, latest(), undefined);
 const perStore = groupBy("store", count());
 const byStore = streamd.reduce(Deposit, perStore, perStore.initial, { fromVersion: -10_000n });
 byStore.value.get(store); // a bigint, or undefined for a store not seen yet
+
+const largest = streamd.reduce(Deposit, max("amount"), undefined, { fromVersion: -10_000n });
+const stores = distinct("store");
+const seen = streamd.reduce(Deposit, stores, stores.initial); // seen.value.values.size
+
+const hourly = buckets(3_600_000_000n, sum("amount"), { keep: 24 });
+const perHour = streamd.reduce(Deposit, hourly, hourly.initial, { fromVersion: -10_000n });
+perHour.value.get(hourStart); // the hour's volume, keyed by its start in microseconds
 ```
 
 - **`count()`** - the number of events folded, a `bigint` from `0n`.
@@ -524,7 +533,16 @@ byStore.value.get(store); // a bigint, or undefined for a store not seen yet
   array. A missing or `null` field adds nothing, so a list of descriptors whose types lack it
   still sums, and a mistyped path sums to `0n`. Any other value that is not an integer throws,
   which stops the reduction as any reducer throw does, rather than leave the total wrong.
+- **`min(path)`** and **`max(path)`** - the smallest and largest integer at `path`, a `bigint`
+  read as `sum` reads it, `undefined` until the first. A missing or `null` field is passed
+  over; any other non-integer throws.
 - **`latest()`** - the most recently folded event, `undefined` before the first.
+- **`distinct(path, { max })`** - `{ values, capped }`: a `Set` of the values seen at `path`,
+  keyed as `groupBy` keys them (so addresses as reported), a missing or `null` field skipped
+  and an object or array thrown. At most `max` values are kept (default 10,000); once full,
+  new values are not added and `capped` turns `true`, so `values.size` is then a lower bound.
+  A new value returns a new state with a new `Set`; one already held returns the state as it
+  was.
 - **`groupBy(path, inner)`** - a `Map` from the value at `path` to `inner` folded over that
   key's events, each new key starting from `inner.initial`. Keys are strings: a string as the
   source reports it, and a number, `bigint` or boolean through `String`. Addresses are not
@@ -532,11 +550,22 @@ byStore.value.get(store); // a bigint, or undefined for a store not seen yet
   always written the same way. A missing or `null` field skips the event, an object or array
   throws. Every event returns a new `Map`, so the previous value and `initial` are never
   changed. Groups nest: `groupBy("pool", groupBy("store", sum("amount")))`.
+- **`buckets(interval, inner, { keep })`** - a `Map` from the start of each window of
+  `interval` microseconds of the event's `timestamp` (a positive `bigint`, windows aligned to
+  the Unix epoch, so an hour starts on the hour UTC) to `inner` folded over that window's
+  events, each from `inner.initial`. Windows are chain time, not wall clock, and an event with
+  no `timestamp` throws, so the source must stamp events (`FullnodeScanAdapter` does on the
+  `module` and `account` paths). `keep` holds at most that many windows, dropping the
+  earliest, and an event older than every kept window once full is dropped with it; without
+  `keep` the map gains one entry per window for as long as the reduction runs. Every event
+  returns a new `Map`, and `buckets` nests with `groupBy` either way round.
 
 Pass `fold.initial`, or a typed literal such as `new Map<string, bigint>()`, rather than a bare
 `new Map()`, which TypeScript reads as `Map<any, any>`. To resume, save the value in a
 JSON-safe form beside `cursor`: a `bigint` as `value.toString()` and back with `BigInt(...)`, a
-`groupBy` map as its entries, and `latest()`'s event with `serializeEvent` and `parseEvent`.
+`groupBy` or `buckets` map as its entries (a `buckets` key through `toString()` too), a
+`distinct` state as `{ values: [...state.values], capped }`, and `latest()`'s event with
+`serializeEvent` and `parseEvent`.
 
 ```ts
 const save = () => storage.set(JSON.stringify({
@@ -547,6 +576,52 @@ const save = () => storage.set(JSON.stringify({
 const { groups, cursor } = JSON.parse(storage.get());
 const resumed = streamd.reduce(Deposit, perStore, new Map(groups.map(([key, n]) => [key, BigInt(n)])), { cursor });
 ```
+
+#### Points and quests
+
+`points(options)` folds events into a score per address, for leaderboards, quests and loyalty
+programs. Each rule awards the address it names whenever an event matches; thresholds record
+when a score first reaches them, and decay shrinks idle scores over chain time:
+
+```ts
+import { points } from "@streamd/core";
+
+const quest = points({
+  rules: [
+    { id: "swap", points: 10n, firstTime: 50n },
+    { id: "big", where: (e) => BigInt((e.data as { amount: string }).amount) >= 1_000_000n, points: 100n, limit: 3 },
+    { id: "referral", address: "referrer", points: 25n },
+  ],
+  thresholds: [{ id: "bronze", points: 100n }, { id: "gold", points: 1_000n }],
+  decay: { interval: 7n * 86_400_000_000n, keep: { numerator: 9n, denominator: 10n } }, // keep 90% a week
+});
+const board = streamd.reduce(Deposit, quest, quest.initial, { fromVersion: -100_000n });
+await board.ready;
+quest.standings(board.value, { limit: 10 }); // the top ten, highest first
+```
+
+- **Rules.** Every rule that matches awards on its own. `id` names the rule (unique, non-empty).
+  `where` is a synchronous predicate, since a reducer is; a returned promise throws. `address`
+  is `"sender"` (the default, the transaction's signer) or a `whereField` path in `event.data`;
+  a missing or `null` address skips the rule, anything else that is not an address string
+  throws. `points` is a `bigint` or a function of the event returning one, `1n` by default, and
+  may be negative. `firstTime` is added once, on an address's first award by that rule, and
+  `limit` caps the awards one address gets from it.
+- **Scores.** The state is a `Map` from long-form address to `Score { address, points, awards,
+  reached, version, updatedAt? }`: `awards` counts each rule's awards, `reached` holds the
+  version at which each threshold was first reached (kept even if the score later falls),
+  `version` is the last event that changed it. A fold returns a new `Map`, copying only the
+  scores it changed, so earlier values and `initial` stay as they were.
+- **Decay.** `interval` is in microseconds, the unit of `event.timestamp`, and `keep` is a
+  fraction from 0 to 1. Before an award, the whole intervals since the score's `updatedAt` are
+  applied at once as `points * numerator^k / denominator^k`, rounded toward zero, and the clock
+  moves on by those intervals. With decay set, an awarding event without a `timestamp` throws.
+- **Standings.** `quest.standings(state, { at, limit })` sorts by points, highest first, ties
+  by address in byte order. `at` applies decay up to that timestamp on copies, leaving the state
+  unchanged, and is refused when earlier than a score's `updatedAt`.
+- **Saving.** `scoreToJson(score)` writes a score as JSON text with bigints as decimal strings,
+  and `scoreFromJson(text)` reads it back, refusing a malformed field by name. `storePoints` in
+  both store packages keeps the whole leaderboard and its cursor for you.
 
 ### Replay history
 
@@ -4073,6 +4148,30 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   written, which ends the subscription as a failed write does. `store.writeTransfers(records,
   { name, cursor })` is there for wiring your own, and `prune` deletes transfers below its edge
   with the events.
+- **Stored points.** `storePoints(client, store, descriptor, fold, options)` runs
+  `client.reduce()` over a `points()` fold and keeps the leaderboard in `streamd_points`, one
+  row per `name` and address: `points` (exact decimal text), `version` (zero-padded) and
+  `score`, the whole score as `scoreToJson` writes it. `options` are `reduce()`'s, but `cursor`,
+  plus `name`. The first run folds the history from the given start, then writes every row and
+  the cursor (under `points:<name>`) in one transaction; each live change then writes the rows
+  it changed and the cursor in one transaction. A restart with a saved cursor reads the rows back
+  as the initial value and follows on from the cursor, without folding the history again (the
+  history options are ignored). It returns the `Reduction`. A failed write stops it and reaches
+  `onError`, and a failed first write also rejects `ready`.
+
+  ```ts
+  import { points } from "@streamd/core";
+  import { SqliteEventStore, storePoints } from "@streamd/store-sqlite";
+
+  const quest = points({ rules: [{ id: "swap", points: 10n }] });
+  const board = storePoints(streamd, store, Deposit, quest, { name: "quest", fromVersion: -100_000n });
+  await board.ready;
+  quest.standings(store.readPoints("quest"), { limit: 10 });
+  ```
+
+  `store.writePoints(name, scores, { name, cursor })` and `store.readPoints(name)` are there for
+  wiring your own. The table is created by the first points write; `prune` leaves it, as it
+  leaves cursors.
 - **Resource changes.** A change carries its resource type but not the address holding it, so
   `storeEvents` over a `resource` descriptor stores the descriptor's address with each change,
   in the `account_address` column (long form, `0x` and 64 lowercase hex digits; null on every
@@ -4249,6 +4348,12 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   stay within Postgres's btree index limit, while `transfer` keeps the full strings).
   It is created on the first transfer write or prune, apart from the event tables, and `prune`
   deletes transfers below the edge in its one statement.
+- **Stored points.** `await storePoints(client, store, descriptor, fold, options)`,
+  `await store.writePoints(name, scores, checkpoint)` and `await store.readPoints(name)` work as
+  on the SQLite store, resolving once the saved cursor and rows are read. `streamd_points` holds
+  `points` as `numeric` (exact, so `ORDER BY points DESC` ranks it), `version` as
+  `numeric(20, 0)` and `score` as JSON text. Each write, the first one with every row included,
+  is one statement with the cursor, and live writes run one at a time in event order.
 - **Saved cursors.** `await store.cursors()` and `await store.deleteCursor(name)` work as they
   do on the SQLite store, the delete itself a single statement. Names sort in byte order
   (`COLLATE "C"`) whatever the database's collation, so in a UTF-8 database both stores list
@@ -4432,7 +4537,8 @@ function Feed() {
   calls the latest `reducer` without restarting. `initial` is compared by value, a `Map` by its
   entries, so a fresh `new Map()` each render does not restart it; a class instance compares as
   empty. The ready-made reducers work here as they do with `client.reduce`:
-  `useReduction(Deposit, perStore, perStore.initial)` returns a `Map<string, bigint>`.
+  `useReduction(Deposit, perStore, perStore.initial)` returns a `Map<string, bigint>`, and a
+  `distinct` state's `Set` compares by its entries as a `Map` does.
 - **`useBalances(address, options?)`** runs `client.balances` and returns
   `{ balances, error, status }`. `balances` is a `ReadonlyMap` of every balance read so far, keyed
   by asset in long form as the client keys it (APT as `0x000...00a`), empty until the first read
@@ -4443,6 +4549,41 @@ function Feed() {
   takes `balances`' options, without `signal`; `onChange` is called in its latest form. A
   `null`, `undefined` or empty address waits. It needs a client with `balances`
   (`BalancesClient`): an `AptosClient`, or a `SuiClient`, keyed by coin type.
+- **`useActivity(address, options?)`**, **`useSwaps(options?)`** and **`useSales(options?)`**
+  follow `client.activity`, `client.swaps` and `client.sales` with `useTransfers`' result and
+  lifetime, each event's `data` an `Activity`, a `Swap` or a `Sale`. They take those methods'
+  options without `signal`, plus `maxEvents` (default 100): `withAssetInfo` on `useActivity`,
+  `protocol` and `asset` on `useSwaps`, `marketplace` and `token` on `useSales`. Pass `null` to
+  `useSwaps` or `useSales`, or a `null`, `undefined` or empty address to `useActivity`, to wait.
+  A malformed address, protocol or marketplace shows as `status: "stopped"` with `error`.
+  `useActivity` needs an adapter serving `account` with `received: true`, as `activity` does.
+
+  ```tsx
+  const { events } = useSwaps({ protocol: "hyperion", maxEvents: 20 });
+  ```
+- **`usePositions(protocol, options?)`** runs `client.positions` and returns
+  `{ positions, error, status }`, shaped as `useBalances`: `positions` is a `ReadonlyMap` of
+  `LendingPosition` by long-form account, empty until the start reads finish, and a fresh map on
+  every change, so it can be compared by identity. `status` is `"idle"` (no protocol),
+  `"loading"`, `"live"`, or `"stopped"` once the start reads fail, the monitor stops or the
+  input is refused. It restarts only when the protocol or options (`account`, `threshold`,
+  `refreshInterval` and the rest, without `signal`) change by value; `onChange` and `onCross` are
+  called in their latest form.
+
+  ```tsx
+  const { positions } = usePositions("aave", { account: wallet });
+  const health = positions.get(wallet)?.health;
+  ```
+- **`useExplain(hash, options?)`** runs `client.explain` for a committed transaction and returns
+  `{ data, error, loading }`, as `useTransactionEvents` does: `data` is the
+  `TransactionExplanation`, a failed transaction included (`success: false`), and `error` is a
+  lookup that failed or timed out. It reads again when the hash or options (`timeout`,
+  `withAssetInfo`, `withValue`, `withNames`) change by value, aborting the read it replaces; a
+  `null` or `undefined` hash reads nothing. To explain an unsigned transaction, call
+  `client.explain` directly.
+- These five need an `AptosClient` (`ActivityClient`, `SwapsClient`, `SalesClient`,
+  `PositionsClient`, `ExplainClient`); given another client they throw a `StreamdError` naming
+  the method.
 - **Keyed by value.** Inline descriptors and options are compared by value (bigints
   included), so a re-render with an equal one keeps the subscription or result. A different
   one resubscribes, starting `events` empty, or refetches, aborting the request it replaces.
@@ -4598,7 +4739,7 @@ has for long-lived handles, it fails at the start, with `--handle` as well.
 `--node-url` overrides its fullnode.
 
 Commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`, `transfers`,
-`balances`, `watch` and `inspect`) take `--node-url` more than once, spreading reads across the nodes through
+`activity`, `trace`, `balances`, `watch` and `inspect`) take `--node-url` more than once, spreading reads across the nodes through
 [`PoolAdapter`](#spreading-load-across-fullnodes): each walk stays on one node, and a node that
 answers `429` is set aside for 30 seconds while the others carry on. `--api-key` goes to the first
 node only. They also take `--archive <url>`, which sends only what the fullnodes refuse as pruned
@@ -4645,7 +4786,7 @@ cursor file could not be written; `2` for invalid arguments; `130` on a second C
 ### Request stats
 
 `--stats` on the commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`,
-`transfers`, `balances`, `watch` and `inspect`) prints what the command has asked of each node, through
+`transfers`, `activity`, `trace`, `balances`, `watch` and `inspect`) prints what the command has asked of each node, through
 `adapterMetrics`, as one JSON line on stderr: once when the command ends, by
 `--limit`, the end of its range, Ctrl-C, `SIGTERM`, stdout closing or a failure, and again each
 time the process gets `SIGUSR1` (not on Windows, which has no such signal). stdout keeps only
@@ -4658,7 +4799,9 @@ kill -USR1 $!
 ```
 
 `nodes` holds one entry per `--node-url`, in the order given (one for the network's default
-node), and `archive` appears with `--archive`; each maps the adapter methods called so far to
+node), `archive` appears with `--archive`, and `indexer` on `activity` and `trace`, counting
+`IndexerAccountAdapter`'s calls (its own fullnode reads of each listed transaction are not
+counted); each maps the adapter methods called so far to
 `requests`, `errors`, `rateLimited` and latency percentiles in milliseconds over the most recent
 1024 calls. The numbers are totals since the start, never reset. Nodes are named by position,
 never by URL, since a URL may carry a key. Each node is counted inside the pool, the archive
@@ -4670,7 +4813,7 @@ first node directly. A second Ctrl-C exits at once, without the line.
 
 ### Sui from the command line
 
-Every command but `handles` and `inspect` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
+Every command but `handles`, `inspect`, `explain`, `swaps` and `sales` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
 with the same output and exit codes:
 
 ```sh
@@ -5110,8 +5253,9 @@ streamd alert --rules rules.json --to https://hooks.example.com/alerts --cursor-
 | Rule field | Meaning |
 | --- | --- |
 | `name` | unique, non-empty; names the rule in alerts and in the cursor file (required) |
-| `descriptor` | `eventType` (a type or a list), `account` and `resource`, combined as the `tail` flags of those names are (required) |
-| `where`, `sender`, `function`, `decode` | arrays of strings, exactly as the repeatable `--where`, `--sender`, `--function` and `--decode` flags |
+| `descriptor` | `eventType` (a type or a list), `account` and `resource`, combined as the `tail` flags of those names are (this or `source` required) |
+| `source` | a record source in place of `descriptor`, below (Aptos only) |
+| `where`, `sender`, `function`, `decode` | arrays of strings, exactly as the repeatable `--where`, `--sender`, `--function` and `--decode` flags; no `decode` with a `source` |
 | `window` | `<n>s`, `<n>m`, `<n>h` or `<n>d` (required) |
 | `threshold` | `{ "count": n }`, at least `n` matching events, or `{ "sum": "<path>", "gte": "<integer>" }`, the field at that path summed at full precision (`gte` a decimal string or a safe integer), or `{ "anomaly": { ... } }`, below (required) |
 
@@ -5119,6 +5263,30 @@ The file is read once, before anything reaches the chain. Any other key, a missi
 value the flags would refuse exits `1` with a message naming the file, the rule and the field, such
 as `rules.json: rule "fee-burst" (#1): window: must be a duration such as 30s, 5m, 1h or 1d`.
 Handle descriptors are refused: their events carry no timestamp.
+
+**Record sources** count and sum the records `streamd transfers`, `swaps` and `sales` print
+rather than raw events, so a sum reads paired, decoded amounts:
+
+```json
+{
+  "name": "apt-outflow",
+  "source": { "kind": "transfers", "asset": "0x1::aptos_coin::AptosCoin", "account": "alice.apt" },
+  "where": ["amount>=100000000"],
+  "window": "1h",
+  "threshold": { "sum": "amount", "gte": "1000000000000" }
+}
+```
+
+| `kind` | Narrowing fields, as the command's flags | Fields `sum` may read |
+| --- | --- | --- |
+| `transfers` | `asset`, `account` (an address or name) | `amount` |
+| `swaps` | `protocol` (a name or a list), `asset` | `amountIn`, `amountOut` |
+| `sales` | `marketplace` (a name or a list), `token` | `price`, `royalty`, `fee` |
+
+Every field is optional. `where`, `sender` and `function` test the record, which keeps its
+event's version, sender and timestamp, so windows are placed as for events. Names, assets and
+accounts are checked by the client as each rule starts, before anything is read, and a refused
+one exits `1` naming the rule. `--chain sui` refuses a rule with a `source`.
 
 | Option | Meaning |
 | --- | --- |
@@ -5133,7 +5301,7 @@ position.
 
 **Windows** are fixed and back to back, in chain time: an event belongs to the window of
 `window` length, aligned to the Unix epoch, that holds its `timestamp`. The same history always
-gives the same windows and the same alerts, whenever it is read. An event with no timestamp stops
+gives the same windows and the same alerts, whenever it is read. An event or record with no timestamp stops
 the command with exit `1`.
 
 **Firing** happens once per window and rule, on the event that first takes the count or sum to the
@@ -5211,7 +5379,7 @@ The window saved is always the one as of the end of the page the cursor follows,
 only after that page's alerts were acknowledged, so a restart resumes the window without losing an
 alert. Delivery is at least once: a crash, a failed delivery, or a stop while a page's alerts are
 being sent replays that page, resending its alerts with the same `id`. A stop between pages
-repeats nothing. An entry records what its rule counts; changing a rule's descriptor, filter,
+repeats nothing. An entry records what its rule counts; changing a rule's descriptor or source, filter,
 decode, window or threshold (any `anomaly` field included) makes the next run exit `1` naming it, until its entry is removed or
 another cursor file is used. Entries for rules no longer in the file are kept.
 
@@ -5375,6 +5543,193 @@ Exit codes: `0` when the limit is reached, the range is printed, on Ctrl-C or `S
 stdout closes; `1` when reading fails (following: once the subscription gives up), or output or
 the cursor file could not be read or written; `2` for invalid arguments; `130` on a second
 Ctrl-C while following.
+
+### Follow or query swaps and sales
+
+`streamd swaps` prints [DEX swaps](#dex-swaps) and `streamd sales` [NFT sales](#nft-sales) as
+JSON lines, through `AptosClient`'s `swaps()`/`getSwaps()` and `sales()`/`getSales()`, followed
+or over a closed range exactly as `streamd transfers` is:
+
+```sh
+# every swap with APT on either side, as it lands
+streamd swaps --asset 0xa
+# Hyperion and Tapp swaps over a closed range, newest first
+streamd swaps --protocol hyperion --protocol tapp --from-version 8177444976 --to-version 8177447976 --order desc
+# the Wapal sales in one transaction of the archived history
+streamd sales --marketplace wapal --from-version 7028273582 --to-version 7028273582 --archive default
+```
+
+Each line is the record event as `tail` prints events, its `data` a `Swap` (one per pool hop) or
+a `Sale` (one per token sold), with amounts and prices in base units as decimal strings:
+
+```json
+{"type":"0x8b4a...e05c::pool_v3::SwapEventV3","data":{"protocol":"hyperion","poolId":"0x9256...00d8","assetIn":"0x...0a","amountIn":"2127446234","assetOut":"0xbae2...6f3b","amountOut":"8076694","trader":"0x989b...9fec"},"version":"8177445224","sequenceNumber":"0","eventIndex":13,"transactionHash":"0x4819...0af8","timestamp":"1795395453252889","sender":"0x989b...9fec","entryFunction":{...}}
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--protocol <name>` | swaps: only this DEX, repeatable (any one matches): `hyperion`, `thala-clamm`, `thala-v2`, `cellana`, `tapp`, `liquidswap`, `pancakeswap` or `thala-v1` |
+| `--asset <asset>` | swaps: only swaps with this asset on either side, as `transfers --asset` takes it |
+| `--marketplace <name>` | sales: only this marketplace, repeatable: `wapal` or `tradeport` |
+| `--token <token>` | sales: only sales of this token, a token object address or a legacy token id |
+
+`--from-version`, `--from-time`, `--to-version <n \| head>`, `--order`, `--limit`,
+`--cursor-file`, `--poll-interval` and `--batch-size` behave as they do for `transfers`, with the
+same combinations refused. A range is read whole through `getSwaps` or `getSales` and then
+printed, since neither has a page-by-page iterator. Every scanned transaction costs a read, so
+keep ranges small on public endpoints or pass `--api-key`. Both marketplaces stopped trading
+near version 7,030,000,000, so sales history needs `--archive`. A name, asset or token the client
+does not accept exits `1` with its message; exit codes are otherwise `transfers`'s. Aptos only:
+`--chain sui` exits `2`, since `SuiClient` has neither method.
+
+### Account activity and fund-flow traces
+
+`streamd activity <address>` prints an account's [activity](#account-activity), one JSON line per
+transaction it sent or received, through `AptosClient`'s `activity()` or `getActivity()`, and
+`streamd trace <address>` resolves the [fund-flow graph](#fund-flow-tracing) around it through
+`trace()`, as one JSON line or as Graphviz DOT:
+
+```sh
+# what alice.apt sent and received in a closed range, with symbols and decimals
+streamd activity alice.apt --from-version 8177444976 --to-version 8177447976 --with-asset-info
+# follow it live
+streamd activity 0x4c...
+# the counterparties one hop out, drawn with Graphviz
+streamd trace 0x4c... --from-version 8177000000 --format dot | dot -Tsvg > trace.svg
+# two hops of APT, an exchange kept but not expanded, and the path to one address
+streamd trace 0x4c... --hops 2 --asset 0xa --min-amount 100000000 --stop 0x5678... --target 0x9abc... \
+  --from-version 8177000000 --max-requests 200
+```
+
+Each `activity` line is the activity event as `tail` prints events, its `data` an `Activity`
+(`direction`, `transfers`, `balanceChanges` and `events`) with bigints as decimal strings. The
+flags are `transfers`': `--from-version`, `--from-time`, `--to-version <n | head>`, `--order`,
+`--limit`, `--cursor-file`, `--poll-interval` and `--batch-size`, with the same combinations
+refused, plus `--with-asset-info`. A range is read whole through `getActivity` and then printed.
+
+`trace` prints the `FundFlowGraph` as one line, `{"root":...,"nodes":[...],"edges":[...],"requests":n}`
+with `stoppedBy` when a bound ended the walk and `amount`, `firstVersion` and `lastVersion` as
+decimal strings. With `--target` it adds `path`, the fewest edges `tracePath` finds from the root to
+the target (from the target to the root under `--direction in`, either way for `both`), or `null`.
+`--format dot` prints `digraph trace { ... }` instead: one node per address labelled with its hop,
+the root drawn heavier and unexpanded nodes dashed, one edge per sender, receiver and asset
+labelled with the asset, the summed amount and the transfer count, the path drawn bold, and
+`stoppedBy` as the graph's `comment`.
+
+| Option | Meaning |
+| --- | --- |
+| `--indexer <url>` | the Indexer's GraphQL URL (default: the network's own) |
+| `--hops <n>` | trace: hops to follow, 1 to 6 (default `1`) |
+| `--direction <out \| in \| both>` | trace: follow what each address sent, received or both (default `both`) |
+| `--from-version <n>`, `--to-version <n \| head>` | trace: the range every address is read over (default: from the oldest version the fullnode holds to the head, read once) |
+| `--asset <asset>` | trace: only transfers of this asset, as `transfers --asset` takes it |
+| `--min-amount <n>` | trace: ignore transfers below this many base units |
+| `--stop <address>` | trace: keep this address as a node but never expand it, repeatable |
+| `--target <address>` | trace: end the walk once this address joins, and add `path` |
+| `--max-nodes <n>`, `--max-requests <n>` | trace: most addresses in the graph (default `100`) and most adapter calls (default `1000`) |
+| `--format <json \| dot>` | trace: one JSON line (default) or Graphviz DOT |
+
+Both read over an Indexer route: the account's transactions come from the Aptos Indexer through
+`IndexerAccountAdapter`, since the fullnode sees only the ones an account signed, and every other
+read, the fungible-store views included, from the fullnode stack the other commands use, with
+several `--node-url`s and `--archive` as usual. The API key goes to the network's Indexer only when
+it goes to the network's fullnode, that is with no `--node-url`; an `--indexer` URL gets none.
+A network with no Indexer exits `1`. Reads stop at the Indexer's processed version and start no
+earlier than the fullnode's oldest. Every listed transaction costs a fullnode read and its stores a
+view each, so keep ranges small on public endpoints, and give `trace` a `--max-requests` and the
+busy addresses (exchanges, routers) as `--stop`. Addresses, names, `--stop`, `--target` and
+`--asset` the client does not accept exit `1` with its message.
+
+Exit codes: `activity`'s are `transfers`'s. `trace` exits `0` once the graph is printed, even when
+a bound stopped it early (`stoppedBy` says which), `1` when the trace or the write fails, `2` for
+invalid arguments, and `130` on Ctrl-C before it printed. Aptos only: `--chain sui` exits `2`,
+since `SuiClient` has neither method.
+
+### Token holders
+
+`streamd holders <asset> --at <version>` lists every fungible store holding an asset at a past
+version through [`holdersAt`](#token-holders-at-a-version), largest first, as JSON lines or CSV:
+
+```sh
+# every holder of one asset, checked against its supply at the version
+streamd holders 0xac21d74053633a030281bd0311361442eb2c4f2f95b19c4599b741c439cff77f --at 8178740000
+# as a spreadsheet, every holder also checked by its balance view
+streamd holders 0x0d82... --at 8120000000 --format csv --verify stores > holders.csv
+```
+
+```text
+store,owner,balance
+0x09f85b35...,0x237798b7...,51640255740
+0xac21d740...,0x4bf51972...,1000
+{"snapshot":{"asset":"0xac21...","version":"8178740000","indexedVersion":"8178747823","total":"51640256740","supply":"51640256740","verified":"supply","dispatchable":false,"requests":9,"holders":2}}
+```
+
+- **Rows.** With `--format json` (the default) each line is `{"store","owner","balance"}`, the
+  balance a decimal string. `--format csv` writes a `store,owner,balance` header, then one record
+  per holder, following RFC 4180: records end in CRLF and a field holding a comma, quote, CR or LF
+  is quoted with its quotes doubled (addresses and decimals never need it).
+- **Summary.** Once every row is written, one JSON line on stderr, in either format:
+  `{"snapshot":{...}}` with the snapshot's `asset`, `version`, `indexedVersion`, `total`,
+  `supply` (only when checked), `verified`, `dispatchable` and `requests`, plus `holders`, the
+  row count, bigints as decimal strings. stdout stays the table alone.
+- **Flags.** `--at <version>` is required. `--verify none | supply | stores` picks the checks
+  (default `supply`), `--max-requests <n>` caps the requests (default `1000`), and
+  `--indexer <url>` and the API key rules are `activity`'s: the fungible-store reads come
+  from the Indexer, the views from the fullnode stack, with several `--node-url`s and `--archive`.
+  Each request is retried up to 5 times. `--stats` counts the fullnode's views but not the
+  Indexer's fungible reads, which `requests` includes.
+- **Cost.** One snapshot near the Indexer's processed version made 9 requests above; a busy
+  asset or a version far back costs one request per 100 stores and per 100 activity rows after
+  it, which the anonymous rate limit soon stops, so pass `--api-key`.
+
+Exit codes: `0` once the rows and the summary are printed (or stdout closes), `1` when the
+snapshot is refused or fails (APT, a coin type, a coin-paired asset, a dispatchable one without
+`--verify stores`, a failed check, `--max-requests` spent, a version the Indexer has not reached),
+`2` for invalid arguments, and `130` on Ctrl-C before it printed. Aptos only: `--chain sui` exits
+`2`.
+
+### Watch lending positions
+
+`streamd positions aave|echelon` follows [lending positions](#lending-positions) through
+`AptosClient.positions()`: each tracked position once the start read finishes, then a line each
+time a read changes one. With `--to` it also POSTs a signed alert to a webhook each time a
+position's health crosses `--threshold`.
+
+```sh
+# two Aave accounts, alerting below a health of 1.1
+streamd positions aave --account 0x5229... --account 0x1ffb... --threshold 1.1 \
+  --to https://hooks.example/liquidations --secret "$SECRET"
+# every Echelon account an event names from now on, printed only
+streamd positions echelon
+```
+
+```json
+{"protocol":"aave","account":"0x9d05...1449","version":"8178864820","assets":[],"collateralValue":"0/1","debtValue":"0/1","liquidationThreshold":"0/1","below":false}
+```
+
+- **Lines.** Each stdout line is the `LendingPosition` as the client keeps it: bigints as decimal
+  strings, and every `Fraction` (`collateralValue`, `debtValue`, `liquidationThreshold`,
+  `health`) as the exact string `"<numerator>/<denominator>"`, so a health of 1.25 is `"5/4"`.
+  The opening lines are the start read, one per account; each later line is one `onChange`.
+- **Alerts.** One POST per `onCross`, after that change's line:
+  `{"id","protocol","account","side","threshold","version","position"}`, `side` `below` or
+  `above` (the side the position crossed to), `threshold` and `position` in the line's form, and
+  `id` `<account>:<side>:<version>`, the same on every redelivery so a receiver can drop
+  repeats. Bodies are signed in `x-streamd-signature` with `--secret` or `STREAMD_WEBHOOK_SECRET`
+  ([`verifyWebhook`](#forward-events-to-a-webhook) checks them), retried as `alert`'s are with
+  `--retries`, `--timeout` and `--header`, which all need `--to`. There is no cursor file:
+  `positions()` keeps none, so a crossing while the command is down is not sent, and the first
+  read after a restart is never a crossing.
+- **Flags.** `--account <address>` is repeatable, addresses only; without it every account one
+  of the protocol's events names is tracked from the start on. `--threshold` is a decimal parsed
+  exactly (`1.05` is `105/100`; default `1`, the liquidation line). `--refresh-interval <ms>`
+  sets the head reads that see price moves (default `60000` with `--account`, otherwise none),
+  `--from-version` starts the scan there (at least `1`), and the read flags are `holders`'s.
+  Mainnet only, like `positions()`.
+
+Exit codes: `0` on Ctrl-C (or when stdout closes), `1` when the start read fails, the monitor
+stops after `maxErrors`, a write fails or an alert is not delivered past its retries, and `2`
+for invalid arguments. Aptos only: `--chain sui` exits `2`.
 
 ### Follow balances
 
@@ -5544,6 +5899,22 @@ streamd tx 0x5d16bc7f...
 `--timeout <ms>` bounds the wait (default 20000). It exits 0 for a successful transaction, 1 if the
 transaction failed, with its VM status on stderr and nothing on stdout, or if it was not found in
 time, 2 for a malformed hash, and 130 if interrupted while waiting.
+
+`streamd explain <hash>` waits the same way, then prints what the transaction did as
+[`formatExplanation`](#explain-a-transaction) renders `AptosClient.explain`'s summary: status,
+sender, function, gas and fee, transfers with asset symbols and decimals, net balance changes,
+swaps, sales and the event count:
+
+```sh
+streamd explain 0x5d16bc7f...
+streamd explain --json 0x5d16bc7f... | jq '.balanceChanges'
+```
+
+`--json` prints the whole `TransactionExplanation` as one JSON line instead, every bigint as a
+decimal string. It takes `--timeout`, `--network`, `--node-url` (repeatable), `--archive`,
+`--api-key` and `--stats` as `tx` does. A failed transaction is still printed, with its gas and no
+transfers, and then exits 1 with its VM status on stderr; otherwise the exit codes are `tx`'s.
+Aptos only: `--chain sui` exits 2, since Sui has no explainer yet.
 
 ### Check event types
 
@@ -6089,10 +6460,32 @@ streamd: src/events.ts differs from the generated output at line 42
 Run the same command without `--check` to bring the file up to date. `--check` needs `--out`,
 and works the same with `--chain sui`.
 
+`--watch` keeps the file current instead. It writes `--out` as usual, then keeps running and
+follows package publishes at every target address from the head through
+[`AptosClient.upgrades`](#package-upgrades). Each publish regenerates the file from the ABIs at
+the head, and when the bytes differ it is rewritten atomically (a temporary file renamed over
+it) and one JSON line goes to stderr naming the publish and its ABI changes by full name:
+
+```sh
+streamd codegen --watch --out src/protocol.ts 0x<protocol address>
+```
+
+```text
+{"rewrite":{"out":"src/protocol.ts","version":"3104582211","address":"0x<long form>","isUpgrade":true,"events":{"added":["0x...::pool::Swapped"],"changed":[],"removed":[]},"entryFunctions":{"added":[],"changed":[],"removed":[]},"views":{"added":[],"changed":[],"removed":[]}}}
+```
+
+Every publish regenerates, since a change to a struct an event only nests can change the file
+without showing in the event diff; a publish that leaves the output as it was writes and prints
+nothing. The first write waits until every address's walk has read the head, so a publish
+landing during it is not missed. `--watch` needs `--out`, is refused with `--check` and with
+`--chain sui`, and exits `0` on SIGINT or SIGTERM and `1` when following gives up after
+repeated failures or a regeneration fails.
+
 | Option | Meaning |
 | --- | --- |
 | `--out <file>` | write to this file instead of stdout |
 | `--check` | compare with the `--out` file instead of writing it |
+| `--watch` | keep the `--out` file current as packages are published at the addresses |
 | `--validators`, `--arbitraries` | also write runtime checks, random payload generators |
 | `--sql <sqlite\|postgres>` | also write a table per event type and its DDL |
 | `--chain <aptos\|sui>` | the chain to read (default `aptos`); see below |

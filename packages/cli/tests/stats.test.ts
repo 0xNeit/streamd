@@ -103,6 +103,20 @@ describe("RequestStats through chainFor", () => {
     expect((await walk()).fetchEvents).toBeUndefined();
   });
 
+  it("counts the Indexer route as indexer, apart from the nodes", async () => {
+    const stats = new RequestStats();
+    const chain = await chainFor({ network: "mainnet", nodeUrl: url("one") }, undefined, stats);
+    const client = chain.indexed!(url("indexer"));
+    try {
+      await client.getActivity("0x1", { fromVersion: 0n, toVersion: 20n }).catch(() => {});
+    } finally {
+      client.destroy();
+    }
+    const { nodes, indexer } = (JSON.parse(stats.line()) as { stats: { nodes: Methods[]; indexer?: Methods } }).stats;
+    expect(nodes).toHaveLength(1);
+    expect(indexer!.fetchEvents).toEqual(expect.objectContaining({ requests: 1, errors: 1 }));
+  });
+
   it("tracks each Sui node once, however many clients and adapters are made", async () => {
     const stats = new RequestStats();
     const chain = await chainFor({ chain: "sui", network: "testnet", nodeUrl: "https://a.invalid:443", extraNodeUrls: ["https://b.invalid:443"] }, undefined, stats);

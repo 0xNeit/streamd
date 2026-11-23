@@ -1,8 +1,8 @@
 import { PGlite } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
-import { MemoryAdapter, StreamdClient, eventId } from "@streamd/core";
-import type { EventAdapter, EventCallback, EventDescriptor, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
-import { PostgresEventStore, PostgresStoreAdapter, storeEvents, storeTransfers } from "../src/index.js";
+import { MemoryAdapter, StreamdClient, eventId, points } from "@streamd/core";
+import type { EventAdapter, EventCallback, EventDescriptor, PointsState, Reduction, Score, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
+import { PostgresEventStore, PostgresStoreAdapter, storeEvents, storePoints, storeTransfers } from "../src/index.js";
 import type { TransferClient } from "../src/index.js";
 
 const SWAP = "0x1::dex::Swap";
@@ -357,5 +357,150 @@ describe("storeTransfers", () => {
     await expect(storeTransfers(client, store, { name: "t", asset: 5 }).then((s) => s.unsubscribe())).resolves.toBeUndefined();
     // @ts-expect-error name is required
     await expect(storeTransfers(client, store, {})).rejects.toThrow("needs a name");
+  });
+});
+
+describe("storePoints", () => {
+  const A = `0x${"a".padStart(64, "0")}`;
+  const B = `0x${"b".padStart(64, "0")}`;
+  const deed = (version: number, sender: string): StreamdEvent => ({
+    type: SWAP,
+    data: {},
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 0,
+    sender,
+  });
+  const deeds = [deed(1, "0xa"), deed(2, "0xb"), deed(3, "0xa")];
+  const board = () => points({ rules: [{ id: "swap", points: 10n, firstTime: 5n }] });
+  const rows = async (db: PGlite) =>
+    (await db.query(`SELECT name, address, points::text, version::text FROM streamd_points ORDER BY address`)).rows;
+  const failFrom = (db: PGlite, version: number) =>
+    db.exec(`
+      CREATE FUNCTION full() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.version >= ${version} THEN RAISE EXCEPTION 'disk full'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER boom BEFORE INSERT ON streamd_points FOR EACH ROW EXECUTE FUNCTION full();
+    `);
+
+  it("writes and reads a leaderboard with its cursor in one statement", async () => {
+    const store = new PostgresEventStore(new PGlite());
+    expect(await store.readPoints("p")).toEqual(new Map());
+    const f = board();
+    const state = deeds.reduce(f, f.initial);
+    await store.writePoints("p", state.values(), { name: "points:p", cursor: "c" });
+    expect(await store.readPoints("p")).toEqual(state);
+    expect(await store.readPoints("other")).toEqual(new Map());
+    expect(await store.readCursor("points:p")).toBe("c");
+    await expect(store.writePoints("", [])).rejects.toThrow("non-empty name");
+  });
+
+  it("folds the history into rows, then writes only a live event's row with the cursor", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    const adapter = new MemoryAdapter(deeds);
+    const client = new StreamdClient({ adapter });
+    let atChange: string | undefined;
+    let reduction: Reduction<PointsState> | undefined;
+    const changed = new Promise<void>((resolve) => {
+      void storePoints(client, store, swaps, board(), {
+        name: "p",
+        pollInterval: 5,
+        onChange: () => {
+          atChange = reduction!.cursor;
+          resolve();
+        },
+      }).then((r) => (reduction = r));
+    });
+    while (reduction === undefined) await new Promise((r) => setTimeout(r, 1));
+    await reduction.ready;
+    expect(await rows(db)).toEqual([
+      { name: "p", address: A, points: "25", version: "3" },
+      { name: "p", address: B, points: "15", version: "2" },
+    ]);
+    expect(await store.readCursor("points:p")).toBe(reduction.cursor);
+    const writes: [string, Score[], unknown][] = [];
+    const write = store.writePoints.bind(store);
+    store.writePoints = (name, scores, checkpoint) => (writes.push([name, [...scores], checkpoint]), write(name, scores, checkpoint));
+    adapter.push(deed(4, "0xb"));
+    await changed;
+    for (let i = 0; i < 100 && (await store.readCursor("points:p")) !== atChange; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(writes.map(([n, s, c]) => [n, s.map((x) => x.address), c])).toEqual([["p", [B], { name: "points:p", cursor: atChange }]]);
+    expect(await rows(db)).toEqual([
+      { name: "p", address: A, points: "25", version: "3" },
+      { name: "p", address: B, points: "25", version: "4" },
+    ]);
+    reduction.unsubscribe();
+    client.destroy();
+  });
+
+  it("resumes from the saved rows and cursor without folding the history again", async () => {
+    const store = new PostgresEventStore(new PGlite());
+    const first = new StreamdClient({ adapter: new MemoryAdapter(deeds) });
+    const r1 = await storePoints(first, store, swaps, board(), { name: "p" });
+    await r1.ready;
+    r1.unsubscribe();
+    first.destroy();
+
+    const seen: string[] = [];
+    const later = [...deeds, deed(4, "0xb"), deed(5, "0xa")];
+    const second = new StreamdClient({ adapter: new MemoryAdapter(later) });
+    let done!: () => void;
+    const reachedFive = new Promise<void>((resolve) => (done = resolve));
+    const r2 = await storePoints(second, store, swaps, board(), {
+      name: "p",
+      pollInterval: 5,
+      fromVersion: 0n,
+      where: (e) => (seen.push(eventId(e)), true),
+      onChange: (state) => state.get(A)?.version === 5n && done(),
+    });
+    await reachedFive;
+    const f = board();
+    const expected = later.reduce(f, f.initial);
+    for (let i = 0; i < 100 && (await store.readPoints("p")).get(A)?.version !== 5n; i++) await new Promise((r) => setTimeout(r, 5));
+    r2.unsubscribe();
+    second.destroy();
+    expect(seen).toEqual(["4:0", "5:0"]);
+    expect(await store.readPoints("p")).toEqual(expected);
+  });
+
+  it("stops and reports a failed live write", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    const adapter = new MemoryAdapter(deeds);
+    const client = new StreamdClient({ adapter });
+    let reported!: (e: Error) => void;
+    const failed = new Promise<Error>((resolve) => (reported = resolve));
+    const reduction = await storePoints(client, store, swaps, board(), { name: "p", pollInterval: 5, onError: reported });
+    await reduction.ready;
+    await failFrom(db, 4);
+    adapter.push(deed(4, "0xa"));
+    const error = await failed;
+    client.destroy();
+    expect(error.message).toContain("disk full");
+    expect(reduction.active).toBe(false);
+    expect((await store.readPoints("p")).get(A)?.version).toBe(3n);
+  });
+
+  it("rejects ready and reports a failed backfill write", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.writePoints("p", []);
+    await failFrom(db, 0);
+    const client = new StreamdClient({ adapter: new MemoryAdapter(deeds) });
+    const reported: Error[] = [];
+    const reduction = await storePoints(client, store, swaps, board(), { name: "p", onError: (e) => reported.push(e) });
+    await expect(reduction.ready).rejects.toThrow("disk full");
+    client.destroy();
+    expect(reported.map((e) => e.message)).toEqual([expect.stringContaining("disk full")]);
+    expect(reduction.active).toBe(false);
+    expect(await store.readCursor("points:p")).toBeUndefined();
+  });
+
+  it("refuses a missing name or a cursor", async () => {
+    const store = new PostgresEventStore(new PGlite());
+    const client = new StreamdClient({ adapter: new MemoryAdapter([]) });
+    await expect(storePoints(client, store, swaps, board(), { name: "" })).rejects.toThrow("needs a name");
+    await expect(storePoints(client, store, swaps, board(), { name: "p", cursor: "x" } as never)).rejects.toThrow("from the store");
+    client.destroy();
   });
 });

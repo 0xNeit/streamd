@@ -25,11 +25,17 @@ export function useStreamdClient(client?: StreamdClient): StreamdClient {
   return resolved;
 }
 
-/** `useStreamdClient`, refusing a client without `method`, which an `AptosClient` and a `SuiClient` both have. */
-export function useClientWith<T extends StreamdClient>(method: "balances" | "eventsOf" | "transfers", client?: T): T {
+const SHARED = new Set(["balances", "eventsOf", "transfers"]);
+
+/** `useStreamdClient`, refusing a client without `method`, which an `AptosClient` has, and a `SuiClient` for the shared ones. */
+export function useClientWith<T extends StreamdClient>(
+  method: "activity" | "balances" | "eventsOf" | "explain" | "positions" | "sales" | "swaps" | "transfers",
+  client?: T,
+): T {
   const resolved = useStreamdClient(client);
   if (typeof (resolved as unknown as Record<string, unknown>)[method] !== "function") {
-    throw new StreamdError(`This hook needs a client with ${method}, such as an AptosClient or a SuiClient`);
+    const examples = SHARED.has(method) ? "an AptosClient or a SuiClient" : "an AptosClient";
+    throw new StreamdError(`This hook needs a client with ${method}, such as ${examples}`);
   }
   return resolved as T;
 }

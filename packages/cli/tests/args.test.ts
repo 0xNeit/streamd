@@ -504,6 +504,21 @@ describe("parseCommand codegen", () => {
     expect(parseCommand(["codegen", "--out", "events.ts", "0x1"])).not.toMatchObject({ options: { check: true } });
   });
 
+  it("takes --watch with --out, refusing it without --out, with --check and on Sui", () => {
+    expect(parseCommand(["codegen", "--watch", "--out", "events.ts", "--validators", "0x1"])).toEqual({
+      command: "codegen",
+      options: { modules: [{ address: ADDR }], network: "mainnet", out: "events.ts", validators: true, watch: true },
+    });
+    expect(parseCommand(["codegen", "--out", "events.ts", "0x1"])).not.toMatchObject({ options: { watch: true } });
+    expect(() => parseCommand(["codegen", "--watch", "0x1"])).toThrow(new UsageError("--watch needs --out <file> to rewrite"));
+    expect(() => parseCommand(["codegen", "--watch", "--check", "--out", "events.ts", "0x1"])).toThrow(
+      new UsageError("--watch cannot be combined with --check"),
+    );
+    expect(() => parseCommand(["codegen", "--chain", "sui", "--watch", "--out", "events.ts", "0x2::kiosk"])).toThrow(
+      new UsageError("--watch reads Aptos package publishes only, not --chain sui"),
+    );
+  });
+
   it("takes a bare address as every module at it", () => {
     expect(parseCommand(["codegen", "0x1", `${LONG_ADDR}::coin`])).toEqual({
       command: "codegen",
@@ -876,6 +891,33 @@ describe("parseCommand tx", () => {
   });
 });
 
+describe("parseCommand explain", () => {
+  const HASH = `0x${"ab".repeat(32)}`;
+
+  it("takes a hash, --json, a timeout and the read options", () => {
+    expect(parseCommand(["explain", HASH])).toEqual({ command: "explain", options: { hash: HASH, network: "mainnet" } });
+    expect(parseCommand(["explain", HASH, "--json"])).toEqual({ command: "explain", options: { hash: HASH, network: "mainnet", json: true } });
+    expect(parseCommand(["explain", "--network", "testnet", "--node-url", "https://n.example/v1", "--timeout", "500", HASH])).toEqual({
+      command: "explain",
+      options: { hash: HASH, network: "testnet", nodeUrl: "https://n.example/v1", timeout: 500 },
+    });
+    expect(parseCommand(["explain", "--help"])).toEqual({ command: "help" });
+  });
+
+  it.each([
+    [["explain"], /explain needs one transaction hash/],
+    [["explain", HASH, HASH], /explain needs one transaction hash/],
+    [["explain", "0x12"], /not a transaction hash/],
+    [["explain", `0x${"zz".repeat(32)}`], /not a transaction hash/],
+    [["explain", HASH, "--timeout", "soon"], /--timeout/],
+    [["explain", HASH, "--json=yes"], /json/],
+    [["explain", HASH, "--limit", "1"], /limit/],
+    [["explain", "--chain", "sui", "Da2zqzrgB4Yis2qEgjVYh5N4Go1tXXDesyo4BKBkonqS"], /explain is not available with --chain sui/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
+
 describe("forward secret", () => {
   const ENV = "STREAMD_WEBHOOK_SECRET";
   const secretOf = (...extra: string[]) => {
@@ -911,6 +953,7 @@ describe("parseCommand --api-key and APTOS_API_KEY", () => {
     ["store", "--db", "e.db", TYPE],
     ["query", "--from-version", "1", TYPE],
     ["tx", `0x${"ab".repeat(32)}`],
+    ["explain", `0x${"ab".repeat(32)}`],
     ["check", TYPE],
     ["record", "--from-version", "1", "--to-version", "2", TYPE],
     ["codegen", "0x1::coin"],
@@ -1214,6 +1257,211 @@ describe("parseCommand transfers", () => {
   });
 });
 
+describe("parseCommand swaps and sales", () => {
+  const options = (...argv: string[]) => {
+    const parsed = parseCommand(argv);
+    if (parsed.command !== "swaps" && parsed.command !== "sales") throw new Error("expected swaps or sales");
+    return parsed.options;
+  };
+
+  it("follows by default, with repeatable names and only the flags given", () => {
+    expect(options("swaps")).toEqual({ network: "mainnet" });
+    expect(options("swaps", "--protocol", "hyperion", "--protocol", "tapp", "--asset", "0xa")).toEqual({
+      network: "mainnet", protocol: ["hyperion", "tapp"], asset: "0xa",
+    });
+    expect(options("sales", "--marketplace", "wapal", "--token", "0xk", "--from-version", "5", "--limit", "3",
+      "--poll-interval", "200", "--batch-size", "500", "--cursor-file", "s.cursor")).toEqual({
+      network: "mainnet", marketplace: ["wapal"], token: "0xk", fromVersion: 5n, limit: 3, pollInterval: 200, batchSize: 500, cursorFile: "s.cursor",
+    });
+  });
+
+  it("reads a range with --to-version, and takes the read options", () => {
+    expect(options("swaps", "--from-version", "5", "--to-version", "9", "--order", "desc"))
+      .toEqual({ network: "mainnet", fromVersion: 5n, toVersion: 9n, order: "desc" });
+    expect(options("sales", "--from-version", "5", "--to-version", "head").toVersion).toBe("head");
+    expect(options("sales", "--api-key", "k", "--archive", "default").apiKey).toBe("k");
+  });
+
+  it.each(["swaps", "sales"])("%s refuses --chain sui", (command) => {
+    rejects([command, "--chain", "sui"], new RegExp(`${command} is not available with --chain sui: SuiClient has no ${command} yet`));
+  });
+
+  it.each([
+    [["swaps", "0x1::coin::CoinDeposit"], /swaps takes no event types/],
+    [["swaps", "--protocol", ""], /--protocol must not be empty/],
+    [["swaps", "--asset", ""], /--asset must not be empty/],
+    [["sales", "--marketplace", "wapal", "--marketplace", ""], /--marketplace must not be empty/],
+    [["sales", "--token", ""], /--token must not be empty/],
+    [["sales", "--cursor-file", ""], /--cursor-file must not be empty/],
+    [["swaps", "--order", "desc"], /--order needs --to-version/],
+    [["sales", "--to-version", "9"], /--to-version needs --from-version or --from-time/],
+    [["swaps", "--from-version", "9", "--to-version", "5"], /--to-version must not be below --from-version/],
+    [["sales", "--from-version", "1", "--to-version", "head", "--cursor-file", "c"], /--cursor-file follows live/],
+    [["swaps", "--from-version", "1", "--from-time", "1h"], /set --from-time or --from-version, not both/],
+    [["swaps", "--token", "0xk"], /Unknown option '--token'/],
+    [["sales", "--asset", "0xa"], /Unknown option '--asset'/],
+    [["swaps", "--account", "0x1"], /Unknown option '--account'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(args, message);
+  });
+});
+
+describe("parseCommand activity and trace", () => {
+  const options = (...argv: string[]) => {
+    const parsed = parseCommand(argv);
+    if (parsed.command !== "activity" && parsed.command !== "trace") throw new Error("expected activity or trace");
+    return parsed.options;
+  };
+
+  it("activity takes one address or name and the walk flags", () => {
+    expect(options("activity", "alice.apt")).toEqual({ network: "mainnet", address: "alice.apt" });
+    expect(options("activity", "0x1", "--with-asset-info", "--indexer", "https://i.example/v1/graphql",
+      "--from-version", "5", "--to-version", "head", "--order", "desc", "--limit", "2")).toEqual({
+      network: "mainnet", address: "0x1", withAssetInfo: true, indexer: "https://i.example/v1/graphql",
+      fromVersion: 5n, toVersion: "head", order: "desc", limit: 2,
+    });
+    expect(options("activity", "0x1", "--cursor-file", "a.cursor", "--poll-interval", "200", "--api-key", "k", "--stats"))
+      .toMatchObject({ cursorFile: "a.cursor", pollInterval: 200, apiKey: "k", stats: true });
+  });
+
+  it("trace defaults to JSON and takes every bound", () => {
+    expect(options("trace", "0x1")).toEqual({ network: "mainnet", address: "0x1", format: "json" });
+    expect(options("trace", "alice.apt", "--format", "dot", "--hops", "6", "--direction", "out", "--from-version", "5",
+      "--to-version", "9", "--min-amount", "1000000", "--asset", "0xa", "--max-nodes", "10", "--max-requests", "50",
+      "--stop", "0x2", "--stop", "0x3", "--target", "0x4", "--archive", "default", "--node-url", "https://a.example/v1")).toEqual({
+      network: "mainnet", address: "alice.apt", format: "dot", hops: 6, direction: "out", fromVersion: 5n, toVersion: 9n,
+      minAmount: 1000000n, asset: "0xa", maxNodes: 10, maxRequests: 50, stop: ["0x2", "0x3"], target: "0x4",
+      archive: "default", nodeUrl: "https://a.example/v1",
+    });
+    expect(options("trace", "0x1", "--to-version", "head").toVersion).toBe("head");
+  });
+
+  it.each(["activity", "trace"])("%s refuses --chain sui", (command) => {
+    rejects([command, "--chain", "sui", "0x1"], new RegExp(`${command} is not available with --chain sui: SuiClient has no ${command} yet`));
+  });
+
+  it.each([
+    [["activity"], /activity needs one address or name/],
+    [["activity", "0x1", "0x2"], /activity needs one address or name/],
+    [["trace", ""], /trace needs one address or name/],
+    [["activity", "0x1", "--indexer", "ftp://i.example"], /--indexer must be an http or https URL/],
+    [["trace", "0x1", "--indexer", "nope"], /--indexer must be an http or https URL/],
+    [["activity", "0x1", "--order", "desc"], /--order needs --to-version/],
+    [["activity", "0x1", "--to-version", "9"], /--to-version needs --from-version or --from-time/],
+    [["activity", "0x1", "--from-version", "1", "--to-version", "2", "--cursor-file", "c"], /--cursor-file follows live/],
+    [["activity", "0x1", "--asset", "0xa"], /Unknown option '--asset'/],
+    [["trace", "0x1", "--hops", "0"], /--hops must be an integer from 1 to 6/],
+    [["trace", "0x1", "--hops", "7"], /--hops must be an integer from 1 to 6/],
+    [["trace", "0x1", "--direction", "up"], /--direction must be out, in or both/],
+    [["trace", "0x1", "--format", "svg"], /--format must be json or dot/],
+    [["trace", "0x1", "--min-amount", "1.5"], /--min-amount must be a non-negative integer/],
+    [["trace", "0x1", "--max-nodes", "0"], /--max-nodes must be an integer from 1/],
+    [["trace", "0x1", "--max-requests", "x"], /--max-requests must be an integer from 1/],
+    [["trace", "0x1", "--from-version", "9", "--to-version", "5"], /--to-version must not be below --from-version/],
+    [["trace", "0x1", "--stop", ""], /--stop must not be empty/],
+    [["trace", "0x1", "--target", ""], /--target must not be empty/],
+    [["trace", "0x1", "--asset", ""], /--asset must not be empty/],
+    [["trace", "0x1", "--limit", "1"], /Unknown option '--limit'/],
+    [["trace", "0x1", "--from-time", "1h"], /Unknown option '--from-time'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(args, message);
+  });
+});
+
+describe("parseCommand holders", () => {
+  const holders = (...argv: string[]) => {
+    const parsed = parseCommand(["holders", ...argv]);
+    if (parsed.command !== "holders") throw new Error("expected a holders command");
+    return parsed.options;
+  };
+
+  it("defaults to JSON and leaves the checks to the client", () => {
+    expect(holders("0xabc", "--at", "8120000000")).toEqual({ network: "mainnet", asset: "0xabc", at: 8120000000n, format: "json" });
+  });
+
+  it("takes every flag", () => {
+    expect(holders("0xabc", "--at", "0", "--format", "csv", "--verify", "stores", "--max-requests", "40",
+      "--indexer", "https://i.example/v1/graphql", "--api-key", "k", "--archive", "default", "--stats")).toEqual({
+      network: "mainnet", asset: "0xabc", at: 0n, format: "csv", verify: "stores", maxRequests: 40,
+      indexer: "https://i.example/v1/graphql", apiKey: "k", archive: "default", stats: true,
+    });
+  });
+
+  it("refuses --chain sui", () => {
+    rejects(["holders", "--chain", "sui", "0xabc", "--at", "1"], /holders is not available with --chain sui/);
+  });
+
+  it.each([
+    [["holders", "--at", "1"], /holders needs one asset/],
+    [["holders", "0xa", "0xb", "--at", "1"], /holders needs one asset/],
+    [["holders", "0xabc"], /holders needs --at <version>/],
+    [["holders", "0xabc", "--at", "head"], /--at must be a non-negative integer/],
+    [["holders", "0xabc", "--at", "1", "--verify", "all"], /--verify must be none, supply or stores/],
+    [["holders", "0xabc", "--at", "1", "--format", "tsv"], /--format must be json or csv/],
+    [["holders", "0xabc", "--at", "1", "--max-requests", "0"], /--max-requests must be an integer from 1/],
+    [["holders", "0xabc", "--at", "1", "--indexer", "ftp://i.example"], /--indexer must be an http or https URL/],
+    [["holders", "0xabc", "--at", "1", "--limit", "5"], /Unknown option '--limit'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(args, message);
+  });
+});
+
+describe("parseCommand positions", () => {
+  const A = `0x${"a".repeat(64)}`;
+  const positions = (...argv: string[]) => {
+    const parsed = parseCommand(["positions", ...argv]);
+    if (parsed.command !== "positions") throw new Error("expected a positions command");
+    return parsed.options;
+  };
+
+  it("defaults to no webhook and leaves the rest to the client", () => {
+    expect(positions("aave")).toEqual({ network: "mainnet", protocol: "aave", retries: 5, timeout: 10_000, headers: {} });
+  });
+
+  it("takes every flag, the threshold exactly and accounts in long form", () => {
+    expect(positions("echelon", "--account", "0xa", "--account", A, "--threshold", "1.05", "--refresh-interval", "0",
+      "--from-version", "7", "--to", "https://hook.example/p", "--retries", "2", "--timeout", "500",
+      "--header", "X-Team: risk", "--secret", "s", "--node-url", "https://n.example/v1", "--api-key", "k", "--stats")).toEqual({
+      network: "mainnet", protocol: "echelon", account: [`0x${"0".repeat(63)}a`, A],
+      threshold: { numerator: 105n, denominator: 100n }, refreshInterval: 0, fromVersion: 7n,
+      to: "https://hook.example/p", retries: 2, timeout: 500, headers: { "x-team": "risk" }, secret: "s",
+      nodeUrl: "https://n.example/v1", apiKey: "k", stats: true,
+    });
+    expect(positions("aave", "--threshold", "2").threshold).toEqual({ numerator: 2n, denominator: 1n });
+  });
+
+  it("signs from the environment only with a webhook", () => {
+    process.env.STREAMD_WEBHOOK_SECRET = "from-env";
+    try {
+      expect(positions("aave", "--to", "http://127.0.0.1:9/").secret).toBe("from-env");
+      expect(positions("aave").secret).toBeUndefined();
+    } finally {
+      delete process.env.STREAMD_WEBHOOK_SECRET;
+    }
+  });
+
+  it.each([
+    [["positions"], /positions needs one protocol/],
+    [["positions", "aave", "echelon"], /positions needs one protocol/],
+    [["positions", "aries"], /positions reads aave or echelon: aries/],
+    [["positions", "aave", "--account", "alice.apt"], /Not a valid Aptos address/],
+    [["positions", "aave", "--threshold", "1e3"], /--threshold must be a non-negative decimal/],
+    [["positions", "aave", "--threshold=-1"], /--threshold must be a non-negative decimal/],
+    [["positions", "aave", "--threshold", ".5"], /--threshold must be a non-negative decimal/],
+    [["positions", "aave", "--refresh-interval=-1"], /--refresh-interval must be an integer from 0/],
+    [["positions", "aave", "--from-version", "0"], /--from-version must be at least 1/],
+    [["positions", "aave", "--from-version", "x"], /--from-version must be a non-negative integer/],
+    [["positions", "aave", "--secret", "s"], /--secret needs --to <url>/],
+    [["positions", "aave", "--retries", "1"], /--retries needs --to <url>/],
+    [["positions", "aave", "--header", "A: b"], /--header needs --to <url>/],
+    [["positions", "aave", "--to", "ftp://hook.example"], /--to must be an http or https URL/],
+    [["positions", "aave", "--cursor-file", "c"], /Unknown option '--cursor-file'/],
+    [["positions", "--chain", "sui", "aave"], /positions is not available with --chain sui/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(args, message);
+  });
+});
+
 describe("parseCommand balances", () => {
   const balances = (...argv: string[]) => {
     const parsed = parseCommand(["balances", ...argv]);
@@ -1439,7 +1687,12 @@ describe("several nodes", () => {
     ["query", "--from-version", "1", TYPE],
     ["record", "--from-version", "1", "--to-version", "2", TYPE],
     ["tx", HASH],
+    ["explain", HASH],
     ["transfers"],
+    ["swaps"],
+    ["sales"],
+    ["activity", ADDR],
+    ["trace", ADDR],
     ["balances", ADDR],
     ["watch", ADDR],
   ];
@@ -1486,7 +1739,12 @@ describe("--archive", () => {
     ["query", "--from-version", "1", TYPE],
     ["record", "--from-version", "1", "--to-version", "2", TYPE],
     ["tx", HASH],
+    ["explain", HASH],
     ["transfers"],
+    ["swaps"],
+    ["sales"],
+    ["activity", ADDR],
+    ["trace", ADDR],
     ["balances", ADDR],
     ["watch", ADDR],
   ];
@@ -1556,9 +1814,14 @@ describe("--stats", () => {
     ["query", "--from-version", "1", TYPE],
     ["record", "--from-version", "1", "--to-version", "2", TYPE],
     ["transfers"],
+    ["swaps"],
+    ["sales"],
+    ["activity", "0x1"],
+    ["trace", "0x1"],
     ["balances", "0x1"],
     ["watch", "0x1"],
     ["tx", `0x${"a".repeat(64)}`],
+    ["explain", `0x${"a".repeat(64)}`],
   ];
   const options = (argv: string[]) => (parseCommand(argv) as unknown as { options: Record<string, unknown> }).options;
 
