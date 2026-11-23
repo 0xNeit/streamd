@@ -1353,6 +1353,44 @@ describe("parseCommand activity and trace", () => {
   });
 });
 
+describe("parseCommand holders", () => {
+  const holders = (...argv: string[]) => {
+    const parsed = parseCommand(["holders", ...argv]);
+    if (parsed.command !== "holders") throw new Error("expected a holders command");
+    return parsed.options;
+  };
+
+  it("defaults to JSON and leaves the checks to the client", () => {
+    expect(holders("0xabc", "--at", "8120000000")).toEqual({ network: "mainnet", asset: "0xabc", at: 8120000000n, format: "json" });
+  });
+
+  it("takes every flag", () => {
+    expect(holders("0xabc", "--at", "0", "--format", "csv", "--verify", "stores", "--max-requests", "40",
+      "--indexer", "https://i.example/v1/graphql", "--api-key", "k", "--archive", "default", "--stats")).toEqual({
+      network: "mainnet", asset: "0xabc", at: 0n, format: "csv", verify: "stores", maxRequests: 40,
+      indexer: "https://i.example/v1/graphql", apiKey: "k", archive: "default", stats: true,
+    });
+  });
+
+  it("refuses --chain sui", () => {
+    rejects(["holders", "--chain", "sui", "0xabc", "--at", "1"], /holders is not available with --chain sui/);
+  });
+
+  it.each([
+    [["holders", "--at", "1"], /holders needs one asset/],
+    [["holders", "0xa", "0xb", "--at", "1"], /holders needs one asset/],
+    [["holders", "0xabc"], /holders needs --at <version>/],
+    [["holders", "0xabc", "--at", "head"], /--at must be a non-negative integer/],
+    [["holders", "0xabc", "--at", "1", "--verify", "all"], /--verify must be none, supply or stores/],
+    [["holders", "0xabc", "--at", "1", "--format", "tsv"], /--format must be json or csv/],
+    [["holders", "0xabc", "--at", "1", "--max-requests", "0"], /--max-requests must be an integer from 1/],
+    [["holders", "0xabc", "--at", "1", "--indexer", "ftp://i.example"], /--indexer must be an http or https URL/],
+    [["holders", "0xabc", "--at", "1", "--limit", "5"], /Unknown option '--limit'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(args, message);
+  });
+});
+
 describe("parseCommand balances", () => {
   const balances = (...argv: string[]) => {
     const parsed = parseCommand(["balances", ...argv]);
