@@ -6460,10 +6460,32 @@ streamd: src/events.ts differs from the generated output at line 42
 Run the same command without `--check` to bring the file up to date. `--check` needs `--out`,
 and works the same with `--chain sui`.
 
+`--watch` keeps the file current instead. It writes `--out` as usual, then keeps running and
+follows package publishes at every target address from the head through
+[`AptosClient.upgrades`](#package-upgrades). Each publish regenerates the file from the ABIs at
+the head, and when the bytes differ it is rewritten atomically (a temporary file renamed over
+it) and one JSON line goes to stderr naming the publish and its ABI changes by full name:
+
+```sh
+streamd codegen --watch --out src/protocol.ts 0x<protocol address>
+```
+
+```text
+{"rewrite":{"out":"src/protocol.ts","version":"3104582211","address":"0x<long form>","isUpgrade":true,"events":{"added":["0x...::pool::Swapped"],"changed":[],"removed":[]},"entryFunctions":{"added":[],"changed":[],"removed":[]},"views":{"added":[],"changed":[],"removed":[]}}}
+```
+
+Every publish regenerates, since a change to a struct an event only nests can change the file
+without showing in the event diff; a publish that leaves the output as it was writes and prints
+nothing. The first write waits until every address's walk has read the head, so a publish
+landing during it is not missed. `--watch` needs `--out`, is refused with `--check` and with
+`--chain sui`, and exits `0` on SIGINT or SIGTERM and `1` when following gives up after
+repeated failures or a regeneration fails.
+
 | Option | Meaning |
 | --- | --- |
 | `--out <file>` | write to this file instead of stdout |
 | `--check` | compare with the `--out` file instead of writing it |
+| `--watch` | keep the `--out` file current as packages are published at the addresses |
 | `--validators`, `--arbitraries` | also write runtime checks, random payload generators |
 | `--sql <sqlite\|postgres>` | also write a table per event type and its DDL |
 | `--chain <aptos\|sui>` | the chain to read (default `aptos`); see below |
