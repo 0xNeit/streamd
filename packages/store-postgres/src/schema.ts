@@ -96,6 +96,18 @@ export const TRANSFER_SCHEMA = [
     WHERE to_address IS NOT NULL`,
 ];
 
+// Created only by what reads or writes points, as the transfers table is.
+export const POINTS_SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS streamd_points (
+    name text NOT NULL,
+    address text NOT NULL,
+    points numeric NOT NULL,
+    version numeric(20, 0) NOT NULL,
+    score text NOT NULL,
+    PRIMARY KEY (name, address)
+  )`,
+];
+
 // Kept among the cursors, as the SQLite store does, so a database created
 // before pruning existed needs no migration: the row appears on the first prune.
 export const PRUNED_BEFORE = "streamd:pruned-before";

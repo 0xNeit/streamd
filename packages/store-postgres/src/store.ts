@@ -6,10 +6,12 @@ import {
   parseEvent,
   requireAddress,
   requireEventTables,
+  scoreFromJson,
+  scoreToJson,
   serializeEvent,
 } from "@streamd/core";
-import type { EventTable, StreamdEvent, Transfer } from "@streamd/core";
-import { EDGE, PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, forgetSchema, hashKey, versionParam } from "./schema.js";
+import type { EventTable, PointsState, Score, StreamdEvent, Transfer } from "@streamd/core";
+import { EDGE, POINTS_SCHEMA, PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, forgetSchema, hashKey, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 import { eventTableSchema, eventTablesWrite } from "./tables.js";
 
@@ -227,6 +229,26 @@ INSERT INTO streamd_cursors (name, cursor)
 SELECT $2::text, $3::text WHERE $2::text IS NOT NULL AND $3::text IS NOT NULL
 ON CONFLICT (name) DO UPDATE SET cursor = excluded.cursor`;
 
+// As WRITE, over the points table.
+const WRITE_POINTS = `
+WITH incoming AS (
+  SELECT r->>0, r->>1, (r->>2)::numeric, (r->>3)::numeric, r->>4
+  FROM jsonb_array_elements($1::text::jsonb) AS r
+), written AS (
+  INSERT INTO streamd_points (name, address, points, version, score)
+  SELECT * FROM incoming
+  ON CONFLICT (name, address) DO UPDATE SET
+    points = excluded.points, version = excluded.version, score = excluded.score
+)
+INSERT INTO streamd_cursors (name, cursor)
+SELECT $2::text, $3::text WHERE $2::text IS NOT NULL AND $3::text IS NOT NULL
+ON CONFLICT (name) DO UPDATE SET cursor = excluded.cursor`;
+
+function requirePointsName(name: string): string {
+  if (typeof name !== "string" || name === "") throw new StreamdError("A points leaderboard needs a non-empty name");
+  return name;
+}
+
 // One statement, so the delete and the edge land together on any connection.
 // The edge only rises: it is compared as numeric, since it is stored as text.
 const PRUNE = `
@@ -287,6 +309,34 @@ export class PostgresEventStore {
   async writeTransfers(records: readonly StreamdEvent<Transfer>[], checkpoint?: StoreCheckpoint): Promise<void> {
     const rows = [...new Map(records.map((r) => [eventId(r), transferRowOf(r)])).values()];
     await this.upsertAll(WRITE_TRANSFERS, rows, checkpoint, TRANSFER_SCHEMA);
+  }
+
+  /**
+   * Upserts `scores` as the rows of the leaderboard `name` in `streamd_points`
+   * and, given a checkpoint, saves its cursor, in one statement.
+   */
+  async writePoints(name: string, scores: Iterable<Score>, checkpoint?: StoreCheckpoint): Promise<void> {
+    const board = requirePointsName(name);
+    // One statement cannot update a row twice, so a repeated address keeps its last copy.
+    const rows = new Map<string, unknown[]>();
+    for (const score of scores) {
+      rows.set(score.address, [board, score.address, score.points.toString(), versionParam(score.version), scoreToJson(score)]);
+    }
+    await this.upsertAll(WRITE_POINTS, [...rows.values()], checkpoint, POINTS_SCHEMA);
+  }
+
+  /** The leaderboard `name` as `writePoints` left it, keyed by long-form address; empty when none. */
+  async readPoints(name: string): Promise<PointsState> {
+    const board = requirePointsName(name);
+    await ensureSchema(this.client, POINTS_SCHEMA);
+    const { rows } = await this.client.query(
+      `SELECT score FROM streamd_points WHERE name = $1 ORDER BY address COLLATE "C"`,
+      [board],
+    );
+    return new Map(rows.map((row) => {
+      const score = scoreFromJson(String(row.score));
+      return [score.address, score];
+    }));
   }
 
   private async runWrite(run: () => Promise<void>, table?: readonly string[]): Promise<void> {
