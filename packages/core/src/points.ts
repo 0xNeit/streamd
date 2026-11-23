@@ -139,16 +139,28 @@ function requireDecay(decay: unknown): PointsDecay | undefined {
   return { interval: d.interval, keep: { numerator, denominator } };
 }
 
+/**
+ * A count of intervals past which `points` has certainly floored to zero, so a
+ * long idle gap never builds the exact power. The 2% and two-interval margins
+ * dwarf any floating-point error in the logarithms.
+ */
+function zeroAfter(points: bigint, numerator: bigint, denominator: bigint): bigint | undefined {
+  const bits = (points < 0n ? -points : points).toString(2).length;
+  const perInterval = Math.log2(Number(denominator)) - Math.log2(Number(numerator));
+  // Keeps too wide for a double to measure take the exact path.
+  if (!Number.isFinite(perInterval) || perInterval <= 0) return undefined;
+  return BigInt(Math.ceil((1.02 * (bits + 1)) / perInterval)) + 2n;
+}
+
 /** `score`'s points and clock after the whole intervals up to `at`. */
 function decayTo(score: Score, at: bigint, decay: PointsDecay): { points: bigint; updatedAt: bigint } {
   const since = score.updatedAt ?? at;
   const k = at > since ? (at - since) / decay.interval : 0n;
   if (k === 0n) return { points: score.points, updatedAt: since };
   const { numerator, denominator } = decay.keep;
-  // ponytail: exact powers cost grows with k (idle intervals); cap k once floor reaches zero if gaps get huge.
   const points =
     score.points === 0n || numerator === denominator ? score.points
-    : numerator === 0n ? 0n
+    : numerator === 0n || k >= (zeroAfter(score.points, numerator, denominator) ?? k + 1n) ? 0n
     : (score.points * numerator ** k) / denominator ** k;
   return { points, updatedAt: since + k * decay.interval };
 }

@@ -119,6 +119,17 @@ describe("points", () => {
       expect([ev(1, { timestamp: 0n }), ev(2, { timestamp: 10n })].reduce(n, n.initial).get(A)?.points).toBe(-66n);
     });
 
+    it("floors to zero across a very long idle gap without building the power", () => {
+      const slow = points({ rules: [{ id: "r", points: (e) => (e.version === 1n ? 10n ** 30n : 0n) }], decay: { interval: 1n, keep: { numerator: 999n, denominator: 1000n } } });
+      const started = performance.now();
+      const s = [ev(1, { timestamp: 0n }), ev(2, { timestamp: 10n ** 12n })].reduce(slow, slow.initial);
+      expect(s.get(A)?.points).toBe(0n);
+      expect(performance.now() - started).toBeLessThan(1000);
+      // Just short of the cut the exact power still runs: 1e30 * 0.999^1000 is about 3.7e29.
+      const near = [ev(1, { timestamp: 0n }), ev(2, { timestamp: 1000n })].reduce(slow, slow.initial);
+      expect(near.get(A)?.points).toBe((10n ** 30n * 999n ** 1000n) / 1000n ** 1000n);
+    });
+
     it("throws on an event without a timestamp", () => {
       expect(() => f(f.initial, ev(1))).toThrow(StreamdError);
     });
