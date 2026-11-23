@@ -302,6 +302,7 @@ export type ParsedCommand =
   | { command: "record"; options: RecordOptions }
   | { command: "query"; options: QueryOptions }
   | { command: "tx"; options: TxOptions }
+  | { command: "explain"; options: ExplainCommandOptions }
   | { command: "transfers"; options: TransfersOptions }
   | { command: "balances"; options: BalancesCommandOptions }
   | { command: "watch"; options: WatchCommandOptions }
@@ -527,6 +528,11 @@ const TX_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const EXPLAIN_OPTIONS = {
+  ...TX_OPTIONS,
+  json: { type: "boolean" },
+} as const;
+
 const CHECK_OPTIONS = {
   ...ENDPOINT_OPTIONS,
   help: { type: "boolean", short: "h" },
@@ -577,6 +583,7 @@ export const USAGE = `Usage:
   streamd store --postgres <url> [options] <eventType>...
   streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
   streamd tx <hash | digest>
+  streamd explain <hash> [--json] [options]
   streamd transfers [--asset <asset>] [--account <address | name>] [--to-version <n | head>] [options]
   streamd balances <address | name> [--asset <asset>]... [options]
   streamd watch <address>... [--cursor-file <path>] [options]
@@ -605,6 +612,9 @@ store follows matching events into a SQLite file, or a Postgres database
 with --postgres, resuming from the cursor saved there when run again.
 query reads a closed range of history as JSON lines, then exits.
 tx waits for a transaction and prints its events, exiting 1 if it failed.
+explain waits for an Aptos transaction and prints its status, gas, transfers,
+balance changes, swaps and sales as text, or as one JSON line with --json,
+exiting 1 if it failed.
 transfers prints asset transfers as JSON lines: followed live, or with
 --to-version read over a closed range, then exits.
 balances prints a wallet's balance of each asset once, then a JSON line each
@@ -642,7 +652,7 @@ from a funded account, runs the command against it (with STREAMD_NODE_URL,
 STREAMD_FAUCET_URL, STREAMD_PACKAGE_ADDRESS and STREAMD_PUBLISHER_KEY set), then
 prints one JSON line per #[event] struct of the package: whether the run emitted
 it, how often, and the call that first did. It exits 1 if the command failed.
-Every command but handles, inspect and coverage takes --chain sui to read Sui instead of Aptos.
+Every command but handles, inspect, explain and coverage takes --chain sui to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
 --decode, which checks integer fields before --where runs.
@@ -708,7 +718,7 @@ Options:
                          coverage: json, or pretty for one line per event struct
   --retries <n>          forward, alert, serve: retries per batch or alert (default: ${DEFAULT_RETRIES})
   --timeout <ms>         forward, alert, serve: per-request timeout (default: ${DEFAULT_TIMEOUT});
-                         tx: wait for commit (default: 20000)
+                         tx, explain: wait for commit (default: 20000)
   --header <h>           forward, alert: request header 'Name: value', repeatable
   --secret <s>           forward, alert: sign each body with HMAC-SHA256 in ${SIGNATURE_HEADER},
                          a Redis entry's signature field or a NATS or Kafka header (or set
@@ -735,6 +745,8 @@ Options:
                          as one JSON line {"stats":...} on exit and on SIGUSR1 (not Windows);
                          reads made outside the adapter, such as name lookups and inspect's
                          resource reads, are not counted
+  --json                 explain: print the explanation as one JSON line, bigints as
+                         decimal strings
   --validators           codegen: also write an is<Type> runtime check per type
   --arbitraries          codegen: also write an arbitrary<Type>(rng) random payload generator
                          per type, a seeded streamdRng and streamdEvent for MemoryAdapter
@@ -1647,6 +1659,23 @@ function parseTx(args: string[]): ParsedCommand {
   return { command: "tx", options };
 }
 
+function parseExplain(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: EXPLAIN_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (chain(values.chain)) throw new UsageError("explain is not available with --chain sui: Sui has no transaction explainer yet");
+  const [hash, ...rest] = positionals;
+  if (hash === undefined || rest.length > 0) throw new UsageError("explain needs one transaction hash");
+  if (!TRANSACTION_HASH.test(hash)) throw new UsageError(`not a transaction hash: ${hash}`);
+  const options: ExplainCommandOptions = { hash, ...endpoint(values, false) };
+  withKey(options, values["api-key"]);
+  const timeout = integer("timeout", values.timeout, 0, MAX_TIMEOUT);
+  if (timeout !== undefined) options.timeout = timeout;
+  if (values.json) options.json = true;
+  return { command: "explain", options };
+}
+
 function parseCheck(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: CHECK_OPTIONS, allowPositionals: true, strict: true }),
@@ -1737,6 +1766,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "record") return parseRecord(rest);
   if (command === "query") return parseQuery(rest);
   if (command === "tx") return parseTx(rest);
+  if (command === "explain") return parseExplain(rest);
   if (command === "transfers") return parseTransfers(rest);
   if (command === "balances") return parseBalances(rest);
   if (command === "watch") return parseWatch(rest);
