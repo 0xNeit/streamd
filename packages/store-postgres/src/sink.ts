@@ -3,6 +3,10 @@ import type {
   EventCallback,
   EventDescriptor,
   EventTable,
+  PointsFold,
+  PointsState,
+  ReduceOptions,
+  Reduction,
   StreamdClient,
   StreamdEvent,
   Subscription,
@@ -32,6 +36,12 @@ const ASYNC_DISPOSE: typeof Symbol.asyncDispose = (Symbol.asyncDispose ?? Symbol
 // Transfer cursors are saved apart from event cursors of the same name.
 const TRANSFER_CURSOR_PREFIX = "transfers:";
 const TABLE_CURSOR_PREFIX = "tables:";
+const POINTS_CURSOR_PREFIX = "points:";
+
+/** `reduce()`'s options but `cursor`, which comes from the store, plus the leaderboard's `name`. */
+export type StorePointsOptions<TEvent = StreamdEvent> = Omit<ReduceOptions<PointsState, unknown, TEvent>, "cursor"> & {
+  name: string;
+};
 
 type Write = (events: StreamdEvent[], checkpoint: StoreCheckpoint) => Promise<void>;
 type Subscribe = (deliver: (events: StreamdEvent[]) => Promise<void>, options: SubscriptionOptions) => Subscription;
@@ -115,6 +125,69 @@ export async function storeTables(
     (events, checkpoint) => store.writeTables(tables, events, checkpoint),
     (deliver, resolved) => client.onBatch({ kind: "module", eventType }, deliver, resolved),
   );
+}
+
+/**
+ * `client.reduce()` over a `points()` fold, keeping the leaderboard `name` in
+ * `streamd_points` with the reduction's cursor under `points:` and `name`.
+ * With a saved cursor it resumes from the stored rows, ignoring the history
+ * options; otherwise it folds from the given start and, once the backfill is
+ * done, writes every row and the cursor in one statement, before `ready`
+ * resolves. Each live change then writes the changed rows and the cursor in
+ * one statement, in order. A failed write stops the reduction and reaches
+ * `onError`; a failed backfill write also rejects `ready`.
+ */
+export async function storePoints<TEvent extends StreamdEvent>(
+  client: StreamdClient,
+  store: PostgresEventStore,
+  descriptor: EventDescriptor<any, TEvent>,
+  fold: PointsFold<TEvent>,
+  options: StorePointsOptions<NoInfer<TEvent>>,
+): Promise<Reduction<PointsState>> {
+  const { name, onChange, ...rest } = options;
+  if (typeof name !== "string" || name === "") throw new StreamdError("storePoints needs a name to save its cursor under");
+  if ((rest as ReduceOptions).cursor !== undefined) throw new StreamdError("storePoints takes its cursor from the store");
+  const checkpoint = POINTS_CURSOR_PREFIX + name;
+  const saved = await store.readCursor(checkpoint);
+  // What the queued writes leave in the store; undefined until the backfill write is queued.
+  let queued: PointsState | undefined = saved === undefined ? undefined : await store.readPoints(name);
+  let failed = false;
+  let writes = Promise.resolve();
+  const enqueue = (state: PointsState) => {
+    const before = queued;
+    const scores = [...state.values()].filter((score) => before?.get(score.address) !== score);
+    const cursor = reduction.cursor;
+    queued = state;
+    const write = writes.then(async () => {
+      if (failed) return;
+      try {
+        await store.writePoints(name, scores, { name: checkpoint, cursor });
+      } catch (err) {
+        failed = true;
+        reduction.unsubscribe();
+        rest.onError?.(err as Error);
+        throw err;
+      }
+    });
+    writes = write.catch(() => {});
+    return write;
+  };
+  const reduction: Reduction<PointsState> = client.reduce(descriptor, fold, queued ?? fold.initial, {
+    ...rest,
+    ...(saved !== undefined && { cursor: saved }),
+    onChange: (state, event) => {
+      if (failed) return;
+      // Before the backfill write is queued, that write covers this change too.
+      if (queued !== undefined) void enqueue(state).catch(() => {});
+      onChange?.(state, event);
+    },
+  } as ReduceOptions<PointsState, any, any>);
+  const ready = reduction.ready.then(async (value) => {
+    if (queued === undefined) await enqueue(reduction.value);
+    return value;
+  });
+  ready.catch(() => {});
+  return Object.create(reduction, { ready: { value: ready } });
 }
 
 async function sink(

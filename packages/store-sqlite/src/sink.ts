@@ -3,6 +3,11 @@ import type {
   EventCallback,
   EventDescriptor,
   EventTable,
+  PointsFold,
+  PointsState,
+  ReduceOptions,
+  Reduction,
+  Score,
   StreamdClient,
   StreamdEvent,
   Subscription,
@@ -32,6 +37,12 @@ const ASYNC_DISPOSE: typeof Symbol.asyncDispose = (Symbol.asyncDispose ?? Symbol
 // Transfer cursors are saved apart from event cursors of the same name.
 const TRANSFER_CURSOR_PREFIX = "transfers:";
 const TABLE_CURSOR_PREFIX = "tables:";
+const POINTS_CURSOR_PREFIX = "points:";
+
+/** `reduce()`'s options but `cursor`, which comes from the store, plus the leaderboard's `name`. */
+export type StorePointsOptions<TEvent = StreamdEvent> = Omit<ReduceOptions<PointsState, unknown, TEvent>, "cursor"> & {
+  name: string;
+};
 
 type Write = (events: StreamdEvent[], checkpoint: StoreCheckpoint) => void;
 type Subscribe = (deliver: (events: StreamdEvent[]) => void, options: SubscriptionOptions) => Subscription;
@@ -114,6 +125,70 @@ export function storeTables(
     (events, checkpoint) => store.writeTables(tables, events, checkpoint),
     (deliver, resolved) => client.onBatch({ kind: "module", eventType }, deliver, resolved),
   );
+}
+
+/**
+ * `client.reduce()` over a `points()` fold, keeping the leaderboard `name` in
+ * `streamd_points` with the reduction's cursor under `points:` and `name`.
+ * With a saved cursor it resumes from the stored rows, ignoring the history
+ * options; otherwise it folds from the given start and, once the backfill is
+ * done, writes every row and the cursor in one write. Each live change then
+ * writes the changed rows and the cursor in one write. A failed write stops
+ * the reduction and reaches `onError`; a failed backfill write also rejects
+ * `ready`.
+ */
+export function storePoints<TEvent extends StreamdEvent>(
+  client: StreamdClient,
+  store: SqliteEventStore,
+  descriptor: EventDescriptor<any, TEvent>,
+  fold: PointsFold<TEvent>,
+  options: StorePointsOptions<NoInfer<TEvent>>,
+): Reduction<PointsState> {
+  const { name, onChange, ...rest } = options;
+  if (typeof name !== "string" || name === "") throw new StreamdError("storePoints needs a name to save its cursor under");
+  if ((rest as ReduceOptions).cursor !== undefined) throw new StreamdError("storePoints takes its cursor from the store");
+  const checkpoint = POINTS_CURSOR_PREFIX + name;
+  const saved = store.readCursor(checkpoint);
+  // What the store holds; undefined until the backfill is written.
+  let written: PointsState | undefined = saved === undefined ? undefined : store.readPoints(name);
+  let failed = false;
+  const save = (scores: Score[], state: PointsState) => {
+    try {
+      store.writePoints(name, scores, { name: checkpoint, cursor: reduction.cursor });
+      written = state;
+    } catch (err) {
+      failed = true;
+      // Ended later, as storeEvents ends: an ended subscription drops the throw before it reaches onError.
+      queueMicrotask(() => reduction.unsubscribe());
+      throw err;
+    }
+  };
+  const reduction: Reduction<PointsState> = client.reduce(descriptor, fold, written ?? fold.initial, {
+    ...rest,
+    ...(saved !== undefined && { cursor: saved }),
+    onChange: (state, event) => {
+      if (failed) return;
+      // Before the backfill write, that write covers this change too.
+      if (written !== undefined) {
+        const before = written;
+        save([...state.values()].filter((score) => before.get(score.address) !== score), state);
+      }
+      onChange?.(state, event);
+    },
+  } as ReduceOptions<PointsState, any, any>);
+  const ready = reduction.ready.then((value) => {
+    if (written === undefined) {
+      try {
+        save([...reduction.value.values()], reduction.value);
+      } catch (err) {
+        rest.onError?.(err as Error);
+        throw err;
+      }
+    }
+    return value;
+  });
+  ready.catch(() => {});
+  return Object.create(reduction, { ready: { value: ready } });
 }
 
 function sink(

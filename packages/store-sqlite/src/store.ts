@@ -1,6 +1,17 @@
-import { StreamdError, eventTableRows, normalizeAddress, parseEvent, requireAddress, requireEventTables, serializeEvent } from "@streamd/core";
-import type { EventTable, StreamdEvent, Transfer } from "@streamd/core";
 import {
+  StreamdError,
+  eventTableRows,
+  normalizeAddress,
+  parseEvent,
+  requireAddress,
+  requireEventTables,
+  scoreFromJson,
+  scoreToJson,
+  serializeEvent,
+} from "@streamd/core";
+import type { EventTable, PointsState, Score, StreamdEvent, Transfer } from "@streamd/core";
+import {
+  POINTS_SCHEMA,
   PRUNED_BEFORE,
   TRANSFER_SCHEMA,
   ensureSchema,
@@ -143,6 +154,11 @@ function requireName(name: unknown): string {
   return name;
 }
 
+function requirePointsName(name: string): string {
+  if (typeof name !== "string" || name === "") throw new StreamdError("A points leaderboard needs a non-empty name");
+  return name;
+}
+
 /**
  * Persists events to a SQLite database the caller supplies. Writes are
  * idempotent on `(version, eventIndex)`: a redelivered event replaces its row
@@ -156,6 +172,7 @@ export class SqliteEventStore {
   private readonly listCursors: SqliteStatement;
   private readonly dropCursor: SqliteStatement;
   private upsertTransfer?: SqliteStatement;
+  private upsertPoints?: SqliteStatement;
   private readonly tableUpserts = new WeakMap<readonly EventTable[], Map<EventTable, SqliteStatement>>();
 
   constructor(db: SqliteDatabase) {
@@ -228,6 +245,35 @@ export class SqliteEventStore {
          transfer = excluded.transfer`,
     );
     this.upsertAll(rows.map((row) => [this.upsertTransfer!, row]), checkpoint);
+  }
+
+  /**
+   * Upserts `scores` as the rows of the leaderboard `name` in `streamd_points`
+   * and, given a checkpoint, saves its cursor, all in one transaction.
+   */
+  writePoints(name: string, scores: Iterable<Score>, checkpoint?: StoreCheckpoint): void {
+    const board = requirePointsName(name);
+    const rows = [...scores].map((score) => [board, score.address, score.points.toString(), versionKey(score.version), scoreToJson(score)]);
+    // Checked on every write, as writeTransfers checks its table.
+    this.db.exec(POINTS_SCHEMA);
+    this.upsertPoints ??= this.db.prepare(
+      `INSERT INTO streamd_points (name, address, points, version, score) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (name, address) DO UPDATE SET
+         points = excluded.points, version = excluded.version, score = excluded.score`,
+    );
+    this.upsertAll(rows.map((row) => [this.upsertPoints!, row]), checkpoint);
+  }
+
+  /** The leaderboard `name` as `writePoints` left it, keyed by long-form address; empty when none. */
+  readPoints(name: string): PointsState {
+    const board = requirePointsName(name);
+    const exists = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'streamd_points'").get();
+    if (exists == null) return new Map();
+    const rows = this.db.prepare("SELECT score FROM streamd_points WHERE name = ? ORDER BY address").all(board) as { score: string }[];
+    return new Map(rows.map(({ score }) => {
+      const parsed = scoreFromJson(score);
+      return [parsed.address, parsed];
+    }));
   }
 
   /**
