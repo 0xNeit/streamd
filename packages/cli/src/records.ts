@@ -1,5 +1,6 @@
+import type { AptosClient, SaleMarketplace, SwapProtocol } from "@streamd/aptos";
 import type { EventFilter, StreamdEvent, Subscription, SubscriptionOptions } from "@streamd/core";
-import type { RecordWalkOptions } from "./args.js";
+import type { RecordWalkOptions, SalesCommandOptions, SwapsCommandOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { formatEvent, message } from "./format.js";
 
@@ -135,4 +136,38 @@ async function follow<T>(options: RecordWalkOptions, source: RecordSource<T>, io
       finish(1);
     }
   });
+}
+
+/**
+ * Prints DEX swaps through `swaps` or `getSwaps`; the protocol names are the
+ * client's to check.
+ */
+export function runSwaps(options: SwapsCommandOptions, io: RecordsIO<Pick<AptosClient, "swaps" | "getSwaps">>): Promise<number> {
+  const { protocol, asset } = options;
+  const narrowing = {
+    ...(protocol !== undefined && { protocol: protocol as SwapProtocol[] }),
+    ...(asset !== undefined && { asset }),
+  };
+  const { client } = io;
+  return runRecords(options, {
+    follow: (callback, listener) => client.swaps(callback, { ...narrowing, ...listener }),
+    range: (filter) => fromArray(client.getSwaps({ ...narrowing, ...filter })),
+  }, io);
+}
+
+/**
+ * Prints NFT sales through `sales` or `getSales`; the marketplace names are
+ * the client's to check.
+ */
+export function runSales(options: SalesCommandOptions, io: RecordsIO<Pick<AptosClient, "sales" | "getSales">>): Promise<number> {
+  const { marketplace, token } = options;
+  const narrowing = {
+    ...(marketplace !== undefined && { marketplace: marketplace as SaleMarketplace[] }),
+    ...(token !== undefined && { token }),
+  };
+  const { client } = io;
+  return runRecords(options, {
+    follow: (callback, listener) => client.sales(callback, { ...narrowing, ...listener }),
+    range: (filter) => fromArray(client.getSales({ ...narrowing, ...filter })),
+  }, io);
 }

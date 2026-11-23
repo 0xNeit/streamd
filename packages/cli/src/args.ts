@@ -155,6 +155,20 @@ export interface TransfersOptions extends RecordWalkOptions {
   withAssetInfo?: true;
 }
 
+/** Aptos only; names and the asset are validated by the client. */
+export interface SwapsCommandOptions extends RecordWalkOptions {
+  /** Non-empty when set. */
+  protocol?: string[];
+  asset?: string;
+}
+
+/** Aptos only; names and the token are validated by the client. */
+export interface SalesCommandOptions extends RecordWalkOptions {
+  /** Non-empty when set. */
+  marketplace?: string[];
+  token?: string;
+}
+
 /** Named apart from core's `BalancesOptions`, which the runner builds from it. */
 export interface BalancesCommandOptions extends Endpoint {
   /** An address or name; validated and resolved by the chain's client. */
