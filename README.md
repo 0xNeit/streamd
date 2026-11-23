@@ -4674,7 +4674,7 @@ has for long-lived handles, it fails at the start, with `--handle` as well.
 `--node-url` overrides its fullnode.
 
 Commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`, `transfers`,
-`balances`, `watch` and `inspect`) take `--node-url` more than once, spreading reads across the nodes through
+`activity`, `trace`, `balances`, `watch` and `inspect`) take `--node-url` more than once, spreading reads across the nodes through
 [`PoolAdapter`](#spreading-load-across-fullnodes): each walk stays on one node, and a node that
 answers `429` is set aside for 30 seconds while the others carry on. `--api-key` goes to the first
 node only. They also take `--archive <url>`, which sends only what the fullnodes refuse as pruned
@@ -4721,7 +4721,7 @@ cursor file could not be written; `2` for invalid arguments; `130` on a second C
 ### Request stats
 
 `--stats` on the commands that read events (`tail`, `forward`, `store`, `query`, `record`, `tx`,
-`transfers`, `balances`, `watch` and `inspect`) prints what the command has asked of each node, through
+`transfers`, `activity`, `trace`, `balances`, `watch` and `inspect`) prints what the command has asked of each node, through
 `adapterMetrics`, as one JSON line on stderr: once when the command ends, by
 `--limit`, the end of its range, Ctrl-C, `SIGTERM`, stdout closing or a failure, and again each
 time the process gets `SIGUSR1` (not on Windows, which has no such signal). stdout keeps only
@@ -4734,7 +4734,9 @@ kill -USR1 $!
 ```
 
 `nodes` holds one entry per `--node-url`, in the order given (one for the network's default
-node), and `archive` appears with `--archive`; each maps the adapter methods called so far to
+node), `archive` appears with `--archive`, and `indexer` on `activity` and `trace`, counting
+`IndexerAccountAdapter`'s calls (its own fullnode reads of each listed transaction are not
+counted); each maps the adapter methods called so far to
 `requests`, `errors`, `rateLimited` and latency percentiles in milliseconds over the most recent
 1024 calls. The numbers are totals since the start, never reset. Nodes are named by position,
 never by URL, since a URL may carry a key. Each node is counted inside the pool, the archive
@@ -5489,6 +5491,69 @@ keep ranges small on public endpoints or pass `--api-key`. Both marketplaces sto
 near version 7,030,000,000, so sales history needs `--archive`. A name, asset or token the client
 does not accept exits `1` with its message; exit codes are otherwise `transfers`'s. Aptos only:
 `--chain sui` exits `2`, since `SuiClient` has neither method.
+
+### Account activity and fund-flow traces
+
+`streamd activity <address>` prints an account's [activity](#account-activity), one JSON line per
+transaction it sent or received, through `AptosClient`'s `activity()` or `getActivity()`, and
+`streamd trace <address>` resolves the [fund-flow graph](#fund-flow-tracing) around it through
+`trace()`, as one JSON line or as Graphviz DOT:
+
+```sh
+# what alice.apt sent and received in a closed range, with symbols and decimals
+streamd activity alice.apt --from-version 8177444976 --to-version 8177447976 --with-asset-info
+# follow it live
+streamd activity 0x4c...
+# the counterparties one hop out, drawn with Graphviz
+streamd trace 0x4c... --from-version 8177000000 --format dot | dot -Tsvg > trace.svg
+# two hops of APT, an exchange kept but not expanded, and the path to one address
+streamd trace 0x4c... --hops 2 --asset 0xa --min-amount 100000000 --stop 0x5678... --target 0x9abc... \
+  --from-version 8177000000 --max-requests 200
+```
+
+Each `activity` line is the activity event as `tail` prints events, its `data` an `Activity`
+(`direction`, `transfers`, `balanceChanges` and `events`) with bigints as decimal strings. The
+flags are `transfers`': `--from-version`, `--from-time`, `--to-version <n | head>`, `--order`,
+`--limit`, `--cursor-file`, `--poll-interval` and `--batch-size`, with the same combinations
+refused, plus `--with-asset-info`. A range is read whole through `getActivity` and then printed.
+
+`trace` prints the `FundFlowGraph` as one line, `{"root":...,"nodes":[...],"edges":[...],"requests":n}`
+with `stoppedBy` when a bound ended the walk and `amount`, `firstVersion` and `lastVersion` as
+decimal strings. With `--target` it adds `path`, the fewest edges `tracePath` finds from the root to
+the target (from the target to the root under `--direction in`, either way for `both`), or `null`.
+`--format dot` prints `digraph trace { ... }` instead: one node per address labelled with its hop,
+the root drawn heavier and unexpanded nodes dashed, one edge per sender, receiver and asset
+labelled with the asset, the summed amount and the transfer count, the path drawn bold, and
+`stoppedBy` as the graph's `comment`.
+
+| Option | Meaning |
+| --- | --- |
+| `--indexer <url>` | the Indexer's GraphQL URL (default: the network's own) |
+| `--hops <n>` | trace: hops to follow, 1 to 6 (default `1`) |
+| `--direction <out \| in \| both>` | trace: follow what each address sent, received or both (default `both`) |
+| `--from-version <n>`, `--to-version <n \| head>` | trace: the range every address is read over (default: from the oldest version the fullnode holds to the head, read once) |
+| `--asset <asset>` | trace: only transfers of this asset, as `transfers --asset` takes it |
+| `--min-amount <n>` | trace: ignore transfers below this many base units |
+| `--stop <address>` | trace: keep this address as a node but never expand it, repeatable |
+| `--target <address>` | trace: end the walk once this address joins, and add `path` |
+| `--max-nodes <n>`, `--max-requests <n>` | trace: most addresses in the graph (default `100`) and most adapter calls (default `1000`) |
+| `--format <json \| dot>` | trace: one JSON line (default) or Graphviz DOT |
+
+Both read over an Indexer route: the account's transactions come from the Aptos Indexer through
+`IndexerAccountAdapter`, since the fullnode sees only the ones an account signed, and every other
+read, the fungible-store views included, from the fullnode stack the other commands use, with
+several `--node-url`s and `--archive` as usual. The API key goes to the network's Indexer only when
+it goes to the network's fullnode, that is with no `--node-url`; an `--indexer` URL gets none.
+A network with no Indexer exits `1`. Reads stop at the Indexer's processed version and start no
+earlier than the fullnode's oldest. Every listed transaction costs a fullnode read and its stores a
+view each, so keep ranges small on public endpoints, and give `trace` a `--max-requests` and the
+busy addresses (exchanges, routers) as `--stop`. Addresses, names, `--stop`, `--target` and
+`--asset` the client does not accept exit `1` with its message.
+
+Exit codes: `activity`'s are `transfers`'s. `trace` exits `0` once the graph is printed, even when
+a bound stopped it early (`stoppedBy` says which), `1` when the trace or the write fails, `2` for
+invalid arguments, and `130` on Ctrl-C before it printed. Aptos only: `--chain sui` exits `2`,
+since `SuiClient` has neither method.
 
 ### Follow balances
 

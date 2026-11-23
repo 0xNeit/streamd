@@ -10,21 +10,24 @@ import type { AdapterMetrics, EventAdapter } from "@streamd/core";
 export class RequestStats {
   private readonly nodes: AdapterMetrics[] = [];
   private archive: AdapterMetrics | undefined;
+  private indexer: AdapterMetrics | undefined;
 
-  /** `adapter`, counted as the next node or as the archive. */
-  track<T extends EventAdapter>(adapter: T, role: "node" | "archive"): T {
+  /** `adapter`, counted as the next node, the archive or the Indexer. */
+  track<T extends EventAdapter>(adapter: T, role: "node" | "archive" | "indexer"): T {
     const metrics = adapterMetrics(adapter);
     if (role === "node") this.nodes.push(metrics);
-    else this.archive = metrics;
+    else if (role === "archive") this.archive = metrics;
+    else this.indexer = metrics;
     // The wrapper has exactly the methods `adapter` has.
     return metrics.adapter as T;
   }
 
-  /** `{"stats":{"nodes":[...],"archive":{...}}}` and a newline, latencies in whole milliseconds. */
+  /** `{"stats":{"nodes":[...],"archive":{...},"indexer":{...}}}` and a newline, latencies in whole milliseconds. */
   line(): string {
     const stats = {
       nodes: this.nodes.map((n) => n.snapshot()),
       ...(this.archive !== undefined && { archive: this.archive.snapshot() }),
+      ...(this.indexer !== undefined && { indexer: this.indexer.snapshot() }),
     };
     return `${JSON.stringify({ stats }, (_, value: unknown) => (typeof value === "number" ? Math.round(value) : value))}\n`;
   }

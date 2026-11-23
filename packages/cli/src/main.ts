@@ -8,6 +8,7 @@ import { Aptos } from "@aptos-labs/ts-sdk";
 import { AptosClient, listEventHandles } from "@streamd/aptos";
 import { parseCommand, USAGE, UsageError } from "./args.js";
 import type {
+  ActivityCommandOptions,
   AlertOptions,
   BalancesCommandOptions,
   CheckOptions,
@@ -29,6 +30,7 @@ import type {
   StoreOptions,
   SwapsCommandOptions,
   TailOptions,
+  TraceCommandOptions,
   TransfersOptions,
   TxOptions,
   WatchCommandOptions,
@@ -58,13 +60,14 @@ import { runMonitor, serveMetrics } from "./monitor.js";
 import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
-import { runSales, runSwaps } from "./records.js";
+import { runActivity, runSales, runSwaps } from "./records.js";
 import type { RecordsIO } from "./records.js";
 import { runServe } from "./serve.js";
 import { sqlTables } from "./sql.js";
 import { RequestStats, onStatsSignal } from "./stats.js";
 import { connectPostgres, openDatabase, runStore } from "./store.js";
 import { runTail } from "./tail.js";
+import { runTrace } from "./trace.js";
 import { runTransfers } from "./transfers.js";
 import { runTx } from "./tx.js";
 import { runWatch } from "./watch.js";
@@ -306,6 +309,35 @@ async function records<O extends SwapsCommandOptions | SalesCommandOptions>(
   }
 }
 
+/** `activity` and `trace`: an `AptosClient` whose account reads go to the Indexer. */
+async function indexed<O extends ActivityCommandOptions | TraceCommandOptions>(
+  options: O,
+  run: (options: O, io: { client: AptosClient; write(line: string): Promise<void>; error(message: string): void; signal: AbortSignal }) => Promise<number>,
+): Promise<number> {
+  const { chain, client: plain, controller } = await setup(options);
+  plain.destroy();
+  let client: AptosClient;
+  try {
+    // The parser refuses --chain sui, so the chain is Aptos's, which has indexed().
+    client = chain.indexed!(options.indexer);
+  } catch (err) {
+    process.stderr.write(`streamd: ${message(err)}\n`);
+    return 1;
+  }
+  const out = stdout(controller);
+  try {
+    const code = await run(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
 async function balances(options: BalancesCommandOptions): Promise<number> {
   const { client, controller } = await setup(options);
   const out = stdout(controller);
@@ -532,6 +564,8 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "transfers") return transfers(parsed.options);
   if (parsed.command === "swaps") return records(parsed.options, runSwaps);
   if (parsed.command === "sales") return records(parsed.options, runSales);
+  if (parsed.command === "activity") return indexed(parsed.options, runActivity);
+  if (parsed.command === "trace") return indexed(parsed.options, runTrace);
   if (parsed.command === "balances") return balances(parsed.options);
   if (parsed.command === "watch") return watch(parsed.options);
   if (parsed.command === "inspect") return inspect(parsed.options);

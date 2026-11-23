@@ -77,6 +77,39 @@ describe("chainFor", () => {
   });
 });
 
+describe("Chain.indexed", () => {
+  /** Each request's URL and bearer token, every one refused. */
+  async function requests(run: () => Promise<unknown>) {
+    const seen: { url: string; auth: string | null }[] = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      seen.push({ url: input instanceof Request ? input.url : String(input), auth: new Headers(init?.headers).get("authorization") });
+      throw new Error("offline");
+    }) as unknown as typeof fetch;
+    await run().catch(() => {});
+    return seen;
+  }
+  const activity = (chain: Awaited<ReturnType<typeof chainFor>>, indexer?: string) => () =>
+    chain.indexed!(indexer).getActivity("0x1", { fromVersion: 0n, toVersion: 10n });
+
+  it("sends account reads to the network's Indexer with the key when there is no --node-url", async () => {
+    const chain = await chainFor({ network: "mainnet", apiKey: "k" });
+    expect((await requests(activity(chain)))[0]).toEqual({ url: "https://api.mainnet.aptoslabs.com/v1/graphql", auth: "Bearer k" });
+  });
+
+  it("sends a custom --node-url's key to neither the network's Indexer nor a custom one", async () => {
+    const chain = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1", apiKey: "k" });
+    expect((await requests(activity(chain)))[0]).toEqual({ url: "https://api.mainnet.aptoslabs.com/v1/graphql", auth: null });
+    const keyed = await chainFor({ network: "mainnet", apiKey: "k" });
+    expect((await requests(activity(keyed, "https://i.example/graphql")))[0]).toEqual({ url: "https://i.example/graphql", auth: null });
+  });
+
+  it("keeps every other read on the fullnode stack", async () => {
+    const chain = await chainFor({ network: "mainnet", nodeUrl: "https://a.example/v1" });
+    const seen = await requests(() => chain.indexed!().getEvents({ kind: "module", eventType: "0x1::coin::DepositEvent" }, { fromVersion: 0n, toVersion: 10n }));
+    expect(seen[0]!.url).toStartWith("https://a.example/v1");
+  });
+});
+
 /** A node that names itself in every cursor, and records each request's cursor. */
 function fakeNode(name: string) {
   const seen: (string | undefined)[] = [];
