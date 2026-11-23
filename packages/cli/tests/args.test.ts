@@ -504,6 +504,21 @@ describe("parseCommand codegen", () => {
     expect(parseCommand(["codegen", "--out", "events.ts", "0x1"])).not.toMatchObject({ options: { check: true } });
   });
 
+  it("takes --watch with --out, refusing it without --out, with --check and on Sui", () => {
+    expect(parseCommand(["codegen", "--watch", "--out", "events.ts", "--validators", "0x1"])).toEqual({
+      command: "codegen",
+      options: { modules: [{ address: ADDR }], network: "mainnet", out: "events.ts", validators: true, watch: true },
+    });
+    expect(parseCommand(["codegen", "--out", "events.ts", "0x1"])).not.toMatchObject({ options: { watch: true } });
+    expect(() => parseCommand(["codegen", "--watch", "0x1"])).toThrow(new UsageError("--watch needs --out <file> to rewrite"));
+    expect(() => parseCommand(["codegen", "--watch", "--check", "--out", "events.ts", "0x1"])).toThrow(
+      new UsageError("--watch cannot be combined with --check"),
+    );
+    expect(() => parseCommand(["codegen", "--chain", "sui", "--watch", "--out", "events.ts", "0x2::kiosk"])).toThrow(
+      new UsageError("--watch reads Aptos package publishes only, not --chain sui"),
+    );
+  });
+
   it("takes a bare address as every module at it", () => {
     expect(parseCommand(["codegen", "0x1", `${LONG_ADDR}::coin`])).toEqual({
       command: "codegen",

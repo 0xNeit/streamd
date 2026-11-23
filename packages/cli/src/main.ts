@@ -48,6 +48,7 @@ import { runCheck } from "./check.js";
 import { runCompare } from "./compare.js";
 import { runCoverage } from "./coverage.js";
 import { checkGenerated } from "./codegen-check.js";
+import { runCodegenWatch } from "./codegen-watch.js";
 import { SUI_DIALECT, suiCodegen } from "./sui-abi.js";
 import { loadSui } from "./sui.js";
 import { generateEventTypes } from "@streamd/codegen";
@@ -553,12 +554,31 @@ async function write(options: CodegenOptions, source: string): Promise<number> {
 async function codegen(options: CodegenOptions): Promise<number> {
   if (options.chain === "sui") return write(options, await suiSource(options));
   const { load, list } = aptosCodegenLoader(aptosConfig(options));
-  return write(options, await generateEventTypes(options.modules, load, {
-    list,
-    validators: options.validators === true,
-    arbitraries: options.arbitraries === true,
-    ...(options.sql !== undefined && { tables: sqlTables(options.sql) }),
-  }));
+  const generate = () =>
+    generateEventTypes(options.modules, load, {
+      list,
+      validators: options.validators === true,
+      arbitraries: options.arbitraries === true,
+      ...(options.sql !== undefined && { tables: sqlTables(options.sql) }),
+    });
+  if (options.watch === true && options.out !== undefined) return codegenWatch({ ...options, out: options.out }, generate);
+  return write(options, await generate());
+}
+
+async function codegenWatch(options: CodegenOptions & { out: string }, generate: () => Promise<string>): Promise<number> {
+  const { client, controller } = await setup(options);
+  try {
+    // The parser refuses --watch with --chain sui, so this is always an AptosClient.
+    if (!(client instanceof AptosClient)) throw new Error("codegen --watch reads Aptos only");
+    return await runCodegenWatch(options, {
+      client,
+      generate,
+      report: (line) => process.stderr.write(`${line}\n`),
+      signal: controller.signal,
+    });
+  } finally {
+    client.destroy();
+  }
 }
 
 async function coverage(options: CoverageOptions): Promise<number> {

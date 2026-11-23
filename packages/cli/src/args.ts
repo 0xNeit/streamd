@@ -362,6 +362,8 @@ export interface CodegenOptions extends Endpoint {
   sql?: "sqlite" | "postgres";
   /** Compare with `out` instead of writing it; set only with `out`. */
   check?: boolean;
+  /** Keep `out` current as publishes land; set only with `out`, never with `check` or Sui. */
+  watch?: true;
 }
 
 export type ParsedCommand =
@@ -698,6 +700,7 @@ const CODEGEN_OPTIONS = {
   arbitraries: { type: "boolean" },
   sql: { type: "string" },
   check: { type: "boolean" },
+  watch: { type: "boolean" },
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -747,7 +750,7 @@ export const USAGE = `Usage:
   streamd name <name | address>
   streamd check <eventType>...
   streamd record --from-version <n> --to-version <n> [--out <file>] [--cache <file>] <eventType>...
-  streamd codegen [--out <file> [--check]] [--validators] [--arbitraries] [--sql <sqlite|postgres>] (<address> | <address>::<module>)...
+  streamd codegen [--out <file> [--check | --watch]] [--validators] [--arbitraries] [--sql <sqlite|postgres>] (<address> | <address>::<module>)...
   streamd compare --against <url> --from-version <n> --to-version <n> [options] <eventType>...
   streamd monitor --node-url <url> --node-url <url>... [options] [<eventType>...]
   streamd serve [--listen <[host:]port>] [--token <t>] [--allow-origin <origin>]... [options]
@@ -811,7 +814,10 @@ posts to webhooks registered at /v1/webhooks, signed and at least once.
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
 With --check it compares what it would write with --out instead, and exits 1
-if the file differs or is missing.
+if the file differs or is missing. With --watch it keeps running after the
+first write, follows package publishes at each address from the head, and
+rewrites --out atomically when a publish changes the output, printing one
+JSON line {"rewrite":...} per rewrite on stderr (Aptos only).
 With --chain sui it reads Sui packages, where every struct or enum with copy
 and drop is an event.
 coverage starts an Aptos localnet with the aptos CLI, publishes the Move package
@@ -956,6 +962,9 @@ Options:
                          storeTables in @streamd/store-sqlite or -postgres fills them
   --check                codegen: compare with the --out file, writing nothing; exit 1 if
                          it differs or is missing, naming the first line that differs
+  --watch                codegen: keep --out current, regenerating on each package publish
+                         at the target addresses and rewriting it when the bytes change;
+                         exits 0 on SIGINT, 1 when following gives up (Aptos only)
   --chain <name>         aptos or sui (default: aptos); with sui, --network is mainnet,
                          testnet or devnet, --node-url and --against are Sui gRPC URLs,
                          tx takes a base58 digest, and --handle, --field,
@@ -2109,6 +2118,12 @@ function parseCodegen(args: string[]): ParsedCommand {
   if (values.check) {
     if (options.out === undefined) throw new UsageError("--check needs --out <file> to compare with");
     options.check = true;
+  }
+  if (values.watch) {
+    if (options.out === undefined) throw new UsageError("--watch needs --out <file> to rewrite");
+    if (options.check === true) throw new UsageError("--watch cannot be combined with --check");
+    if (sui) throw new UsageError("--watch reads Aptos package publishes only, not --chain sui");
+    options.watch = true;
   }
   return { command: "codegen", options };
 }
