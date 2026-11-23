@@ -372,7 +372,7 @@ export function runAlert(options: AlertOptions, rules: readonly AlertRule[], io:
           if (!done && !checkpoint()) finish(1);
         }, 0);
       };
-      entry.sub = io.client.onBatch(rule.descriptor, handle, {
+      entry.sub = io.client.onBatch(rule.descriptor!, handle, {
         ...(entry.confirmed !== undefined
           ? { cursor: entry.confirmed.cursor }
           : { ...(fromVersion !== undefined && { fromVersion }), ...(fromTime !== undefined && { fromTime }) }),
