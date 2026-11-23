@@ -1,6 +1,7 @@
 import { count, serializeEvent, sum } from "@streamd/core";
-import type { Fold, StreamdClient, StreamdEvent, Subscription } from "@streamd/core";
-import type { AlertRule, Anomaly } from "./alert-rules.js";
+import type { AptosClient, SaleMarketplace, SwapProtocol } from "@streamd/aptos";
+import type { Fold, StreamdClient, StreamdEvent, Subscription, SubscriptionOptions } from "@streamd/core";
+import type { AlertRule, AlertSource, Anomaly } from "./alert-rules.js";
 import { band, decimal, outside } from "./anomaly.js";
 import type { Band } from "./anomaly.js";
 import type { AlertOptions } from "./args.js";
@@ -9,8 +10,11 @@ import { filterPredicate } from "./filter.js";
 import { deliver, webhookSink } from "./forward.js";
 import { message } from "./format.js";
 
+/** Record sources need an `AptosClient`; descriptor rules need only `onBatch`. */
+export type AlertClient = Pick<StreamdClient, "onBatch"> & Partial<Pick<AptosClient, "transfers" | "swaps" | "sales">>;
+
 export interface AlertIO {
-  client: Pick<StreamdClient, "onBatch">;
+  client: AlertClient;
   /** Reports one diagnostic message, without a trailing newline. */
   error(message: string): void;
   /** Aborting abandons any in-flight POST and ends the command with exit code 0. */
@@ -216,6 +220,36 @@ export function advance(
   return { window: next, fires };
 }
 
+/** Follows `source` one record at a time; the poller moves the cursor only once a page's records are all handled. */
+function followSource(
+  client: AlertClient,
+  source: AlertSource,
+  handle: (events: StreamdEvent[]) => Promise<void>,
+  options: SubscriptionOptions,
+): Subscription {
+  const callback = (record: StreamdEvent) => handle([record]);
+  const method = client[source.kind];
+  if (method === undefined) throw new Error(`${source.kind} needs an Aptos client`);
+  if (source.kind === "transfers") {
+    const { asset, account } = source;
+    return client.transfers!(callback, { ...options, ...(asset !== undefined && { asset }), ...(account !== undefined && { account }) });
+  }
+  if (source.kind === "swaps") {
+    const { protocol, asset } = source;
+    return client.swaps!(callback, {
+      ...options,
+      ...(protocol !== undefined && { protocol: protocol as SwapProtocol[] }),
+      ...(asset !== undefined && { asset }),
+    });
+  }
+  const { marketplace, token } = source;
+  return client.sales!(callback, {
+    ...options,
+    ...(marketplace !== undefined && { marketplace: marketplace as SaleMarketplace[] }),
+    ...(token !== undefined && { token }),
+  });
+}
+
 function thresholdJson(rule: AlertRule): unknown {
   const { threshold } = rule;
   if ("count" in threshold) return { count: `${threshold.count}` };
@@ -372,7 +406,7 @@ export function runAlert(options: AlertOptions, rules: readonly AlertRule[], io:
           if (!done && !checkpoint()) finish(1);
         }, 0);
       };
-      entry.sub = io.client.onBatch(rule.descriptor!, handle, {
+      const listener: SubscriptionOptions = {
         ...(entry.confirmed !== undefined
           ? { cursor: entry.confirmed.cursor }
           : { ...(fromVersion !== undefined && { fromVersion }), ...(fromTime !== undefined && { fromTime }) }),
@@ -383,9 +417,16 @@ export function runAlert(options: AlertOptions, rules: readonly AlertRule[], io:
           report(`rule ${name}: ${message(err)}`);
           if (!entry.sub?.active) finish(1);
         },
-      });
+      };
+      try {
+        entry.sub =
+          rule.source === undefined ? io.client.onBatch(rule.descriptor!, handle, listener) : followSource(io.client, rule.source, handle, listener);
+      } catch (err) {
+        throw new Error(`rule ${name}: ${message(err)}`);
+      }
     }
 
+    // The first poll is a timer, so a rule refused here stops every earlier one before any read.
     try {
       for (const entry of entries) subscribe(entry);
     } catch (err) {

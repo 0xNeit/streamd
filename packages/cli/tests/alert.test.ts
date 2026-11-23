@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { MemoryAdapter, StreamdClient, verifyWebhook } from "@streamd/core";
-import type { StreamdEvent } from "@streamd/core";
+import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
+import { AptosClient } from "@streamd/aptos";
+import { MemoryAdapter, StreamdClient, parseEvent, verifyWebhook } from "@streamd/core";
+import type { EventAdapter, StreamdEvent } from "@streamd/core";
 import { advance, alertBody, runAlert } from "../src/alert.js";
 import type { AlertIO } from "../src/alert.js";
 import { parseRules } from "../src/alert-rules.js";
@@ -100,11 +102,11 @@ async function until(condition: () => boolean, ms = 3000): Promise<void> {
   }
 }
 
-function start(adapter: MemoryAdapter, list: ReturnType<typeof rules>, extra: Partial<AlertOptions> = {}) {
+function start(adapter: MemoryAdapter, list: ReturnType<typeof rules>, extra: Partial<AlertOptions> = {}, client: AlertIO["client"] = new StreamdClient({ adapter })) {
   const controller = new AbortController();
   const errors: string[] = [];
   const io: AlertIO = {
-    client: new StreamdClient({ adapter }),
+    client,
     error: (m) => void errors.push(m),
     signal: controller.signal,
     retryDelay: 1,
@@ -491,5 +493,114 @@ describe("advance with an anomaly rule", () => {
     const { window, fires } = advance(entryOf({}), { ...open([4n, 4n, 5n], 1n), start: T0 + MINUTE }, ev(1, T0, "1"));
     expect(window).toEqual({ start: T0 + MINUTE, value: 2n, fired: false, history: [4n, 4n, 5n] });
     expect(fires).toEqual([]);
+  });
+});
+
+describe("runAlert over record sources", () => {
+  const long = (hex: string) => `0x${hex.padStart(64, "0")}`;
+  const ALICE = long("a11ce");
+  const BOB = long("b0b");
+  const fixture = (name: string) =>
+    readFileSync(join(import.meta.dir, "../../aptos/tests/fixtures", name), "utf8").trim().split("\n").map((line) => parseEvent(line));
+
+  function coin(version: number, eventIndex: number, side: "Withdraw" | "Deposit", account: string, amount: string, timestamp?: bigint): StreamdEvent {
+    return {
+      type: `0x1::coin::Coin${side}`,
+      data: { coin_type: "0x1::aptos_coin::AptosCoin", account, amount },
+      version: BigInt(version),
+      sequenceNumber: 0n,
+      eventIndex,
+      ...(timestamp !== undefined && { timestamp }),
+    };
+  }
+  const send = (version: number, amount: string, timestamp?: bigint) => [
+    coin(version, 0, "Withdraw", ALICE, amount, timestamp),
+    coin(version, 1, "Deposit", BOB, amount, timestamp),
+  ];
+  /** Coin transfers read no view, but `transfers` needs an adapter that has one. */
+  const viewing = (adapter: MemoryAdapter): MemoryAdapter =>
+    Object.assign(adapter, { view: async () => Promise.reject(new Error("no views here")) });
+  const aptos = (adapter: EventAdapter) =>
+    new AptosClient({ aptos: new Aptos(new AptosConfig({ network: Network.MAINNET, clientConfig: { http2: false } })), adapter });
+  const sourced = (name: string, source: unknown, threshold: unknown, extra: Record<string, unknown> = {}) => ({
+    name,
+    source,
+    window: "1m",
+    threshold,
+    ...extra,
+  });
+  function begin(adapter: MemoryAdapter, list: ReturnType<typeof rules>) {
+    const client = aptos(adapter);
+    const h = start(adapter, list, {}, client);
+    return { ...h, run: h.run.finally(() => client.destroy()) };
+  }
+
+  it("fires a transfers count rule on the paired record, and resumes without resending", async () => {
+    const adapter = viewing(new MemoryAdapter([...send(1, "5", T0 + 1n), ...send(2, "6", T0 + 2n), ...send(3, "7", T0 + MINUTE)]));
+    const list = rules(sourced("moves", { kind: "transfers", asset: "0x1::aptos_coin::AptosCoin", account: BOB }, { count: 2 }));
+    const first = begin(adapter, list);
+    await until(caughtUp("moves", "1"));
+    expect(await first.stop()).toBe(0);
+    expect(received).toHaveLength(1);
+    expect(received[0]!.body).toMatchObject({
+      rule: "moves",
+      windowStart: `${T0}`,
+      value: "2",
+      event: { version: "2", eventIndex: 1, data: { asset: "0x1::aptos_coin::AptosCoin", amount: "6", from: ALICE, to: BOB } },
+    });
+    adapter.push(...send(4, "8", T0 + MINUTE + 1n));
+    const second = begin(adapter, list);
+    await until(caughtUp("moves", "2"));
+    expect(await second.stop()).toBe(0);
+    expect(received.map((r) => r.body.windowStart)).toEqual([`${T0}`, `${T0 + MINUTE}`]);
+    expect(versions()).toEqual(["2", "4"]);
+  });
+
+  it("sums a swaps rule's amountIn and a sales rule's price at full precision", async () => {
+    const [swap] = fixture("swaps.jsonl").filter((e) => e.version === 8049170438n && e.eventIndex === 10);
+    const [sale] = fixture("sales.jsonl");
+    const adapter = new MemoryAdapter([
+      { ...swap!, version: 1n, timestamp: T0 + 1n },
+      { ...swap!, version: 2n, timestamp: T0 + 2n },
+      { ...sale!, version: 3n, timestamp: T0 + 3n },
+    ]);
+    const list = rules(
+      sourced("volume", { kind: "swaps", protocol: "hyperion" }, { sum: "amountIn", gte: "8000" }),
+      sourced("spend", { kind: "sales", marketplace: ["wapal"] }, { sum: "price", gte: "450000000" }),
+    );
+    const h = begin(adapter, list);
+    await until(() => received.length === 2);
+    expect(await h.stop()).toBe(0);
+    const by = (name: string) => received.find((r) => r.body.rule === name)!.body;
+    expect(by("volume")).toMatchObject({ value: "8000", event: { version: "2", data: { protocol: "hyperion", amountIn: "4000" } } });
+    expect(by("spend")).toMatchObject({ value: "450000000", event: { version: "3", data: { marketplace: "wapal", price: "450000000" } } });
+  });
+
+  it("stops with exit 1 on a record with no timestamp", async () => {
+    const adapter = viewing(new MemoryAdapter(send(1, "5")));
+    const h = begin(adapter, rules(sourced("moves", { kind: "transfers" }, { count: 5 })));
+    expect(await h.run).toBe(1);
+    expect(h.errors).toEqual(['streamd: rule "moves": the event at version 1 has no timestamp, so no window can be placed']);
+  });
+
+  it("refuses a source the client rejects, naming the rule, before any read", async () => {
+    let fetches = 0;
+    const adapter = viewing(new MemoryAdapter(send(1, "5", T0)));
+    const fetchEvents = adapter.fetchEvents.bind(adapter);
+    adapter.fetchEvents = (d, o) => (fetches++, fetchEvents(d, o));
+    const list = rules(sourced("ok", { kind: "transfers" }, { count: 1 }), sourced("bad", { kind: "swaps", protocol: "uniswap" }, { count: 1 }));
+    const h = begin(adapter, list);
+    expect(await h.run).toBe(1);
+    expect(h.errors).toHaveLength(1);
+    expect(h.errors[0]).toStartWith('streamd: rule "bad": ');
+    expect(h.errors[0]).toContain("uniswap");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(fetches).toBe(0);
+  });
+
+  it("refuses a source on a client without record methods", async () => {
+    const h = start(new MemoryAdapter([]), rules(sourced("moves", { kind: "transfers" }, { count: 1 })));
+    expect(await h.run).toBe(1);
+    expect(h.errors).toEqual(['streamd: rule "moves": transfers needs an Aptos client']);
   });
 });
