@@ -108,6 +108,15 @@ export interface TxOptions extends Endpoint {
   timeout?: number;
 }
 
+/** Aptos only; named apart from the library's `ExplainOptions`. */
+export interface ExplainCommandOptions extends Endpoint {
+  hash: string;
+  /** Print the explanation as one JSON line instead of text. */
+  json?: true;
+  /** How long to wait for the transaction to commit, in ms. */
+  timeout?: number;
+}
+
 export interface QueryOptions extends Endpoint {
   descriptor: EventDescriptor;
   /** Exactly one of `fromVersion` and `fromTime` is set. */
