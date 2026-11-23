@@ -5,6 +5,7 @@ export { useBalances } from "./use-balances.js";
 export { useEventPages } from "./use-event-pages.js";
 export { useEvents } from "./use-events.js";
 export { useLogs } from "./use-logs.js";
+export { usePositions } from "./use-positions.js";
 export { useReduction } from "./use-reduction.js";
 export { useSales } from "./use-sales.js";
 export { useSubmitTransaction } from "./use-submit-transaction.js";
@@ -21,6 +22,7 @@ export type { BalancesClient, UseBalancesOptions, UseBalancesResult, UseBalances
 export type { UseEventPagesOptions, UseEventPagesResult } from "./use-event-pages.js";
 export type { UseEventsOptions, UseEventsResult, UseEventsStatus } from "./use-events.js";
 export type { UseLogsOptions, UseLogsResult } from "./use-logs.js";
+export type { PositionsClient, UsePositionsOptions, UsePositionsResult, UsePositionsStatus } from "./use-positions.js";
 export type { UseReductionOptions, UseReductionResult, UseReductionStatus } from "./use-reduction.js";
 export type { SalesClient, UseSalesOptions } from "./use-sales.js";
 export type {
