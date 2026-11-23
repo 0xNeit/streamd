@@ -207,6 +207,22 @@ export interface HoldersCommandOptions extends Endpoint {
   maxRequests?: number;
 }
 
+/** Aptos only; the webhook fields are set only with `to`. */
+export interface PositionsCommandOptions extends Endpoint {
+  protocol: "aave" | "echelon";
+  /** Long-form addresses; without them every account an event names is tracked. */
+  account?: string[];
+  threshold?: { numerator: bigint; denominator: bigint };
+  refreshInterval?: number;
+  fromVersion?: bigint;
+  /** Webhook URL for crossing alerts; may carry a token, so it is never printed. */
+  to?: string;
+  retries: number;
+  timeout: number;
+  headers: Record<string, string>;
+  secret?: string;
+}
+
 /** Named apart from core's `BalancesOptions`, which the runner builds from it. */
 export interface BalancesCommandOptions extends Endpoint {
   /** An address or name; validated and resolved by the chain's client. */
