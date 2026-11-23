@@ -4,7 +4,7 @@ import { MemoryAdapter } from "../src/adapters/memory.js";
 import { StreamdClient } from "../src/client.js";
 import { defineEvent } from "../src/define.js";
 import { StreamdError } from "../src/errors.js";
-import { count, groupBy, latest, sum } from "../src/reducers.js";
+import { count, distinct, groupBy, latest, max, min, sum, type Distinct } from "../src/reducers.js";
 import type { EventOf, Reduction, StreamdEvent } from "../src/types.js";
 
 const TYPE = "0x1::test::Deposit";
@@ -101,6 +101,76 @@ describe("groupBy", () => {
     expect(before).toEqual(new Map([["0xa", 1n]]));
     expect(after).toEqual(new Map([["0xa", 2n]]));
     expect(g.initial.size).toBe(0);
+  });
+});
+
+describe("min and max", () => {
+  it("start undefined and track the extremes at full precision", () => {
+    const events = [ev(1, { amount: "18446744073709551615" }), ev(2, { amount: 5n }), ev(3, { amount: 7 }), ev(4, { amount: "-3" })];
+    expect(min("amount").initial).toBeUndefined();
+    expect(max("amount").initial).toBeUndefined();
+    expect(fold(min("amount"), undefined, events)).toBe(-3n);
+    expect(fold(max("amount"), undefined, events)).toBe(18446744073709551615n);
+  });
+
+  it("pass over a missing or null field, staying undefined when nothing is read", () => {
+    expect(fold(min("amount"), undefined, [ev(1, {}), ev(2, { amount: null })])).toBeUndefined();
+    expect(fold(max("amount"), undefined, [ev(1, { amount: "2" }), ev(2, {}), ev(3, { amount: null })])).toBe(2n);
+  });
+
+  it("throw on a present field that is not an integer, and refuse a malformed path", () => {
+    for (const amount of ["1.5", "abc", 1.5, { value: "1" }, true]) {
+      expect(() => min("amount")(undefined, ev(1, { amount }) as EventOf<unknown>)).toThrow("min: field");
+      expect(() => max("amount")(undefined, ev(1, { amount }) as EventOf<unknown>)).toThrow("max: field");
+    }
+    expect(() => min("")).toThrow(StreamdError);
+    expect(() => max("a..b")).toThrow(StreamdError);
+  });
+});
+
+describe("distinct", () => {
+  const values = (d: Distinct) => [...d.values];
+
+  it("keeps each value once, keyed as reported", () => {
+    const d = distinct("store");
+    expect(values(d.initial)).toEqual([]);
+    expect(d.initial.capped).toBe(false);
+    const events = [ev(1, { store: "0x0a" }), ev(2, { store: "0x000a" }), ev(3, { store: "0x0a" }), ev(4, { store: 7 }), ev(5, { store: 7n })];
+    const out = fold(d, d.initial, events);
+    expect(values(out)).toEqual(["0x0a", "0x000a", "7"]);
+    expect(out.capped).toBe(false);
+  });
+
+  it("skips a missing or null field and throws on an object or array", () => {
+    const d = distinct("store");
+    expect(values(fold(d, d.initial, [ev(1, {}), ev(2, { store: null })]))).toEqual([]);
+    expect(() => d(d.initial, ev(1, { store: { inner: 1 } }) as EventOf<unknown>)).toThrow("distinct: field");
+    expect(() => d(d.initial, ev(1, { store: ["0xa"] }) as EventOf<unknown>)).toThrow(StreamdError);
+  });
+
+  it("returns a new state for a new value and the same state for one already held", () => {
+    const d = distinct("store");
+    const one = d(d.initial, ev(1, { store: "0xa" }) as EventOf<unknown>);
+    expect(one).not.toBe(d.initial);
+    expect(d.initial.values.size).toBe(0);
+    expect(d(one, ev(2, { store: "0xa" }) as EventOf<unknown>)).toBe(one);
+  });
+
+  it("stops adding at max and flags capped", () => {
+    const d = distinct("store", { max: 2 });
+    const events = [ev(1, { store: "a" }), ev(2, { store: "b" }), ev(3, { store: "a" })];
+    const full = fold(d, d.initial, events);
+    expect(full.capped).toBe(false);
+    const capped = d(full, ev(4, { store: "c" }) as EventOf<unknown>);
+    expect(values(capped)).toEqual(["a", "b"]);
+    expect(capped.capped).toBe(true);
+    expect(d(capped, ev(5, { store: "d" }) as EventOf<unknown>)).toBe(capped);
+  });
+
+  it("refuses a bad max at construction", () => {
+    for (const bad of [0, -1, 1.5, Infinity, Number.NaN]) {
+      expect(() => distinct("store", { max: bad })).toThrow("distinct: max");
+    }
   });
 });
 
