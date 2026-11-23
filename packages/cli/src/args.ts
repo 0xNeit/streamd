@@ -132,13 +132,8 @@ export interface QueryOptions extends Endpoint {
   cache?: string;
 }
 
-/** Bounded when `toVersion` is set, through `iterateTransfers` or `getTransfers`; otherwise followed, through `transfers`. */
-export interface TransfersOptions extends Endpoint {
-  /** An asset as the chain's client takes it; validated there. */
-  asset?: string;
-  /** An address or name; validated and resolved by the chain's client. */
-  account?: string;
-  withAssetInfo?: true;
+/** A record command's walk: bounded when `toVersion` is set, otherwise followed. */
+export interface RecordWalkOptions extends Endpoint {
   fromVersion?: bigint;
   fromTime?: bigint;
   toVersion?: bigint | "head";
@@ -149,6 +144,15 @@ export interface TransfersOptions extends Endpoint {
   pollInterval?: number;
   batchSize?: number;
   cursorFile?: string;
+}
+
+/** Bounded through `iterateTransfers` or `getTransfers`; followed through `transfers`. */
+export interface TransfersOptions extends RecordWalkOptions {
+  /** An asset as the chain's client takes it; validated there. */
+  asset?: string;
+  /** An address or name; validated and resolved by the chain's client. */
+  account?: string;
+  withAssetInfo?: true;
 }
 
 /** Named apart from core's `BalancesOptions`, which the runner builds from it. */
