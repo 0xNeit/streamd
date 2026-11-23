@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { StreamdError } from "../src/errors.js";
-import { points, type PointsOptions, type PointsState } from "../src/points.js";
+import { points, scoreFromJson, scoreToJson, type PointsOptions, type PointsState } from "../src/points.js";
 import type { StreamdEvent } from "../src/types.js";
 
 const A = `0x${"a".padStart(64, "0")}`;
@@ -166,5 +166,78 @@ describe("points", () => {
       { rules: [{ id: "r" }], decay: { interval: 1n, keep: { numerator: 3n, denominator: 2n } } },
     ];
     for (const options of bad) expect(() => points(options as PointsOptions)).toThrow(StreamdError);
+  });
+});
+
+describe("standings", () => {
+  const f = points({ rules: [{ id: "r", points: (e) => BigInt((e.data as { n: number }).n) }] });
+  const C = `0x${"c".padStart(64, "0")}`;
+  const state = [
+    ev(1, { sender: "0xb", data: { n: 5 } }),
+    ev(2, { sender: "0xc", data: { n: 9 } }),
+    ev(3, { sender: "0xa", data: { n: 5 } }),
+  ].reduce(f, f.initial);
+
+  it("sorts by points descending, ties by address", () => {
+    expect(f.standings(state).map((s) => s.address)).toEqual([C, A, B]);
+    expect(f.standings(state, { limit: 2 }).map((s) => s.address)).toEqual([C, A]);
+    expect(f.standings(f.initial)).toEqual([]);
+  });
+
+  it("refuses a malformed limit or at", () => {
+    for (const limit of [0, -1, 1.5]) expect(() => f.standings(state, { limit })).toThrow(StreamdError);
+    expect(() => f.standings(state, { at: 5 as never })).toThrow(StreamdError);
+  });
+
+  describe("with decay", () => {
+    const d = points({ rules: [{ id: "r", points: 100n }], decay: { interval: 10n, keep: { numerator: 1n, denominator: 2n } } });
+    const decayed = [ev(1, { timestamp: 0n }), ev(2, { sender: "0xb", timestamp: 20n })].reduce(d, d.initial);
+
+    it("decays to at without changing the state", () => {
+      const ranked = d.standings(decayed, { at: 25n });
+      expect(ranked.map((s) => [s.address, s.points, s.updatedAt])).toEqual([[B, 100n, 20n], [A, 25n, 20n]]);
+      expect(decayed.get(A)).toMatchObject({ points: 100n, updatedAt: 0n });
+      expect(d.standings(decayed).map((s) => s.points)).toEqual([100n, 100n]);
+    });
+
+    it("refuses at earlier than a score's updatedAt", () => {
+      expect(() => d.standings(decayed, { at: 19n })).toThrow(StreamdError);
+    });
+  });
+});
+
+describe("scoreToJson and scoreFromJson", () => {
+  const score = {
+    address: A,
+    points: -18446744073709551617n,
+    awards: { r: 3, s: 1 },
+    reached: { gold: 12345678901234567890n },
+    version: 9n,
+    updatedAt: 1700000000000000n,
+  };
+
+  it("round-trips a score, with and without updatedAt", () => {
+    expect(scoreFromJson(scoreToJson(score))).toEqual(score);
+    const { updatedAt: _, ...plain } = score;
+    const back = scoreFromJson(scoreToJson(plain));
+    expect(back).toEqual(plain);
+    expect("updatedAt" in back).toBe(false);
+  });
+
+  it("refuses malformed JSON, naming the field", () => {
+    const good = JSON.parse(scoreToJson(score));
+    const cases: [unknown, string][] = [
+      [{ ...good, address: "alice" }, "address"],
+      [{ ...good, points: 5 }, "points"],
+      [{ ...good, points: "1.5" }, "points"],
+      [{ ...good, version: undefined }, "version"],
+      [{ ...good, updatedAt: "x" }, "updatedAt"],
+      [{ ...good, awards: [] }, "awards"],
+      [{ ...good, awards: { r: 0 } }, "awards.r"],
+      [{ ...good, reached: { gold: 1 } }, "reached.gold"],
+    ];
+    for (const [json, field] of cases) expect(() => scoreFromJson(JSON.stringify(json))).toThrow(field);
+    expect(() => scoreFromJson("{")).toThrow(StreamdError);
+    expect(() => scoreFromJson("[]")).toThrow(StreamdError);
   });
 });

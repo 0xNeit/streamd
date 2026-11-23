@@ -56,8 +56,18 @@ export interface Score {
 /** Scores keyed by long-form address. */
 export type PointsState = ReadonlyMap<string, Score>;
 
-/** A `points()` fold. */
-export type PointsFold<TEvent = StreamdEvent> = Fold<PointsState, unknown, TEvent>;
+/** Options for `standings()`. */
+export interface StandingsOptions {
+  /** Apply decay up to this timestamp (microseconds) without changing the state. */
+  at?: bigint;
+  /** Keep the first `limit` scores, a positive integer. */
+  limit?: number;
+}
+
+/** A `points()` fold, with `standings` to rank its state. */
+export type PointsFold<TEvent = StreamdEvent> = Fold<PointsState, unknown, TEvent> & {
+  standings(state: PointsState, options?: StandingsOptions): Score[];
+};
 
 interface Rule<TEvent> {
   id: string;
@@ -198,5 +208,65 @@ export function points<TEvent extends StreamdEvent = StreamdEvent>(options: Poin
     return next ?? state;
   };
 
-  return Object.assign(reducer, { initial: new Map() as PointsState });
+  return Object.assign(reducer, {
+    initial: new Map() as PointsState,
+    standings: (state: PointsState, opts?: StandingsOptions) => standings(state, decay, opts),
+  });
+}
+
+function standings(state: PointsState, decay: PointsDecay | undefined, options: StandingsOptions = {}): Score[] {
+  const { at, limit } = options;
+  if (at !== undefined && typeof at !== "bigint") refuse("standings: at must be a bigint");
+  if (limit !== undefined && !isPositiveInteger(limit)) refuse("standings: limit must be a positive integer");
+  const scores = [...state.values()].map((score) => {
+    if (at === undefined || !decay || score.updatedAt === undefined) return score;
+    if (at < score.updatedAt) refuse(`standings: at is before ${score.address}'s updatedAt`);
+    return { ...score, ...decayTo(score, at, decay) };
+  });
+  scores.sort((x, y) =>
+    x.points !== y.points ? (x.points > y.points ? -1 : 1) : x.address < y.address ? -1 : x.address > y.address ? 1 : 0,
+  );
+  return limit === undefined ? scores : scores.slice(0, limit);
+}
+
+/** A score as JSON text, bigints as decimal strings: the form the stores keep. */
+export function scoreToJson(score: Score): string {
+  return JSON.stringify(score, (_, value) => (typeof value === "bigint" ? value.toString() : value));
+}
+
+const DECIMAL = /^-?(0|[1-9]\d*)$/;
+
+function bigintField(value: unknown, field: string): bigint {
+  if (typeof value !== "string" || !DECIMAL.test(value)) refuse(`score JSON: ${field} must be a decimal string`);
+  return BigInt(value);
+}
+
+function recordField<T>(value: unknown, field: string, read: (v: unknown, f: string) => T): Record<string, T> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) refuse(`score JSON: ${field} must be an object`);
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, read(v, `${field}.${k}`)]));
+}
+
+/** A score back from `scoreToJson`'s text, refusing anything malformed by field. */
+export function scoreFromJson(text: string): Score {
+  let json: Record<string, unknown>;
+  try {
+    json = JSON.parse(text);
+  } catch (cause) {
+    throw new StreamdError("points: score JSON is not JSON", cause);
+  }
+  if (typeof json !== "object" || json === null || Array.isArray(json)) refuse("score JSON must be an object");
+  const address = typeof json.address === "string" ? normalizeAddress(json.address) : undefined;
+  if (address === undefined) refuse("score JSON: address must be an address");
+  const score: Score = {
+    address,
+    points: bigintField(json.points, "points"),
+    awards: recordField(json.awards, "awards", (v, f) => {
+      if (!isPositiveInteger(v)) refuse(`score JSON: ${f} must be a positive integer`);
+      return v;
+    }),
+    reached: recordField(json.reached, "reached", bigintField),
+    version: bigintField(json.version, "version"),
+  };
+  if (json.updatedAt !== undefined) score.updatedAt = bigintField(json.updatedAt, "updatedAt");
+  return score;
 }
