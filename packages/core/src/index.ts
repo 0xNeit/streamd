@@ -29,6 +29,8 @@ export { STANDARD_COLUMNS, eventTableRows, requireEventTables } from "./tables.j
 export type { EventTableRow } from "./tables.js";
 export { count, groupBy, latest, sum } from "./reducers.js";
 export type { Fold } from "./reducers.js";
+export { points } from "./points.js";
+export type { PointsDecay, PointsFold, PointsOptions, PointsRule, PointsState, PointsThreshold, Score } from "./points.js";
 export { startReduction } from "./reduce.js";
 export type { ReduceHost } from "./reduce.js";
 export { WEBHOOK_SIGNATURE_HEADER, deliver, signWebhook, verifyWebhook, webhookSink } from "./webhook.js";
