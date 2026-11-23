@@ -4746,7 +4746,7 @@ first node directly. A second Ctrl-C exits at once, without the line.
 
 ### Sui from the command line
 
-Every command but `handles`, `inspect` and `explain` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
+Every command but `handles`, `inspect`, `explain`, `swaps` and `sales` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
 with the same output and exit codes:
 
 ```sh
@@ -5451,6 +5451,44 @@ Exit codes: `0` when the limit is reached, the range is printed, on Ctrl-C or `S
 stdout closes; `1` when reading fails (following: once the subscription gives up), or output or
 the cursor file could not be read or written; `2` for invalid arguments; `130` on a second
 Ctrl-C while following.
+
+### Follow or query swaps and sales
+
+`streamd swaps` prints [DEX swaps](#dex-swaps) and `streamd sales` [NFT sales](#nft-sales) as
+JSON lines, through `AptosClient`'s `swaps()`/`getSwaps()` and `sales()`/`getSales()`, followed
+or over a closed range exactly as `streamd transfers` is:
+
+```sh
+# every swap with APT on either side, as it lands
+streamd swaps --asset 0xa
+# Hyperion and Tapp swaps over a closed range, newest first
+streamd swaps --protocol hyperion --protocol tapp --from-version 8177444976 --to-version 8177447976 --order desc
+# the Wapal sales in one transaction of the archived history
+streamd sales --marketplace wapal --from-version 7028273582 --to-version 7028273582 --archive default
+```
+
+Each line is the record event as `tail` prints events, its `data` a `Swap` (one per pool hop) or
+a `Sale` (one per token sold), with amounts and prices in base units as decimal strings:
+
+```json
+{"type":"0x8b4a...e05c::pool_v3::SwapEventV3","data":{"protocol":"hyperion","poolId":"0x9256...00d8","assetIn":"0x...0a","amountIn":"2127446234","assetOut":"0xbae2...6f3b","amountOut":"8076694","trader":"0x989b...9fec"},"version":"8177445224","sequenceNumber":"0","eventIndex":13,"transactionHash":"0x4819...0af8","timestamp":"1795395453252889","sender":"0x989b...9fec","entryFunction":{...}}
+```
+
+| Option | Meaning |
+| --- | --- |
+| `--protocol <name>` | swaps: only this DEX, repeatable (any one matches): `hyperion`, `thala-clamm`, `thala-v2`, `cellana`, `tapp`, `liquidswap`, `pancakeswap` or `thala-v1` |
+| `--asset <asset>` | swaps: only swaps with this asset on either side, as `transfers --asset` takes it |
+| `--marketplace <name>` | sales: only this marketplace, repeatable: `wapal` or `tradeport` |
+| `--token <token>` | sales: only sales of this token, a token object address or a legacy token id |
+
+`--from-version`, `--from-time`, `--to-version <n \| head>`, `--order`, `--limit`,
+`--cursor-file`, `--poll-interval` and `--batch-size` behave as they do for `transfers`, with the
+same combinations refused. A range is read whole through `getSwaps` or `getSales` and then
+printed, since neither has a page-by-page iterator. Every scanned transaction costs a read, so
+keep ranges small on public endpoints or pass `--api-key`. Both marketplaces stopped trading
+near version 7,030,000,000, so sales history needs `--archive`. A name, asset or token the client
+does not accept exits `1` with its message; exit codes are otherwise `transfers`'s. Aptos only:
+`--chain sui` exits `2`, since `SuiClient` has neither method.
 
 ### Follow balances
 
