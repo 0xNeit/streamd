@@ -2,11 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Sale, Swap } from "@streamd/aptos";
+import type { Activity, Sale, Swap } from "@streamd/aptos";
 import { MemoryAdapter, StreamdClient, StreamdError } from "@streamd/core";
 import type { EventAdapter, EventDescriptor, StreamdEvent } from "@streamd/core";
-import type { SalesCommandOptions, SwapsCommandOptions } from "../src/args.js";
-import { runSales, runSwaps } from "../src/records.js";
+import type { ActivityCommandOptions, SalesCommandOptions, SwapsCommandOptions } from "../src/args.js";
+import { runActivity, runSales, runSwaps } from "../src/records.js";
 import type { RecordsIO } from "../src/records.js";
 
 const SWAP_TYPE = "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c::pool_v3::SwapEventV3";
@@ -161,5 +161,71 @@ describe("runSales", () => {
     };
     expect(await h.run({ fromVersion: 1n, toVersion: 3n })).toBe(1);
     expect(h.errors).toEqual(["streamd: disk full"]);
+  });
+});
+
+function entry(version: number): StreamdEvent<Activity> {
+  return {
+    type: "0x1::transaction_fee::FeeStatement",
+    data: { direction: "received", transfers: [], balanceChanges: [{ asset: "0xa", delta: 10n ** 19n }], events: [] },
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 0,
+  };
+}
+
+/** A client whose `activity` and `getActivity` read plain events, recording the address and options each call was given. */
+function activity(adapter: EventAdapter) {
+  const descriptor = { kind: "module", eventType: "0x1::transaction_fee::FeeStatement" } as EventDescriptor;
+  const inner = new StreamdClient({ adapter });
+  const seen: { address: string; options: Record<string, unknown> }[] = [];
+  const lines: string[] = [];
+  const errors: string[] = [];
+  const strip = (address: string, options: Record<string, unknown>) => {
+    seen.push({ address, options });
+    const { withAssetInfo: _w, ...rest } = options;
+    return rest;
+  };
+  const client = {
+    activity: (address: string, callback: never, options: Record<string, unknown> = {}) => inner.on(descriptor, callback, strip(address, options)),
+    getActivity: async (address: string, filter: Record<string, unknown> = {}) => inner.getEvents(descriptor, strip(address, filter)),
+  };
+  const io: RecordsIO<never> = { client: client as never, write: (l) => void lines.push(l), error: (m) => errors.push(m), signal: new AbortController().signal };
+  const run = async (options: Partial<ActivityCommandOptions>) => {
+    const code = await runActivity({ network: "mainnet", address: "alice.apt", ...options }, io);
+    inner.destroy();
+    return code;
+  };
+  return { run, seen, lines, errors, client };
+}
+
+const entries = [entry(1), entry(2), entry(3)];
+
+describe("runActivity", () => {
+  it("follows the address with withAssetInfo, printing bigints as decimal strings", async () => {
+    const h = activity(new MemoryAdapter(entries));
+    expect(await h.run({ withAssetInfo: true, fromVersion: 2n, pollInterval: 1, limit: 1 })).toBe(0);
+    expect(JSON.parse(h.lines[0]!)).toMatchObject({ version: "2", data: { direction: "received", balanceChanges: [{ asset: "0xa", delta: "10000000000000000000" }] } });
+    const { signal: _s, onError: _o, ...given } = h.seen[0]!.options;
+    expect(h.seen[0]!.address).toBe("alice.apt");
+    expect(given).toEqual({ withAssetInfo: true, fromVersion: 2n, pollInterval: 1 });
+  });
+
+  it("reads a range through getActivity, leaving withAssetInfo out when unset", async () => {
+    const h = activity(new MemoryAdapter(entries));
+    expect(await h.run({ address: "0x1", fromVersion: 1n, toVersion: 2n, order: "desc" })).toBe(0);
+    expect(h.lines.map((l) => (JSON.parse(l) as { version: string }).version)).toEqual(["2", "1"]);
+    const { signal: _s, ...given } = h.seen[0]!.options;
+    expect(h.seen[0]!.address).toBe("0x1");
+    expect(given).toEqual({ fromVersion: 1n, toVersion: 2n, orderBy: "desc", retries: 5 });
+  });
+
+  it("exits 1 with the client's message when it refuses the address", async () => {
+    const h = activity(new MemoryAdapter(entries));
+    h.client.getActivity = async () => {
+      throw new StreamdError("activity needs an address or Aptos name");
+    };
+    expect(await h.run({ fromVersion: 1n, toVersion: "head" })).toBe(1);
+    expect(h.errors).toEqual(["streamd: activity needs an address or Aptos name"]);
   });
 });

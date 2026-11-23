@@ -169,6 +169,33 @@ export interface SalesCommandOptions extends RecordWalkOptions {
   token?: string;
 }
 
+/** Aptos only, read over the Indexer route; the address or name is validated by the client. */
+export interface ActivityCommandOptions extends RecordWalkOptions {
+  address: string;
+  withAssetInfo?: true;
+  /** `--indexer`: the Indexer's GraphQL URL (default: the network's). */
+  indexer?: string;
+}
+
+/** Aptos only, read over the Indexer route; addresses, names and the asset are validated by the client. */
+export interface TraceCommandOptions extends Endpoint {
+  address: string;
+  /** `--indexer`: the Indexer's GraphQL URL (default: the network's). */
+  indexer?: string;
+  format: "json" | "dot";
+  hops?: number;
+  direction?: "out" | "in" | "both";
+  fromVersion?: bigint;
+  toVersion?: bigint | "head";
+  minAmount?: bigint;
+  asset?: string;
+  maxNodes?: number;
+  maxRequests?: number;
+  /** Non-empty when set. */
+  stop?: string[];
+  target?: string;
+}
+
 /** Named apart from core's `BalancesOptions`, which the runner builds from it. */
 export interface BalancesCommandOptions extends Endpoint {
   /** An address or name; validated and resolved by the chain's client. */

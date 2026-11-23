@@ -1,6 +1,6 @@
 import type { AptosClient, SaleMarketplace, SwapProtocol } from "@streamd/aptos";
 import type { EventFilter, StreamdEvent, Subscription, SubscriptionOptions } from "@streamd/core";
-import type { RecordWalkOptions, SalesCommandOptions, SwapsCommandOptions } from "./args.js";
+import type { ActivityCommandOptions, RecordWalkOptions, SalesCommandOptions, SwapsCommandOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { formatEvent, message } from "./format.js";
 
@@ -169,5 +169,16 @@ export function runSales(options: SalesCommandOptions, io: RecordsIO<Pick<AptosC
   return runRecords(options, {
     follow: (callback, listener) => client.sales(callback, { ...narrowing, ...listener }),
     range: (filter) => fromArray(client.getSales({ ...narrowing, ...filter })),
+  }, io);
+}
+
+/** Prints an account's activity through `activity` or `getActivity`. */
+export function runActivity(options: ActivityCommandOptions, io: RecordsIO<Pick<AptosClient, "activity" | "getActivity">>): Promise<number> {
+  const { address, withAssetInfo } = options;
+  const narrowing = withAssetInfo ? { withAssetInfo } : {};
+  const { client } = io;
+  return runRecords(options, {
+    follow: (callback, listener) => client.activity(address, callback, { ...narrowing, ...listener }),
+    range: (filter) => fromArray(client.getActivity(address, { ...narrowing, ...filter })),
   }, io);
 }
