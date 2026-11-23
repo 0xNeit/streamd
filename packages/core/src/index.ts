@@ -27,7 +27,7 @@ export { descriptorKey, onAbort, raceAbort, redactSecrets, resolveFromVersion, s
 export { parseEvent, serializeEvent } from "./serialize.js";
 export { STANDARD_COLUMNS, eventTableRows, requireEventTables } from "./tables.js";
 export type { EventTableRow } from "./tables.js";
-export { count, distinct, groupBy, latest, max, min, sum } from "./reducers.js";
+export { buckets, count, distinct, groupBy, latest, max, min, sum } from "./reducers.js";
 export type { Distinct, Fold } from "./reducers.js";
 export { points, scoreFromJson, scoreToJson } from "./points.js";
 export type { PointsDecay, PointsFold, PointsOptions, PointsRule, PointsState, PointsThreshold, Score, StandingsOptions } from "./points.js";

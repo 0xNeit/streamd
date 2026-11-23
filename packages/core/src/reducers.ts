@@ -1,3 +1,4 @@
+import { eventId } from "./cursor.js";
 import { StreamdError } from "./errors.js";
 import { MISSING, parseFieldPath, readField, toInteger, type FieldPath } from "./filter.js";
 import type { Reducer, StreamdEvent } from "./types.js";
@@ -134,4 +135,39 @@ export function distinct(path: FieldPath, options: { max?: number } = {}): Fold<
     // ponytail: copies the set per new value so earlier states stay intact; fine at the default cap.
     return { values: new Set(state.values).add(key), capped: state.capped };
   }, { values: new Set<string>(), capped: false });
+}
+
+/**
+ * `inner` folded per window of `interval` microseconds of `event.timestamp`,
+ * keyed by the window's start, aligned to the Unix epoch. An event without a
+ * timestamp throws. `keep` holds at most that many windows, dropping the
+ * earliest first; omitted, the map gains one entry per window seen.
+ */
+export function buckets<S, TData = unknown, TEvent = StreamdEvent<TData>>(
+  interval: bigint,
+  inner: Fold<S, TData, TEvent>,
+  options: { keep?: number } = {},
+): Fold<Map<bigint, S>, TData, TEvent> {
+  if (typeof interval !== "bigint" || interval <= 0n) {
+    throw new StreamdError(`buckets: interval must be a positive bigint of microseconds: ${String(interval)}`);
+  }
+  const { keep } = options;
+  if (keep !== undefined && (!Number.isSafeInteger(keep) || keep < 1)) {
+    throw new StreamdError(`buckets: keep must be a positive safe integer: ${String(keep)}`);
+  }
+  return fold<Map<bigint, S>, any, any>((windows, event: StreamdEvent) => {
+    if (event.timestamp === undefined) {
+      throw new StreamdError(`buckets: event ${eventId(event)} has no timestamp`);
+    }
+    const offset = event.timestamp % interval;
+    const start = event.timestamp - (offset < 0n ? offset + interval : offset);
+    const before = windows.has(start) ? windows.get(start)! : inner.initial;
+    const next = new Map(windows).set(start, inner(before, event as any));
+    while (keep !== undefined && next.size > keep) {
+      let earliest = start;
+      for (const key of next.keys()) if (key < earliest) earliest = key;
+      next.delete(earliest);
+    }
+    return next;
+  }, new Map());
 }
