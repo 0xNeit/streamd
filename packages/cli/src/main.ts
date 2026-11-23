@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { writeFile } from "node:fs/promises";
 import { Aptos } from "@aptos-labs/ts-sdk";
-import { listEventHandles } from "@streamd/aptos";
+import { AptosClient, listEventHandles } from "@streamd/aptos";
 import { parseCommand, USAGE, UsageError } from "./args.js";
 import type {
   AlertOptions,
@@ -15,6 +15,7 @@ import type {
   CompareOptions,
   CoverageOptions,
   Endpoint,
+  ExplainCommandOptions,
   ForwardOptions,
   HandlesOptions,
   InspectOptions,
@@ -47,6 +48,7 @@ import { generateEventTypes } from "@streamd/codegen";
 import type { SuiNetworkPreset } from "@streamd/sui";
 import { startLocalnet } from "@streamd/testing";
 import { message } from "./format.js";
+import { runExplain } from "./explain.js";
 import { runForward } from "./forward.js";
 import { runHandles } from "./handles.js";
 import { runInspect } from "./inspect.js";
@@ -234,6 +236,24 @@ async function tx(options: TxOptions): Promise<number> {
   const out = stdout(controller);
   try {
     const code = await runTx(options, {
+      client,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
+async function explain(options: ExplainCommandOptions): Promise<number> {
+  const { client, controller } = await setup(options);
+  const out = stdout(controller);
+  try {
+    // The parser refuses --chain sui, so this is always an AptosClient.
+    if (!(client instanceof AptosClient)) throw new Error("explain reads Aptos only");
+    const code = await runExplain(options, {
       client,
       write: out.write,
       error: (message) => process.stderr.write(`${message}\n`),
@@ -483,6 +503,7 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "record") return withCache(parsed.options, (cache) => record(parsed.options, cache));
   if (parsed.command === "query") return withCache(parsed.options, (cache) => query(parsed.options, cache));
   if (parsed.command === "tx") return tx(parsed.options);
+  if (parsed.command === "explain") return explain(parsed.options);
   if (parsed.command === "transfers") return transfers(parsed.options);
   if (parsed.command === "balances") return balances(parsed.options);
   if (parsed.command === "watch") return watch(parsed.options);

@@ -876,6 +876,33 @@ describe("parseCommand tx", () => {
   });
 });
 
+describe("parseCommand explain", () => {
+  const HASH = `0x${"ab".repeat(32)}`;
+
+  it("takes a hash, --json, a timeout and the read options", () => {
+    expect(parseCommand(["explain", HASH])).toEqual({ command: "explain", options: { hash: HASH, network: "mainnet" } });
+    expect(parseCommand(["explain", HASH, "--json"])).toEqual({ command: "explain", options: { hash: HASH, network: "mainnet", json: true } });
+    expect(parseCommand(["explain", "--network", "testnet", "--node-url", "https://n.example/v1", "--timeout", "500", HASH])).toEqual({
+      command: "explain",
+      options: { hash: HASH, network: "testnet", nodeUrl: "https://n.example/v1", timeout: 500 },
+    });
+    expect(parseCommand(["explain", "--help"])).toEqual({ command: "help" });
+  });
+
+  it.each([
+    [["explain"], /explain needs one transaction hash/],
+    [["explain", HASH, HASH], /explain needs one transaction hash/],
+    [["explain", "0x12"], /not a transaction hash/],
+    [["explain", `0x${"zz".repeat(32)}`], /not a transaction hash/],
+    [["explain", HASH, "--timeout", "soon"], /--timeout/],
+    [["explain", HASH, "--json=yes"], /json/],
+    [["explain", HASH, "--limit", "1"], /limit/],
+    [["explain", "--chain", "sui", "Da2zqzrgB4Yis2qEgjVYh5N4Go1tXXDesyo4BKBkonqS"], /explain is not available with --chain sui/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
+
 describe("forward secret", () => {
   const ENV = "STREAMD_WEBHOOK_SECRET";
   const secretOf = (...extra: string[]) => {
@@ -911,6 +938,7 @@ describe("parseCommand --api-key and APTOS_API_KEY", () => {
     ["store", "--db", "e.db", TYPE],
     ["query", "--from-version", "1", TYPE],
     ["tx", `0x${"ab".repeat(32)}`],
+    ["explain", `0x${"ab".repeat(32)}`],
     ["check", TYPE],
     ["record", "--from-version", "1", "--to-version", "2", TYPE],
     ["codegen", "0x1::coin"],
@@ -1439,6 +1467,7 @@ describe("several nodes", () => {
     ["query", "--from-version", "1", TYPE],
     ["record", "--from-version", "1", "--to-version", "2", TYPE],
     ["tx", HASH],
+    ["explain", HASH],
     ["transfers"],
     ["balances", ADDR],
     ["watch", ADDR],
@@ -1486,6 +1515,7 @@ describe("--archive", () => {
     ["query", "--from-version", "1", TYPE],
     ["record", "--from-version", "1", "--to-version", "2", TYPE],
     ["tx", HASH],
+    ["explain", HASH],
     ["transfers"],
     ["balances", ADDR],
     ["watch", ADDR],
@@ -1559,6 +1589,7 @@ describe("--stats", () => {
     ["balances", "0x1"],
     ["watch", "0x1"],
     ["tx", `0x${"a".repeat(64)}`],
+    ["explain", `0x${"a".repeat(64)}`],
   ];
   const options = (argv: string[]) => (parseCommand(argv) as unknown as { options: Record<string, unknown> }).options;
 

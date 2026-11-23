@@ -4746,7 +4746,7 @@ first node directly. A second Ctrl-C exits at once, without the line.
 
 ### Sui from the command line
 
-Every command but `handles` and `inspect` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
+Every command but `handles`, `inspect` and `explain` takes `--chain sui` to read Sui through [`@streamd/sui`](#sui) instead of Aptos,
 with the same output and exit codes:
 
 ```sh
@@ -5620,6 +5620,22 @@ streamd tx 0x5d16bc7f...
 `--timeout <ms>` bounds the wait (default 20000). It exits 0 for a successful transaction, 1 if the
 transaction failed, with its VM status on stderr and nothing on stdout, or if it was not found in
 time, 2 for a malformed hash, and 130 if interrupted while waiting.
+
+`streamd explain <hash>` waits the same way, then prints what the transaction did as
+[`formatExplanation`](#explain-a-transaction) renders `AptosClient.explain`'s summary: status,
+sender, function, gas and fee, transfers with asset symbols and decimals, net balance changes,
+swaps, sales and the event count:
+
+```sh
+streamd explain 0x5d16bc7f...
+streamd explain --json 0x5d16bc7f... | jq '.balanceChanges'
+```
+
+`--json` prints the whole `TransactionExplanation` as one JSON line instead, every bigint as a
+decimal string. It takes `--timeout`, `--network`, `--node-url` (repeatable), `--archive`,
+`--api-key` and `--stats` as `tx` does. A failed transaction is still printed, with its gas and no
+transfers, and then exits 1 with its VM status on stderr; otherwise the exit codes are `tx`'s.
+Aptos only: `--chain sui` exits 2, since Sui has no explainer yet.
 
 ### Check event types
 
