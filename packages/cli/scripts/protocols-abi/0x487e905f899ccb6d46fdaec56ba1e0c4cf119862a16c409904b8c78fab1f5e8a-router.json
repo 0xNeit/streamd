@@ -1,0 +1,626 @@
+{
+ "abi": {
+  "address": "0x487e905f899ccb6d46fdaec56ba1e0c4cf119862a16c409904b8c78fab1f5e8a",
+  "name": "router",
+  "structs": [
+   {
+    "name": "IncentiveAdded",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "campaign_idx",
+      "type": "u64"
+     },
+     {
+      "name": "incentive_amount",
+      "type": "u64"
+     },
+     {
+      "name": "incentive_token",
+      "type": "address"
+     },
+     {
+      "name": "rate_per_second",
+      "type": "u64"
+     },
+     {
+      "name": "end_time",
+      "type": "u64"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "IncentiveClaimed",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "position_idx",
+      "type": "u64"
+     },
+     {
+      "name": "creator",
+      "type": "address"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "IncentiveWithdrawn",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "campaign_idx",
+      "type": "u64"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LiquidityAdded",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "position_idx",
+      "type": "u64"
+     },
+     {
+      "name": "assets",
+      "type": "vector<address>"
+     },
+     {
+      "name": "amounts",
+      "type": "vector<u64>"
+     },
+     {
+      "name": "creator",
+      "type": "address"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LiquidityRemoved",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "position_idx",
+      "type": "u64"
+     },
+     {
+      "name": "assets",
+      "type": "vector<address>"
+     },
+     {
+      "name": "amounts",
+      "type": "vector<u64>"
+     },
+     {
+      "name": "creator",
+      "type": "address"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PoolCreated",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "hook_type",
+      "type": "u8"
+     },
+     {
+      "name": "assets",
+      "type": "vector<address>"
+     },
+     {
+      "name": "creator",
+      "type": "address"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Swapped",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "assets",
+      "type": "vector<address>"
+     },
+     {
+      "name": "asset_in_index",
+      "type": "u64"
+     },
+     {
+      "name": "asset_out_index",
+      "type": "u64"
+     },
+     {
+      "name": "amount_in",
+      "type": "u64"
+     },
+     {
+      "name": "amount_out",
+      "type": "u64"
+     },
+     {
+      "name": "creator",
+      "type": "address"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FuncStorage",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "store",
+     "key"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": [
+       "copy",
+       "drop",
+       "store"
+      ]
+     }
+    ],
+    "fields": [
+     {
+      "name": "f",
+      "type": "T0"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FeeCollected",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "hook_type",
+      "type": "u8"
+     },
+     {
+      "name": "position_idx",
+      "type": "u64"
+     },
+     {
+      "name": "assets",
+      "type": "vector<address>"
+     },
+     {
+      "name": "amounts",
+      "type": "vector<u64>"
+     },
+     {
+      "name": "creator",
+      "type": "address"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Manager",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "vault",
+      "type": "0x1::account::SignerCapability"
+     },
+     {
+      "name": "pools",
+      "type": "vector<address>"
+     },
+     {
+      "name": "paused_hooks",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AdminLiquidityRemoved",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "position_idx",
+      "type": "u64"
+     },
+     {
+      "name": "assets",
+      "type": "vector<address>"
+     },
+     {
+      "name": "amounts",
+      "type": "vector<u64>"
+     },
+     {
+      "name": "recipient",
+      "type": "address"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "GaugeFeesWithdrawn",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "recipient",
+      "type": "address"
+     },
+     {
+      "name": "assets",
+      "type": "vector<address>"
+     },
+     {
+      "name": "amounts",
+      "type": "vector<u64>"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "GaugePositionRecovered",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "position_addr",
+      "type": "address"
+     },
+     {
+      "name": "position_idx",
+      "type": "u64"
+     },
+     {
+      "name": "committed_owner",
+      "type": "address"
+     },
+     {
+      "name": "recipient",
+      "type": "address"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "IncentiveWithdrawnIncludingUnclaimedRewards",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_addr",
+      "type": "address"
+     },
+     {
+      "name": "campaign_idx",
+      "type": "u64"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "NftVaultWhitelisted",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "nft_vault",
+      "type": "address"
+     },
+     {
+      "name": "is_whitelisted",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PlatformFeeUpdated",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "hook_type",
+      "type": "u8"
+     },
+     {
+      "name": "pool_addr",
+      "type": "0x1::option::Option<address>"
+     },
+     {
+      "name": "old_rate",
+      "type": "u64"
+     },
+     {
+      "name": "new_rate",
+      "type": "u64"
+     },
+     {
+      "name": "ts",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PoolCap",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "extend_ref",
+      "type": "0x1::object::ExtendRef"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "TappTokenConfig",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "tapp_token",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UpdateForGauges",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "_0",
+      "type": "|&signer,vector<address>|"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "WhitelistNftVaults",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "nft_vaults",
+      "type": "0x1::simple_map::SimpleMap<address, bool>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

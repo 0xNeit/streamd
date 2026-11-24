@@ -1,0 +1,95 @@
+{
+ "abi": {
+  "address": "0x39ddcd9e1a39fa14f25e3f9ec8a86074d05cc0881cbf667df8a6ee70942016fb",
+  "name": "emode_logic",
+  "structs": [
+   {
+    "name": "EModeCategory",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "ltv",
+      "type": "u16"
+     },
+     {
+      "name": "liquidation_threshold",
+      "type": "u16"
+     },
+     {
+      "name": "liquidation_bonus",
+      "type": "u16"
+     },
+     {
+      "name": "label",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "EModeCategoryList",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "value",
+      "type": "0x1::smart_table::SmartTable<u8, 0x39ddcd9e1a39fa14f25e3f9ec8a86074d05cc0881cbf667df8a6ee70942016fb::emode_logic::EModeCategory>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UserEModeSet",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "user",
+      "type": "address"
+     },
+     {
+      "name": "category_id",
+      "type": "u8"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UsersEmodeCategory",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "value",
+      "type": "0x1::smart_table::SmartTable<address, u8>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

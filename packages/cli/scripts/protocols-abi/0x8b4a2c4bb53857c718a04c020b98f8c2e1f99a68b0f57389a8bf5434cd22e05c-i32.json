@@ -1,0 +1,49 @@
+{
+ "abi": {
+  "address": "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c",
+  "name": "i32",
+  "structs": [
+   {
+    "name": "I32",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "bits",
+      "type": "u32"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "I32_RES",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "sign",
+      "type": "bool"
+     },
+     {
+      "name": "value",
+      "type": "u32"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

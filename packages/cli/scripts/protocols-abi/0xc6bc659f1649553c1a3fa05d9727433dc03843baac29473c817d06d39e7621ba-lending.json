@@ -1,0 +1,883 @@
+{
+ "abi": {
+  "address": "0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba",
+  "name": "lending",
+  "structs": [
+   {
+    "name": "WithdrawEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account_addr",
+      "type": "address"
+     },
+     {
+      "name": "market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     },
+     {
+      "name": "shares",
+      "type": "u64"
+     },
+     {
+      "name": "user_shares",
+      "type": "u64"
+     },
+     {
+      "name": "total_cash",
+      "type": "u64"
+     },
+     {
+      "name": "total_shares",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CoinInfo",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "type_name",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Market",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "extend_ref",
+      "type": "0x1::object::ExtendRef"
+     },
+     {
+      "name": "asset_name",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "asset_type",
+      "type": "u64"
+     },
+     {
+      "name": "asset_mantissa",
+      "type": "u64"
+     },
+     {
+      "name": "initial_liquidity",
+      "type": "u64"
+     },
+     {
+      "name": "total_shares",
+      "type": "u64"
+     },
+     {
+      "name": "total_liability",
+      "type": "u64"
+     },
+     {
+      "name": "total_reserve",
+      "type": "u64"
+     },
+     {
+      "name": "total_cash",
+      "type": "u64"
+     },
+     {
+      "name": "interest_rate_model_type",
+      "type": "u64"
+     },
+     {
+      "name": "interest_rate_index",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::fixed_point64::FixedPoint64"
+     },
+     {
+      "name": "interest_rate_last_update_seconds",
+      "type": "u64"
+     },
+     {
+      "name": "collateral_factor_bps",
+      "type": "u64"
+     },
+     {
+      "name": "efficiency_mode_id",
+      "type": "u8"
+     },
+     {
+      "name": "paused",
+      "type": "bool"
+     },
+     {
+      "name": "supply_cap",
+      "type": "u64"
+     },
+     {
+      "name": "borrow_cap",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RateLimitUpdateEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     },
+     {
+      "name": "rate_limit_type",
+      "type": "u8"
+     },
+     {
+      "name": "window_duration_seconds",
+      "type": "u64"
+     },
+     {
+      "name": "window_max_qty",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AccrueMarketInterestEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     },
+     {
+      "name": "borrow_interest_rate",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::fixed_point64::FixedPoint64"
+     },
+     {
+      "name": "second_delta",
+      "type": "u64"
+     },
+     {
+      "name": "simple_interest_factor",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::fixed_point64::FixedPoint64"
+     },
+     {
+      "name": "interest_accumulated",
+      "type": "u64"
+     },
+     {
+      "name": "interest_fee",
+      "type": "u64"
+     },
+     {
+      "name": "interest_rate_index",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::fixed_point64::FixedPoint64"
+     },
+     {
+      "name": "total_liability",
+      "type": "u64"
+     },
+     {
+      "name": "total_reserve",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AccrueVaultInterestEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account_addr",
+      "type": "address"
+     },
+     {
+      "name": "market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     },
+     {
+      "name": "prev_user_liability",
+      "type": "u64"
+     },
+     {
+      "name": "user_liability",
+      "type": "u64"
+     },
+     {
+      "name": "interest_rate_index",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::fixed_point64::FixedPoint64"
+     },
+     {
+      "name": "interest_accumulated",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "BorrowEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account_addr",
+      "type": "address"
+     },
+     {
+      "name": "market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     },
+     {
+      "name": "user_liability",
+      "type": "u64"
+     },
+     {
+      "name": "total_cash",
+      "type": "u64"
+     },
+     {
+      "name": "total_liability",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CreateMarketEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "asset_name",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DepositReserveEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     },
+     {
+      "name": "manager_addr",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     },
+     {
+      "name": "total_reserve",
+      "type": "u64"
+     },
+     {
+      "name": "total_cash",
+      "type": "u64"
+     },
+     {
+      "name": "total_liability",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "EfficiencyMode",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "id",
+      "type": "u8"
+     },
+     {
+      "name": "markets",
+      "type": "vector<0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>>"
+     },
+     {
+      "name": "collateral_factor_bps",
+      "type": "u64"
+     },
+     {
+      "name": "liquidation_incentive_bps",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "EmodeLiquidationThreshold",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "value_bps",
+      "type": "0x1::simple_map::SimpleMap<u8, u64>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FungibleAssetInfo",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "JumpInterestRateModel",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "base_rate_bps",
+      "type": "u64"
+     },
+     {
+      "name": "multiplier_bps",
+      "type": "u64"
+     },
+     {
+      "name": "jump_multiplier_bps",
+      "type": "u64"
+     },
+     {
+      "name": "utilization_kink_bps",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Lending",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "liquidation_incentive_bps",
+      "type": "u64"
+     },
+     {
+      "name": "close_factor_bps",
+      "type": "u64"
+     },
+     {
+      "name": "interest_fee_bps",
+      "type": "u64"
+     },
+     {
+      "name": "liquidation_fee_bps",
+      "type": "u64"
+     },
+     {
+      "name": "next_efficiency_mode_id",
+      "type": "u8"
+     },
+     {
+      "name": "efficiency_modes",
+      "type": "0x1::simple_map::SimpleMap<u8, 0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::EfficiencyMode>"
+     },
+     {
+      "name": "market_objects",
+      "type": "vector<0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Liability",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "principal",
+      "type": "u64"
+     },
+     {
+      "name": "interest_accumulated",
+      "type": "u64"
+     },
+     {
+      "name": "last_interest_rate_index",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::fixed_point64::FixedPoint64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LiquidateEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "liquidator_addr",
+      "type": "address"
+     },
+     {
+      "name": "borrower_addr",
+      "type": "address"
+     },
+     {
+      "name": "collateral_market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     },
+     {
+      "name": "borrow_market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     },
+     {
+      "name": "repay_amount",
+      "type": "u64"
+     },
+     {
+      "name": "seize_shares",
+      "type": "u64"
+     },
+     {
+      "name": "seize_shares_post_fee",
+      "type": "u64"
+     },
+     {
+      "name": "borrower_shares",
+      "type": "u64"
+     },
+     {
+      "name": "liquidator_shares",
+      "type": "u64"
+     },
+     {
+      "name": "liquidation_fee_coins",
+      "type": "u64"
+     },
+     {
+      "name": "total_reserve",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "MarketInterestFee",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "value_bps",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "MarketLiquidationIncentive",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "value_bps",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "MarketLiquidationPauseFlag",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "paused",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "MarketLiquidationThreshold",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "value_bps",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "MarketOriginationFee",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "value_bps",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "MarketRateLimit",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "withdraw",
+      "type": "0x87978b35bf1eb73ae6cf04cfedcaa1f48254a683ebd00a21e7516a991edae3ac::rate_limiter::RateLimiter"
+     },
+     {
+      "name": "borrow",
+      "type": "0x87978b35bf1eb73ae6cf04cfedcaa1f48254a683ebd00a21e7516a991edae3ac::rate_limiter::RateLimiter"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PauseEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "paused",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PauseFlag",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "paused",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RepayEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "borrower_addr",
+      "type": "address"
+     },
+     {
+      "name": "repayer_addr",
+      "type": "address"
+     },
+     {
+      "name": "market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     },
+     {
+      "name": "user_liability",
+      "type": "u64"
+     },
+     {
+      "name": "total_cash",
+      "type": "u64"
+     },
+     {
+      "name": "total_liability",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SupplyEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account_addr",
+      "type": "address"
+     },
+     {
+      "name": "market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     },
+     {
+      "name": "shares",
+      "type": "u64"
+     },
+     {
+      "name": "user_shares_increment",
+      "type": "u64"
+     },
+     {
+      "name": "user_shares",
+      "type": "u64"
+     },
+     {
+      "name": "total_cash",
+      "type": "u64"
+     },
+     {
+      "name": "total_shares",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Vault",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "efficiency_mode_id",
+      "type": "u8"
+     },
+     {
+      "name": "collaterals",
+      "type": "0x1::simple_map::SimpleMap<0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>, u64>"
+     },
+     {
+      "name": "liabilities",
+      "type": "0x1::simple_map::SimpleMap<0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>, 0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Liability>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "VaultCreatedEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account_addr",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "WithdrawReserveEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "market_obj",
+      "type": "0x1::object::Object<0xc6bc659f1649553c1a3fa05d9727433dc03843baac29473c817d06d39e7621ba::lending::Market>"
+     },
+     {
+      "name": "recipient",
+      "type": "address"
+     },
+     {
+      "name": "total_cash",
+      "type": "u64"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}
