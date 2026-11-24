@@ -55,7 +55,7 @@ describe("generateEventTypes", () => {
   it("maps fields per the ABI mapping and loads each module once", async () => {
     const { load, calls } = loader();
     const source = await generateEventTypes(TARGETS, load);
-    expect(source).toContain('import { defineEvent } from "@streamd/core";');
+    expect(source).toContain('import { defineEvent, defineEvents } from "@streamd/core";');
     expect(source).toContain(
       [
         "export interface Swap<T0 = unknown, T1 = unknown> {",
@@ -851,3 +851,101 @@ describe("generateEventTypes validators", () => {
     }
   }, 60_000);
 });
+
+describe("generateEventTypes module unions", () => {
+  it("writes one union per module over its non-generic events, keyed by their types", async () => {
+    const source = await generateEventTypes(TARGETS, loader().load);
+    expect(source).toContain('import { defineEvent, defineEvents } from "@streamd/core";');
+    expect(source).toContain(
+      [
+        "/** Every non-generic event of `0x1::fungible_asset`, narrowing on `event.type` */",
+        "export const fungibleAssetEvents = defineEvents({",
+        '  "0x1::fungible_asset::Creation": Creation,',
+        '  "0x1::fungible_asset::Deposit": FungibleAsset_Deposit,',
+        '  "0x1::fungible_asset::Frozen": Frozen,',
+        '  "0x1::fungible_asset::FungibleStoreDeletion": FungibleStoreDeletion,',
+        '  "0x1::fungible_asset::Withdraw": FungibleAsset_Withdraw,',
+        "});",
+      ].join("\n"),
+    );
+    expect(source).toContain(`export const dexEvents = defineEvents({\n  "${DEX}::dex::Deposit": Dex_Deposit,\n  "${DEX}::dex::OrderEvent": OrderEvent,\n});`);
+    const coin = source.slice(source.indexOf("export const coinEvents"));
+    expect(coin.slice(0, coin.indexOf("});"))).not.toContain("Coin_Deposit");
+  });
+
+  it("writes none for a module with only generic events, and imports defineEvents only when used", async () => {
+    const generic = abi("0x1", "g", [{ ...struct("G", [["x", "T0"]]), generic_type_params: [{ constraints: [] }] }]);
+    const source = await generateEventTypes([{ address: "0x1", module: "g" }], loader([generic]).load);
+    expect(source).toContain('import { defineEvent } from "@streamd/core";');
+    expect(source).not.toContain("defineEvents");
+  });
+
+  it("qualifies one module name at two addresses, and steps around a taken name", async () => {
+    const abis = [
+      abi(DEX, "dex", [struct("A", [["a", "u8"]])]),
+      abi(BEEF, "dex", [struct("B", [["b", "u8"]])]),
+      abi("0x1", "define", [struct("C", [["c", "u8"]])]),
+    ];
+    const source = await generateEventTypes(
+      [{ address: DEX, module: "dex" }, { address: BEEF, module: "dex" }, { address: "0x1", module: "define" }],
+      loader(abis).load,
+    );
+    expect(source).toContain(`export const dexEvents_${DEX} = defineEvents({\n  "${DEX}::dex::A": A,\n});`);
+    expect(source).toContain(`export const dexEvents_${BEEF} = defineEvents({`);
+    expect(source).toContain("export const defineEvents_ = defineEvents({");
+  });
+
+  it("emits unions that typecheck and narrow event.data on event.type", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "streamd-codegen-"));
+    try {
+      writeFileSync(join(dir, "events.ts"), await generateEventTypes(TARGETS, loader().load));
+      writeFileSync(join(dir, "usage.ts"), UNION_USAGE);
+      writeFileSync(
+        join(dir, "tsconfig.json"),
+        JSON.stringify({
+          compilerOptions: {
+            target: "ES2022",
+            module: "ESNext",
+            moduleResolution: "bundler",
+            strict: true,
+            noUnusedLocals: true,
+            noUnusedParameters: true,
+            noEmit: true,
+            skipLibCheck: true,
+            types: [],
+            paths: { "@streamd/core": [fileURLToPath(new URL("../../core/dist/index.d.ts", import.meta.url))] },
+          },
+          files: ["events.ts", "usage.ts"],
+        }),
+      );
+      const tsc = fileURLToPath(new URL("../../../node_modules/.bin/tsc", import.meta.url));
+      const result = Bun.spawnSync([tsc, "-p", dir]);
+      expect(result.stdout.toString() + result.stderr.toString()).toBe("");
+      expect(result.exitCode).toBe(0);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 60_000);
+});
+
+// Each @ts-expect-error fails the compile if its line does typecheck.
+const UNION_USAGE = `
+import type { StreamdClient } from "@streamd/core";
+import { dexEvents, fungibleAssetEvents } from "./events.js";
+
+declare const client: StreamdClient;
+const is = <T>(_value: T) => {};
+
+client.on(fungibleAssetEvents, (e) => {
+  if (e.type === "0x1::fungible_asset::Deposit") {
+    is<string>(e.data.store);
+    // @ts-expect-error Deposit has no frozen field
+    is(e.data.frozen);
+  }
+  if (e.type === "0x1::fungible_asset::Frozen") is<boolean>(e.data.frozen);
+});
+client.on(dexEvents, (e) => {
+  if (e.type !== "${DEX}::dex::OrderEvent") return;
+  if (e.data.__variant__ === "Filled") is<number>(e.data.delta);
+});
+`;

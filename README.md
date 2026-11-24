@@ -1596,6 +1596,10 @@ client.on(Coin_Deposit("0x1::aptos_coin::AptosCoin"), (e) => console.log(e.data.
 const fees = await client.getEvents(FeeStatement, { fromVersion: -1000n, limit: 10 });
 ```
 
+Each module also has its union, as `streamd codegen` writes it: `fungibleAssetEvents`,
+`stakeEvents` and the rest, with `tokenEvents_0x3` and `tokenEvents_0x4` for the two `token`
+modules.
+
 The catalog reflects the framework ABIs it was generated from; legacy `EventHandle` events such
 as `0x1::coin::DepositEvent` are not `#[event]` structs and are not in it.
 
@@ -3512,6 +3516,8 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   `0x3` packages, so it follows that command's rules: long-form type strings, generic events as
   functions of their type arguments, and descriptors for the dynamic-field keys those modules
   declare too (`Item`, `Listing`, `Lock`, `ConfigKey` and the like), which never match an event.
+  Each module with non-generic ones has a union too (`kioskEvents`, `validatorEvents`), which
+  takes in those keys as well.
 
   ```ts
   import { ItemListed, ItemListedDecode, StakingRequestEvent } from "@streamd/sui/framework";
@@ -6485,6 +6491,25 @@ streamd codegen --out src/events.ts 0x1::fungible_asset 0x1::coin
 
 The generator is `generateEventTypes` in `@streamd/codegen`, which takes a function reading a
 module's ABI, so it runs anywhere, the [Playground](#playground) included.
+
+Each module with non-generic events also gets one [`defineEvents`](#typed-events)
+descriptor over all of them, so one subscription follows the module and narrows on `event.type`:
+
+```ts
+import { fungibleAssetEvents } from "./events.js";
+
+client.on(fungibleAssetEvents, (e) => {
+  if (e.type === "0x1::fungible_asset::Deposit") console.log("in", e.data.store, e.data.amount);
+  if (e.type === "0x1::fungible_asset::Frozen") console.log("frozen", e.data.store, e.data.frozen);
+});
+```
+
+It is named `<module>Events`, the module name camel-cased, so it never meets a struct's name.
+Where two modules in the file share a name, each gets its address appended
+(`tokenEvents_0x3`), and where the name is still taken, an `_`. Generic events are left out,
+since their descriptors are functions of their type arguments, so a module of only generic
+events gets none. With `--chain sui` it covers every non-generic `copy + drop` type the module
+declares.
 
 It also writes a typed `handle` descriptor builder for each legacy `0x1::event::EventHandle<T>`
 field of a resource (a struct with `key`) in the modules it reads, named `<Struct>_<Field>` and
