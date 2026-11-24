@@ -63,9 +63,10 @@ TypeScript types:
 - `@streamd/store-indexeddb` (`packages/store-indexeddb`) - `IndexedDbPageStore`, which keeps
   `CachingAdapter`'s settled pages in the browser's IndexedDB. See
   [History the fullnode has pruned](#history-the-fullnode-has-pruned).
-- `@streamd/receiver` (`packages/receiver`) - receive `streamd forward` webhooks: the signature
-  checked, the events parsed and repeats dropped. See
-  [Forward events to a webhook](#forward-events-to-a-webhook).
+- `@streamd/receiver` (`packages/receiver`) - receive `streamd forward` webhooks and
+  `streamd alert` alerts: the signature checked, the body parsed and repeats dropped. See
+  [Forward events to a webhook](#forward-events-to-a-webhook) and
+  [Alert on thresholds](#alert-on-thresholds).
 - `@streamd/gateway` (`apps/gateway`) - the gateway behind `streamd serve`, and
   `GatewayAdapter`, which reads through one, from the browser-safe `@streamd/gateway/adapter`.
   See [Serve a gateway](#serve-a-gateway).
@@ -5420,6 +5421,37 @@ trailing zeros trimmed (`mad` unscaled, `low` and `high` the band's bounds):
 ```
 `id` is the rule and the window start, the same on every redelivery, so a receiver can
 deduplicate on it.
+
+The body's type is `AlertPayload` in `@streamd/core`, and the CLI writes it with
+`serializeAlert`; `parseAlert(body)` reads one back, the integers as `bigint`s, the counts
+(`baseline`, `minBaseline`, `baselineWindows`) as numbers and `event` as `parseEvent` reads it,
+refusing anything else, unknown fields included, with a `StreamdError` naming the field.
+
+**Receive them with `@streamd/receiver`.** `createAlertReceiver` checks each request as
+`createReceiver` does for `forward` (`405`, `415`, `413` past `maxBodyBytes`, `401` for a missing
+or wrong signature, all before anything is parsed), then answers `400` with `parseAlert`'s message
+for a body it refuses, and hands `onAlert` each alert whose `id` its store has not seen:
+
+```ts
+import { createAlertReceiver } from "@streamd/receiver";
+
+const receive = createAlertReceiver({
+  secret: process.env.STREAMD_WEBHOOK_SECRET!,
+  async onAlert(alert) {
+    const why = alert.anomaly ? `${alert.anomaly.side} its band` : `over ${JSON.stringify(alert.threshold)}`;
+    await notify(`${alert.rule}: ${alert.value} ${why}`);
+  },
+});
+
+Bun.serve({ port: 8788, fetch: receive });
+```
+
+The id is recorded only after `onAlert` resolves, in the same `DedupStore` `createReceiver` takes
+(`MemoryDedupStore` by default, or `SqliteDedupStore` and `PostgresDedupStore` for a durable one),
+prefixed `<namespace>/` when `namespace` is set. A failing store or `onAlert` answers `500` and a
+redelivery of an alert still being handled `503`, both of which `streamd alert` retries; `204`
+otherwise, repeats included. `onError` is told what caused a `400` or `500`. `streamd positions
+--to` alerts have another shape and are not read by it.
 
 **The cursor file** holds one JSON object: each rule's cursor beside its open window (start,
 count or sum, and whether it alerted; for an anomaly rule also `history`, the baseline's values
