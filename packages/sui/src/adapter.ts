@@ -5,6 +5,7 @@ import type {
   AccountEventDescriptor,
   BlockHeights,
   BlockInfo,
+  EntryFunctionCall,
   EventAdapter,
   EventDescriptor,
   EventPage,
@@ -15,7 +16,7 @@ import type {
   TransactionEvents,
   TransactionSimulation,
 } from "@streamd/core";
-import { attachCalls, callsOf, CALL_FIELDS, withCall, type BatchGetTransactions, type CallTransaction } from "./calls.js";
+import { attachCalls, callsOf, CALL_FIELDS, onlyCall, withCall, type BatchGetTransactions, type CallTransaction } from "./calls.js";
 import { toJson, type ProtoValue } from "./json.js";
 import { graphqlEffects, graphqlStatesOf, objectChangesOf, objectStatesOf, StateMemo, type ObjectChangeTransaction, type StateLookup, type StateTransaction } from "./objects.js";
 import { networks } from "./networks.js";
@@ -96,6 +97,40 @@ interface CheckpointResponse {
   };
 }
 
+/** `ExecutedTransaction` under the wider mask `getTransactionDetails` reads. */
+type DetailedTransaction = ExecutedTransaction &
+  BalanceChangeTransaction & {
+    transaction?: CallTransaction & { sender?: string; gasPayment?: { owner?: string; price?: bigint } };
+    effects?: { gasUsed?: { nonRefundableStorageFee?: bigint } };
+  };
+
+/** A Sui transaction's gas summary, in MIST. */
+export interface SuiGasUsage {
+  computationCost: bigint;
+  storageCost: bigint;
+  storageRebate: bigint;
+  nonRefundableStorageFee: bigint;
+  /** `computationCost + storageCost - storageRebate`: what the gas owner paid, as `transfers()` takes it out. */
+  fee: bigint;
+  /** MIST per gas unit, from the gas payment. */
+  unitPrice?: bigint;
+}
+
+/** What `SuiAdapter.getTransactionDetails` reads: the lookup's events, plus the rest of the transaction. */
+export type SuiTransactionDetails = TransactionEvents & {
+  /** In long form. */
+  sender?: string;
+  /** The gas payment's owner, in long form, the sender unless sponsored. */
+  feePayer?: string;
+  /** Microseconds since the Unix epoch. */
+  timestamp?: bigint;
+  gas?: SuiGasUsage;
+  /** The PTB's one `MoveCall`; absent when it has none or several. */
+  call?: EntryFunctionCall;
+  /** Paired as `fetchTransfers` pairs them. */
+  transfers: StreamdEvent<Transfer>[];
+};
+
 /** The part of `@mysten/sui`'s `SuiGrpcClient` the adapter uses. */
 export interface SuiLedgerClient {
   /** Picks the default `graphqlUrl` when it names a preset in `networks`. */
@@ -169,6 +204,9 @@ const DEFAULT_LIMIT = 25;
 const KEPT_SUMMARIES = 4096;
 const EVENT_FIELDS = ["event_type", "package_id", "module", "sender", "json", "checkpoint", "transaction_digest", "transaction_index", "event_index"];
 const TRANSACTION_FIELDS = ["digest", "checkpoint", "effects.status", ...["event_type", "package_id", "module", "sender", "json"].map((f) => `events.events.${f}`), ...CALL_FIELDS.map((f) => `transaction.${f}`)];
+const DETAIL_FIELDS = [
+  ...TRANSACTION_FIELDS, "timestamp", "transaction.sender", "transaction.gas_payment.owner", "transaction.gas_payment.price", "effects.gas_used", "balance_changes",
+];
 const SIMULATION_FIELDS = TRANSACTION_FIELDS.filter((f) => f !== "digest" && f !== "checkpoint").map((f) => `transaction.${f}`);
 const TRANSFER_FIELDS = ["digest", "checkpoint", "transaction_index", "timestamp", "transaction.sender", "transaction.gas_payment.owner", "effects.gas_used", "balance_changes", "events.events.event_type"];
 const OBJECT_FIELDS = [
@@ -700,10 +738,39 @@ export class SuiAdapter implements EventAdapter {
    * comes from its checkpoint's digest list.
    */
   async getTransactionEvents(digest: string, _descriptor?: EventDescriptor): Promise<TransactionEvents | undefined> {
+    return (await this.lookUp(digest, TRANSACTION_FIELDS))?.found;
+  }
+
+  /**
+   * `getTransactionEvents` with what `explain` needs besides, from the same
+   * one read: the signer, the gas owner, the time, the gas summary, the PTB's
+   * one `MoveCall` and the transfer records `fetchTransfers` would build.
+   */
+  async getTransactionDetails(digest: string): Promise<SuiTransactionDetails | undefined> {
+    const looked = await this.lookUp(digest, DETAIL_FIELDS);
+    if (looked === undefined) return undefined;
+    const { found, raw } = looked;
+    const details: SuiTransactionDetails = { ...found, transfers: transfersOf(raw, found.version) };
+    const { sender, gasPayment } = raw.transaction ?? {};
+    if (sender !== undefined && sender !== "") details.sender = normalizeSuiAddress(sender);
+    if (gasPayment?.owner !== undefined && gasPayment.owner !== "") details.feePayer = normalizeSuiAddress(gasPayment.owner);
+    if (raw.timestamp !== undefined) details.timestamp = micros(raw.timestamp);
+    const gas = raw.effects?.gasUsed;
+    if (gas !== undefined) {
+      const [computationCost, storageCost, storageRebate] = [gas.computationCost ?? 0n, gas.storageCost ?? 0n, gas.storageRebate ?? 0n];
+      details.gas = { computationCost, storageCost, storageRebate, nonRefundableStorageFee: gas.nonRefundableStorageFee ?? 0n, fee: computationCost + storageCost - storageRebate };
+      if (gasPayment?.price !== undefined) details.gas.unitPrice = gasPayment.price;
+    }
+    const call = onlyCall(raw.transaction);
+    if (call !== undefined) details.call = call;
+    return details;
+  }
+
+  private async lookUp(digest: string, paths: string[]): Promise<{ found: TransactionEvents; raw: DetailedTransaction } | undefined> {
     requireDigest(digest);
-    let found: ExecutedTransaction | undefined;
+    let found: DetailedTransaction | undefined;
     try {
-      ({ response: { transaction: found } } = await this.ledger.getTransaction({ digest, readMask: { paths: TRANSACTION_FIELDS } }));
+      ({ response: { transaction: found } } = await this.ledger.getTransaction({ digest, readMask: { paths } }));
     } catch (err) {
       if ((err as { code?: unknown } | null)?.code === "NOT_FOUND") return undefined;
       networkError(err);
@@ -718,7 +785,7 @@ export class SuiAdapter implements EventAdapter {
         withCall(await this.toEvent({ ...raw, checkpoint, transactionIndex, eventIndex, transactionDigest: digest }), calls, raw),
       ),
     );
-    return { version: (await this.base(checkpoint)) + transactionIndex, ...status, events };
+    return { found: { version: (await this.base(checkpoint)) + transactionIndex, ...status, events }, raw: found! };
   }
 
   /**

@@ -3480,6 +3480,21 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   ```ts
   sui.transfers((t) => console.log(t.data.from, "->", t.data.to, formatAmount(t.data.amount, 9)), { account: me, asset: "0x2::sui::SUI" });
   ```
+- **Transaction explainer:** `sui.explain(digest, { timeout?, signal?, withAssetInfo?, withNames? })`
+  waits for the transaction as `eventsOf` waits, then resolves one `SuiTransactionExplanation`
+  in the shape of Aptos's `TransactionExplanation`: `success` and `vmStatus` (`"success"` or the
+  execution error; a failed transaction resolves rather than rejects), `sender`, `feePayer` (the
+  gas owner, only when it is not the sender), `timestamp`, `entryFunction` (the PTB's one
+  `MoveCall`, none when it has several), `gas` (`computationCost`, `storageCost`,
+  `storageRebate`, `nonRefundableStorageFee` and `unitPrice` in MIST, and `fee`, computation
+  plus storage less the rebate), `transfers` paired from the balance changes exactly as
+  `transfers()` pairs them, `balanceChanges` (net per account and coin type over them, gas
+  left out), and every event. `swaps` and `sales` are always empty, since Sui has no decoders
+  for them yet. `symbol` and `decimals` are read once per coin type unless
+  `withAssetInfo: false`, and `withNames` adds SuiNS `names` for the sender, the sponsor and
+  every counterparty. One `GetTransaction` read, plus the checkpoint reads that place its version, every read
+  through the client's limiter. Digests only: a built transaction is not simulated, and
+  `formatExplanation` stays Aptos's, since it prints APT and Aptos gas.
 - **Balances:** `sui.balances(address, { asset?, onChange? })` keeps an address's coin balances
   current, reading each coin type (SUI when none is named) through the state service every
   `pollInterval`, keyed by coin type in long form, with `value`, `get`, `ready` and `onChange`
