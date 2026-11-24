@@ -25,3 +25,5 @@ export type {
 } from "./sink.js";
 export { PostgresPageStore } from "./pages.js";
 export type { PostgresPageStoreOptions } from "./pages.js";
+export { PostgresDedupStore } from "./dedup.js";
+export type { PostgresDedupStoreOptions } from "./dedup.js";
