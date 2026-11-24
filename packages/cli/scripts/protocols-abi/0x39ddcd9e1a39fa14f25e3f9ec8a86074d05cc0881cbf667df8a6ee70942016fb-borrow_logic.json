@@ -1,0 +1,84 @@
+{
+ "abi": {
+  "address": "0x39ddcd9e1a39fa14f25e3f9ec8a86074d05cc0881cbf667df8a6ee70942016fb",
+  "name": "borrow_logic",
+  "structs": [
+   {
+    "name": "Borrow",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "reserve",
+      "type": "address"
+     },
+     {
+      "name": "user",
+      "type": "address"
+     },
+     {
+      "name": "on_behalf_of",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u256"
+     },
+     {
+      "name": "interest_rate_mode",
+      "type": "u8"
+     },
+     {
+      "name": "borrow_rate",
+      "type": "u256"
+     },
+     {
+      "name": "referral_code",
+      "type": "u16"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Repay",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "reserve",
+      "type": "address"
+     },
+     {
+      "name": "user",
+      "type": "address"
+     },
+     {
+      "name": "repayer",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u256"
+     },
+     {
+      "name": "use_a_tokens",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

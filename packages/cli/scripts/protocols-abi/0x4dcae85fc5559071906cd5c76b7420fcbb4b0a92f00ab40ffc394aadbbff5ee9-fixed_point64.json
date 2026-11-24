@@ -1,0 +1,27 @@
+{
+ "abi": {
+  "address": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9",
+  "name": "fixed_point64",
+  "structs": [
+   {
+    "name": "FixedPoint64",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "v",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

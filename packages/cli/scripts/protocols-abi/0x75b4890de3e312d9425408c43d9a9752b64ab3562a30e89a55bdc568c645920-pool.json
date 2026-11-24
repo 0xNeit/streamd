@@ -1,0 +1,994 @@
+{
+ "abi": {
+  "address": "0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920",
+  "name": "pool",
+  "structs": [
+   {
+    "name": "Position",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "position_id",
+      "type": "u64"
+     },
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "tick_lower",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64"
+     },
+     {
+      "name": "tick_upper",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64"
+     },
+     {
+      "name": "extend_ref",
+      "type": "0x1::object::ExtendRef"
+     },
+     {
+      "name": "liquidity",
+      "type": "u64"
+     },
+     {
+      "name": "fee_growth_inside_0_last",
+      "type": "u128"
+     },
+     {
+      "name": "fee_growth_inside_1_last",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Pool",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata_0",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "metadata_1",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "collection_obj",
+      "type": "0x1::object::Object<0x4::collection::Collection>"
+     },
+     {
+      "name": "mutator_ref",
+      "type": "0x4::collection::MutatorRef"
+     },
+     {
+      "name": "oracle_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::oracle::TwapOracle>"
+     },
+     {
+      "name": "swap_fee_bps",
+      "type": "u64"
+     },
+     {
+      "name": "tick_spacing",
+      "type": "u64"
+     },
+     {
+      "name": "max_liquidity_per_tick",
+      "type": "u64"
+     },
+     {
+      "name": "extend_ref",
+      "type": "0x1::object::ExtendRef"
+     },
+     {
+      "name": "position_id",
+      "type": "u64"
+     },
+     {
+      "name": "sqrt_price",
+      "type": "u128"
+     },
+     {
+      "name": "tick",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64"
+     },
+     {
+      "name": "ticks",
+      "type": "0x1::smart_table::SmartTable<0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64, 0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::TickInfo>"
+     },
+     {
+      "name": "tick_bitmap",
+      "type": "0x1::smart_table::SmartTable<0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64, u256>"
+     },
+     {
+      "name": "liquidity",
+      "type": "u128"
+     },
+     {
+      "name": "fee_growth_global_0",
+      "type": "u128"
+     },
+     {
+      "name": "fee_growth_global_1",
+      "type": "u128"
+     },
+     {
+      "name": "locked",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "AccrueFeesEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "position_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Position>"
+     },
+     {
+      "name": "amount_0",
+      "type": "u64"
+     },
+     {
+      "name": "amount_1",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Clamm",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "swap_fee_protocol_allocation_bps",
+      "type": "u64"
+     },
+     {
+      "name": "pools",
+      "type": "0x1::smart_vector::SmartVector<0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>>"
+     },
+     {
+      "name": "swap_paused",
+      "type": "bool"
+     },
+     {
+      "name": "liquidity_paused",
+      "type": "bool"
+     },
+     {
+      "name": "flashloan_paused",
+      "type": "bool"
+     },
+     {
+      "name": "trader_swap_fee_multipliers",
+      "type": "0x1::smart_table::SmartTable<address, u64>"
+     },
+     {
+      "name": "asset_remove_liquidity_rate_limiters",
+      "type": "0x1::smart_table::SmartTable<0x1::object::Object<0x1::fungible_asset::Metadata>, 0x87978b35bf1eb73ae6cf04cfedcaa1f48254a683ebd00a21e7516a991edae3ac::rate_limiter::RateLimiter>"
+     },
+     {
+      "name": "asset_collect_fees_rate_limiters",
+      "type": "0x1::smart_table::SmartTable<0x1::object::Object<0x1::fungible_asset::Metadata>, 0x87978b35bf1eb73ae6cf04cfedcaa1f48254a683ebd00a21e7516a991edae3ac::rate_limiter::RateLimiter>"
+     },
+     {
+      "name": "rate_limit_exempt_addresses",
+      "type": "vector<address>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CollectFeesEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "token_obj",
+      "type": "0x1::object::Object<0x4::token::Token>"
+     },
+     {
+      "name": "amount_0",
+      "type": "u64"
+     },
+     {
+      "name": "amount_1",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Flashloan",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "amount_0",
+      "type": "u64"
+     },
+     {
+      "name": "amount_1",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FlashloanEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "borrow_amount_0",
+      "type": "u64"
+     },
+     {
+      "name": "borrow_amount_1",
+      "type": "u64"
+     },
+     {
+      "name": "repay_amount_0",
+      "type": "u64"
+     },
+     {
+      "name": "repay_amount_1",
+      "type": "u64"
+     },
+     {
+      "name": "protocol_fee_amount_0",
+      "type": "u64"
+     },
+     {
+      "name": "protocol_fee_amount_1",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "IncreaseLiquidityEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "metadata_0",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "metadata_1",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "token_obj",
+      "type": "0x1::object::Object<0x4::token::Token>"
+     },
+     {
+      "name": "recipient",
+      "type": "address"
+     },
+     {
+      "name": "amount_0",
+      "type": "u64"
+     },
+     {
+      "name": "amount_1",
+      "type": "u64"
+     },
+     {
+      "name": "refund_0",
+      "type": "u64"
+     },
+     {
+      "name": "refund_1",
+      "type": "u64"
+     },
+     {
+      "name": "liquidity",
+      "type": "u64"
+     },
+     {
+      "name": "pool_balance_0",
+      "type": "u64"
+     },
+     {
+      "name": "pool_balance_1",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LiquidityInvariantState",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "tick",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64"
+     },
+     {
+      "name": "liquidity",
+      "type": "u128"
+     },
+     {
+      "name": "tick_lower_liquidity_gross",
+      "type": "u64"
+     },
+     {
+      "name": "tick_lower_liquidity_net",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64"
+     },
+     {
+      "name": "tick_upper_liquidity_gross",
+      "type": "u64"
+     },
+     {
+      "name": "tick_upper_liquidity_net",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "NewPositionEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "token_obj",
+      "type": "0x1::object::Object<0x4::token::Token>"
+     },
+     {
+      "name": "recipient",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PermissionedPool",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "whitelisted_lps",
+      "type": "vector<address>"
+     },
+     {
+      "name": "remove_liquidity_requests",
+      "type": "0x1::ordered_map::OrderedMap<u64, 0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::RemoveLiquidityRequest>"
+     },
+     {
+      "name": "user_remove_liquidity_requests",
+      "type": "0x1::ordered_map::OrderedMap<address, vector<u64>>"
+     },
+     {
+      "name": "next_remove_liquidity_request_id",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PoolCreationEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "creator",
+      "type": "address"
+     },
+     {
+      "name": "metadata_0",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "metadata_1",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "sqrt_price",
+      "type": "u128"
+     },
+     {
+      "name": "swap_fee_bps",
+      "type": "u64"
+     },
+     {
+      "name": "collection_obj",
+      "type": "0x1::object::Object<0x4::collection::Collection>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PoolParamChangeEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "name",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "prev_value",
+      "type": "u64"
+     },
+     {
+      "name": "new_value",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PositionCollection",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "collection_obj",
+      "type": "0x1::object::Object<0x4::collection::Collection>"
+     },
+     {
+      "name": "mutator_ref",
+      "type": "0x4::collection::MutatorRef"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PositionInfo",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "position_id",
+      "type": "u64"
+     },
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "tick_lower",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64"
+     },
+     {
+      "name": "tick_upper",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64"
+     },
+     {
+      "name": "liquidity",
+      "type": "u64"
+     },
+     {
+      "name": "fee_growth_inside_0_last",
+      "type": "u128"
+     },
+     {
+      "name": "fee_growth_inside_1_last",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RateLimitUpdateEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "name",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "asset_metadata",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "window_max_qty",
+      "type": "u128"
+     },
+     {
+      "name": "window_duration_seconds",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RemoveLiquidityEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "metadata_0",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "metadata_1",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "token_obj",
+      "type": "0x1::object::Object<0x4::token::Token>"
+     },
+     {
+      "name": "amount_0",
+      "type": "u64"
+     },
+     {
+      "name": "amount_1",
+      "type": "u64"
+     },
+     {
+      "name": "liquidity_delta",
+      "type": "u64"
+     },
+     {
+      "name": "pool_balance_0",
+      "type": "u64"
+     },
+     {
+      "name": "pool_balance_1",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RemoveLiquidityRequest",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "request_id",
+      "type": "u64"
+     },
+     {
+      "name": "recipient",
+      "type": "address"
+     },
+     {
+      "name": "token_obj",
+      "type": "0x1::object::Object<0x4::token::Token>"
+     },
+     {
+      "name": "liquidity",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RemoveLiquidityRequestEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "request_id",
+      "type": "u64"
+     },
+     {
+      "name": "recipient",
+      "type": "address"
+     },
+     {
+      "name": "token_obj",
+      "type": "0x1::object::Object<0x4::token::Token>"
+     },
+     {
+      "name": "liquidity",
+      "type": "u64"
+     },
+     {
+      "name": "previewed_amount_out_0",
+      "type": "u64"
+     },
+     {
+      "name": "previewed_amount_out_1",
+      "type": "u64"
+     },
+     {
+      "name": "pool_balance_0",
+      "type": "u64"
+     },
+     {
+      "name": "pool_balance_1",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RemoveLiquidityRequestProcessedEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "request_id",
+      "type": "u64"
+     },
+     {
+      "name": "request_status",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SwapCache",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "tick_cumulative",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i128::I128"
+     },
+     {
+      "name": "seconds_per_liquidity_cumulative",
+      "type": "u128"
+     },
+     {
+      "name": "computed_latest_observation",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SwapEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool_obj",
+      "type": "0x1::object::Object<0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920::pool::Pool>"
+     },
+     {
+      "name": "metadata_0",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "metadata_1",
+      "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+     },
+     {
+      "name": "zero_for_one",
+      "type": "bool"
+     },
+     {
+      "name": "exact_in",
+      "type": "bool"
+     },
+     {
+      "name": "amount_in",
+      "type": "u64"
+     },
+     {
+      "name": "amount_out",
+      "type": "u64"
+     },
+     {
+      "name": "refund_amount",
+      "type": "u64"
+     },
+     {
+      "name": "protocol_fee_amount",
+      "type": "u64"
+     },
+     {
+      "name": "fee_amount",
+      "type": "u64"
+     },
+     {
+      "name": "pool_balance_0",
+      "type": "u64"
+     },
+     {
+      "name": "pool_balance_1",
+      "type": "u64"
+     },
+     {
+      "name": "integrator",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SwapInvariantState",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "tick",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64"
+     },
+     {
+      "name": "liquidity",
+      "type": "u128"
+     },
+     {
+      "name": "fee_growth_global_0",
+      "type": "u128"
+     },
+     {
+      "name": "fee_growth_global_1",
+      "type": "u128"
+     },
+     {
+      "name": "balance_in",
+      "type": "u64"
+     },
+     {
+      "name": "balance_out",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SwapState",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "amount_specified_remaining",
+      "type": "u64"
+     },
+     {
+      "name": "amount_calculated",
+      "type": "u64"
+     },
+     {
+      "name": "sqrt_price",
+      "type": "u128"
+     },
+     {
+      "name": "tick",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64"
+     },
+     {
+      "name": "fee_growth_global",
+      "type": "u128"
+     },
+     {
+      "name": "protocol_fee",
+      "type": "u64"
+     },
+     {
+      "name": "total_fee",
+      "type": "u64"
+     },
+     {
+      "name": "liquidity",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "TickInfo",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "liquidity_gross",
+      "type": "u64"
+     },
+     {
+      "name": "liquidity_net",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i64::I64"
+     },
+     {
+      "name": "fee_growth_outside_0",
+      "type": "u128"
+     },
+     {
+      "name": "fee_growth_outside_1",
+      "type": "u128"
+     },
+     {
+      "name": "tick_cumulative_outside",
+      "type": "0x4dcae85fc5559071906cd5c76b7420fcbb4b0a92f00ab40ffc394aadbbff5ee9::i128::I128"
+     },
+     {
+      "name": "seconds_per_liquidity_outside",
+      "type": "u128"
+     },
+     {
+      "name": "seconds_outside",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

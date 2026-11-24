@@ -44,7 +44,7 @@ TypeScript types:
 - `@streamd/aptos` (`packages/aptos`) - Aptos: `AptosClient`, `FullnodeScanAdapter`,
   `IndexerAccountAdapter`, the network presets, `checkDescriptor`, `listEventHandles`, `ownedBy`,
   `resolveName`, `primaryName`, `sendOnce`, and the
-  `@streamd/aptos/framework` event catalog. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer dependency.
+  `@streamd/aptos/framework` and `@streamd/aptos/protocols` event catalogs. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer dependency.
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core` and
   `@streamd/aptos`.
 - `@streamd/codegen` (`packages/codegen`) - the generator behind
@@ -1602,6 +1602,46 @@ modules.
 
 The catalog reflects the framework ABIs it was generated from; legacy `EventHandle` events such
 as `0x1::coin::DepositEvent` are not `#[event]` structs and are not in it.
+
+### Protocol events
+
+`@streamd/aptos/protocols` does the same for the protocol modules that [`swaps`](#dex-swaps) and
+[`positions`](#lending-positions) decode, with a typed descriptor for every `#[event]` struct in
+them, plus each module's union:
+
+| Protocol | Modules |
+| --- | --- |
+| Hyperion | `0x8b4a...e05c::pool_v3` |
+| Thala CLAMM | `0x75b4...5920::pool` |
+| ThalaSwap v2 | `0x7730...b5::pool` |
+| Cellana | `0x4bf5...bd1::liquidity_pool` |
+| Tapp | `0x487e...8a::router` |
+| Aave | `0x39dd...6fb::{borrow_logic, emode_logic, events, liquidation_logic, supply_logic}` |
+| Echelon | `0xc6bc...21ba::lending` |
+
+Names follow codegen's rule over the whole catalog: the Move name where it is unique
+(`SwapEventV3`, `Swapped`, `Supply`, `LiquidateEvent`), `<Module>_<Struct>` where two modules
+share it (`PoolV3_SwapEvent`, `LiquidityPool_SwapEvent`), and `<Module>_<Struct>_<address>` where
+that still collides, as the two Thala `pool` modules do
+(`Pool_SwapEvent_0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920`). Unions are
+`<module>Events` (`poolV3Events`, `lendingEvents`), with `_<address>` for the two `pool` modules.
+Addresses are written as the ABIs write them.
+
+```ts
+import { SwapEventV3, lendingEvents } from "@streamd/aptos/protocols";
+
+client.on(SwapEventV3, (e) => console.log(e.data.pool_id, e.data.amount_in, e.data.amount_out));
+const echelon = await client.getEvents(lendingEvents, { fromVersion: -10_000n, limit: 20 });
+```
+
+The decoders read some types that are legacy `EventHandle` events, not `#[event]` structs, whose
+modules declare no event structs at all, so they have no descriptor here: LiquidSwap's
+`0x190d...1e12::liquidity_pool::SwapEvent` and `0x163d...ba6e::liquidity_pool::SwapEvent`,
+PancakeSwap's `0xc7ef...50fa::swap::SwapEvent`, ThalaSwap v1's `stable_pool::SwapEvent` and
+`weighted_pool::SwapEvent`, Wapal's `events::{ListingFilled,TokenOfferFilled,CollectionOfferFilled}Event`
+and Tradeport's `listings_v2::BuyEvent`, `listings::BuyEvent` and the `biddings_v2` and `biddings`
+`Accept{Token,Collection}BidEvent`s. So nothing from the [`sales`](#nft-sales) marketplaces is in
+the catalog.
 
 ### Typed view builders
 
@@ -6834,6 +6874,7 @@ bun run build              # each package into its own dist/
 bun run demo               # live demo against mainnet
 bun run test:integration   # @streamd/aptos and @streamd/sui integration tests, hit mainnet
 bun packages/cli/scripts/framework.ts  # regenerate @streamd/aptos/framework from its ABI snapshots
+bun packages/cli/scripts/protocols.ts  # regenerate @streamd/aptos/protocols (--refresh rereads mainnet)
 bun packages/cli/scripts/sui-framework.ts  # regenerate @streamd/sui/framework (--refresh rereads mainnet)
 ```
 
