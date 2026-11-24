@@ -129,6 +129,17 @@ describe("WebSocket streams", () => {
     expect(socket.messages).toEqual([{ end: "Polling failed (1/1): down" }]);
   });
 
+  it("counts open sockets under transport=\"websocket\" in metrics", async () => {
+    const { gateway, url } = serve();
+    const socket = connect(url);
+    await socket.opened;
+    await waitFor(() => socket.first !== undefined);
+    expect(gateway.metrics()).toContain('streamd_gateway_streams{transport="websocket"} 1\n');
+    expect(gateway.metrics()).toContain('streamd_gateway_streams{transport="sse"} 0\n');
+    socket.ws.close();
+    await waitFor(() => gateway.metrics().includes('streamd_gateway_streams{transport="websocket"} 0\n'));
+  });
+
   it("closes every socket on close()", async () => {
     const { gateway, url } = serve();
     const socket = connect(url);
