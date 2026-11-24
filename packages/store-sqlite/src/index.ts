@@ -25,3 +25,5 @@ export type {
 } from "./sink.js";
 export { SqlitePageStore } from "./pages.js";
 export type { SqlitePageStoreOptions } from "./pages.js";
+export { SqliteDedupStore } from "./dedup.js";
+export type { SqliteDedupStoreOptions } from "./dedup.js";
