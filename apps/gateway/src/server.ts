@@ -1,7 +1,8 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Server, WebSocketHandler } from "bun";
 import { DEFAULT_LIMIT, RequestLimiter, SharedFetches, StreamdError, StreamdNetworkError, isObject, pageJson, redactSecrets } from "@streamd/core";
-import type { EventAdapter, EventDescriptor, FetchOptions, StreamdClient } from "@streamd/core";
+import type { EventAdapter, EventDescriptor, FetchOptions, PrometheusSource, StreamdClient } from "@streamd/core";
+import { METRICS_CONTENT_TYPE, renderMetrics } from "./metrics.js";
 import { Topics } from "./topics.js";
 import type { Entry, Subscriber, Topic, TopicStatus } from "./topics.js";
 import { Webhooks } from "./webhooks.js";
@@ -49,6 +50,12 @@ export interface GatewayOptions {
    * each starting at the head `adapter` reports at registration.
    */
   webhooks?: Omit<WebhooksOptions, "client" | "headVersion">;
+  /**
+   * Adapter snapshots `GET /metrics` renders under `streamd_gateway_adapter`.
+   * The caller builds the adapters `client` and `adapter` read through, so it
+   * wraps them in `adapterMetrics` and labels each source.
+   */
+  metrics?: () => readonly PrometheusSource[];
   /** A topic's polling errors; the topic keeps polling unless its poller gave up. */
   onError?: (error: Error, descriptor: EventDescriptor) => void;
 }
@@ -78,11 +85,14 @@ export interface Gateway {
   /** `Bun.serve`'s `websocket` handler for `/v1/ws`. */
   websocket: WebSocketHandler<SocketData>;
   status(): GatewayStatus;
+  /** What `GET /metrics` answers: Prometheus text exposition format. */
+  metrics(): string;
   /** Stops every topic and closes every stream. */
   close(): void;
 }
 
 interface Connection {
+  transport: "sse" | "websocket";
   close(): void;
 }
 
@@ -290,7 +300,7 @@ export function createGateway(options: GatewayOptions): Gateway {
         close();
       },
     };
-    const connection: Connection = { close: () => close() };
+    const connection: Connection = { transport: "sse", close: () => close() };
     const ping = () => write(": keepalive\n\n");
     const body = new ReadableStream<Uint8Array>(
       {
@@ -363,7 +373,7 @@ export function createGateway(options: GatewayOptions): Gateway {
           ws.close(1011, "Topic ended");
         },
       };
-      const connection: Connection = { close: () => ws.close(1001, "Gateway closing") };
+      const connection: Connection = { transport: "websocket", close: () => ws.close(1001, "Gateway closing") };
       ws.data.close = () => {
         topics.leave(topic, subscriber);
         connections.delete(connection);
@@ -420,6 +430,9 @@ export function createGateway(options: GatewayOptions): Gateway {
     if (url.pathname === "/v1/events" && request.method === "GET") return events(request, url);
     if (url.pathname === "/v1/ws" && request.method === "GET") return upgrade(request, url, server);
     if (url.pathname === "/v1/status" && request.method === "GET") return json(status());
+    if (url.pathname === "/metrics" && request.method === "GET") {
+      return new Response(metrics(), { headers: { "content-type": METRICS_CONTENT_TYPE } });
+    }
     if (webhooks !== undefined && url.pathname.startsWith("/v1/webhooks")) return webhookRoute(webhooks, request, url);
     if (request.method === "POST") {
       if (url.pathname === "/v1/fetch") return readBody(request).then(({ descriptor, options }) => fetchPage(descriptor, options));
@@ -459,6 +472,16 @@ export function createGateway(options: GatewayOptions): Gateway {
     return { topics: topics.status(), connections: connections.size, webhooks: webhooks?.size ?? 0 };
   }
 
+  function metrics(): string {
+    const held = topics.status();
+    const streams = { sse: 0, websocket: 0 };
+    for (const connection of connections) streams[connection.transport]++;
+    const hooks = { active: 0, failed: 0 };
+    for (const hook of webhooks?.list() ?? []) hooks[hook.status]++;
+    const buffered = held.reduce((sum, topic) => sum + topic.buffered, 0);
+    return renderMetrics({ topics: held.length, streams, webhooks: hooks, buffered }, options.metrics?.() ?? []);
+  }
+
   return {
     async fetch(request, server) {
       const cors = corsHeaders(request);
@@ -489,6 +512,7 @@ export function createGateway(options: GatewayOptions): Gateway {
     },
     websocket,
     status,
+    metrics,
     close() {
       clearInterval(ticker);
       webhooks?.close();

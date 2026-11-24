@@ -6278,6 +6278,38 @@ CORS preflight `--allow-origin` governs. With no token, the gateway answers only
 `GET /v1/status` lists each topic (descriptor, clients, last id, events held), the open
 stream count and the number of registered webhooks.
 
+**Metrics.** `GET /metrics` answers Prometheus text exposition
+(`text/plain; version=0.0.4; charset=utf-8`) under the same rule as `/v1/status`: the token
+when one is set, as `Authorization: Bearer` (Prometheus's `authorization` scrape setting) or
+`?access_token=`, and otherwise only a loopback `Host`. It sits at `/metrics` rather than under
+`/v1`, since that is Prometheus's default path and the format carries its own version.
+
+```sh
+curl -H "authorization: Bearer $STREAMD_GATEWAY_TOKEN" http://127.0.0.1:8787/metrics
+# # HELP streamd_gateway_topics Descriptors followed.
+# # TYPE streamd_gateway_topics gauge
+# streamd_gateway_topics 1
+# streamd_gateway_streams{transport="sse"} 3
+# streamd_gateway_streams{transport="websocket"} 0
+# streamd_gateway_webhooks{status="active"} 0
+# streamd_gateway_webhooks{status="failed"} 0
+# streamd_gateway_buffered_events 412
+# streamd_gateway_adapter_requests_total{source="node",node="0",method="fetchEvents"} 97
+# ...
+```
+
+| Family | |
+| --- | --- |
+| `streamd_gateway_topics` | descriptors followed |
+| `streamd_gateway_streams{transport}` | open streams, `sse` and `websocket` |
+| `streamd_gateway_webhooks{status}` | registered webhooks, `active` and `failed`; 0 without `--webhooks` |
+| `streamd_gateway_buffered_events` | events held for resuming, across all topics |
+| `streamd_gateway_adapter_*` | `toPrometheus`'s families for each node (`source="node",node="<i>"`, by `--node-url` position) and the archive (`source="archive"`), topic polling and history reads alike, the same calls `--stats` counts |
+
+Nothing is labelled by descriptor, since descriptors are whatever clients ask for and a scraper
+need not see them. With `createGateway`, pass `metrics: () => [{ snapshot, labels }]` from the
+`adapterMetrics` wrapping the adapters you built, and `gateway.metrics()` returns the same text.
+
 **Webhooks.** With `--webhooks <file>`, clients register webhooks through the gateway's API, and
 the gateway POSTs every new event on each one's descriptor to its URL, as `streamd forward`
 does: a JSON array of events per POST, signed in `x-streamd-signature`, retried with backoff

@@ -97,12 +97,12 @@ function parse(argv: string[]): ParsedCommand | undefined {
 }
 
 /** The endpoint's chain, a client over it, and a signal that the first SIGINT or a SIGTERM aborts. */
-async function setup(endpoint: Endpoint, cache?: PageCache) {
+async function setup(endpoint: Endpoint, cache?: PageCache, counts = stats) {
   const controller = new AbortController();
   // The first SIGINT stops cleanly; a second one means stop now.
   process.on("SIGINT", () => (controller.signal.aborted ? process.exit(130) : controller.abort()));
   process.once("SIGTERM", () => controller.abort());
-  const chain = await chainFor(endpoint, cache, stats);
+  const chain = await chainFor(endpoint, cache, counts);
   return { chain, client: chain.client(), controller };
 }
 
@@ -148,11 +148,14 @@ async function alert(options: AlertOptions): Promise<number> {
 }
 
 async function serve(options: ServeOptions): Promise<number> {
-  const { chain, client, controller } = await setup(options);
+  // Always counted, for /metrics; the --stats counts when given, so both report the same calls.
+  const counts = stats ?? new RequestStats();
+  const { chain, client, controller } = await setup(options, undefined, counts);
   try {
     return await runServe(options, {
       client,
       adapter: chain.adapter(),
+      metrics: () => counts.sources(),
       error: (message) => process.stderr.write(`${message}\n`),
       signal: controller.signal,
     });
