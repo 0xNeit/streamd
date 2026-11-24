@@ -632,6 +632,61 @@ describe("parseCommand store", () => {
   });
 });
 
+describe("parseCommand store maintenance", () => {
+  const url = "postgres://me:hunter2@db.example/events";
+
+  it("parses each subcommand over a file or a Postgres URL", () => {
+    expect(parseCommand(["store", "stats", "--db", "e.db"])).toEqual({ command: "store-admin", options: { action: "stats", db: "e.db" } });
+    expect(parseCommand(["store", "stats", "--postgres", url, "--by-type"])).toEqual({
+      command: "store-admin",
+      options: { action: "stats", postgres: url, byType: true },
+    });
+    expect(parseCommand(["store", "prune", "--db", "e.db", "--before", "500"])).toEqual({
+      command: "store-admin",
+      options: { action: "prune", db: "e.db", before: 500n },
+    });
+    expect(parseCommand(["store", "prune", "--db", "e.db", "--before", "0", "--yes"])).toEqual({
+      command: "store-admin",
+      options: { action: "prune", db: "e.db", before: 0n, yes: true },
+    });
+    expect(parseCommand(["store", "cursors", "--db", "e.db"])).toEqual({ command: "store-admin", options: { action: "cursors", db: "e.db" } });
+    expect(parseCommand(["store", "cursors", "--db", "e.db", "--delete", "swaps"])).toEqual({
+      command: "store-admin",
+      options: { action: "cursors", db: "e.db", delete: "swaps" },
+    });
+    expect(parseCommand(["store", "stats", "--help"])).toEqual({ command: "help" });
+  });
+
+  it("leaves a store run with the subcommand words elsewhere alone", () => {
+    expect(parseCommand(["store", "--db", "e.db", TYPE])).toMatchObject({ command: "store" });
+    expect(() => parseCommand(["store", "--db", "e.db", "stats"])).toThrow(UsageError);
+  });
+
+  it.each([
+    [["store", "stats"], /store needs --db <file> or --postgres <url>/],
+    [["store", "cursors", "--db", "e.db", "--postgres", url], /--db and --postgres cannot be used together/],
+    [["store", "stats", "--db", ""], /--db must not be empty/],
+    [["store", "stats", "--postgres", "mysql://me:hunter2@db/events"], /--postgres must be a postgres:\/\/ or postgresql:\/\/ URL/],
+    [["store", "prune", "--db", "e.db"], /store prune needs --before <version>/],
+    [["store", "prune", "--db", "e.db", "--before=-1"], /--before must be a non-negative integer/],
+    [["store", "prune", "--db", "e.db", "--before", "1.5"], /--before must be a non-negative integer/],
+    [["store", "stats", "--db", "e.db", "--yes"], /--yes is for store prune, not store stats/],
+    [["store", "cursors", "--db", "e.db", "--by-type"], /--by-type is for store stats, not store cursors/],
+    [["store", "prune", "--db", "e.db", "--before", "1", "--delete", "x"], /--delete is for store cursors, not store prune/],
+    [["store", "cursors", "--db", "e.db", "--delete", ""], /--delete must not be empty/],
+    [["store", "stats", "--db", "e.db", "--network", "testnet"], /network/],
+    [["store", "stats", "--db", "e.db", TYPE], UsageError],
+  ] as [string[], RegExp | typeof UsageError][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+    try {
+      parseCommand(argv);
+    } catch (err) {
+      expect(err).toBeInstanceOf(UsageError);
+      expect(String(err)).not.toContain("hunter2");
+    }
+  });
+});
+
 describe("parseCommand check", () => {
   it("takes event types, a network and a node URL", () => {
     expect(parseCommand(["check", "--network", "testnet", "--node-url", "https://n.example/v1", TYPE])).toEqual({
