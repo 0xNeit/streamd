@@ -1,22 +1,15 @@
 import { sum } from "@streamd/core";
-import type { EventDescriptor } from "@streamd/core";
+import type { AlertAnomalyRule, AlertThreshold, EventDescriptor } from "@streamd/core";
 import { K_PATTERN } from "./anomaly.js";
 import { descriptor } from "./args.js";
 import { parseDecode, parseFilter } from "./filter.js";
 import type { CliFilter } from "./filter.js";
 
 /** A band threshold over the rule's previous closed windows; `k` is a normalised decimal string. */
-export interface Anomaly {
-  metric: "count" | "sum";
-  /** The summed field path, for metric `sum` only. */
-  sum?: string;
-  k: string;
-  baseline: number;
-  minBaseline: number;
-  direction: "above" | "below" | "both";
-}
+export type Anomaly = AlertAnomalyRule;
 
-export type Threshold = { count: bigint } | { sum: string; gte: bigint } | { anomaly: Anomaly };
+/** The alert payload echoes the threshold, so the rule's type is the payload's. */
+export type Threshold = AlertThreshold;
 
 /** A record source in place of a descriptor; names and values are checked by the client. */
 export type AlertSource =

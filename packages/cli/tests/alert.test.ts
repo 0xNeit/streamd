@@ -4,11 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Aptos, AptosConfig, Network } from "@aptos-labs/ts-sdk";
 import { AptosClient } from "@streamd/aptos";
-import { MemoryAdapter, StreamdClient, parseEvent, verifyWebhook } from "@streamd/core";
+import { MemoryAdapter, StreamdClient, parseAlert, parseEvent, serializeAlert, verifyWebhook } from "@streamd/core";
 import type { EventAdapter, StreamdEvent } from "@streamd/core";
 import { advance, alertBody, runAlert } from "../src/alert.js";
 import type { AlertIO } from "../src/alert.js";
 import { parseRules } from "../src/alert-rules.js";
+import { band } from "../src/anomaly.js";
 import type { AlertOptions } from "../src/args.js";
 
 const TYPE = "0x1::transaction_fee::FeeStatement";
@@ -493,6 +494,32 @@ describe("advance with an anomaly rule", () => {
     const { window, fires } = advance(entryOf({}), { ...open([4n, 4n, 5n], 1n), start: T0 + MINUTE }, ev(1, T0, "1"));
     expect(window).toEqual({ start: T0 + MINUTE, value: 2n, fired: false, history: [4n, 4n, 5n] });
     expect(fires).toEqual([]);
+  });
+});
+
+describe("alertBody", () => {
+  const rules = parseRules(
+    JSON.stringify({
+      rules: [
+        { name: "count", descriptor: { eventType: TYPE }, window: "1m", threshold: { count: 2 } },
+        { name: "sum", descriptor: { eventType: TYPE }, window: "1m", threshold: { sum: "amount", gte: "-3" } },
+        { name: "band", descriptor: { eventType: TYPE }, window: "1m", threshold: { anomaly: { metric: "sum", sum: "amount", k: 2.5, baseline: 5, minBaseline: 3 } } },
+        { name: "moves", source: { kind: "transfers", asset: "0xa" }, window: "1h", threshold: { count: 1 } },
+      ],
+    }),
+    "rules.json",
+  );
+
+  it("writes a body parseAlert reads back exactly, for every kind of rule", () => {
+    const window = { start: T0, value: -2n, fired: true };
+    const b = band([1n, 2n, 3n, 9n], "2.5");
+    const fires = [{ window }, { window }, { window, anomaly: { side: "below" as const, band: b, baselineWindows: 4 } }, { window }];
+    rules.forEach((rule, i) => {
+      const text = alertBody(rule, fires[i]!, ev(7, T0 + 1n, "-2"));
+      const alert = parseAlert(text);
+      expect(serializeAlert(alert)).toBe(text);
+      expect(alert).toMatchObject({ id: `${rule.name}:${T0}`, windowEnd: T0 + rule.window, threshold: rule.threshold, value: -2n });
+    });
   });
 });
 
