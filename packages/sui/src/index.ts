@@ -1,5 +1,6 @@
 export { SuiAdapter } from "./adapter.js";
-export type { SuiAdapterOptions, SuiLedgerClient, SuiTransactionSimulation, TransferPage } from "./adapter.js";
+export type { SuiAdapterOptions, SuiGasUsage, SuiLedgerClient, SuiTransactionDetails, SuiTransactionSimulation, TransferPage } from "./adapter.js";
+export type { SuiAccountBalanceChange, SuiExplainOptions, SuiTransactionExplanation } from "./explain.js";
 export type { SuiTransferFilter, SuiTransferListenerOptions, SuiTransferOptions } from "./transfers.js";
 export { formatAmount } from "@streamd/core";
 export type { BalanceChange, Balances, BalancesOptions, Transfer } from "@streamd/core";
