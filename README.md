@@ -4282,6 +4282,10 @@ checkpoint)` writes one batch in a savepoint. `prune` and `stats` leave these ta
 upgraded module keeps its event structs' fields, so a table stays valid; an enum's new variant
 lands in `data`.
 
+`SqliteDedupStore` keeps the event ids a webhook receiver has handled, for
+`@streamd/receiver`'s `createReceiver`; see
+[Forward events to a webhook](#forward-events-to-a-webhook).
+
 ## Store events in Postgres
 
 `@streamd/store-postgres` does what `@streamd/store-sqlite` does, over a Postgres client you
@@ -4420,6 +4424,9 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   so give unrelated services their own database or schema. Stored pages are trusted as they
   are: a final page is served without asking the node again, so grant write access to
   `streamd_pages` only to the processes doing the caching.
+- **Receiver dedup.** `PostgresDedupStore` is the Postgres counterpart of `SqliteDedupStore`,
+  a `DedupStore` for `@streamd/receiver` that every receiver over the same database shares; see
+  [Forward events to a webhook](#forward-events-to-a-webhook).
 
 ## React hooks
 
@@ -5054,28 +5061,37 @@ or `500`; the response body never says.
 
 The default store, `MemoryDedupStore`, keeps the last `maxEntries` ids (default 100,000) in
 memory and forgets them on restart. Behind more than one instance, or across restarts, pass a
-`store`: any object with `seen(ids)`, answering a boolean per id in order, and `add(ids)`,
-either of which may be async. Ids are `version:eventIndex`, which repeat across networks and
-chains, so when forwarders for more than one network share a receiver or store, give each its
-own receiver with a `namespace` (`"aptos:mainnet"`), which prefixes every id it stores. Over
-`bun:sqlite`:
+durable `store`. `SqliteDedupStore` from `@streamd/store-sqlite` and `PostgresDedupStore` from
+`@streamd/store-postgres` keep the ids in a `streamd_dedup` table, over the database or client
+you supply:
 
 ```ts
 import { Database } from "bun:sqlite";
-import type { DedupStore } from "@streamd/receiver";
+import { SqliteDedupStore } from "@streamd/store-sqlite";
 
-const db = new Database("seen.db");
-db.run("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY)");
-const has = db.query("SELECT 1 FROM seen WHERE id = ?");
-const insert = db.query("INSERT OR IGNORE INTO seen (id) VALUES (?)");
-
-const store: DedupStore = {
-  seen: (ids) => ids.map((id) => has.get(id) !== null),
-  add: db.transaction((ids: readonly string[]) => {
-    for (const id of ids) insert.run(id);
-  }),
-};
+const receive = createReceiver({
+  secret: process.env.STREAMD_WEBHOOK_SECRET!,
+  namespace: "aptos:mainnet",
+  store: new SqliteDedupStore(new Database("seen.db"), { maxEntries: 1_000_000 }),
+  async onEvents(events) {
+    for (const event of events) await save(event);
+  },
+});
 ```
+
+Both remember the last `maxEntries` ids (default 100,000) across the whole table, every receiver
+on it together, forgetting the oldest by when each was first added; re-adding an id held already
+changes nothing. An add and its eviction are one write (a savepoint on SQLite, one statement on
+Postgres), and ids are bound as parameters, never read as SQL. Two Postgres processes adding at
+once may leave the table a row or two over the bound until the next add, never under it, and an
+id holding a NUL character is refused there (answered `500`), since `text` cannot store one. Any
+other object with `seen(ids)`, answering a boolean per id in order, and `add(ids)`, either of
+which may be async, works too.
+
+Ids are `version:eventIndex`, which repeat across networks and chains, so when forwarders for
+more than one network share a receiver or store, give each its own receiver with a `namespace`
+(`"aptos:mainnet"`), which prefixes every id it stores. That prefix is also what keeps receivers
+sharing one `streamd_dedup` table apart, so the stores take no namespace of their own.
 
 The `503` guard covers one process; two instances sharing a store can both handle a resent batch
 that arrives while the first is still running. A handler slower than `--timeout` spends
