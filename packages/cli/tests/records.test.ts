@@ -2,11 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Activity, Sale, Swap } from "@streamd/aptos";
+import type { Activity, PackageUpgrade, Sale, Swap } from "@streamd/aptos";
 import { MemoryAdapter, StreamdClient, StreamdError } from "@streamd/core";
 import type { EventAdapter, EventDescriptor, StreamdEvent } from "@streamd/core";
-import type { ActivityCommandOptions, SalesCommandOptions, SwapsCommandOptions } from "../src/args.js";
-import { runActivity, runSales, runSwaps } from "../src/records.js";
+import type { ActivityCommandOptions, SalesCommandOptions, SwapsCommandOptions, UpgradesCommandOptions } from "../src/args.js";
+import { breakingChanges, runActivity, runSales, runSwaps, runUpgrades } from "../src/records.js";
 import type { RecordsIO } from "../src/records.js";
 
 const SWAP_TYPE = "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c::pool_v3::SwapEventV3";
@@ -227,5 +227,102 @@ describe("runActivity", () => {
     };
     expect(await h.run({ fromVersion: 1n, toVersion: "head" })).toBe(1);
     expect(h.errors).toEqual(["streamd: activity needs an address or Aptos name"]);
+  });
+});
+
+const PUBLISH = "0x1::code::PublishPackage";
+const fn = (name: string, params: string[] = []) => ({ name, visibility: "public", typeParameters: [], params, returns: [] });
+const none = () => ({ added: [], changed: [], removed: [] });
+
+function upgrade(version: number, change: "added" | "removed" | "changed" | "event" | "unsafe"): StreamdEvent<PackageUpgrade> {
+  const data: PackageUpgrade = { address: "0x1", isUpgrade: true, events: none(), entryFunctions: none(), views: none() };
+  if (change === "added") data.entryFunctions.added.push(fn("0x1::m::f"));
+  if (change === "removed") data.entryFunctions.removed.push(fn("0x1::m::gone"));
+  if (change === "changed") data.views.changed.push({ before: fn("0x1::m::v"), after: fn("0x1::m::v", ["u64"]) });
+  if (change === "event") data.events.removed.push({ name: "0x1::m::E", abilities: [], typeParameters: [], fields: [] });
+  if (change === "unsafe") data.entryFunctions.removed.push(fn("0x1::m::\u001b[31m"));
+  return { type: PUBLISH, data, version: BigInt(version), sequenceNumber: 0n, eventIndex: 0 };
+}
+
+/** A client whose `upgrades` and `getUpgrades` read plain events, recording the address each call was given. */
+function upgrades(adapter: EventAdapter) {
+  const descriptor = { kind: "module", eventType: PUBLISH } as EventDescriptor;
+  const inner = new StreamdClient({ adapter });
+  const seen: { address: string; options: Record<string, unknown> }[] = [];
+  const lines: string[] = [];
+  const errors: string[] = [];
+  const client = {
+    upgrades: (address: string, callback: never, options: Record<string, unknown> = {}) => {
+      seen.push({ address, options });
+      return inner.on(descriptor, callback, options);
+    },
+    getUpgrades: async (address: string, filter: Record<string, unknown> = {}) => {
+      seen.push({ address, options: filter });
+      return inner.getEvents(descriptor, filter);
+    },
+  };
+  const io: RecordsIO<never> = { client: client as never, write: (l) => void lines.push(l), error: (m) => errors.push(m), signal: new AbortController().signal };
+  const run = async (options: Partial<UpgradesCommandOptions>) => {
+    const code = await runUpgrades({ network: "mainnet", address: "0x1", ...options }, io);
+    inner.destroy();
+    return code;
+  };
+  const versions = () => lines.map((l) => (JSON.parse(l) as { version: string }).version);
+  return { run, seen, lines, errors, versions };
+}
+
+describe("breakingChanges", () => {
+  it("is undefined for a publish that only adds", () => {
+    expect(breakingChanges(upgrade(1, "added"))).toBeUndefined();
+  });
+
+  it("names removed and changed signatures across events, entry functions and views", () => {
+    const record = upgrade(7, "removed");
+    record.data.views.changed.push({ before: fn("0x1::m::v"), after: fn("0x1::m::v", ["u64"]) });
+    record.data.events.removed.push({ name: "0x1::m::E", abilities: [], typeParameters: [], fields: [] });
+    expect(breakingChanges(record)).toBe(
+      'breaking upgrade at version 7: {"address":"0x1","removed":["0x1::m::E","0x1::m::gone"],"changed":["0x1::m::v"]}',
+    );
+  });
+
+  it("JSON-encodes on-chain names, so no control character reaches stderr", () => {
+    const line = breakingChanges(upgrade(1, "unsafe"))!;
+    expect(line).toContain("\\u001b[31m");
+    expect(/[\u0000-\u001f]/.test(line)).toBe(false);
+  });
+});
+
+describe("runUpgrades", () => {
+  it("reads an additive range through getUpgrades for the address and exits 0", async () => {
+    const h = upgrades(new MemoryAdapter([upgrade(1, "added"), upgrade(2, "added")]));
+    expect(await h.run({ address: "alice.apt", fromVersion: 1n, toVersion: "head" })).toBe(0);
+    expect(h.versions()).toEqual(["1", "2"]);
+    expect(JSON.parse(h.lines[0]!).data.entryFunctions.added[0].name).toBe("0x1::m::f");
+    expect(h.seen[0]!.address).toBe("alice.apt");
+    expect(h.errors).toEqual([]);
+  });
+
+  it("prints the whole range, then exits 1 when a printed publish was breaking", async () => {
+    const h = upgrades(new MemoryAdapter([upgrade(1, "added"), upgrade(2, "changed"), upgrade(3, "event"), upgrade(4, "added")]));
+    expect(await h.run({ fromVersion: 1n, toVersion: 4n })).toBe(1);
+    expect(h.versions()).toEqual(["1", "2", "3", "4"]);
+    expect(h.errors).toEqual([
+      'streamd: breaking upgrade at version 2: {"address":"0x1","removed":[],"changed":["0x1::m::v"]}',
+      'streamd: breaking upgrade at version 3: {"address":"0x1","removed":["0x1::m::E"],"changed":[]}',
+    ]);
+  });
+
+  it("counts only printed publishes against a range's limit", async () => {
+    const h = upgrades(new MemoryAdapter([upgrade(1, "added"), upgrade(2, "removed")]));
+    expect(await h.run({ fromVersion: 1n, toVersion: 2n, limit: 1 })).toBe(0);
+    expect(h.versions()).toEqual(["1"]);
+  });
+
+  it("following, prints a breaking publish and exits 1 at once", async () => {
+    const h = upgrades(new MemoryAdapter([upgrade(1, "added"), upgrade(2, "removed"), upgrade(3, "added")]));
+    expect(await h.run({ address: "0xabc", fromVersion: 1n, pollInterval: 1 })).toBe(1);
+    expect(h.versions()).toEqual(["1", "2"]);
+    expect(h.seen[0]!.address).toBe("0xabc");
+    expect(h.errors).toEqual(['streamd: breaking upgrade at version 2: {"address":"0x1","removed":["0x1::m::gone"],"changed":[]}']);
   });
 });

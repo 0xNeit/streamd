@@ -169,6 +169,11 @@ export interface SalesCommandOptions extends RecordWalkOptions {
   token?: string;
 }
 
+/** Aptos only; the address or name is validated by the client. */
+export interface UpgradesCommandOptions extends RecordWalkOptions {
+  address: string;
+}
+
 /** Aptos only, read over the Indexer route; the address or name is validated by the client. */
 export interface ActivityCommandOptions extends RecordWalkOptions {
   address: string;
