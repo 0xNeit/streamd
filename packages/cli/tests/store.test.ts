@@ -1,11 +1,11 @@
 import { PGlite } from "@electric-sql/pglite";
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, it } from "bun:test";
-import { MemoryAdapter, StreamdClient, StreamdNetworkError } from "@streamd/core";
-import type { EventAdapter, StreamdEvent } from "@streamd/core";
-import type { StoreOptions } from "../src/args.js";
+import { MemoryAdapter, StreamdClient, StreamdError, StreamdNetworkError } from "@streamd/core";
+import type { EventAdapter, EventCallback, StreamdEvent, SubscriptionOptions } from "@streamd/core";
+import type { StoreOptions, StoreRecordsOptions } from "../src/args.js";
 import { redactUrl } from "../src/format.js";
-import { openDatabase, runStore, type OpenDatabase, type PostgresConnection } from "../src/store.js";
+import { openDatabase, runStore, runStoreRecords, type OpenDatabase, type PostgresConnection } from "../src/store.js";
 
 const TYPE = "0x1::coin::DepositEvent";
 const OTHER = "0x1::coin::WithdrawEvent";
@@ -390,6 +390,128 @@ describe("runStore --postgres", () => {
     expect(errors.join()).toContain("disk full, ***");
     expect(connection.closed).toBe(1);
     client.destroy();
+  });
+});
+
+const SWAP_TYPE = "0x1::pool_v3::SwapEventV3";
+
+function swapRecord(version: number): StreamdEvent {
+  return {
+    type: SWAP_TYPE,
+    data: { protocol: "hyperion", poolId: "0xp", assetIn: "0xa", amountIn: BigInt(version), assetOut: "0xb", amountOut: 1n },
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 1,
+  };
+}
+
+function saleRecord(version: number): StreamdEvent {
+  return {
+    type: SWAP_TYPE,
+    data: { marketplace: "wapal", kind: "listing", token: "0xt", seller: "0xs", buyer: "0xb", price: BigInt(version) },
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 2,
+  };
+}
+
+function transferRecord(version: number): StreamdEvent {
+  return { type: SWAP_TYPE, data: { asset: "0xa", amount: BigInt(version) }, version: BigInt(version), sequenceNumber: 0n, eventIndex: 3 };
+}
+
+/** A StreamdClient with `kind`'s record method over a MemoryAdapter of records, keeping the options each call got. */
+function recordClient(kind: "transfers" | "swaps" | "sales", records: StreamdEvent[], refuse?: string) {
+  const client = new StreamdClient({ adapter: new MemoryAdapter(records) });
+  const calls: Record<string, unknown>[] = [];
+  const method = (callback: EventCallback, options: SubscriptionOptions & Record<string, unknown> = {}) => {
+    calls.push(options);
+    if (refuse !== undefined) throw new StreamdError(refuse);
+    const { asset: _a, account: _c, protocol: _p, marketplace: _m, token: _t, ...rest } = options;
+    return client.on({ kind: "module", eventType: SWAP_TYPE }, callback, rest);
+  };
+  return { client: Object.assign(client, { [kind]: method }), calls };
+}
+
+const recordOptions = (records: StoreRecordsOptions["records"], extra: Partial<StoreRecordsOptions> = {}): StoreRecordsOptions => ({
+  network: "mainnet",
+  pollInterval: 1,
+  fromVersion: 0n,
+  db: "e.db",
+  records,
+  ...extra,
+});
+
+async function runRecords(client: StreamdClient, opts: StoreRecordsOptions, db: OpenDatabase | undefined, connection: PostgresConnection | undefined, done: () => Promise<boolean>) {
+  if (db !== undefined) db.close = () => {};
+  const errors: string[] = [];
+  const controller = new AbortController();
+  const running = runStoreRecords(opts, {
+    client,
+    open: db === undefined ? refuse : () => db,
+    connect: connection === undefined ? refuse : () => connection,
+    error: (m) => errors.push(m),
+    signal: controller.signal,
+  });
+  for (let i = 0; i < 300; i++) {
+    await new Promise((r) => setTimeout(r, 5));
+    if (await done().catch(() => false)) break;
+  }
+  await new Promise((r) => setTimeout(r, 20));
+  controller.abort();
+  const code = await running;
+  client.destroy();
+  return { code, errors };
+}
+
+describe("runStoreRecords", () => {
+  const rowsOf = (db: Database, table: string) =>
+    (db.query(`SELECT version FROM ${table} ORDER BY version`).all() as { version: string }[]).map((r) => Number(r.version));
+
+  it("stores swaps under a cursor named by network and narrowing, passing the narrowing to the client", async () => {
+    const db = new Database(":memory:");
+    const { client, calls } = recordClient("swaps", [swapRecord(1), swapRecord(2)]);
+    const opts = recordOptions({ kind: "swaps", protocol: ["hyperion"], asset: "0xa" });
+    const { code, errors } = await runRecords(client, opts, db, undefined, async () => rowsOf(db, "streamd_swaps").length === 2);
+    expect({ code, errors }).toEqual({ code: 0, errors: [] });
+    expect(rowsOf(db, "streamd_swaps")).toEqual([1, 2]);
+    expect(calls[0]).toMatchObject({ protocol: ["hyperion"], asset: "0xa", fromVersion: 0n, pollInterval: 1 });
+    expect(cursors(db)).toEqual([`swaps:mainnet:${JSON.stringify({ protocol: ["hyperion"], asset: "0xa" })}`]);
+  });
+
+  it("stores sales and transfers, named by --name or the network alone, with a sui prefix on Sui", async () => {
+    const db = new Database(":memory:");
+    const sales = recordClient("sales", [saleRecord(3)]);
+    await runRecords(sales.client, recordOptions({ kind: "sales" }, { name: "nft" }), db, undefined, async () => rowsOf(db, "streamd_sales").length === 1);
+    const transfers = recordClient("transfers", [transferRecord(4)]);
+    await runRecords(transfers.client, recordOptions({ kind: "transfers" }, { chain: "sui" }), db, undefined, async () => rowsOf(db, "streamd_transfers").length === 1);
+    expect(rowsOf(db, "streamd_sales")).toEqual([3]);
+    expect(rowsOf(db, "streamd_transfers")).toEqual([4]);
+    expect(cursors(db)).toEqual(["sales:nft", "transfers:sui:mainnet"]);
+  });
+
+  it("stores swaps into Postgres", async () => {
+    const { pg, connection } = pglite();
+    const { client } = recordClient("swaps", [swapRecord(1), swapRecord(2)]);
+    const count = async () => (await pg.query<{ n: number }>("SELECT count(*)::int AS n FROM streamd_swaps")).rows[0]!.n;
+    const { code, errors } = await runRecords(client, recordOptions({ kind: "swaps" }, { db: undefined, postgres: URL_WITH_PASSWORD }), undefined, connection, async () => (await count()) === 2);
+    expect({ code, errors }).toEqual({ code: 0, errors: [] });
+    expect(await count()).toBe(2);
+    expect(await pgCursors(pg)).toEqual(["swaps:mainnet"]);
+  });
+
+  it("exits 1 with the client's message when it refuses the narrowing, not blaming the database", async () => {
+    const db = new Database(":memory:");
+    const { client } = recordClient("swaps", [], "Unknown swap protocol: nope");
+    const { code, errors } = await runRecords(client, recordOptions({ kind: "swaps", protocol: ["nope"] }), db, undefined, async () => false);
+    expect(code).toBe(1);
+    expect(errors).toEqual(["streamd: Unknown swap protocol: nope"]);
+  });
+
+  it("exits 1 when the client has no such method", async () => {
+    const client = new StreamdClient({ adapter: new MemoryAdapter([]) });
+    const { code, errors } = await runRecords(client, recordOptions({ kind: "sales" }), new Database(":memory:"), undefined, async () => true);
+    expect(code).toBe(1);
+    expect(errors).toEqual(["streamd: this chain's client has no sales"]);
   });
 });
 

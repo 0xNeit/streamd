@@ -101,6 +101,25 @@ export interface StoreOptions extends SourceOptions {
   name?: string;
 }
 
+/** What `store --records` follows, with the narrowing its client command takes; the values are the client's to check. */
+export type StoreRecords =
+  | { kind: "transfers"; asset?: string; account?: string }
+  | { kind: "swaps"; protocol?: string[]; asset?: string }
+  | { kind: "sales"; marketplace?: string[]; token?: string };
+
+/** `store --records`: a chain client's records into `streamd_transfers`, `streamd_swaps` or `streamd_sales`. */
+export interface StoreRecordsOptions extends Endpoint {
+  records: StoreRecords;
+  /** SQLite file to write; the parser sets exactly one of this and `postgres`. */
+  db?: string;
+  /** Postgres URL to write to; may carry a password, so never printed as given. */
+  postgres?: string;
+  /** Name its cursor is saved under; derived from the network and narrowing when unset. */
+  name?: string;
+  fromVersion?: bigint;
+  pollInterval?: number;
+}
+
 /** `store stats`, `store prune` or `store cursors`: upkeep of a database `store` writes. */
 export interface StoreAdminOptions {
   action: "stats" | "prune" | "cursors";
@@ -394,6 +413,7 @@ export type ParsedCommand =
   | { command: "forward"; options: ForwardOptions }
   | { command: "alert"; options: AlertOptions }
   | { command: "store"; options: StoreOptions }
+  | { command: "store-records"; options: StoreRecordsOptions }
   | { command: "store-admin"; options: StoreAdminOptions }
   | { command: "check"; options: CheckOptions }
   | { command: "record"; options: RecordOptions }
@@ -503,7 +523,22 @@ const STORE_OPTIONS = {
   db: { type: "string" },
   postgres: { type: "string" },
   name: { type: "string" },
+  records: { type: "string" },
+  asset: { type: "string" },
+  protocol: { type: "string", multiple: true },
+  marketplace: { type: "string", multiple: true },
+  token: { type: "string" },
 } as const;
+
+/** The narrowing each `--records` kind takes; `--account` is also a descriptor flag without `--records`. */
+const RECORD_FLAGS = {
+  transfers: ["asset", "account"],
+  swaps: ["protocol", "asset"],
+  sales: ["marketplace", "token"],
+} as const;
+const RECORD_ONLY_FLAGS = ["asset", "protocol", "marketplace", "token"] as const;
+/** Flags that shape an event descriptor or test events, which records have neither of. */
+const EVENT_ONLY_FLAGS = ["handle", "field", "resource", "creation-number", "sender", "function", "where", "decode"] as const;
 
 const STORE_ADMIN_OPTIONS = {
   db: { type: "string" },
@@ -775,6 +810,7 @@ export const USAGE = `Usage:
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
   streamd store --postgres <url> [options] <eventType>...
+  streamd store (--db <file> | --postgres <url>) --records <transfers|swaps|sales> [options]
   streamd store stats (--db <file> | --postgres <url>) [--by-type]
   streamd store prune (--db <file> | --postgres <url>) --before <version> [--yes]
   streamd store cursors (--db <file> | --postgres <url>) [--delete <name>]
@@ -987,8 +1023,10 @@ Options:
                          under Bun, pg under Node (npm i pg); the URL is never printed, and
                          PGPASSWORD keeps the password out of it and out of ps
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
+  --records <kind>       store: follow transfers, swaps or sales records instead of events, with that
+                         command's narrowing flags; swaps and sales are Aptos only
   --by-type              store stats: also count events per type
-  --before <version>     store prune: delete events and transfers below this version
+  --before <version>     store prune: delete events and records below this version
   --yes                  store prune: delete for real (default: report what it would do)
   --delete <name>        store cursors: delete the cursor saved under this name, exit 1 if none
   --to-version <n>       record: end of the range (required); query: default the head;
@@ -1572,15 +1610,58 @@ function parseStoreAdmin(action: StoreAdminOptions["action"], args: string[]): P
   return { command: "store-admin", options };
 }
 
+type StoreFlags = ReturnType<typeof parseStoreFlags>["values"];
+
+function parseStoreFlags(args: string[]) {
+  return wrap(() => parseArgs({ args, options: STORE_OPTIONS, allowPositionals: true, strict: true }));
+}
+
+function parseStoreRecords(values: StoreFlags, positionals: string[]): ParsedCommand {
+  const kind = values.records!;
+  if (!Object.hasOwn(RECORD_FLAGS, kind)) throw new UsageError(`--records must be transfers, swaps or sales: ${kind}`);
+  const allowed: readonly string[] = RECORD_FLAGS[kind as StoreRecords["kind"]];
+  const sui = chain(values.chain);
+  if (sui && kind !== "transfers") {
+    throw new UsageError(`--records ${kind} is not available with --chain sui: SuiClient has no ${kind} yet`);
+  }
+  if (positionals.length > 0) throw new UsageError(`--records takes no event types: ${positionals[0]}`);
+  for (const flag of EVENT_ONLY_FLAGS) {
+    if (values[flag] !== undefined) throw new UsageError(`--${flag} is for events, so it cannot be combined with --records`);
+  }
+  for (const flag of [...RECORD_ONLY_FLAGS, "account"] as const) {
+    if (values[flag] !== undefined && !allowed.includes(flag)) throw new UsageError(`--${flag} does not narrow --records ${kind}`);
+  }
+  for (const flag of ["asset", "account", "token"] as const) {
+    if (values[flag] === "") throw new UsageError(`--${flag} must not be empty`);
+  }
+  const listed = kind === "swaps" ? names("protocol", values.protocol) : names("marketplace", values.marketplace);
+  const records: StoreRecords =
+    kind === "transfers"
+      ? { kind, ...(values.asset !== undefined && { asset: values.asset }), ...(values.account !== undefined && { account: values.account }) }
+      : kind === "swaps"
+        ? { kind, ...(listed !== undefined && { protocol: listed }), ...(values.asset !== undefined && { asset: values.asset }) }
+        : { kind: "sales", ...(listed !== undefined && { marketplace: listed }), ...(values.token !== undefined && { token: values.token }) };
+  const options: StoreRecordsOptions = { ...endpoint(values, sui), records, ...database(values.db, values.postgres) };
+  withKey(options, values["api-key"]);
+  const fromVersion = version(values["from-version"]);
+  const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
+  if (fromVersion !== undefined) options.fromVersion = fromVersion;
+  if (pollInterval !== undefined) options.pollInterval = pollInterval;
+  if (values.name !== undefined) options.name = values.name;
+  return { command: "store-records", options };
+}
+
 function parseStore(args: string[]): ParsedCommand {
   const [first, ...rest] = args;
   if (first === "stats" || first === "prune" || first === "cursors") return parseStoreAdmin(first, rest);
-  const { values, positionals } = wrap(() =>
-    parseArgs({ args, options: STORE_OPTIONS, allowPositionals: true, strict: true }),
-  );
+  const { values, positionals } = parseStoreFlags(args);
   if (values.help) return { command: "help" };
   const target = database(values.db, values.postgres);
   if (values.name === "") throw new UsageError("--name must not be empty");
+  if (values.records !== undefined) return parseStoreRecords(values, positionals);
+  for (const flag of RECORD_ONLY_FLAGS) {
+    if (values[flag] !== undefined) throw new UsageError(`--${flag} needs --records`);
+  }
   const options: StoreOptions = { ...source("store", values, positionals), ...target };
   if (values.name !== undefined) options.name = values.name;
   return { command: "store", options };

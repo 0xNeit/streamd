@@ -3,7 +3,7 @@ import { PGlite } from "./helpers.js";
 import { StreamdError, parseEvent } from "@streamd/core";
 import type { StreamdEvent, Transfer } from "@streamd/core";
 import { PostgresEventStore } from "../src/index.js";
-import type { PostgresClient } from "../src/index.js";
+import type { PostgresClient, StoredSale, StoredSwap } from "../src/index.js";
 
 const U64_MAX = 2n ** 64n - 1n;
 
@@ -373,5 +373,127 @@ describe("PostgresEventStore transfers", () => {
     expect(Buffer.byteLength(row!.from_address as string, "utf8")).toBe(2048);
     expect(row!.from_address as string).not.toContain("\uFFFD");
     expect(parseEvent(row!.transfer as string).data).toMatchObject({ asset: hugeAsset, from: utf8Addr });
+  });
+});
+
+function sw(version: bigint, eventIndex: number, data: Partial<StoredSwap> = {}): StreamdEvent<StoredSwap> {
+  return {
+    type: "0x1::pool_v3::SwapEventV3",
+    data: { protocol: "hyperion", poolId: "0xp", assetIn: "0xa", amountIn: 5n, assetOut: "0xb", amountOut: 7n, ...data },
+    version,
+    sequenceNumber: 0n,
+    eventIndex,
+  };
+}
+
+function sa(version: bigint, eventIndex: number, data: Partial<StoredSale> = {}): StreamdEvent<StoredSale> {
+  return {
+    type: "0x1::events::ListingFilledEvent",
+    data: { marketplace: "wapal", kind: "listing", token: "0xt", seller: "0xs", buyer: "0xb", price: 100n, ...data },
+    version,
+    sequenceNumber: 0n,
+    eventIndex,
+  };
+}
+
+async function swapRows(db: PGlite): Promise<Record<string, unknown>[]> {
+  const { rows } = await db.query<Record<string, unknown>>(
+    `SELECT version::text, event_index, protocol, pool_id, trader, asset_in, amount_in::text, asset_out, amount_out::text, swap
+     FROM streamd_swaps ORDER BY version, event_index`,
+  );
+  return rows;
+}
+
+async function saleRows(db: PGlite): Promise<Record<string, unknown>[]> {
+  const { rows } = await db.query<Record<string, unknown>>(
+    `SELECT version::text, event_index, marketplace, kind, token, collection, seller, buyer,
+       price::text, royalty::text, fee::text, sale
+     FROM streamd_sales ORDER BY version, event_index`,
+  );
+  return rows;
+}
+
+describe("PostgresEventStore swaps and sales", () => {
+  const U256_MAX = 2n ** 256n - 1n;
+
+  it("stores swaps in columns with exact amounts and their cursor, the later write winning", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.writeSwaps([sw(1n, 2, { trader: "0xtr", amountIn: U256_MAX }), sw(2n, 0)], { name: "swaps:s", cursor: "c1" });
+    await store.writeSwaps([sw(2n, 0, { amountOut: 1n }), sw(2n, 0, { amountOut: 9n })]);
+    const [first, second] = await swapRows(db);
+    expect(first).toEqual({
+      version: "1",
+      event_index: 2,
+      protocol: "hyperion",
+      pool_id: "0xp",
+      trader: "0xtr",
+      asset_in: "0xa",
+      amount_in: U256_MAX.toString(),
+      asset_out: "0xb",
+      amount_out: "7",
+      swap: expect.any(String),
+    });
+    expect(parseEvent(first!.swap as string).data).toMatchObject({ trader: "0xtr", amountIn: U256_MAX.toString() });
+    expect(second).toMatchObject({ trader: null, amount_out: "9" });
+    expect(await store.readCursor("swaps:s")).toBe("c1");
+  });
+
+  it("stores sales in columns with exact prices and their cursor", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.writeSales([sa(1n, 0, { collection: "0xc", royalty: 3n, fee: 2n }), sa(2n, 1)], { name: "sales:s", cursor: "c2" });
+    const [first, second] = await saleRows(db);
+    expect(first).toEqual({
+      version: "1",
+      event_index: 0,
+      marketplace: "wapal",
+      kind: "listing",
+      token: "0xt",
+      collection: "0xc",
+      seller: "0xs",
+      buyer: "0xb",
+      price: "100",
+      royalty: "3",
+      fee: "2",
+      sale: expect.any(String),
+    });
+    expect(second).toMatchObject({ collection: null, royalty: null, fee: null });
+    expect(await store.readCursor("sales:s")).toBe("c2");
+  });
+
+  it("refuses a malformed swap or sale before sending anything", async () => {
+    const queries: string[] = [];
+    const client: PostgresClient = { query: async (text) => (queries.push(text), { rows: [] }) };
+    const store = new PostgresEventStore(client);
+    const swaps: Partial<StoredSwap>[] = [
+      { amountIn: -1n },
+      { amountOut: U256_MAX + 1n },
+      { poolId: "" },
+      { trader: 7 as unknown as string },
+    ];
+    for (const data of swaps) {
+      await expect(store.writeSwaps([sw(1n, 0), sw(2n, 0, data)], { name: "s", cursor: "c" })).rejects.toThrow(StreamdError);
+    }
+    const sales: Partial<StoredSale>[] = [{ price: -1n }, { fee: 1 as unknown as bigint }, { seller: "" }, { collection: 7 as unknown as string }];
+    for (const data of sales) {
+      await expect(store.writeSales([sa(1n, 0), sa(2n, 0, data)], { name: "s", cursor: "c" })).rejects.toThrow(StreamdError);
+    }
+    await expect(store.writeSwaps([{ ...sw(1n, 0), data: null as unknown as StoredSwap }])).rejects.toThrow(StreamdError);
+    expect(queries).toEqual([]);
+  });
+
+  it("prunes swaps and sales below the edge with the events, and caps indexed text", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    const hugePool = `0x1::m::${"P".repeat(10_000)}`;
+    await store.writeSwaps([sw(1n, 0), sw(3n, 0, { poolId: hugePool })]);
+    await store.writeSales([sa(2n, 0), sa(4n, 0)]);
+    await store.prune({ beforeVersion: 3n });
+    const [swap] = await swapRows(db);
+    expect(swap).toMatchObject({ version: "3" });
+    expect((swap!.pool_id as string).length).toBe(2048);
+    expect(parseEvent(swap!.swap as string).data).toMatchObject({ poolId: hugePool });
+    expect((await saleRows(db)).map((r) => r.version)).toEqual(["4"]);
   });
 });

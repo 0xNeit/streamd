@@ -1,7 +1,26 @@
-import type { EventDescriptor, StreamdClient, Subscription } from "@streamd/core";
-import { PostgresEventStore, storeEvents as storeInPostgres, type PostgresClient, type StoreEventsOptions } from "@streamd/store-postgres";
-import { SqliteEventStore, storeEvents as storeInSqlite, type SqliteDatabase } from "@streamd/store-sqlite";
-import type { StoreAdminOptions, StoreOptions } from "./args.js";
+import { StreamdError } from "@streamd/core";
+import type { StreamdClient, Subscription } from "@streamd/core";
+import {
+  PostgresEventStore,
+  storeEvents as storeInPostgres,
+  storeSales as salesInPostgres,
+  storeSwaps as swapsInPostgres,
+  storeTransfers as transfersInPostgres,
+  type PostgresClient,
+  type StoreEventsOptions,
+} from "@streamd/store-postgres";
+import {
+  SqliteEventStore,
+  storeEvents as storeInSqlite,
+  storeSales as salesInSqlite,
+  storeSwaps as swapsInSqlite,
+  storeTransfers as transfersInSqlite,
+  type SaleClient,
+  type SqliteDatabase,
+  type SwapClient,
+  type TransferClient,
+} from "@streamd/store-sqlite";
+import type { Endpoint, StoreAdminOptions, StoreOptions, StoreRecords, StoreRecordsOptions } from "./args.js";
 import { filterPredicate } from "./filter.js";
 import { message, redactUrl, scrubber } from "./format.js";
 import { isMissingModule } from "./sui.js";
@@ -77,19 +96,32 @@ interface Backend {
   close(): unknown;
 }
 
-async function sqliteBackend(path: string, descriptor: EventDescriptor, io: StoreIO): Promise<Backend> {
-  const db = await io.open(path);
-  // WAL lets the file be queried while it is written; the timeout stops a busy reader failing a write.
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
-  const store = new SqliteEventStore(db);
-  return { start: (options) => storeInSqlite(io.client, store, descriptor, options), close: () => db.close?.() };
+/** How a run follows into each kind of store; both get the cursor name and listener options. */
+interface Starters {
+  sqlite(store: SqliteEventStore, options: StoreEventsOptions): Subscription;
+  postgres(store: PostgresEventStore, options: StoreEventsOptions): Promise<Subscription>;
 }
 
-async function postgresBackend(url: string, descriptor: EventDescriptor, io: StoreIO): Promise<Backend> {
-  const connection = await io.connect(url);
-  const store = new PostgresEventStore(connection);
-  return { start: (options) => storeInPostgres(io.client, store, descriptor, options), close: () => connection.close() };
+interface Target {
+  db?: string;
+  postgres?: string;
 }
+
+async function openBackend({ db, postgres }: Target, starters: Starters, io: StoreIO): Promise<Backend> {
+  if (postgres !== undefined) {
+    const connection = await io.connect(postgres);
+    const store = new PostgresEventStore(connection);
+    return { start: (options) => starters.postgres(store, options), close: () => connection.close() };
+  }
+  const opened = await io.open(db!);
+  // WAL lets the file be queried while it is written; the timeout stops a busy reader failing a write.
+  opened.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
+  const store = new SqliteEventStore(opened);
+  return { start: (options) => starters.sqlite(store, options), close: () => opened.close?.() };
+}
+
+/** Prefixed for Sui, so a database shared by both chains never resumes from the other's cursor. */
+const networkName = (options: Endpoint) => (options.chain === "sui" ? `sui:${options.network}` : options.network);
 
 /** The cursor name: `--name`, or one derived from the chain, network, descriptor and filter. */
 function cursorName(options: StoreOptions): string {
@@ -99,9 +131,7 @@ function cursorName(options: StoreOptions): string {
   );
   // A filtered run gets its own cursor, so it never resumes from one that skipped events it wants.
   const filterName = options.filter === undefined ? "" : `:${JSON.stringify(options.filter)}`;
-  // Prefixed for Sui, so a database shared by both chains never resumes from the other's cursor.
-  const network = options.chain === "sui" ? `sui:${options.network}` : options.network;
-  return `${network}:${descriptorName}${filterName}`;
+  return `${networkName(options)}:${descriptorName}${filterName}`;
 }
 
 /**
@@ -110,18 +140,96 @@ function cursorName(options: StoreOptions): string {
  * 0 when the signal aborts, 1 when polling gives up, a write fails, or the
  * database cannot be opened or reached. A Postgres URL is never printed as given.
  */
-export async function runStore(options: StoreOptions, io: StoreIO): Promise<number> {
-  const { postgres } = options;
+export function runStore(options: StoreOptions, io: StoreIO): Promise<number> {
+  const { descriptor, fromVersion, pollInterval, filter, decode } = options;
+  return follow(
+    options,
+    {
+      sqlite: (store, listener) => storeInSqlite(io.client, store, descriptor, listener),
+      postgres: (store, listener) => storeInPostgres(io.client, store, descriptor, listener),
+    },
+    {
+      name: cursorName(options),
+      // Only seeds the first run: the poller prefers the saved cursor storeEvents loads.
+      ...(fromVersion !== undefined && { fromVersion }),
+      ...(pollInterval !== undefined && { pollInterval }),
+      ...(decode !== undefined && { decode }),
+      ...(filter !== undefined && { where: filterPredicate(filter) }),
+    },
+    io,
+  );
+}
+
+/** The narrowing a `--records` kind passes to its client method. */
+function narrowing(records: StoreRecords): Record<string, unknown> {
+  const { kind: _kind, ...rest } = records;
+  return rest;
+}
+
+/**
+ * The cursor name: `--name`, or the chain and network plus the narrowing,
+ * so a narrowed run never resumes from one that skipped records it wants.
+ * The sink prefixes it with the record kind.
+ */
+function recordCursorName(options: StoreRecordsOptions): string {
+  if (options.name !== undefined) return options.name;
+  const narrowed = narrowing(options.records);
+  return Object.keys(narrowed).length === 0 ? networkName(options) : `${networkName(options)}:${JSON.stringify(narrowed)}`;
+}
+
+/** A store sink over one record kind, named once for both backends. */
+function recordStarters(client: StreamdClient, { kind }: StoreRecords): Starters {
+  // The parser refuses swaps and sales on Sui, whose client has only transfers.
+  if (typeof (client as unknown as Record<string, unknown>)[kind] !== "function") {
+    throw new Error(`this chain's client has no ${kind}`);
+  }
+  const records = client as unknown as TransferClient & SwapClient & SaleClient;
+  if (kind === "transfers") {
+    return { sqlite: (s, o) => transfersInSqlite(records, s, o), postgres: (s, o) => transfersInPostgres(records, s, o) };
+  }
+  if (kind === "swaps") {
+    return { sqlite: (s, o) => swapsInSqlite(records, s, o), postgres: (s, o) => swapsInPostgres(records, s, o) };
+  }
+  return { sqlite: (s, o) => salesInSqlite(records, s, o), postgres: (s, o) => salesInPostgres(records, s, o) };
+}
+
+/**
+ * Follows the client's `transfers`, `swaps` or `sales` into the SQLite file
+ * or Postgres database, resuming from the cursor saved there, and resolves to
+ * the exit code as `runStore` does. The narrowing values are the client's to
+ * check; a refused one exits 1 with the client's message.
+ */
+export function runStoreRecords(options: StoreRecordsOptions, io: StoreIO): Promise<number> {
+  const { fromVersion, pollInterval } = options;
+  let starters: Starters;
+  try {
+    starters = recordStarters(io.client, options.records);
+  } catch (err) {
+    io.error(`streamd: ${message(err)}`);
+    return Promise.resolve(1);
+  }
+  return follow(
+    options,
+    starters,
+    {
+      name: recordCursorName(options),
+      ...narrowing(options.records),
+      ...(fromVersion !== undefined && { fromVersion }),
+      ...(pollInterval !== undefined && { pollInterval }),
+    },
+    io,
+  );
+}
+
+async function follow(target: Target, starters: Starters, listener: StoreEventsOptions, io: StoreIO): Promise<number> {
+  const { postgres } = target;
   const scrub = postgres === undefined ? (text: string) => text : scrubber(postgres);
   const report = (text: string) => io.error(scrub(text));
-  const failure = postgres === undefined ? `cannot open ${options.db}` : `cannot connect to ${redactUrl(postgres)}`;
+  const failure = postgres === undefined ? `cannot open ${target.db}` : `cannot connect to ${redactUrl(postgres)}`;
 
   let backend: Backend;
   try {
-    backend =
-      postgres === undefined
-        ? await sqliteBackend(options.db!, options.descriptor, io)
-        : await postgresBackend(postgres, options.descriptor, io);
+    backend = await openBackend(target, starters, io);
   } catch (err) {
     report(`streamd: ${failure}: ${message(err)}`);
     return 1;
@@ -138,17 +246,11 @@ export async function runStore(options: StoreOptions, io: StoreIO): Promise<numb
   const onAbort = () => settle(0);
   io.signal.addEventListener("abort", onAbort, { once: true });
 
-  const { fromVersion, pollInterval, filter, decode } = options;
   // Postgres reads the saved cursor, creating the tables, first, so an unreachable server fails here.
   Promise.resolve()
     .then(() =>
       backend.start({
-        name: cursorName(options),
-        // Only seeds the first run: the poller prefers the saved cursor storeEvents loads.
-        ...(fromVersion !== undefined && { fromVersion }),
-        ...(pollInterval !== undefined && { pollInterval }),
-        ...(decode !== undefined && { decode }),
-        ...(filter !== undefined && { where: filterPredicate(filter) }),
+        ...listener,
         onError: (err) => {
           report(`streamd: ${message(err)}`);
           // A failed write ends the subscription on a microtask, after this runs.
@@ -166,7 +268,8 @@ export async function runStore(options: StoreOptions, io: StoreIO): Promise<numb
       },
       (err: unknown) => {
         if (done) return;
-        report(`streamd: ${failure}: ${message(err)}`);
+        // A refusal from the client, such as an unknown protocol, is not the database's.
+        report(err instanceof StreamdError ? `streamd: ${message(err)}` : `streamd: ${failure}: ${message(err)}`);
         settle(1);
       },
     );

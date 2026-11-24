@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { parseCommand, parseTime, UsageError } from "../src/args.js";
 import { parseKafkaUrl } from "../src/kafka.js";
-import type { AlertOptions, MonitorOptions, ServeOptions, StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
+import type { AlertOptions, MonitorOptions, ServeOptions, StoreOptions, StoreRecordsOptions, ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
 const LONG_ADDR = `0x${"0".repeat(63)}1`;
@@ -629,6 +629,67 @@ describe("parseCommand store", () => {
     [["store", "--db", "e.db", "--limit", "1", TYPE], /limit/],
   ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
     expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
+
+describe("parseCommand store --records", () => {
+  function records(...argv: string[]): StoreRecordsOptions {
+    const parsed = parseCommand(["store", ...argv]);
+    if (parsed.command !== "store-records") throw new Error("expected a store-records command");
+    return parsed.options;
+  }
+
+  it("takes each kind with its own narrowing and the store flags", () => {
+    expect(records("--db", "e.db", "--records", "transfers", "--asset", "0xa", "--account", "alice.apt")).toEqual({
+      network: "mainnet",
+      db: "e.db",
+      records: { kind: "transfers", asset: "0xa", account: "alice.apt" },
+    });
+    expect(
+      records("--postgres", "postgres://h/db", "--records", "swaps", "--protocol", "hyperion", "--protocol", "cellana", "--asset", "0xa",
+        "--from-version", "5", "--poll-interval", "9", "--name", "dex", "--network", "testnet"),
+    ).toEqual({
+      network: "testnet",
+      postgres: "postgres://h/db",
+      records: { kind: "swaps", protocol: ["hyperion", "cellana"], asset: "0xa" },
+      fromVersion: 5n,
+      pollInterval: 9,
+      name: "dex",
+    });
+    expect(records("--db", "e.db", "--records", "sales", "--marketplace", "wapal", "--token", "0xt").records).toEqual({
+      kind: "sales",
+      marketplace: ["wapal"],
+      token: "0xt",
+    });
+    expect(records("--db", "e.db", "--records", "sales").records).toEqual({ kind: "sales" });
+    expect(records("--chain", "sui", "--db", "e.db", "--records", "transfers")).toMatchObject({ chain: "sui", records: { kind: "transfers" } });
+  });
+
+  it.each([
+    [["--records", "events"], /--records must be transfers, swaps or sales: events/],
+    [["--records", "swaps", TYPE], /--records takes no event types/],
+    [["--records", "swaps", "--handle", "0x1::a::B"], /--handle is for events/],
+    [["--records", "transfers", "--resource", "0x1::a::B"], /--resource is for events/],
+    [["--records", "transfers", "--creation-number", "2"], /--creation-number is for events/],
+    [["--records", "transfers", "--sender", ADDR], /--sender is for events/],
+    [["--records", "transfers", "--where", "amount>1"], /--where is for events/],
+    [["--records", "swaps", "--decode", "amount"], /--decode is for events/],
+    [["--records", "swaps", "--account", ADDR], /--account does not narrow --records swaps/],
+    [["--records", "swaps", "--token", "0xt"], /--token does not narrow --records swaps/],
+    [["--records", "sales", "--asset", "0xa"], /--asset does not narrow --records sales/],
+    [["--records", "transfers", "--protocol", "hyperion"], /--protocol does not narrow --records transfers/],
+    [["--records", "transfers", "--asset", ""], /--asset must not be empty/],
+    [["--records", "swaps", "--protocol", ""], /--protocol must not be empty/],
+    [["--records", "swaps", "--chain", "sui"], /--records swaps is not available with --chain sui/],
+    [["--records", "sales", "--chain", "sui"], /--records sales is not available with --chain sui/],
+    [["--asset", "0xa", TYPE], /--asset needs --records/],
+    [["--protocol", "hyperion", TYPE], /--protocol needs --records/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(["store", "--db", "e.db", ...argv])).toThrow(pattern);
+  });
+
+  it("still needs a database", () => {
+    expect(() => parseCommand(["store", "--records", "swaps"])).toThrow(/store needs --db <file> or --postgres <url>/);
   });
 });
 
