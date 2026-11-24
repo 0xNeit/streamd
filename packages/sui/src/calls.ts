@@ -96,6 +96,15 @@ export function callsOf(transaction: CallTransaction | undefined): (packageId: s
     typeof packageId !== "string" || typeof module !== "string" ? undefined : byModule.get(`${normalizeSuiAddress(packageId)}::${module}`);
 }
 
+/** The PTB's one `MoveCall` command as a call; `undefined` when it has none, several, or a malformed one. */
+export function onlyCall(transaction: CallTransaction | undefined): EntryFunctionCall | undefined {
+  const data = transaction?.kind?.data;
+  if (data?.oneofKind !== "programmableTransaction" || !Array.isArray(data.programmableTransaction?.commands)) return undefined;
+  const { inputs, commands } = data.programmableTransaction;
+  const moves = commands.flatMap((c) => (c?.command?.oneofKind === "moveCall" && c.command.moveCall !== undefined ? [c.command.moveCall] : []));
+  return moves.length === 1 ? toCall(moves[0]!, Array.isArray(inputs) ? inputs : [], commands.length) : undefined;
+}
+
 /** What a raw event says about the command that emitted it. */
 export interface EventOrigin {
   transactionDigest?: string;

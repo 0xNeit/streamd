@@ -840,3 +840,45 @@ describe("SuiAdapter object state", () => {
     expect((new SuiAdapter(stateLedger(touched).client) as { view?: unknown }).view).toBeUndefined();
   });
 });
+
+describe("SuiAdapter.getTransactionDetails", () => {
+  const SUI = `${LONG("2")}::sui::SUI`;
+  const USDC = `${LONG("dba3")}::usdc::USDC`;
+  const [BOB, SPONSOR] = [LONG("b0b"), LONG("5905")];
+  const GAS = { computationCost: 1000n, storageCost: 2000n, storageRebate: 500n, nonRefundableStorageFee: 5n };
+  const call = { package: "0x2", module: "pay", function: "split_and_transfer", typeArguments: [], arguments: [] };
+  const TRANSACTIONS: FakeTransaction[] = [
+    {
+      digest: digest(1), cp: 1n, ti: 2n, events: [{ type: SWAP }], ptb: ptb(["split", call]),
+      sender: "0xa11ce", payer: "0x5905", price: 750n, gas: GAS,
+      changes: [["0xa11ce", "0x2::sui::SUI", -40n], ["0xb0b", "0x2::sui::SUI", 40n], ["0x5905", "0x2::sui::SUI", -2500n], ["0xa11ce", USDC, -9n], ["0xb0b", USDC, 9n]],
+    },
+    { digest: digest(2), cp: 3n, ti: 1n, error: "MoveAbort(m::z, 101) in command 1", events: [], ptb: ptb([call, call]), sender: "0xa11ce", payer: "0xa11ce", gas: GAS, changes: [["0xa11ce", "0x2::sui::SUI", -2500n]] },
+    { digest: digest(3), ti: 0n, events: [] },
+  ];
+  const adapter = () => new SuiAdapter(fakeLedger(SIZES, [], undefined, 0n, TRANSACTIONS).client);
+
+  it("adds the signer, gas owner, time, gas, the one call and paired transfers to the lookup", async () => {
+    const found = await adapter().getTransactionDetails(digest(1));
+    expect(found).toMatchObject({ version: 3n, success: true, vmStatus: "success", sender: ALICE, feePayer: SPONSOR, timestamp: 1_700_000_001_000_007n });
+    expect(found!.events.map((e) => e.type)).toEqual([SWAP]);
+    expect(found!.gas).toEqual({ ...GAS, fee: 2500n, unitPrice: 750n });
+    expect(found!.call).toEqual({ function: `${LONG("2")}::pay::split_and_transfer`, typeArguments: [], arguments: [] });
+    expect(found!.transfers.map((t) => [t.data, t.eventIndex])).toEqual([
+      [{ asset: SUI, amount: 40n, from: ALICE, to: BOB }, 1],
+      [{ asset: USDC, amount: 9n, from: ALICE, to: BOB }, 2],
+    ]);
+  });
+
+  it("names no call for several MoveCalls, and no transfers for a failure that only paid gas", async () => {
+    const found = await adapter().getTransactionDetails(digest(2));
+    expect(found).toMatchObject({ version: 7n, success: false, vmStatus: "MoveAbort(m::z, 101) in command 1", feePayer: ALICE });
+    expect(found!.call).toBeUndefined();
+    expect(found!.transfers).toEqual([]);
+  });
+
+  it("answers undefined for an unknown or uncheckpointed transaction", async () => {
+    expect(await adapter().getTransactionDetails(digest(9))).toBeUndefined();
+    expect(await adapter().getTransactionDetails(digest(3))).toBeUndefined();
+  });
+});
