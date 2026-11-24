@@ -1,5 +1,5 @@
 import { redactSecrets } from "@streamd/core";
-import type { EventAdapter, StreamdClient } from "@streamd/core";
+import type { EventAdapter, PrometheusSource, StreamdClient } from "@streamd/core";
 import { createGateway } from "@streamd/gateway";
 import type { Gateway } from "@streamd/gateway";
 import type { ServeOptions } from "./args.js";
@@ -9,6 +9,8 @@ export interface ServeDeps {
   client: StreamdClient;
   /** What the gateway's history reads go to. */
   adapter: EventAdapter;
+  /** Request counts per source, for `/metrics`. */
+  metrics?: () => readonly PrometheusSource[];
   error(message: string): void;
   signal: AbortSignal;
 }
@@ -33,6 +35,7 @@ export async function runServe(options: ServeOptions, deps: ServeDeps): Promise<
       maxTopics: options.maxTopics,
       maxConnections: options.maxConnections,
       pollInterval: options.pollInterval,
+      metrics: deps.metrics,
       onError: (err, descriptor) => {
         deps.error(`streamd: ${JSON.stringify(descriptor, (_k, v: unknown) => (typeof v === "bigint" ? String(v) : v))}: ${redactSecrets(message(err))}`);
       },

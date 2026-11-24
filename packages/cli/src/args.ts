@@ -899,7 +899,8 @@ Prometheus text (default type: ${MONITOR_DEFAULT_TYPE} on Aptos).
 serve runs a gateway (under Bun) that polls each descriptor its clients ask for
 once and streams it to all of them as Server-Sent Events (/v1/events) and
 WebSocket (/v1/ws), resumed by Last-Event-ID, with POST /v1/fetch, /v1/head and
-/v1/earliest for GatewayAdapter and GET /v1/status. With --webhooks it also
+/v1/earliest for GatewayAdapter, GET /v1/status and Prometheus text at GET
+/metrics. With --webhooks it also
 posts to webhooks registered at /v1/webhooks, signed and at least once.
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
