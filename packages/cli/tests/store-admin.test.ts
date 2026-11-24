@@ -75,7 +75,7 @@ describe.each(backends)("runStoreAdmin over $name", (backend) => {
     expect(plain.code).toBe(0);
     expect(plain.raw).toHaveLength(1);
     expect(plain.raw[0]!.endsWith("\n")).toBe(true);
-    expect(plain.lines[0]).toEqual({ events: "3", resourceChanges: "0", transfers: "0", lowestVersion: "100", highestVersion: "300", prunedBefore: "0" });
+    expect(plain.lines[0]).toEqual({ events: "3", resourceChanges: "0", transfers: "0", swaps: "0", sales: "0", lowestVersion: "100", highestVersion: "300", prunedBefore: "0" });
     const typed = await run(made, { action: "stats", byType: true });
     expect(typed.lines[0]!.byType).toEqual([
       { type: TYPE, count: "2" },
@@ -86,7 +86,7 @@ describe.each(backends)("runStoreAdmin over $name", (backend) => {
   it("prints stats of an empty store without a version range", async () => {
     const { lines, code } = await run(await backend.make(), { action: "stats" });
     expect(code).toBe(0);
-    expect(lines).toEqual([{ events: "0", resourceChanges: "0", transfers: "0", prunedBefore: "0" }]);
+    expect(lines).toEqual([{ events: "0", resourceChanges: "0", transfers: "0", swaps: "0", sales: "0", prunedBefore: "0" }]);
   });
 
   it("reports a prune without --yes and changes nothing", async () => {
@@ -104,7 +104,7 @@ describe.each(backends)("runStoreAdmin over $name", (backend) => {
     const { code, lines } = await run(made, { action: "prune", before: 250n, yes: true });
     expect(code).toBe(0);
     expect(lines).toEqual([
-      { dryRun: false, beforeVersion: "250", noop: false, events: "1", resourceChanges: "0", transfers: "0", lowestVersion: "300", highestVersion: "300", prunedBefore: "250" },
+      { dryRun: false, beforeVersion: "250", noop: false, events: "1", resourceChanges: "0", transfers: "0", swaps: "0", sales: "0", lowestVersion: "300", highestVersion: "300", prunedBefore: "250" },
     ]);
     expect((await made.store.cursors()).map((c) => c.name)).toEqual(["fees", "swaps"]);
   });
