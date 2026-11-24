@@ -101,6 +101,42 @@ export interface StoreOptions extends SourceOptions {
   name?: string;
 }
 
+/** What `store --records` follows, with the narrowing its client command takes; the values are the client's to check. */
+export type StoreRecords =
+  | { kind: "transfers"; asset?: string; account?: string }
+  | { kind: "swaps"; protocol?: string[]; asset?: string }
+  | { kind: "sales"; marketplace?: string[]; token?: string };
+
+/** `store --records`: a chain client's records into `streamd_transfers`, `streamd_swaps` or `streamd_sales`. */
+export interface StoreRecordsOptions extends Endpoint {
+  records: StoreRecords;
+  /** SQLite file to write; the parser sets exactly one of this and `postgres`. */
+  db?: string;
+  /** Postgres URL to write to; may carry a password, so never printed as given. */
+  postgres?: string;
+  /** Name its cursor is saved under; derived from the network and narrowing when unset. */
+  name?: string;
+  fromVersion?: bigint;
+  pollInterval?: number;
+}
+
+/** `store stats`, `store prune` or `store cursors`: upkeep of a database `store` writes. */
+export interface StoreAdminOptions {
+  action: "stats" | "prune" | "cursors";
+  /** SQLite file; the parser sets exactly one of this and `postgres`. */
+  db?: string;
+  /** Postgres URL; may carry a password, so never printed as given. */
+  postgres?: string;
+  /** stats: also count events per type. */
+  byType?: true;
+  /** prune: the edge to raise; set exactly when `action` is `prune`. */
+  before?: bigint;
+  /** prune: delete for real; without it the run only reports. */
+  yes?: true;
+  /** cursors: the cursor name to delete instead of listing. */
+  delete?: string;
+}
+
 export interface TxOptions extends Endpoint {
   /** A transaction hash, or a base58 digest for Sui. */
   hash: string;
@@ -167,6 +203,11 @@ export interface SalesCommandOptions extends RecordWalkOptions {
   /** Non-empty when set. */
   marketplace?: string[];
   token?: string;
+}
+
+/** Aptos only; the address or name is validated by the client. */
+export interface UpgradesCommandOptions extends RecordWalkOptions {
+  address: string;
 }
 
 /** Aptos only, read over the Indexer route; the address or name is validated by the client. */
@@ -372,6 +413,8 @@ export type ParsedCommand =
   | { command: "forward"; options: ForwardOptions }
   | { command: "alert"; options: AlertOptions }
   | { command: "store"; options: StoreOptions }
+  | { command: "store-records"; options: StoreRecordsOptions }
+  | { command: "store-admin"; options: StoreAdminOptions }
   | { command: "check"; options: CheckOptions }
   | { command: "record"; options: RecordOptions }
   | { command: "query"; options: QueryOptions }
@@ -381,6 +424,7 @@ export type ParsedCommand =
   | { command: "swaps"; options: SwapsCommandOptions }
   | { command: "sales"; options: SalesCommandOptions }
   | { command: "activity"; options: ActivityCommandOptions }
+  | { command: "upgrades"; options: UpgradesCommandOptions }
   | { command: "trace"; options: TraceCommandOptions }
   | { command: "holders"; options: HoldersCommandOptions }
   | { command: "positions"; options: PositionsCommandOptions }
@@ -479,7 +523,35 @@ const STORE_OPTIONS = {
   db: { type: "string" },
   postgres: { type: "string" },
   name: { type: "string" },
+  records: { type: "string" },
+  asset: { type: "string" },
+  protocol: { type: "string", multiple: true },
+  marketplace: { type: "string", multiple: true },
+  token: { type: "string" },
 } as const;
+
+/** The narrowing each `--records` kind takes; `--account` is also a descriptor flag without `--records`. */
+const RECORD_FLAGS = {
+  transfers: ["asset", "account"],
+  swaps: ["protocol", "asset"],
+  sales: ["marketplace", "token"],
+} as const;
+const RECORD_ONLY_FLAGS = ["asset", "protocol", "marketplace", "token"] as const;
+/** Flags that shape an event descriptor or test events, which records have neither of. */
+const EVENT_ONLY_FLAGS = ["handle", "field", "resource", "creation-number", "sender", "function", "where", "decode"] as const;
+
+const STORE_ADMIN_OPTIONS = {
+  db: { type: "string" },
+  postgres: { type: "string" },
+  "by-type": { type: "boolean" },
+  before: { type: "string" },
+  yes: { type: "boolean" },
+  delete: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+/** The flags each maintenance subcommand takes beyond the database. */
+const STORE_ADMIN_FLAGS = { stats: ["by-type"], prune: ["before", "yes"], cursors: ["delete"] } as const;
 
 const COMPARE_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
@@ -584,6 +656,12 @@ const SALES_OPTIONS = {
   ...WALK_OPTIONS,
   marketplace: { type: "string", multiple: true },
   token: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+const UPGRADES_OPTIONS = {
+  ...READ_OPTIONS,
+  ...WALK_OPTIONS,
   help: { type: "boolean", short: "h" },
 } as const;
 
@@ -732,6 +810,10 @@ export const USAGE = `Usage:
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
   streamd store --postgres <url> [options] <eventType>...
+  streamd store (--db <file> | --postgres <url>) --records <transfers|swaps|sales> [options]
+  streamd store stats (--db <file> | --postgres <url>) [--by-type]
+  streamd store prune (--db <file> | --postgres <url>) --before <version> [--yes]
+  streamd store cursors (--db <file> | --postgres <url>) [--delete <name>]
   streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
   streamd tx <hash | digest>
   streamd explain <hash> [--json] [options]
@@ -739,6 +821,7 @@ export const USAGE = `Usage:
   streamd swaps [--protocol <name>]... [--asset <asset>] [--to-version <n | head>] [options]
   streamd sales [--marketplace <name>]... [--token <token>] [--to-version <n | head>] [options]
   streamd activity <address | name> [--to-version <n | head>] [--indexer <url>] [options]
+  streamd upgrades <address | name> [--to-version <n | head>] [options]
   streamd trace <address | name> [--hops <n>] [--format <json|dot>] [--indexer <url>] [options]
   streamd holders <asset> --at <version> [--verify <none|supply|stores>] [--format <json|csv>] [options]
   streamd positions <aave|echelon> [--account <address>]... [--threshold <d>] [--to <url>] [options]
@@ -768,6 +851,9 @@ time a window of chain time crosses its threshold or leaves its baseline's
 band, saving each rule's position and open window to a cursor file.
 store follows matching events into a SQLite file, or a Postgres database
 with --postgres, resuming from the cursor saved there when run again.
+store stats, prune and cursors read and tidy such a database: its counts and
+version range, deleting history below a version (a dry run without --yes), and
+listing or deleting its saved cursors, each as JSON lines.
 query reads a closed range of history as JSON lines, then exits.
 tx waits for a transaction and prints its events, exiting 1 if it failed.
 explain waits for an Aptos transaction and prints its status, gas, transfers,
@@ -781,6 +867,10 @@ activity prints each transaction an Aptos account sent or received as a JSON
 line of its direction, transfers, balance changes and events, and trace the
 counterparty graph around it as one JSON line or Graphviz DOT; both read the
 account's transactions from the Indexer and everything else from the fullnode.
+upgrades prints each package publish at an Aptos address as a JSON line of the
+event structs, entry functions and views it added, changed or removed, and
+exits 1 on one that removed or changed any: following, at once; over a range,
+once it is printed.
 holders prints every fungible store holding an Aptos asset at a past version,
 largest first, as JSON lines or CSV, folded back from the Indexer and checked
 against the chain there, then the snapshot's summary as one JSON line on stderr.
@@ -809,7 +899,8 @@ Prometheus text (default type: ${MONITOR_DEFAULT_TYPE} on Aptos).
 serve runs a gateway (under Bun) that polls each descriptor its clients ask for
 once and streams it to all of them as Server-Sent Events (/v1/events) and
 WebSocket (/v1/ws), resumed by Last-Event-ID, with POST /v1/fetch, /v1/head and
-/v1/earliest for GatewayAdapter and GET /v1/status. With --webhooks it also
+/v1/earliest for GatewayAdapter, GET /v1/status and Prometheus text at GET
+/metrics. With --webhooks it also
 posts to webhooks registered at /v1/webhooks, signed and at least once.
 codegen reads module ABIs and writes TypeScript types and defineEvent
 descriptors for their event structs; a bare address covers all its modules.
@@ -825,7 +916,7 @@ from a funded account, runs the command against it (with STREAMD_NODE_URL,
 STREAMD_FAUCET_URL, STREAMD_PACKAGE_ADDRESS and STREAMD_PUBLISHER_KEY set), then
 prints one JSON line per #[event] struct of the package: whether the run emitted
 it, how often, and the call that first did. It exits 1 if the command failed.
-Every command but handles, inspect, explain, swaps, sales, activity, trace, holders, positions and coverage takes --chain sui
+Every command but handles, inspect, explain, swaps, sales, activity, upgrades, trace, holders, positions and coverage takes --chain sui
 to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
@@ -895,7 +986,7 @@ Options:
                          (legs.*.amount); output and matches are unchanged, but a present
                          field that is not an unsigned integer is an error: query exits 1,
                          tail, forward, store and watch report it and skip the event
-  --limit <n>            tail, transfers, swaps, sales, activity, watch: exit after printing n;
+  --limit <n>            tail, transfers, swaps, sales, activity, upgrades, watch: exit after printing n;
                          balances: after n changes; record, query, inspect: stop after n;
                          compare: page size; monitor: rounds
   --rules <file>         alert: the rules file (required)
@@ -912,7 +1003,7 @@ Options:
                          JetStream stream must capture (with nats://)
   --topic <name>         forward: the Kafka topic each batch is produced to, which must exist
                          (with kafka:// or kafkas://)
-  --cursor-file <path>   tail, transfers, swaps, sales, activity (following): save and
+  --cursor-file <path>   tail, transfers, swaps, sales, activity, upgrades (following): save and
                          resume from here; watch: each address's position, as one JSON object;
                          forward: cursor file (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
                          and open window (default: ${DEFAULT_ALERT_CURSOR_FILE})
@@ -933,15 +1024,21 @@ Options:
                          under Bun, pg under Node (npm i pg); the URL is never printed, and
                          PGPASSWORD keeps the password out of it and out of ps
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
+  --records <kind>       store: follow transfers, swaps or sales records instead of events, with that
+                         command's narrowing flags; swaps and sales are Aptos only
+  --by-type              store stats: also count events per type
+  --before <version>     store prune: delete events and records below this version
+  --yes                  store prune: delete for real (default: report what it would do)
+  --delete <name>        store cursors: delete the cursor saved under this name, exit 1 if none
   --to-version <n>       record: end of the range (required); query: default the head;
                          inspect: a version or head (default: head);
                          forward: deliver up to here, then exit 0; transfers, swaps, sales,
-                         activity: a version or head, read the range instead of following
+                         activity, upgrades: a version or head, read the range instead of following
                          (needs a start); trace: end of every address's range (default: head)
   --batch-size <n>       forward: most events per POST (default: 25); serve: per webhook POST
-                         (default: each page); transfers, swaps, sales, activity (following):
+                         (default: each page); transfers, swaps, sales, activity, upgrades (following):
                          transactions per page (default: 25)
-  --order <asc|desc>     query; transfers, swaps, sales, activity with --to-version: oldest
+  --order <asc|desc>     query; transfers, swaps, sales, activity, upgrades with --to-version: oldest
                          or newest first (default: asc; desc without --limit buffers the
                          range to reverse it)
   --out <file>           codegen, record: write to this file instead of stdout
@@ -1480,21 +1577,93 @@ function withCache(options: { cache?: string }, cache: string | undefined, sui: 
   options.cache = cache;
 }
 
-function parseStore(args: string[]): ParsedCommand {
-  const { values, positionals } = wrap(() =>
-    parseArgs({ args, options: STORE_OPTIONS, allowPositionals: true, strict: true }),
-  );
-  if (values.help) return { command: "help" };
-  const { db, postgres } = values;
+/** Exactly one of `--db` and `--postgres`, as `{ db }` or `{ postgres }`. */
+function database(db: string | undefined, postgres: string | undefined): { db: string } | { postgres: string } {
   if (db === undefined && postgres === undefined) throw new UsageError("store needs --db <file> or --postgres <url>");
   if (db !== undefined && postgres !== undefined) throw new UsageError("--db and --postgres cannot be used together");
   if (db === "") throw new UsageError("--db must not be empty");
+  if (db !== undefined) return { db };
   // The value may carry a password, so the refusal never repeats it.
-  if (postgres !== undefined && !isPostgresUrl(postgres)) {
-    throw new UsageError("--postgres must be a postgres:// or postgresql:// URL");
+  if (!isPostgresUrl(postgres!)) throw new UsageError("--postgres must be a postgres:// or postgresql:// URL");
+  return { postgres: postgres! };
+}
+
+function parseStoreAdmin(action: StoreAdminOptions["action"], args: string[]): ParsedCommand {
+  const { values } = wrap(() => parseArgs({ args, options: STORE_ADMIN_OPTIONS, allowPositionals: false, strict: true }));
+  if (values.help) return { command: "help" };
+  for (const [other, flags] of Object.entries(STORE_ADMIN_FLAGS)) {
+    if (other === action) continue;
+    for (const flag of flags) {
+      if (values[flag] !== undefined) throw new UsageError(`--${flag} is for store ${other}, not store ${action}`);
+    }
   }
+  const options: StoreAdminOptions = { action, ...database(values.db, values.postgres) };
+  if (values["by-type"]) options.byType = true;
+  if (action === "prune") {
+    if (values.before === undefined) throw new UsageError("store prune needs --before <version>");
+    options.before = version(values.before, "before")!;
+  }
+  if (values.yes) options.yes = true;
+  if (values.delete !== undefined) {
+    if (values.delete === "") throw new UsageError("--delete must not be empty");
+    options.delete = values.delete;
+  }
+  return { command: "store-admin", options };
+}
+
+type StoreFlags = ReturnType<typeof parseStoreFlags>["values"];
+
+function parseStoreFlags(args: string[]) {
+  return wrap(() => parseArgs({ args, options: STORE_OPTIONS, allowPositionals: true, strict: true }));
+}
+
+function parseStoreRecords(values: StoreFlags, positionals: string[]): ParsedCommand {
+  const kind = values.records!;
+  if (!Object.hasOwn(RECORD_FLAGS, kind)) throw new UsageError(`--records must be transfers, swaps or sales: ${kind}`);
+  const allowed: readonly string[] = RECORD_FLAGS[kind as StoreRecords["kind"]];
+  const sui = chain(values.chain);
+  if (sui && kind !== "transfers") {
+    throw new UsageError(`--records ${kind} is not available with --chain sui: SuiClient has no ${kind} yet`);
+  }
+  if (positionals.length > 0) throw new UsageError(`--records takes no event types: ${positionals[0]}`);
+  for (const flag of EVENT_ONLY_FLAGS) {
+    if (values[flag] !== undefined) throw new UsageError(`--${flag} is for events, so it cannot be combined with --records`);
+  }
+  for (const flag of [...RECORD_ONLY_FLAGS, "account"] as const) {
+    if (values[flag] !== undefined && !allowed.includes(flag)) throw new UsageError(`--${flag} does not narrow --records ${kind}`);
+  }
+  for (const flag of ["asset", "account", "token"] as const) {
+    if (values[flag] === "") throw new UsageError(`--${flag} must not be empty`);
+  }
+  const listed = kind === "swaps" ? names("protocol", values.protocol) : names("marketplace", values.marketplace);
+  const records: StoreRecords =
+    kind === "transfers"
+      ? { kind, ...(values.asset !== undefined && { asset: values.asset }), ...(values.account !== undefined && { account: values.account }) }
+      : kind === "swaps"
+        ? { kind, ...(listed !== undefined && { protocol: listed }), ...(values.asset !== undefined && { asset: values.asset }) }
+        : { kind: "sales", ...(listed !== undefined && { marketplace: listed }), ...(values.token !== undefined && { token: values.token }) };
+  const options: StoreRecordsOptions = { ...endpoint(values, sui), records, ...database(values.db, values.postgres) };
+  withKey(options, values["api-key"]);
+  const fromVersion = version(values["from-version"]);
+  const pollInterval = integer("poll-interval", values["poll-interval"], 0, MAX_TIMEOUT);
+  if (fromVersion !== undefined) options.fromVersion = fromVersion;
+  if (pollInterval !== undefined) options.pollInterval = pollInterval;
+  if (values.name !== undefined) options.name = values.name;
+  return { command: "store-records", options };
+}
+
+function parseStore(args: string[]): ParsedCommand {
+  const [first, ...rest] = args;
+  if (first === "stats" || first === "prune" || first === "cursors") return parseStoreAdmin(first, rest);
+  const { values, positionals } = parseStoreFlags(args);
+  if (values.help) return { command: "help" };
+  const target = database(values.db, values.postgres);
   if (values.name === "") throw new UsageError("--name must not be empty");
-  const options: StoreOptions = { ...source("store", values, positionals), ...(db !== undefined ? { db } : { postgres }) };
+  if (values.records !== undefined) return parseStoreRecords(values, positionals);
+  for (const flag of RECORD_ONLY_FLAGS) {
+    if (values[flag] !== undefined) throw new UsageError(`--${flag} needs --records`);
+  }
+  const options: StoreOptions = { ...source("store", values, positionals), ...target };
   if (values.name !== undefined) options.name = values.name;
   return { command: "store", options };
 }
@@ -1901,8 +2070,8 @@ function parseSales(args: string[]): ParsedCommand {
   return { command: "sales", options };
 }
 
-/** The one address or name `activity` and `trace` take, and their Indexer; Aptos only. */
-function indexedTarget(command: "activity" | "trace" | "holders", values: { chain?: string; indexer?: string }, positionals: string[]) {
+/** The one address or name `activity`, `trace` and `upgrades` take, and the Indexer of the first two; Aptos only. */
+function indexedTarget(command: "activity" | "trace" | "holders" | "upgrades", values: { chain?: string; indexer?: string }, positionals: string[]) {
   if (chain(values.chain)) {
     throw new UsageError(`${command} is not available with --chain sui: SuiClient has no ${command} yet`);
   }
@@ -1925,6 +2094,16 @@ function parseActivity(args: string[]): ParsedCommand {
   const options: ActivityCommandOptions = recordWalk({ ...target, ...withKey(endpoint(values, false), values["api-key"]) }, values);
   if (values["with-asset-info"]) options.withAssetInfo = true;
   return { command: "activity", options };
+}
+
+function parseUpgrades(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: UPGRADES_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const { address } = indexedTarget("upgrades", values, positionals);
+  const options: UpgradesCommandOptions = recordWalk({ address, ...withKey(endpoint(values, false), values["api-key"]) }, values);
+  return { command: "upgrades", options };
 }
 
 function parseTrace(args: string[]): ParsedCommand {
@@ -2165,6 +2344,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "swaps") return parseSwaps(rest);
   if (command === "sales") return parseSales(rest);
   if (command === "activity") return parseActivity(rest);
+  if (command === "upgrades") return parseUpgrades(rest);
   if (command === "trace") return parseTrace(rest);
   if (command === "holders") return parseHolders(rest);
   if (command === "positions") return parsePositions(rest);

@@ -1,5 +1,5 @@
 import { adapterMetrics } from "@streamd/core";
-import type { AdapterMetrics, EventAdapter } from "@streamd/core";
+import type { AdapterMetrics, EventAdapter, PrometheusSource } from "@streamd/core";
 
 /**
  * `--stats`: one `adapterMetrics` per source a command reads, so the numbers
@@ -20,6 +20,15 @@ export class RequestStats {
     else this.indexer = metrics;
     // The wrapper has exactly the methods `adapter` has.
     return metrics.adapter as T;
+  }
+
+  /** Each source's snapshot for `toPrometheus`, labelled `source` and, for nodes, `node` by position. */
+  sources(): PrometheusSource[] {
+    return [
+      ...this.nodes.map((n, i) => ({ snapshot: n.snapshot(), labels: { source: "node", node: String(i) } })),
+      ...(this.archive === undefined ? [] : [{ snapshot: this.archive.snapshot(), labels: { source: "archive" } }]),
+      ...(this.indexer === undefined ? [] : [{ snapshot: this.indexer.snapshot(), labels: { source: "indexer" } }]),
+    ];
   }
 
   /** `{"stats":{"nodes":[...],"archive":{...},"indexer":{...}}}` and a newline, latencies in whole milliseconds. */

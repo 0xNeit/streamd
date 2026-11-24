@@ -356,6 +356,7 @@ describe("webhook routes", () => {
     expect(await one.json()).toMatchObject({ id: body.id, status: "active" });
     expect(await (await call(g, "POST", `/v1/webhooks/${body.id}/resume`)).json()).toMatchObject({ status: "active" });
     expect(g.status().webhooks).toBe(1);
+    expect(g.metrics()).toContain('streamd_gateway_webhooks{status="active"} 1\n');
     expect((await call(g, "DELETE", `/v1/webhooks/${body.id}`)).status).toBe(204);
     expect((await call(g, "GET", `/v1/webhooks/${body.id}`)).status).toBe(404);
     expect((await call(g, "DELETE", `/v1/webhooks/${body.id}`)).status).toBe(404);

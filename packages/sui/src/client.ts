@@ -17,6 +17,8 @@ import type {
   Transfer,
 } from "@streamd/core";
 import { SuiAdapter, requireDigest, requireTransactionBytes, suiDescriptor } from "./adapter.js";
+import { explain } from "./explain.js";
+import type { SuiExplainOptions, SuiTransactionExplanation } from "./explain.js";
 import { addressOrName, nameService, primaryName, resolveName } from "./names.js";
 import { TRANSFER_DESCRIPTOR, coinType, transferSource } from "./transfers.js";
 import type { SuiTransferFilter, SuiTransferListenerOptions, SuiTransferOptions, TransferNarrowing } from "./transfers.js";
@@ -213,6 +215,22 @@ export class SuiClient extends StreamdClient {
     const normal = descriptor === undefined ? undefined : suiDescriptor(descriptor as EventDescriptor);
     const events = await eventsOf(this.adapter, this.limiter, this.defaults.pollInterval!, digest, normal, options);
     return events as unknown as TEvent[];
+  }
+
+  /**
+   * What the transaction with this base58 digest did, as one
+   * `SuiTransactionExplanation`: status, sender and sponsor, time, the PTB's
+   * one `MoveCall`, gas from its effects, the transfers it made (paired as
+   * `transfers()` pairs them) with each account's net change per coin type,
+   * and every event. Waits for the checkpoint as `eventsOf` waits (`timeout`,
+   * `signal`); a failed transaction resolves with `success: false` rather
+   * than rejecting. Coin details are read unless `withAssetInfo: false`, and
+   * `withNames` adds SuiNS `names`. Every read goes through the client's
+   * limiter and a `SuiAdapter` over `sui`, the client's own when it is one.
+   */
+  async explain(digest: string, options: SuiExplainOptions = {}): Promise<SuiTransactionExplanation> {
+    const host = { ledger: this.ledger, limiter: this.limiter, names: this.names, pollInterval: this.defaults.pollInterval! };
+    return explain(host, digest, options);
   }
 
   /**

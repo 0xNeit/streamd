@@ -32,6 +32,12 @@ export interface FakeTransaction {
   error?: string;
   events: FakeInner[];
   ptb?: CallTransaction;
+  /** Under the details mask: the signer, the gas payment's owner and price, the gas summary and balance changes. */
+  sender?: string;
+  payer?: string;
+  price?: bigint;
+  gas?: { computationCost: bigint; storageCost: bigint; storageRebate: bigint; nonRefundableStorageFee: bigint };
+  changes?: [address: string, coinType: string, amount: bigint][];
 }
 
 export const str = (s: string) => ({ kind: { oneofKind: "stringValue" as const, stringValue: s } });
@@ -116,9 +122,17 @@ export function fakeLedger(
           transaction: {
             digest,
             ...(t.cp !== undefined && { checkpoint: t.cp }),
-            effects: { status },
+            effects: { status, ...(t.gas !== undefined && { gasUsed: t.gas }) },
             events: { events: t.events.map((e) => ({ eventType: e.type, ...origin(e), ...(e.sender !== undefined && { sender: e.sender }), json: json(e.amount) })) },
-            ...(t.ptb !== undefined && { transaction: t.ptb }),
+            ...((t.ptb !== undefined || t.sender !== undefined || t.payer !== undefined) && {
+              transaction: {
+                ...t.ptb,
+                ...(t.sender !== undefined && { sender: t.sender }),
+                ...(t.payer !== undefined && { gasPayment: { owner: t.payer, ...(t.price !== undefined && { price: t.price }) } }),
+              },
+            }),
+            ...(t.cp !== undefined && { timestamp: { seconds: 1_700_000_000n + t.cp, nanos: 7_000 } }),
+            ...(t.changes !== undefined && { balanceChanges: t.changes.map(([address, coinType, amount]) => ({ address, coinType, amount: String(amount) })) }),
           },
         },
       };

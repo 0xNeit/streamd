@@ -74,9 +74,9 @@ const SCHEMA = [
   addedIndex("streamd_events_type_c", '(type COLLATE "C", version, event_index) WHERE account_address IS NULL'),
 ];
 
-// Its own schema, created only by what writes or prunes transfers, so the
-// event tables stay all a reader needs.
-export const TRANSFER_SCHEMA = [
+// Its own schema, created only by what writes, prunes or counts records, so
+// the event tables stay all a reader needs.
+export const RECORD_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS streamd_transfers (
     version numeric(20, 0) NOT NULL,
     event_index integer NOT NULL,
@@ -94,6 +94,44 @@ export const TRANSFER_SCHEMA = [
     WHERE from_address IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS streamd_transfers_to ON streamd_transfers (to_address, version, event_index)
     WHERE to_address IS NOT NULL`,
+  `CREATE TABLE IF NOT EXISTS streamd_swaps (
+    version numeric(20, 0) NOT NULL,
+    event_index integer NOT NULL,
+    protocol text NOT NULL,
+    pool_id text NOT NULL,
+    trader text,
+    asset_in text NOT NULL,
+    amount_in numeric(78, 0) NOT NULL,
+    asset_out text NOT NULL,
+    amount_out numeric(78, 0) NOT NULL,
+    swap text NOT NULL,
+    PRIMARY KEY (version, event_index)
+  )`,
+  "CREATE INDEX IF NOT EXISTS streamd_swaps_pool ON streamd_swaps (pool_id, version, event_index)",
+  `CREATE INDEX IF NOT EXISTS streamd_swaps_trader ON streamd_swaps (trader, version, event_index)
+    WHERE trader IS NOT NULL`,
+  "CREATE INDEX IF NOT EXISTS streamd_swaps_asset_in ON streamd_swaps (asset_in, version, event_index)",
+  "CREATE INDEX IF NOT EXISTS streamd_swaps_asset_out ON streamd_swaps (asset_out, version, event_index)",
+  `CREATE TABLE IF NOT EXISTS streamd_sales (
+    version numeric(20, 0) NOT NULL,
+    event_index integer NOT NULL,
+    marketplace text NOT NULL,
+    kind text NOT NULL,
+    token text NOT NULL,
+    collection text,
+    seller text NOT NULL,
+    buyer text NOT NULL,
+    price numeric(78, 0) NOT NULL,
+    royalty numeric(78, 0),
+    fee numeric(78, 0),
+    sale text NOT NULL,
+    PRIMARY KEY (version, event_index)
+  )`,
+  "CREATE INDEX IF NOT EXISTS streamd_sales_token ON streamd_sales (token, version, event_index)",
+  `CREATE INDEX IF NOT EXISTS streamd_sales_collection ON streamd_sales (collection, version, event_index)
+    WHERE collection IS NOT NULL`,
+  "CREATE INDEX IF NOT EXISTS streamd_sales_seller ON streamd_sales (seller, version, event_index)",
+  "CREATE INDEX IF NOT EXISTS streamd_sales_buyer ON streamd_sales (buyer, version, event_index)",
 ];
 
 // Created only by what reads or writes points, as the transfers table is.

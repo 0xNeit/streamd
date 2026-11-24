@@ -11,7 +11,7 @@ import {
   serializeEvent,
 } from "@streamd/core";
 import type { EventTable, PointsState, Score, StreamdEvent, Transfer } from "@streamd/core";
-import { EDGE, POINTS_SCHEMA, PRUNED_BEFORE, TRANSFER_SCHEMA, ensureSchema, forgetSchema, hashKey, versionParam } from "./schema.js";
+import { EDGE, POINTS_SCHEMA, PRUNED_BEFORE, RECORD_SCHEMA, ensureSchema, forgetSchema, hashKey, versionParam } from "./schema.js";
 import type { PostgresClient } from "./schema.js";
 import { eventTableSchema, eventTablesWrite } from "./tables.js";
 
@@ -30,6 +30,30 @@ export interface StoreWriteOptions {
    * so this is what lets a store adapter serve the descriptor back.
    */
   accountAddress?: string;
+}
+
+/** A swap record's data as `writeSwaps` stores it; `@streamd/aptos`'s `Swap` fits it. */
+export interface StoredSwap {
+  protocol: string;
+  poolId: string;
+  trader?: string;
+  assetIn: string;
+  amountIn: bigint;
+  assetOut: string;
+  amountOut: bigint;
+}
+
+/** A sale record's data as `writeSales` stores it; `@streamd/aptos`'s `Sale` fits it. */
+export interface StoredSale {
+  marketplace: string;
+  kind: string;
+  token: string;
+  collection?: string;
+  seller: string;
+  buyer: string;
+  price: bigint;
+  royalty?: bigint;
+  fee?: bigint;
 }
 
 /** A cursor saved under a name, as `cursors()` lists it. */
@@ -58,6 +82,10 @@ export interface StoreStats {
   resourceChanges: bigint;
   /** Rows of `streamd_transfers`. */
   transfers: bigint;
+  /** Rows of `streamd_swaps`. */
+  swaps: bigint;
+  /** Rows of `streamd_sales`. */
+  sales: bigint;
   /** The lowest version of any stored event or resource change; absent when there are none. */
   lowestVersion?: bigint;
   /** The highest version of any stored event or resource change; absent when there are none. */
@@ -140,10 +168,68 @@ function indexText(value: string): string {
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
 const tableText = (value: string) => columnText(value).replace(LONE_SURROGATE, "\uFFFD");
 
-function optionalText(value: unknown, field: string, cap = false): string | null {
+function optionalText(value: unknown, field: string, cap = false, record = "transfer"): string | null {
   if (value === undefined) return null;
-  if (typeof value !== "string") throw new StreamdError(`Not a valid transfer ${field}: ${String(value)}`);
+  if (typeof value !== "string") throw new StreamdError(`Not a valid ${record} ${field}: ${String(value)}`);
   return cap ? indexText(value) : columnText(value);
+}
+
+function requiredText(value: unknown, field: string, record: string, cap = false): string {
+  if (typeof value !== "string" || value === "") throw new StreamdError(`A ${record} needs a non-empty ${field}`);
+  return cap ? indexText(value) : columnText(value);
+}
+
+function u256Text(value: unknown, field: string, record: string): string {
+  if (typeof value !== "bigint" || value < 0n || value > U256_MAX) {
+    throw new StreamdError(`Not a valid ${record} ${field}: ${String(value)} (expected a u256 bigint)`);
+  }
+  return value.toString();
+}
+
+function optionalU256Text(value: unknown, field: string, record: string): string | null {
+  return value === undefined ? null : u256Text(value, field, record);
+}
+
+/** The record's version, eventIndex and JSON, and its data, refused unless an object. */
+function recordOf<T>(record: StreamdEvent<T>, kind: string): [[string, number, string], Partial<T>] {
+  const [version, eventIndex, , , , , json] = rowOf(record);
+  const data = record.data as Partial<T> | null;
+  if (typeof data !== "object" || data === null) throw new StreamdError(`A ${kind} record needs an object as data`);
+  return [[version, eventIndex, json], data];
+}
+
+function swapRowOf(record: StreamdEvent<StoredSwap>): unknown[] {
+  const [[version, eventIndex, json], d] = recordOf(record, "swap");
+  return [
+    version,
+    eventIndex,
+    requiredText(d.protocol, "protocol", "swap"),
+    requiredText(d.poolId, "poolId", "swap", true),
+    optionalText(d.trader, "trader", true, "swap"),
+    requiredText(d.assetIn, "assetIn", "swap", true),
+    u256Text(d.amountIn, "amountIn", "swap"),
+    requiredText(d.assetOut, "assetOut", "swap", true),
+    u256Text(d.amountOut, "amountOut", "swap"),
+    json,
+  ];
+}
+
+function saleRowOf(record: StreamdEvent<StoredSale>): unknown[] {
+  const [[version, eventIndex, json], d] = recordOf(record, "sale");
+  return [
+    version,
+    eventIndex,
+    requiredText(d.marketplace, "marketplace", "sale"),
+    requiredText(d.kind, "kind", "sale"),
+    requiredText(d.token, "token", "sale", true),
+    optionalText(d.collection, "collection", true, "sale"),
+    requiredText(d.seller, "seller", "sale", true),
+    requiredText(d.buyer, "buyer", "sale", true),
+    u256Text(d.price, "price", "sale"),
+    optionalU256Text(d.royalty, "royalty", "sale"),
+    optionalU256Text(d.fee, "fee", "sale"),
+    json,
+  ];
 }
 
 function transferRowOf(record: StreamdEvent<Transfer>): TransferRow {
@@ -229,6 +315,43 @@ INSERT INTO streamd_cursors (name, cursor)
 SELECT $2::text, $3::text WHERE $2::text IS NOT NULL AND $3::text IS NOT NULL
 ON CONFLICT (name) DO UPDATE SET cursor = excluded.cursor`;
 
+// As WRITE, over the swaps table.
+const WRITE_SWAPS = `
+WITH incoming AS (
+  SELECT (r->>0)::numeric, (r->>1)::integer, r->>2, r->>3, r->>4, r->>5, (r->>6)::numeric, r->>7, (r->>8)::numeric, r->>9
+  FROM jsonb_array_elements($1::text::jsonb) AS r
+), written AS (
+  INSERT INTO streamd_swaps
+    (version, event_index, protocol, pool_id, trader, asset_in, amount_in, asset_out, amount_out, swap)
+  SELECT * FROM incoming
+  ON CONFLICT (version, event_index) DO UPDATE SET
+    protocol = excluded.protocol, pool_id = excluded.pool_id, trader = excluded.trader,
+    asset_in = excluded.asset_in, amount_in = excluded.amount_in, asset_out = excluded.asset_out,
+    amount_out = excluded.amount_out, swap = excluded.swap
+)
+INSERT INTO streamd_cursors (name, cursor)
+SELECT $2::text, $3::text WHERE $2::text IS NOT NULL AND $3::text IS NOT NULL
+ON CONFLICT (name) DO UPDATE SET cursor = excluded.cursor`;
+
+// As WRITE, over the sales table.
+const WRITE_SALES = `
+WITH incoming AS (
+  SELECT (r->>0)::numeric, (r->>1)::integer, r->>2, r->>3, r->>4, r->>5, r->>6, r->>7,
+    (r->>8)::numeric, (r->>9)::numeric, (r->>10)::numeric, r->>11
+  FROM jsonb_array_elements($1::text::jsonb) AS r
+), written AS (
+  INSERT INTO streamd_sales
+    (version, event_index, marketplace, kind, token, collection, seller, buyer, price, royalty, fee, sale)
+  SELECT * FROM incoming
+  ON CONFLICT (version, event_index) DO UPDATE SET
+    marketplace = excluded.marketplace, kind = excluded.kind, token = excluded.token,
+    collection = excluded.collection, seller = excluded.seller, buyer = excluded.buyer,
+    price = excluded.price, royalty = excluded.royalty, fee = excluded.fee, sale = excluded.sale
+)
+INSERT INTO streamd_cursors (name, cursor)
+SELECT $2::text, $3::text WHERE $2::text IS NOT NULL AND $3::text IS NOT NULL
+ON CONFLICT (name) DO UPDATE SET cursor = excluded.cursor`;
+
 // As WRITE, over the points table.
 const WRITE_POINTS = `
 WITH incoming AS (
@@ -253,7 +376,9 @@ function requirePointsName(name: string): string {
 // The edge only rises: it is compared as numeric, since it is stored as text.
 const PRUNE = `
 WITH deleted AS (DELETE FROM streamd_events WHERE version < $1::numeric),
-transfers AS (DELETE FROM streamd_transfers WHERE version < $1::numeric)
+transfers AS (DELETE FROM streamd_transfers WHERE version < $1::numeric),
+swaps AS (DELETE FROM streamd_swaps WHERE version < $1::numeric),
+sales AS (DELETE FROM streamd_sales WHERE version < $1::numeric)
 INSERT INTO streamd_cursors (name, cursor) VALUES ('${PRUNED_BEFORE}', $1::text)
 ON CONFLICT (name) DO UPDATE SET cursor = GREATEST(streamd_cursors.cursor::numeric, excluded.cursor::numeric)::text`;
 
@@ -267,6 +392,8 @@ WITH totals AS (
 )
 SELECT rows::text AS rows, changes::text AS changes, lowest::text AS lowest, highest::text AS highest,
   (SELECT count(*) FROM streamd_transfers)::text AS transfers,
+  (SELECT count(*) FROM streamd_swaps)::text AS swaps,
+  (SELECT count(*) FROM streamd_sales)::text AS sales,
   ${EDGE}::text AS edge,
   CASE WHEN $1::boolean THEN (
     SELECT coalesce(json_agg(json_build_array(type, n::text) ORDER BY n DESC, type COLLATE "C"), '[]'::json)::text
@@ -308,7 +435,27 @@ export class PostgresEventStore {
    */
   async writeTransfers(records: readonly StreamdEvent<Transfer>[], checkpoint?: StoreCheckpoint): Promise<void> {
     const rows = [...new Map(records.map((r) => [eventId(r), transferRowOf(r)])).values()];
-    await this.upsertAll(WRITE_TRANSFERS, rows, checkpoint, TRANSFER_SCHEMA);
+    await this.upsertAll(WRITE_TRANSFERS, rows, checkpoint, RECORD_SCHEMA);
+  }
+
+  /**
+   * Upserts swap records, as `swaps()` delivers them, into `streamd_swaps`
+   * and, given a checkpoint, saves its cursor, in one statement. Idempotent
+   * on `(version, eventIndex)`, as `write` is.
+   */
+  async writeSwaps(records: readonly StreamdEvent<StoredSwap>[], checkpoint?: StoreCheckpoint): Promise<void> {
+    const rows = [...new Map(records.map((r) => [eventId(r), swapRowOf(r)])).values()];
+    await this.upsertAll(WRITE_SWAPS, rows, checkpoint, RECORD_SCHEMA);
+  }
+
+  /**
+   * Upserts sale records, as `sales()` delivers them, into `streamd_sales`
+   * and, given a checkpoint, saves its cursor, in one statement. Idempotent
+   * on `(version, eventIndex)`, as `write` is.
+   */
+  async writeSales(records: readonly StreamdEvent<StoredSale>[], checkpoint?: StoreCheckpoint): Promise<void> {
+    const rows = [...new Map(records.map((r) => [eventId(r), saleRowOf(r)])).values()];
+    await this.upsertAll(WRITE_SALES, rows, checkpoint, RECORD_SCHEMA);
   }
 
   /**
@@ -396,33 +543,35 @@ export class PostgresEventStore {
   }
 
   /**
-   * Deletes every event and stored transfer below `beforeVersion` and records
+   * Deletes every event and stored transfer, swap and sale below `beforeVersion` and records
    * that edge, so a `PostgresStoreAdapter` read below it fails instead of
    * returning a short history. Saved cursors stay. A lower edge than one already set stays put.
    */
   async prune(options: { beforeVersion: bigint }): Promise<void> {
     const edge = versionParam(options?.beforeVersion);
     await ensureSchema(this.client);
-    await ensureSchema(this.client, TRANSFER_SCHEMA);
+    await ensureSchema(this.client, RECORD_SCHEMA);
     await this.client.query(PRUNE, [edge]);
   }
 
   /**
    * Counts what the store holds, in one statement so every count reads one
    * snapshot. Like every read, it creates and migrates the event tables on
-   * first use, and creates `streamd_transfers` as `prune` does. Each count
+   * first use, and creates the record tables as `prune` does. Each count
    * scans its table or an index.
    */
   async stats(options?: StoreStatsOptions): Promise<StoreStats> {
     const byType = wantsByType(options);
     await ensureSchema(this.client);
-    await ensureSchema(this.client, TRANSFER_SCHEMA);
+    await ensureSchema(this.client, RECORD_SCHEMA);
     const { rows } = await this.client.query(STATS, [byType]);
     const row = rows[0]!;
     const stats: StoreStats = {
       events: BigInt(String(row.rows)) - BigInt(String(row.changes)),
       resourceChanges: BigInt(String(row.changes)),
       transfers: BigInt(String(row.transfers)),
+      swaps: BigInt(String(row.swaps)),
+      sales: BigInt(String(row.sales)),
       ...(row.lowest != null && { lowestVersion: BigInt(String(row.lowest)), highestVersion: BigInt(String(row.highest)) }),
       prunedBefore: BigInt(String(row.edge)),
     };

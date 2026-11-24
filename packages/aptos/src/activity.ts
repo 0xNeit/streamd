@@ -2,6 +2,8 @@ import { StreamdError, normalizeAddress } from "@streamd/core";
 import type { AccountEventDescriptor, EventAdapter, EventPage, FetchOptions, StreamdEvent, Transfer } from "@streamd/core";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
 import type { Activity, BalanceDelta } from "./types.js";
+import { toAssetValue } from "./values.js";
+import type { Pricer } from "./values.js";
 
 /**
  * Every transaction that affected `account`, the address or name as given;
@@ -20,14 +22,22 @@ function push<K, V>(map: Map<K, V[]>, key: K, value: V): void {
 const byIdentity = (a: StreamdEvent, b: StreamdEvent) =>
   a.version === b.version ? a.eventIndex - b.eventIndex : a.version < b.version ? -1 : 1;
 
-/** `who`'s net per asset over `transfers`, in order of first appearance, zero nets left out. */
+/**
+ * `who`'s net per asset over `transfers`, in order of first appearance, zero
+ * nets left out, each valued at the price of a valued transfer of its asset.
+ */
 export function deltas(transfers: Transfer[], who: string): BalanceDelta[] {
   const sums = new Map<string, bigint>();
   for (const { asset, amount, from, to } of transfers) {
     const delta = (to === who ? amount : 0n) - (from === who ? amount : 0n);
     sums.set(asset, (sums.get(asset) ?? 0n) + delta);
   }
-  return [...sums].filter(([, delta]) => delta !== 0n).map(([asset, delta]) => ({ asset, delta }));
+  return [...sums]
+    .filter(([, delta]) => delta !== 0n)
+    .map(([asset, delta]) => {
+      const priced = transfers.find((t) => t.asset === asset && t.value !== undefined)?.value;
+      return priced === undefined ? { asset, delta } : { asset, delta, value: toAssetValue(priced, delta) };
+    });
 }
 
 /** One transaction's entry, keeping its first event's identity. */
@@ -61,7 +71,8 @@ async function withNames(
  * `adapter` as a source of activity records: each page of an `account`
  * descriptor with `received: true` becomes one record per transaction, its
  * transfers built by `transferSource` over the same page and kept when
- * `account` sent or received them. `name`, when given, attaches `names`.
+ * `account` sent or received them. `name`, when given, attaches `names`;
+ * `pricer` values transfers and balance changes, as `transferSource` does.
  *
  * Grouping sees one page; `IndexerAccountAdapter` pages hold whole
  * transactions.
@@ -72,6 +83,7 @@ export function activitySource(
   withAssetInfo?: boolean,
   requestTimeout?: number,
   name?: (address: string) => Promise<string | null>,
+  pricer?: Pricer,
 ): EventAdapter {
   if (typeof adapter.view !== "function") {
     throw new StreamdError("activity needs an adapter that implements view, for its transfer reads");
@@ -82,7 +94,7 @@ export function activitySource(
     fetchEvents: async (_descriptor, options) => pages.get(options)!,
     view: adapter.view.bind(adapter),
   };
-  const transfers = transferSource(feed, undefined, account, withAssetInfo, requestTimeout);
+  const transfers = transferSource(feed, undefined, account, withAssetInfo, requestTimeout, pricer);
 
   const source: EventAdapter = {
     fetchEvents: async (descriptor, options) => {

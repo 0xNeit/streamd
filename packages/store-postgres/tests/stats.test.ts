@@ -3,7 +3,7 @@ import { describe, expect, it } from "bun:test";
 import { StreamdError } from "@streamd/core";
 import type { StreamdEvent, Transfer } from "@streamd/core";
 import { PostgresEventStore } from "../src/index.js";
-import type { StoreStats } from "../src/index.js";
+import type { StoreStats, StoredSale, StoredSwap } from "../src/index.js";
 
 const A = "0x1::a::A";
 const B = "0x1::b::B";
@@ -19,11 +19,23 @@ function tr(version: bigint, eventIndex: number): StreamdEvent<Transfer> {
   return { type: "0x1::fungible_asset::Deposit", data: { asset: "0xa", amount: 5n }, version, sequenceNumber: 0n, eventIndex };
 }
 
+function swap(version: bigint): StreamdEvent<StoredSwap> {
+  const data = { protocol: "hyperion", poolId: "0xp", assetIn: "0xa", amountIn: 1n, assetOut: "0xb", amountOut: 2n };
+  return { type: "0x1::pool::Swap", data, version, sequenceNumber: 0n, eventIndex: 0 };
+}
+
+function sale(version: bigint): StreamdEvent<StoredSale> {
+  const data = { marketplace: "wapal", kind: "listing", token: "0xt", seller: "0xs", buyer: "0xb", price: 9n };
+  return { type: "0x1::market::Fill", data, version, sequenceNumber: 0n, eventIndex: 0 };
+}
+
 // The same sequence and expected answers as the SQLite suite, so the two stores are held to one result.
 const WRITTEN: StoreStats = {
   events: 5n,
   resourceChanges: 1n,
   transfers: 2n,
+  swaps: 1n,
+  sales: 1n,
   lowestVersion: 3n,
   highestVersion: 9n,
   prunedBefore: 0n,
@@ -37,6 +49,8 @@ const PRUNED: StoreStats = {
   events: 3n,
   resourceChanges: 1n,
   transfers: 2n,
+  swaps: 1n,
+  sales: 0n,
   lowestVersion: 5n,
   highestVersion: 9n,
   prunedBefore: 5n,
@@ -51,6 +65,8 @@ async function write(store: PostgresEventStore): Promise<void> {
   await store.write([ev(9n, 0, B), ev(3n, 0, A), ev(5n, 1, A), ev(7n, 0, B), ev(4n, 0, C)]);
   await store.write([ev(6n, 2, COIN)], undefined, { accountAddress: HOLDER });
   await store.writeTransfers([tr(5n, 1), tr(8n, 0)]);
+  await store.writeSwaps([swap(6n)]);
+  await store.writeSales([sale(2n)]);
 }
 
 async function tableNames(db: PGlite): Promise<string[]> {
@@ -63,11 +79,13 @@ async function tableNames(db: PGlite): Promise<string[]> {
 describe("PostgresEventStore.stats", () => {
   it("reports an empty store with no bounds", async () => {
     const store = new PostgresEventStore(new PGlite());
-    expect(await store.stats()).toEqual({ events: 0n, resourceChanges: 0n, transfers: 0n, prunedBefore: 0n });
+    expect(await store.stats()).toEqual({ events: 0n, resourceChanges: 0n, transfers: 0n, swaps: 0n, sales: 0n, prunedBefore: 0n });
     expect(await store.stats({ byType: true })).toEqual({
       events: 0n,
       resourceChanges: 0n,
       transfers: 0n,
+      swaps: 0n,
+      sales: 0n,
       prunedBefore: 0n,
       byType: [],
     });
@@ -100,7 +118,7 @@ describe("PostgresEventStore.stats", () => {
   it("counts transfers stored without any event", async () => {
     const store = new PostgresEventStore(new PGlite());
     await store.writeTransfers([tr(1n, 0)]);
-    expect(await store.stats()).toEqual({ events: 0n, resourceChanges: 0n, transfers: 1n, prunedBefore: 0n });
+    expect(await store.stats()).toEqual({ events: 0n, resourceChanges: 0n, transfers: 1n, swaps: 0n, sales: 0n, prunedBefore: 0n });
   });
 
   it("keeps exact counts and versions at the top of the u64 range", async () => {
@@ -126,6 +144,8 @@ describe("PostgresEventStore.stats", () => {
       events: 3n,
       resourceChanges: 0n,
       transfers: 0n,
+      swaps: 0n,
+      sales: 0n,
       lowestVersion: 10n,
       highestVersion: 12n,
       prunedBefore: 10n,
@@ -134,7 +154,7 @@ describe("PostgresEventStore.stats", () => {
         { type: B, count: 1n },
       ],
     });
-    expect(await tableNames(db)).toEqual(["streamd_cursors", "streamd_events", "streamd_transfers"]);
+    expect(await tableNames(db)).toEqual(["streamd_cursors", "streamd_events", "streamd_sales", "streamd_swaps", "streamd_transfers"]);
   });
 
   it("refuses options that are not an object with a boolean byType, before any query", async () => {

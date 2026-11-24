@@ -24,6 +24,8 @@ export { SharedFetches } from "./shared.js";
 // Building blocks the chain packages use for their own client methods.
 export { UNSIGNED_INTEGER, fieldDecoder } from "./decode.js";
 export { descriptorKey, onAbort, raceAbort, redactSecrets, resolveFromVersion, sleep } from "./utils.js";
+export { parseAlert, serializeAlert } from "./alert.js";
+export type { AlertAnomaly, AlertAnomalyRule, AlertPayload, AlertThreshold } from "./alert.js";
 export { parseEvent, serializeEvent } from "./serialize.js";
 export { STANDARD_COLUMNS, eventTableRows, requireEventTables } from "./tables.js";
 export type { EventTableRow } from "./tables.js";

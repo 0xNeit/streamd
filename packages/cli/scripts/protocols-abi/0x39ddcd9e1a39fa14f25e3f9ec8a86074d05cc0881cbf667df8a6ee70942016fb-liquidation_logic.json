@@ -1,0 +1,247 @@
+{
+ "abi": {
+  "address": "0x39ddcd9e1a39fa14f25e3f9ec8a86074d05cc0881cbf667df8a6ee70942016fb",
+  "name": "liquidation_logic",
+  "structs": [
+   {
+    "name": "AvailableCollateralToLiquidateLocalVars",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "max_collateral_to_liquidate",
+      "type": "u256"
+     },
+     {
+      "name": "base_collateral",
+      "type": "u256"
+     },
+     {
+      "name": "bonus_collateral",
+      "type": "u256"
+     },
+     {
+      "name": "collateral_amount",
+      "type": "u256"
+     },
+     {
+      "name": "debt_amount_needed",
+      "type": "u256"
+     },
+     {
+      "name": "liquidation_protocol_fee_percentage",
+      "type": "u256"
+     },
+     {
+      "name": "liquidation_protocol_fee",
+      "type": "u256"
+     },
+     {
+      "name": "collateral_to_liquidate_in_base_currency",
+      "type": "u256"
+     },
+     {
+      "name": "collateral_asset_price",
+      "type": "u256"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "DeficitCreated",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "user",
+      "type": "address"
+     },
+     {
+      "name": "debt_asset",
+      "type": "address"
+     },
+     {
+      "name": "amount_created",
+      "type": "u256"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ExecuteLiquidationCallParams",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "reserves_count",
+      "type": "u256"
+     },
+     {
+      "name": "debt_to_cover",
+      "type": "u256"
+     },
+     {
+      "name": "collateral_asset",
+      "type": "address"
+     },
+     {
+      "name": "debt_asset",
+      "type": "address"
+     },
+     {
+      "name": "user",
+      "type": "address"
+     },
+     {
+      "name": "receive_a_token",
+      "type": "bool"
+     },
+     {
+      "name": "user_emode_category",
+      "type": "u8"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LiquidationCall",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "collateral_asset",
+      "type": "address"
+     },
+     {
+      "name": "debt_asset",
+      "type": "address"
+     },
+     {
+      "name": "user",
+      "type": "address"
+     },
+     {
+      "name": "debt_to_cover",
+      "type": "u256"
+     },
+     {
+      "name": "liquidated_collateral_amount",
+      "type": "u256"
+     },
+     {
+      "name": "liquidator",
+      "type": "address"
+     },
+     {
+      "name": "receive_a_token",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LiquidationCallLocalVars",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "user_collateral_balance",
+      "type": "u256"
+     },
+     {
+      "name": "user_reserve_debt",
+      "type": "u256"
+     },
+     {
+      "name": "actual_debt_to_liquidate",
+      "type": "u256"
+     },
+     {
+      "name": "actual_collateral_to_liquidate",
+      "type": "u256"
+     },
+     {
+      "name": "liquidation_bonus",
+      "type": "u256"
+     },
+     {
+      "name": "health_factor",
+      "type": "u256"
+     },
+     {
+      "name": "liquidation_protocol_fee_amount",
+      "type": "u256"
+     },
+     {
+      "name": "total_collateral_in_base_currency",
+      "type": "u256"
+     },
+     {
+      "name": "total_debt_in_base_currency",
+      "type": "u256"
+     },
+     {
+      "name": "collateral_to_liquidate_in_base_currency",
+      "type": "u256"
+     },
+     {
+      "name": "user_reserve_debt_in_base_currency",
+      "type": "u256"
+     },
+     {
+      "name": "user_reserve_collateral_in_base_currency",
+      "type": "u256"
+     },
+     {
+      "name": "collateral_asset_price",
+      "type": "u256"
+     },
+     {
+      "name": "debt_asset_price",
+      "type": "u256"
+     },
+     {
+      "name": "collateral_asset_unit",
+      "type": "u256"
+     },
+     {
+      "name": "debt_asset_unit",
+      "type": "u256"
+     },
+     {
+      "name": "collateral_a_token",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

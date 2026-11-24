@@ -13,7 +13,7 @@ import type { EventTable, PointsState, Score, StreamdEvent, Transfer } from "@st
 import {
   POINTS_SCHEMA,
   PRUNED_BEFORE,
-  TRANSFER_SCHEMA,
+  RECORD_SCHEMA,
   ensureSchema,
   eventColumns,
   hashKey,
@@ -43,6 +43,30 @@ export interface StoreWriteOptions {
   accountAddress?: string;
 }
 
+/** A swap record's data as `writeSwaps` stores it; `@streamd/aptos`'s `Swap` fits it. */
+export interface StoredSwap {
+  protocol: string;
+  poolId: string;
+  trader?: string;
+  assetIn: string;
+  amountIn: bigint;
+  assetOut: string;
+  amountOut: bigint;
+}
+
+/** A sale record's data as `writeSales` stores it; `@streamd/aptos`'s `Sale` fits it. */
+export interface StoredSale {
+  marketplace: string;
+  kind: string;
+  token: string;
+  collection?: string;
+  seller: string;
+  buyer: string;
+  price: bigint;
+  royalty?: bigint;
+  fee?: bigint;
+}
+
 /** A cursor saved under a name, as `cursors()` lists it. */
 export interface SavedCursor {
   name: string;
@@ -67,8 +91,12 @@ export interface StoreStats {
   events: bigint;
   /** Rows written as resource changes, with an `accountAddress`. */
   resourceChanges: bigint;
-  /** Rows of `streamd_transfers`, `0n` before the first transfer write or prune. */
+  /** Rows of `streamd_transfers`, `0n` before the first record write or prune. */
   transfers: bigint;
+  /** Rows of `streamd_swaps`, counted as `transfers` is. */
+  swaps: bigint;
+  /** Rows of `streamd_sales`, counted as `transfers` is. */
+  sales: bigint;
   /** The lowest version of any stored event or resource change; absent when there are none. */
   lowestVersion?: bigint;
   /** The highest version of any stored event or resource change; absent when there are none. */
@@ -115,10 +143,68 @@ function rowOf(event: StreamdEvent, accountAddress: string | null = null): unkno
 
 const U256_MAX = 2n ** 256n - 1n;
 
-function optionalText(value: unknown, field: string): string | null {
+function optionalText(value: unknown, field: string, record = "transfer"): string | null {
   if (value === undefined) return null;
-  if (typeof value !== "string") throw new StreamdError(`Not a valid transfer ${field}: ${String(value)}`);
+  if (typeof value !== "string") throw new StreamdError(`Not a valid ${record} ${field}: ${String(value)}`);
   return value;
+}
+
+function requiredText(value: unknown, field: string, record: string): string {
+  if (typeof value !== "string" || value === "") throw new StreamdError(`A ${record} needs a non-empty ${field}`);
+  return value;
+}
+
+function u256Text(value: unknown, field: string, record: string): string {
+  if (typeof value !== "bigint" || value < 0n || value > U256_MAX) {
+    throw new StreamdError(`Not a valid ${record} ${field}: ${String(value)} (expected a u256 bigint)`);
+  }
+  return value.toString();
+}
+
+function optionalU256Text(value: unknown, field: string, record: string): string | null {
+  return value === undefined ? null : u256Text(value, field, record);
+}
+
+/** The record's version, eventIndex and JSON, and its data, refused unless an object. */
+function recordOf<T>(record: StreamdEvent<T>, kind: string): [unknown[], Partial<T>] {
+  const [version, eventIndex, , , , , json] = rowOf(record);
+  const data = record.data as Partial<T> | null;
+  if (typeof data !== "object" || data === null) throw new StreamdError(`A ${kind} record needs an object as data`);
+  return [[version, eventIndex, json], data];
+}
+
+function swapRowOf(record: StreamdEvent<StoredSwap>): unknown[] {
+  const [[version, eventIndex, json], d] = recordOf(record, "swap");
+  return [
+    version,
+    eventIndex,
+    requiredText(d.protocol, "protocol", "swap"),
+    requiredText(d.poolId, "poolId", "swap"),
+    optionalText(d.trader, "trader", "swap"),
+    requiredText(d.assetIn, "assetIn", "swap"),
+    u256Text(d.amountIn, "amountIn", "swap"),
+    requiredText(d.assetOut, "assetOut", "swap"),
+    u256Text(d.amountOut, "amountOut", "swap"),
+    json,
+  ];
+}
+
+function saleRowOf(record: StreamdEvent<StoredSale>): unknown[] {
+  const [[version, eventIndex, json], d] = recordOf(record, "sale");
+  return [
+    version,
+    eventIndex,
+    requiredText(d.marketplace, "marketplace", "sale"),
+    requiredText(d.kind, "kind", "sale"),
+    requiredText(d.token, "token", "sale"),
+    optionalText(d.collection, "collection", "sale"),
+    requiredText(d.seller, "seller", "sale"),
+    requiredText(d.buyer, "buyer", "sale"),
+    u256Text(d.price, "price", "sale"),
+    optionalU256Text(d.royalty, "royalty", "sale"),
+    optionalU256Text(d.fee, "fee", "sale"),
+    json,
+  ];
 }
 
 function transferRowOf(record: StreamdEvent<Transfer>): unknown[] {
@@ -146,6 +232,8 @@ function transferRowOf(record: StreamdEvent<Transfer>): unknown[] {
   ];
 }
 
+const RECORD_TABLES = ["streamd_transfers", "streamd_swaps", "streamd_sales"] as const;
+
 function requireName(name: unknown): string {
   if (typeof name !== "string" || name === "") {
     throw new StreamdError("A checkpoint name must be a non-empty string");
@@ -172,6 +260,8 @@ export class SqliteEventStore {
   private readonly listCursors: SqliteStatement;
   private readonly dropCursor: SqliteStatement;
   private upsertTransfer?: SqliteStatement;
+  private upsertSwap?: SqliteStatement;
+  private upsertSale?: SqliteStatement;
   private upsertPoints?: SqliteStatement;
   private readonly tableUpserts = new WeakMap<readonly EventTable[], Map<EventTable, SqliteStatement>>();
 
@@ -234,7 +324,7 @@ export class SqliteEventStore {
     const rows = records.map(transferRowOf);
     // Checked on every write: a caller rolling back its own transaction around
     // the first writeTransfers removes the table while keeping the statement.
-    this.db.exec(TRANSFER_SCHEMA);
+    this.db.exec(RECORD_SCHEMA);
     this.upsertTransfer ??= this.db.prepare(
       `INSERT INTO streamd_transfers
          (version, event_index, asset, amount, from_address, to_address, symbol, decimals, transfer)
@@ -245,6 +335,48 @@ export class SqliteEventStore {
          transfer = excluded.transfer`,
     );
     this.upsertAll(rows.map((row) => [this.upsertTransfer!, row]), checkpoint);
+  }
+
+  /**
+   * Upserts swap records, as `swaps()` delivers them, into `streamd_swaps`
+   * and, given a checkpoint, saves its cursor, all in one transaction.
+   * Idempotent on `(version, eventIndex)`, as `write` is.
+   */
+  writeSwaps(records: readonly StreamdEvent<StoredSwap>[], checkpoint?: StoreCheckpoint): void {
+    const rows = records.map(swapRowOf);
+    // Checked on every write, as writeTransfers checks its table.
+    this.db.exec(RECORD_SCHEMA);
+    this.upsertSwap ??= this.db.prepare(
+      `INSERT INTO streamd_swaps
+         (version, event_index, protocol, pool_id, trader, asset_in, amount_in, asset_out, amount_out, swap)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (version, event_index) DO UPDATE SET
+         protocol = excluded.protocol, pool_id = excluded.pool_id, trader = excluded.trader,
+         asset_in = excluded.asset_in, amount_in = excluded.amount_in, asset_out = excluded.asset_out,
+         amount_out = excluded.amount_out, swap = excluded.swap`,
+    );
+    this.upsertAll(rows.map((row) => [this.upsertSwap!, row]), checkpoint);
+  }
+
+  /**
+   * Upserts sale records, as `sales()` delivers them, into `streamd_sales`
+   * and, given a checkpoint, saves its cursor, all in one transaction.
+   * Idempotent on `(version, eventIndex)`, as `write` is.
+   */
+  writeSales(records: readonly StreamdEvent<StoredSale>[], checkpoint?: StoreCheckpoint): void {
+    const rows = records.map(saleRowOf);
+    // Checked on every write, as writeTransfers checks its table.
+    this.db.exec(RECORD_SCHEMA);
+    this.upsertSale ??= this.db.prepare(
+      `INSERT INTO streamd_sales
+         (version, event_index, marketplace, kind, token, collection, seller, buyer, price, royalty, fee, sale)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (version, event_index) DO UPDATE SET
+         marketplace = excluded.marketplace, kind = excluded.kind, token = excluded.token,
+         collection = excluded.collection, seller = excluded.seller, buyer = excluded.buyer,
+         price = excluded.price, royalty = excluded.royalty, fee = excluded.fee, sale = excluded.sale`,
+    );
+    this.upsertAll(rows.map((row) => [this.upsertSale!, row]), checkpoint);
   }
 
   /**
@@ -302,17 +434,17 @@ export class SqliteEventStore {
   }
 
   /**
-   * Deletes every event and stored transfer below `beforeVersion` and records
+   * Deletes every event and stored transfer, swap and sale below `beforeVersion` and records
    * that edge, so a `StoreAdapter` read below it fails instead of returning a
    * short history. Saved cursors stay. A lower edge than one already set
    * deletes nothing new.
    */
   prune(options: { beforeVersion: bigint }): void {
     const key = versionKey(options?.beforeVersion);
-    this.db.exec(TRANSFER_SCHEMA);
+    this.db.exec(RECORD_SCHEMA);
     transaction(this.db, () => {
       this.db.prepare("DELETE FROM streamd_events WHERE version < ?").run(key);
-      this.db.prepare("DELETE FROM streamd_transfers WHERE version < ?").run(key);
+      for (const table of RECORD_TABLES) this.db.prepare(`DELETE FROM ${table} WHERE version < ?`).run(key);
       raisePrunedBefore(this.db, key);
     });
   }
@@ -335,16 +467,17 @@ export class SqliteEventStore {
              min(version) AS lowest, max(version) AS highest FROM streamd_events`,
         )
         .get() as { rows: number | bigint; changes: number | bigint; lowest: string | null; highest: string | null };
-      const hasTransfers = this.db
-        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'streamd_transfers'")
-        .get();
-      const transfers = hasTransfers
-        ? (this.db.prepare("SELECT count(*) AS n FROM streamd_transfers").get() as { n: number | bigint }).n
-        : 0;
+      // Each looked up apart: a database from before swaps and sales has transfers alone.
+      const [transfers, swaps, sales] = RECORD_TABLES.map((table) => {
+        const exists = this.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+        return exists ? BigInt((this.db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number | bigint }).n) : 0n;
+      }) as [bigint, bigint, bigint];
       stats = {
         events: BigInt(totals.rows) - BigInt(totals.changes),
         resourceChanges: BigInt(totals.changes),
-        transfers: BigInt(transfers),
+        transfers,
+        swaps,
+        sales,
         ...(totals.lowest !== null && { lowestVersion: BigInt(totals.lowest), highestVersion: BigInt(totals.highest!) }),
         prunedBefore: prunedBefore(this.db),
       };

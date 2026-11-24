@@ -1,0 +1,366 @@
+{
+ "abi": {
+  "address": "0x4bf51972879e3b95c4781a5cdcb9e1ee24ef483e7d22f2d903626f126df62bd1",
+  "name": "liquidity_pool",
+  "structs": [
+   {
+    "name": "AddLiquidityEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "lp",
+      "type": "address"
+     },
+     {
+      "name": "pool",
+      "type": "address"
+     },
+     {
+      "name": "amount_1",
+      "type": "u64"
+     },
+     {
+      "name": "amount_2",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ClaimFeesEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool",
+      "type": "address"
+     },
+     {
+      "name": "amount_1",
+      "type": "u64"
+     },
+     {
+      "name": "amount_2",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CreatePoolEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool",
+      "type": "0x1::object::Object<0x4bf51972879e3b95c4781a5cdcb9e1ee24ef483e7d22f2d903626f126df62bd1::liquidity_pool::LiquidityPool>"
+     },
+     {
+      "name": "token_1",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "token_2",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "is_stable",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FeesAccounting",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "total_fees_1",
+      "type": "u128"
+     },
+     {
+      "name": "total_fees_2",
+      "type": "u128"
+     },
+     {
+      "name": "total_fees_at_last_claim_1",
+      "type": "0x1::smart_table::SmartTable<address, u128>"
+     },
+     {
+      "name": "total_fees_at_last_claim_2",
+      "type": "0x1::smart_table::SmartTable<address, u128>"
+     },
+     {
+      "name": "claimable_1",
+      "type": "0x1::smart_table::SmartTable<address, u128>"
+     },
+     {
+      "name": "claimable_2",
+      "type": "0x1::smart_table::SmartTable<address, u128>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LPTokenRefs",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "burn_ref",
+      "type": "0x1::fungible_asset::BurnRef"
+     },
+     {
+      "name": "mint_ref",
+      "type": "0x1::fungible_asset::MintRef"
+     },
+     {
+      "name": "transfer_ref",
+      "type": "0x1::fungible_asset::TransferRef"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LiquidityPool",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "token_store_1",
+      "type": "0x1::object::Object<0x1::fungible_asset::FungibleStore>"
+     },
+     {
+      "name": "token_store_2",
+      "type": "0x1::object::Object<0x1::fungible_asset::FungibleStore>"
+     },
+     {
+      "name": "fees_store_1",
+      "type": "0x1::object::Object<0x1::fungible_asset::FungibleStore>"
+     },
+     {
+      "name": "fees_store_2",
+      "type": "0x1::object::Object<0x1::fungible_asset::FungibleStore>"
+     },
+     {
+      "name": "lp_token_refs",
+      "type": "0x4bf51972879e3b95c4781a5cdcb9e1ee24ef483e7d22f2d903626f126df62bd1::liquidity_pool::LPTokenRefs"
+     },
+     {
+      "name": "swap_fee_bps",
+      "type": "u64"
+     },
+     {
+      "name": "is_stable",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "LiquidityPoolConfigs",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "all_pools",
+      "type": "0x1::smart_vector::SmartVector<0x1::object::Object<0x4bf51972879e3b95c4781a5cdcb9e1ee24ef483e7d22f2d903626f126df62bd1::liquidity_pool::LiquidityPool>>"
+     },
+     {
+      "name": "is_paused",
+      "type": "bool"
+     },
+     {
+      "name": "fee_manager",
+      "type": "address"
+     },
+     {
+      "name": "pauser",
+      "type": "address"
+     },
+     {
+      "name": "pending_fee_manager",
+      "type": "address"
+     },
+     {
+      "name": "pending_pauser",
+      "type": "address"
+     },
+     {
+      "name": "stable_fee_bps",
+      "type": "u64"
+     },
+     {
+      "name": "volatile_fee_bps",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RemoveLiquidityEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "lp",
+      "type": "address"
+     },
+     {
+      "name": "pool",
+      "type": "address"
+     },
+     {
+      "name": "amount_lp",
+      "type": "u64"
+     },
+     {
+      "name": "amount_1",
+      "type": "u64"
+     },
+     {
+      "name": "amount_2",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SwapEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool",
+      "type": "address"
+     },
+     {
+      "name": "from_token",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "to_token",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "amount_in",
+      "type": "u64"
+     },
+     {
+      "name": "amount_out",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SyncEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool",
+      "type": "address"
+     },
+     {
+      "name": "reserves_1",
+      "type": "u128"
+     },
+     {
+      "name": "reserves_2",
+      "type": "u128"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "TransferEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "pool",
+      "type": "address"
+     },
+     {
+      "name": "amount",
+      "type": "u64"
+     },
+     {
+      "name": "from",
+      "type": "address"
+     },
+     {
+      "name": "to",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

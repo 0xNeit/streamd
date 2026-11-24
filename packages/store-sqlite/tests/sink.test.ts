@@ -2,8 +2,8 @@ import { Database } from "bun:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "bun:test";
 import { MemoryAdapter, StreamdClient, eventId, points } from "@streamd/core";
 import type { EventAdapter, EventCallback, EventDescriptor, FetchOptions, PointsState, Reduction, Score, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
-import { SqliteEventStore, StoreAdapter, storeEvents, storePoints, storeTransfers } from "../src/index.js";
-import type { TransferClient } from "../src/index.js";
+import { SqliteEventStore, StoreAdapter, storeEvents, storePoints, storeSales, storeSwaps, storeTransfers } from "../src/index.js";
+import type { SaleClient, StoredSale, StoredSwap, SwapClient, TransferClient } from "../src/index.js";
 
 const SWAP = "0x1::dex::Swap";
 const swaps: EventDescriptor = { kind: "module", eventType: SWAP };
@@ -400,6 +400,106 @@ describe("storeTransfers", () => {
     storeTransfers(client, store, { name: "t", asset: 5 }).unsubscribe();
     // @ts-expect-error name is required
     expect(() => storeTransfers(client, store, { asset: "0xa" })).toThrow("needs a name");
+    client.destroy();
+  });
+});
+
+interface RecordOptions extends SubscriptionOptions {
+  protocol?: string[];
+  token?: string;
+}
+
+function swapRecords(count: number): StreamdEvent<StoredSwap>[] {
+  return Array.from({ length: count }, (_, i) => ({
+    type: SWAP,
+    data: { protocol: "hyperion", poolId: "0xp", assetIn: "0xa", amountIn: BigInt(i + 1), assetOut: "0xb", amountOut: 1n },
+    version: BigInt(i + 1),
+    sequenceNumber: 0n,
+    eventIndex: 1,
+  }));
+}
+
+function saleRecords(count: number): StreamdEvent<StoredSale>[] {
+  return Array.from({ length: count }, (_, i) => ({
+    type: SWAP,
+    data: { marketplace: "wapal", kind: "listing", token: "0xt", seller: "0xs", buyer: "0xb", price: BigInt(i + 1) },
+    version: BigInt(i + 1),
+    sequenceNumber: 0n,
+    eventIndex: 2,
+  }));
+}
+
+/** A chain client's swaps() and sales(), over MemoryAdapters whose events already are records. */
+function recordClient(swapList: StreamdEvent[], saleList: StreamdEvent[]): SwapClient<RecordOptions> & SaleClient<RecordOptions> & { destroy(): void } {
+  const swapsClient = new StreamdClient({ adapter: new MemoryAdapter(swapList) });
+  const salesClient = new StreamdClient({ adapter: new MemoryAdapter(saleList) });
+  const strip = ({ protocol: _p, token: _t, ...rest }: RecordOptions = {}) => rest;
+  return {
+    swaps: (callback, options) => swapsClient.on(swaps, callback as EventCallback, strip(options)),
+    sales: (callback, options) => salesClient.on(swaps, callback as EventCallback, strip(options)),
+    destroy: () => (swapsClient.destroy(), salesClient.destroy()),
+  };
+}
+
+const keys = (db: Database, table: string) =>
+  (db.query(`SELECT version, event_index FROM ${table} ORDER BY version`).all() as { version: string; event_index: number }[]).map(
+    (r) => `${BigInt(r.version)}:${r.event_index}`,
+  );
+
+describe("storeSwaps and storeSales", () => {
+  it("resume after a restart with every record stored once, each under its own cursor name", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    const options = { name: "r", batchSize: 2, pollInterval: 5 };
+    const first = recordClient(swapRecords(3), saleRecords(4));
+    const subs = await Promise.all([
+      caughtUp((onCaughtUp) => storeSwaps(first, store, { ...options, protocol: ["hyperion"], onCaughtUp })),
+      caughtUp((onCaughtUp) => storeSales(first, store, { ...options, token: "0xt", onCaughtUp })),
+    ]);
+    for (const sub of subs) sub.unsubscribe();
+    first.destroy();
+    expect(keys(db, "streamd_swaps")).toEqual(swapRecords(3).map(eventId));
+    expect(keys(db, "streamd_sales")).toEqual(saleRecords(4).map(eventId));
+    expect(store.readCursor("swaps:r")).toBe("3");
+    expect(store.readCursor("sales:r")).toBe("4");
+
+    const second = recordClient(swapRecords(5), saleRecords(6));
+    const seen: string[] = [];
+    const where = (e: StreamdEvent) => (seen.push(eventId(e)), true);
+    const resumed = await Promise.all([
+      caughtUp((onCaughtUp) => storeSwaps(second, store, { ...options, where, onCaughtUp })),
+      caughtUp((onCaughtUp) => storeSales(second, store, { ...options, where, onCaughtUp })),
+    ]);
+    for (const sub of resumed) sub.unsubscribe();
+    second.destroy();
+    expect(seen.sort()).toEqual(["4:1", "5:1", "5:2", "6:2"]);
+    expect(keys(db, "streamd_swaps")).toEqual(swapRecords(5).map(eventId));
+    expect(keys(db, "streamd_sales")).toEqual(saleRecords(6).map(eventId));
+  });
+
+  it("ends on a failed write without moving the saved cursor past it", async () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.writeSwaps([]);
+    db.exec(`CREATE TRIGGER boom BEFORE INSERT ON streamd_swaps
+      WHEN NEW.version >= '00000000000000000003' BEGIN SELECT RAISE(ABORT, 'disk full'); END`);
+    const client = recordClient(swapRecords(6), []);
+    const error = await new Promise<Error>((resolve) => {
+      storeSwaps(client, store, { name: "s", batchSize: 2, pollInterval: 5, onError: resolve });
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    client.destroy();
+    expect((error.cause as Error).message).toContain("disk full");
+    expect(keys(db, "streamd_swaps")).toEqual(["1:1", "2:1"]);
+    expect(store.readCursor("swaps:s")).toBe("2");
+  });
+
+  it("needs a name", () => {
+    const store = new SqliteEventStore(new Database(":memory:"));
+    const client = recordClient([], []);
+    // @ts-expect-error name is required
+    expect(() => storeSwaps(client, store, {})).toThrow("needs a name");
+    expect(() => storeSales(client, store, { name: "" })).toThrow("needs a name");
     client.destroy();
   });
 });

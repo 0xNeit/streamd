@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { StreamdClient, StreamdNetworkError, parseEvent } from "@streamd/core";
+import { StreamdClient, StreamdNetworkError, adapterMetrics, parseEvent } from "@streamd/core";
 import type { EventAdapter, EventDescriptor } from "@streamd/core";
 import { createGateway } from "../src/server.js";
 import type { Gateway, GatewayOptions } from "../src/server.js";
@@ -214,5 +214,68 @@ describe("requests", () => {
     gateway.close();
     await waitFor(() => stream.done);
     expect(gateway.status()).toEqual({ topics: [], connections: 0, webhooks: 0 });
+  });
+});
+
+describe("metrics", () => {
+  const SAMPLE = /^[a-zA-Z_:][a-zA-Z0-9_:]*(\{[a-zA-Z_][a-zA-Z0-9_]*="(?:[^"\\]|\\.)*"(?:,[a-zA-Z_][a-zA-Z0-9_]*="(?:[^"\\]|\\.)*")*\})? -?[0-9.e+-]+$/;
+
+  /** The sample lines, each checked against the exposition format, as `name{labels}` to value. */
+  async function scrape(gateway: Gateway, init?: RequestInit): Promise<Map<string, number>> {
+    const response = await call(gateway, new Request("http://localhost/metrics", init));
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/plain; version=0.0.4; charset=utf-8");
+    const samples = new Map<string, number>();
+    for (const line of (await response.text()).trimEnd().split("\n")) {
+      if (line.startsWith("# HELP ") || line.startsWith("# TYPE ")) continue;
+      expect(line).toMatch(SAMPLE);
+      const at = line.lastIndexOf(" ");
+      samples.set(line.slice(0, at), Number(line.slice(at + 1)));
+    }
+    return samples;
+  }
+
+  it("serves under /v1/status's auth rule", async () => {
+    const guarded = setup({ token: "s3cret" });
+    expect((await call(guarded, new Request("http://localhost/metrics"))).status).toBe(401);
+    expect((await call(guarded, new Request("http://localhost/metrics", { headers: { authorization: "Bearer wrong" } }))).status).toBe(401);
+    await scrape(guarded, { headers: { authorization: "Bearer s3cret" } });
+    expect((await call(guarded, new Request("http://localhost/metrics?access_token=s3cret"))).status).toBe(200);
+    const open = setup();
+    expect((await call(open, new Request("http://evil.example:8787/metrics"))).status).toBe(401);
+    expect((await call(open, new Request("http://127.0.0.1:8787/metrics"))).status).toBe(200);
+    expect((await call(open, new Request("http://localhost/metrics", { method: "POST" }))).status).toBe(404);
+  });
+
+  it("reports topics, streams by transport, webhooks by status and events held", async () => {
+    const adapter = new CountingAdapter();
+    const gateway = setup({}, adapter);
+    const before = await scrape(gateway);
+    expect(before.get("streamd_gateway_topics")).toBe(0);
+    expect(before.get('streamd_gateway_streams{transport="sse"}')).toBe(0);
+    expect(before.get('streamd_gateway_streams{transport="websocket"}')).toBe(0);
+    expect(before.get('streamd_gateway_webhooks{status="active"}')).toBe(0);
+    expect(before.get('streamd_gateway_webhooks{status="failed"}')).toBe(0);
+    const stream = reader(await call(gateway, new Request(eventsUrl())));
+    await waitFor(() => stream.text.startsWith("id:"));
+    adapter.push(ev(1), ev(2));
+    await waitFor(() => stream.frames().length === 2);
+    const after = await scrape(gateway);
+    expect(after.get("streamd_gateway_topics")).toBe(1);
+    expect(after.get('streamd_gateway_streams{transport="sse"}')).toBe(1);
+    expect(after.get("streamd_gateway_buffered_events")).toBe(2);
+    expect([...after.keys()].some((key) => key.startsWith("streamd_gateway_adapter_"))).toBe(false);
+  });
+
+  it("renders the adapter snapshots it is given, labelled, through toPrometheus", async () => {
+    const counted = adapterMetrics(new CountingAdapter());
+    const client = new StreamdClient({ adapter: counted.adapter });
+    const gateway = createGateway({ client, pollInterval: 10, metrics: () => [{ snapshot: counted.snapshot(), labels: { source: "node", node: "0" } }] });
+    open.push({ gateway, client });
+    reader(await call(gateway, new Request(eventsUrl())));
+    await waitFor(() => (counted.snapshot().fetchEvents?.requests ?? 0) > 0);
+    const samples = await scrape(gateway);
+    expect(samples.get('streamd_gateway_adapter_requests_total{source="node",node="0",method="fetchEvents"}')).toBeGreaterThan(0);
+    expect(gateway.metrics()).toContain("# TYPE streamd_gateway_adapter_requests_total counter");
   });
 });

@@ -1,0 +1,108 @@
+{
+ "abi": {
+  "address": "0x39ddcd9e1a39fa14f25e3f9ec8a86074d05cc0881cbf667df8a6ee70942016fb",
+  "name": "events",
+  "structs": [
+   {
+    "name": "BalanceTransfer",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "from",
+      "type": "address"
+     },
+     {
+      "name": "to",
+      "type": "address"
+     },
+     {
+      "name": "value",
+      "type": "u256"
+     },
+     {
+      "name": "index",
+      "type": "u256"
+     },
+     {
+      "name": "a_token_address",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "IsolationModeTotalDebtUpdated",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "asset",
+      "type": "address"
+     },
+     {
+      "name": "total_debt",
+      "type": "u256"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ReserveUsedAsCollateralDisabled",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "reserve",
+      "type": "address"
+     },
+     {
+      "name": "user",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ReserveUsedAsCollateralEnabled",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "reserve",
+      "type": "address"
+     },
+     {
+      "name": "user",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

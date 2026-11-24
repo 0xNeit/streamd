@@ -85,6 +85,17 @@ describe("RequestStats through chainFor", () => {
     expect(archive).toEqual({ getEarliestVersion: expect.objectContaining({ requests: 1, errors: 0 }) });
   });
 
+  it("labels each node by position and the archive by role for toPrometheus", async () => {
+    const stats = new RequestStats();
+    const endpoint: Endpoint = { network: "mainnet", nodeUrl: url("a"), extraNodeUrls: [url("b")], archive: url("c") };
+    const adapter = (await chainFor(endpoint, undefined, stats)).adapter();
+    await adapter.fetchEvents(DESCRIPTOR, { fromVersion: 0n, limit: 5 });
+    const sources = stats.sources();
+    expect(sources.map((s) => s.labels)).toEqual([{ source: "node", node: "0" }, { source: "node", node: "1" }, { source: "archive" }]);
+    expect(sources[0]!.snapshot.fetchEvents?.requests).toBe(1);
+    expect(new RequestStats().sources()).toEqual([]);
+  });
+
   it("does not count pages the cache answers", async () => {
     const db = new Database(":memory:");
     const endpoint: Endpoint = { network: "mainnet", nodeUrl: url("cached") };

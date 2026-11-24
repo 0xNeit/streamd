@@ -1,4 +1,4 @@
-import { StreamdNetworkError, UNSIGNED_INTEGER } from "@streamd/core";
+import { RequestLimiter, StreamdNetworkError, UNSIGNED_INTEGER } from "@streamd/core";
 import type { AssetValue, ViewRequest } from "@streamd/core";
 import { assetKey } from "./transfers.js";
 import type { Price } from "./types.js";
@@ -124,4 +124,34 @@ export function toAssetValue(quote: PriceQuote, amount: bigint): AssetValue {
   const value: AssetValue = { quote: QUOTE, decimals: QUOTE_DECIMALS, amount: (amount * price.numerator) / price.denominator, price, source };
   if (reference !== undefined) value.reference = reference;
   return value;
+}
+
+/** Values an amount of an asset at a version; `undefined` when the asset has no price source. */
+export type PageValuer = (asset: string, amount: bigint, version: bigint) => Promise<AssetValue | undefined>;
+
+/**
+ * A valuer per page through `pricer`: one read per price source and version
+ * within the page, at most 4 at a time under `requestTimeout`. Starting a
+ * page drops the reads the previous one still had queued, since a caller
+ * only starts another page after giving that one up or finishing it.
+ */
+export function pageValuer(pricer: Pricer, requestTimeout?: number): () => PageValuer {
+  const limiter = new RequestLimiter(4, Infinity, requestTimeout);
+  let page = new AbortController();
+  return () => {
+    page.abort(new StreamdNetworkError("Valued page abandoned for a newer one"));
+    page = new AbortController();
+    const { signal } = page;
+    const run: Run = (task) => limiter.run(task, signal, signal);
+    const quotes = new Map<string, Promise<PriceQuote | undefined>>();
+    return async (asset, amount, version) => {
+      const key = priceKey(asset);
+      if (key === undefined) return undefined;
+      const id = `${key}@${version}`;
+      let quote = quotes.get(id);
+      if (quote === undefined) quotes.set(id, (quote = pricer(asset, version, run)));
+      const found = await quote;
+      return found === undefined ? undefined : toAssetValue(found, amount);
+    };
+  };
 }

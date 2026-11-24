@@ -644,6 +644,30 @@ function viewNames(views: ViewEntry[]): string[] {
 }
 
 /**
+ * `<module>Events` where unique, the address appended where two targets share a module name,
+ * then `_` until clear of every other generated or imported name.
+ */
+function unionNames(modules: ModuleAbi[], taken: Set<string>): string[] {
+  const plain = modules.map((m) => `${camel(m.name)}Events`);
+  const counts = count(plain);
+  return modules.map((m, i) => {
+    let name = counts.get(plain[i]!) === 1 ? plain[i]! : `${plain[i]}_${m.address}`;
+    while (taken.has(name)) name += "_";
+    taken.add(name);
+    return name;
+  });
+}
+
+function renderUnion(module: ModuleAbi, name: string, members: Entry[], names: Map<string, string>): string {
+  return [
+    `/** Every non-generic event of \`${module.address}::${module.name}\`, narrowing on \`event.type\` */`,
+    `export const ${name} = defineEvents({`,
+    ...members.map((e) => `  "${qualified(e)}": ${names.get(e.key)!},`),
+    "});",
+  ].join("\n");
+}
+
+/**
  * TypeScript source declaring a type and a `defineEvent` descriptor for every
  * event struct in `targets`, plus types for the structs they reference, a
  * `ViewRequest` builder for each of their `#[view]` functions, and a `handle`
@@ -692,6 +716,14 @@ export async function generateEventTypes(
       generators.set(e.key, generator);
     }
   }
+  const byModule = new Map<string, Entry[]>();
+  for (const e of entries) {
+    if (!e.struct.isEvent || e.struct.typeParams > 0) continue;
+    const key = moduleKey(e.module.address, e.module.name);
+    byModule.set(key, [...(byModule.get(key) ?? []), e]);
+  }
+  const unionMembers = [...byModule.values()];
+  const unions = unionNames(unionMembers.map((m) => m[0]!.module), new Set([...taken, "defineEvent", "defineEvents"]));
   const used = new Set<Helper>();
   const checks = options.validators ? entries.map((e) => renderGuard(e, names.get(e.key)!, guards.get(e.key)!, guards, used, dialect)) : [];
   const arbitrary = arbitraryWriter(dialect, (t) => generators.get(`${moduleKey(t.address, t.module)}::${t.name}`)!);
@@ -705,7 +737,7 @@ export async function generateEventTypes(
       .join(", ")}.`,
     "// Do not edit: regenerate after a module upgrade.",
     dialect.note,
-    ...(hasEvents ? ['import { defineEvent } from "@streamd/core";'] : []),
+    ...(hasEvents ? [`import { defineEvent${unions.length > 0 ? ", defineEvents" : ""} } from "@streamd/core";`] : []),
     ...(options.arbitraries && hasEvents ? ['import type { ModuleEventDescriptor, StreamdEvent } from "@streamd/core";'] : []),
     ...(views.length > 0 ? ['import type { ViewRequest } from "@streamd/core";'] : []),
     ...(handles.length > 0 ? ['import type { HandleEventDescriptor } from "@streamd/core";'] : []),
@@ -715,6 +747,7 @@ export async function generateEventTypes(
   const sections = [
     header.join("\n"),
     ...entries.map((e) => render(e, names, dialect)),
+    ...unionMembers.map((m, i) => renderUnion(m[0]!.module, unions[i]!, m, names)),
     ...views.map((v, i) => renderView(v, builders[i]!)),
     ...handles.map((h, i) => renderHandle(h, handleBuilders[i]!, names)),
     ...(checks.length > 0 ? [(Object.keys(HELPERS) as Helper[]).filter((h) => used.has(h)).map((h) => (h === "bytes" ? dialect.bytes : HELPERS[h])).join("\n"), ...checks] : []),

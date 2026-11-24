@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryAdapter, StreamdError, parseEvent } from "@streamd/core";
-import type { StreamdEvent } from "@streamd/core";
+import { MemoryAdapter, StreamdError, StreamdNetworkError, parseEvent } from "@streamd/core";
+import type { EventAdapter, StreamdEvent, ViewRequest } from "@streamd/core";
 import { saleDescriptor, saleSource, toSale } from "../src/sales.js";
 import { testClient } from "./helpers.js";
 import type { Sale } from "../src/types.js";
@@ -267,5 +267,63 @@ describe("AptosClient sales", () => {
     expect(() => client.sales(() => {}, { marketplace: [] })).toThrow(StreamdError);
     expect(() => client.sales(() => {}, { token: "0xnot" })).toThrow(StreamdError);
     client.destroy();
+  });
+});
+
+describe("sales withValue", () => {
+  const APT_POOL = "0x925660b8618394809f89f8002e2926600c775221f43bf1919782b297a79400d8";
+  const USDC = "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b";
+
+  function priced(events: StreamdEvent[], fail = false) {
+    const memory = new MemoryAdapter(events);
+    const calls: { fn: string; pool: string; version: bigint }[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => memory.fetchEvents(d, o),
+      getHeadVersion: () => memory.getHeadVersion(),
+      view: async (request: ViewRequest, version: bigint) => {
+        calls.push({ fn: request.function, pool: String(request.functionArguments![0]), version });
+        if (fail) throw new StreamdNetworkError("rate limited", 429);
+        // 2^60 squared over 2^128: 1/256 USDC base unit per octa.
+        return [0, (1n << 60n).toString()];
+      },
+    };
+    return { adapter, calls };
+  }
+
+  it("values Tradeport fills as APT from one pool read per version, leaving Wapal fills bare", async () => {
+    const { adapter, calls } = priced(EVENTS);
+    const mixed = await testClient({ adapter }).getSales({ fromVersion: 7025333927n, toVersion: 7025333927n, withValue: true });
+    expect(mixed.map((e) => [e.data.marketplace, e.data.value])).toEqual([
+      ["wapal", undefined],
+      [
+        "tradeport",
+        { quote: USDC, decimals: 6, amount: mixed[1]!.data.price / 256n, price: { numerator: 1n, denominator: 256n }, source: "pool", reference: APT_POOL },
+      ],
+      ["wapal", undefined],
+    ]);
+    expect(calls).toEqual([{ fn: "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c::pool_v3::current_tick_and_price", pool: APT_POOL, version: 7025333927n }]);
+  });
+
+  it("values live sales the same way, and reads nothing for Wapal alone", async () => {
+    const { adapter, calls } = priced(EVENTS.filter((e) => e.version === 7025333927n));
+    const client = testClient({ adapter });
+    const seen: Sale[] = [];
+    const sub = client.sales((e) => void seen.push(e.data), { fromVersion: 0n, withValue: true, pollInterval: 5 });
+    await sub.caughtUp;
+    sub.unsubscribe();
+    expect(seen.map((s) => s.value !== undefined)).toEqual([false, true, false]);
+    calls.length = 0;
+    expect(await client.getSales({ fromVersion: 0n, marketplace: "wapal", withValue: true })).toHaveLength(2);
+    expect(calls).toHaveLength(0);
+    client.destroy();
+  });
+
+  it("fails the query when a pool read fails, and reads nothing without withValue", async () => {
+    await expect(testClient({ adapter: priced(EVENTS, true).adapter }).getSales({ fromVersion: 0n, withValue: true })).rejects.toThrow("rate limited");
+    const { adapter, calls } = priced(EVENTS);
+    const records = await testClient({ adapter }).getSales({ fromVersion: 0n });
+    expect(records.some((r) => r.data.value !== undefined)).toBe(false);
+    expect(calls).toHaveLength(0);
+    await expect(testClient({ adapter: new MemoryAdapter(EVENTS) }).getSales({ withValue: true })).rejects.toThrow("implements view");
   });
 });

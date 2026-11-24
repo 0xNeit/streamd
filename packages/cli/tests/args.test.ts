@@ -1,7 +1,7 @@
 import { beforeAll, describe, expect, it } from "bun:test";
 import { parseCommand, parseTime, UsageError } from "../src/args.js";
 import { parseKafkaUrl } from "../src/kafka.js";
-import type { AlertOptions, MonitorOptions, ServeOptions, StoreOptions, ForwardOptions, TailOptions } from "../src/args.js";
+import type { AlertOptions, MonitorOptions, ServeOptions, StoreOptions, StoreRecordsOptions, ForwardOptions, TailOptions } from "../src/args.js";
 
 const ADDR = "0x1";
 const LONG_ADDR = `0x${"0".repeat(63)}1`;
@@ -629,6 +629,122 @@ describe("parseCommand store", () => {
     [["store", "--db", "e.db", "--limit", "1", TYPE], /limit/],
   ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
     expect(() => parseCommand(argv)).toThrow(pattern);
+  });
+});
+
+describe("parseCommand store --records", () => {
+  function records(...argv: string[]): StoreRecordsOptions {
+    const parsed = parseCommand(["store", ...argv]);
+    if (parsed.command !== "store-records") throw new Error("expected a store-records command");
+    return parsed.options;
+  }
+
+  it("takes each kind with its own narrowing and the store flags", () => {
+    expect(records("--db", "e.db", "--records", "transfers", "--asset", "0xa", "--account", "alice.apt")).toEqual({
+      network: "mainnet",
+      db: "e.db",
+      records: { kind: "transfers", asset: "0xa", account: "alice.apt" },
+    });
+    expect(
+      records("--postgres", "postgres://h/db", "--records", "swaps", "--protocol", "hyperion", "--protocol", "cellana", "--asset", "0xa",
+        "--from-version", "5", "--poll-interval", "9", "--name", "dex", "--network", "testnet"),
+    ).toEqual({
+      network: "testnet",
+      postgres: "postgres://h/db",
+      records: { kind: "swaps", protocol: ["hyperion", "cellana"], asset: "0xa" },
+      fromVersion: 5n,
+      pollInterval: 9,
+      name: "dex",
+    });
+    expect(records("--db", "e.db", "--records", "sales", "--marketplace", "wapal", "--token", "0xt").records).toEqual({
+      kind: "sales",
+      marketplace: ["wapal"],
+      token: "0xt",
+    });
+    expect(records("--db", "e.db", "--records", "sales").records).toEqual({ kind: "sales" });
+    expect(records("--chain", "sui", "--db", "e.db", "--records", "transfers")).toMatchObject({ chain: "sui", records: { kind: "transfers" } });
+  });
+
+  it.each([
+    [["--records", "events"], /--records must be transfers, swaps or sales: events/],
+    [["--records", "swaps", TYPE], /--records takes no event types/],
+    [["--records", "swaps", "--handle", "0x1::a::B"], /--handle is for events/],
+    [["--records", "transfers", "--resource", "0x1::a::B"], /--resource is for events/],
+    [["--records", "transfers", "--creation-number", "2"], /--creation-number is for events/],
+    [["--records", "transfers", "--sender", ADDR], /--sender is for events/],
+    [["--records", "transfers", "--where", "amount>1"], /--where is for events/],
+    [["--records", "swaps", "--decode", "amount"], /--decode is for events/],
+    [["--records", "swaps", "--account", ADDR], /--account does not narrow --records swaps/],
+    [["--records", "swaps", "--token", "0xt"], /--token does not narrow --records swaps/],
+    [["--records", "sales", "--asset", "0xa"], /--asset does not narrow --records sales/],
+    [["--records", "transfers", "--protocol", "hyperion"], /--protocol does not narrow --records transfers/],
+    [["--records", "transfers", "--asset", ""], /--asset must not be empty/],
+    [["--records", "swaps", "--protocol", ""], /--protocol must not be empty/],
+    [["--records", "swaps", "--chain", "sui"], /--records swaps is not available with --chain sui/],
+    [["--records", "sales", "--chain", "sui"], /--records sales is not available with --chain sui/],
+    [["--asset", "0xa", TYPE], /--asset needs --records/],
+    [["--protocol", "hyperion", TYPE], /--protocol needs --records/],
+  ] as [string[], RegExp][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(["store", "--db", "e.db", ...argv])).toThrow(pattern);
+  });
+
+  it("still needs a database", () => {
+    expect(() => parseCommand(["store", "--records", "swaps"])).toThrow(/store needs --db <file> or --postgres <url>/);
+  });
+});
+
+describe("parseCommand store maintenance", () => {
+  const url = "postgres://me:hunter2@db.example/events";
+
+  it("parses each subcommand over a file or a Postgres URL", () => {
+    expect(parseCommand(["store", "stats", "--db", "e.db"])).toEqual({ command: "store-admin", options: { action: "stats", db: "e.db" } });
+    expect(parseCommand(["store", "stats", "--postgres", url, "--by-type"])).toEqual({
+      command: "store-admin",
+      options: { action: "stats", postgres: url, byType: true },
+    });
+    expect(parseCommand(["store", "prune", "--db", "e.db", "--before", "500"])).toEqual({
+      command: "store-admin",
+      options: { action: "prune", db: "e.db", before: 500n },
+    });
+    expect(parseCommand(["store", "prune", "--db", "e.db", "--before", "0", "--yes"])).toEqual({
+      command: "store-admin",
+      options: { action: "prune", db: "e.db", before: 0n, yes: true },
+    });
+    expect(parseCommand(["store", "cursors", "--db", "e.db"])).toEqual({ command: "store-admin", options: { action: "cursors", db: "e.db" } });
+    expect(parseCommand(["store", "cursors", "--db", "e.db", "--delete", "swaps"])).toEqual({
+      command: "store-admin",
+      options: { action: "cursors", db: "e.db", delete: "swaps" },
+    });
+    expect(parseCommand(["store", "stats", "--help"])).toEqual({ command: "help" });
+  });
+
+  it("leaves a store run with the subcommand words elsewhere alone", () => {
+    expect(parseCommand(["store", "--db", "e.db", TYPE])).toMatchObject({ command: "store" });
+    expect(() => parseCommand(["store", "--db", "e.db", "stats"])).toThrow(UsageError);
+  });
+
+  it.each([
+    [["store", "stats"], /store needs --db <file> or --postgres <url>/],
+    [["store", "cursors", "--db", "e.db", "--postgres", url], /--db and --postgres cannot be used together/],
+    [["store", "stats", "--db", ""], /--db must not be empty/],
+    [["store", "stats", "--postgres", "mysql://me:hunter2@db/events"], /--postgres must be a postgres:\/\/ or postgresql:\/\/ URL/],
+    [["store", "prune", "--db", "e.db"], /store prune needs --before <version>/],
+    [["store", "prune", "--db", "e.db", "--before=-1"], /--before must be a non-negative integer/],
+    [["store", "prune", "--db", "e.db", "--before", "1.5"], /--before must be a non-negative integer/],
+    [["store", "stats", "--db", "e.db", "--yes"], /--yes is for store prune, not store stats/],
+    [["store", "cursors", "--db", "e.db", "--by-type"], /--by-type is for store stats, not store cursors/],
+    [["store", "prune", "--db", "e.db", "--before", "1", "--delete", "x"], /--delete is for store cursors, not store prune/],
+    [["store", "cursors", "--db", "e.db", "--delete", ""], /--delete must not be empty/],
+    [["store", "stats", "--db", "e.db", "--network", "testnet"], /network/],
+    [["store", "stats", "--db", "e.db", TYPE], UsageError],
+  ] as [string[], RegExp | typeof UsageError][])("rejects %j", (argv, pattern) => {
+    expect(() => parseCommand(argv)).toThrow(pattern);
+    try {
+      parseCommand(argv);
+    } catch (err) {
+      expect(err).toBeInstanceOf(UsageError);
+      expect(String(err)).not.toContain("hunter2");
+    }
   });
 });
 
@@ -1306,6 +1422,38 @@ describe("parseCommand swaps and sales", () => {
   });
 });
 
+describe("parseCommand upgrades", () => {
+  const options = (...argv: string[]) => {
+    const parsed = parseCommand(["upgrades", ...argv]);
+    if (parsed.command !== "upgrades") throw new Error("expected upgrades");
+    return parsed.options;
+  };
+
+  it("follows one address or name by default, with only the flags given", () => {
+    expect(options("0x1")).toEqual({ network: "mainnet", address: "0x1" });
+    expect(options("alice.apt", "--from-version", "5", "--limit", "3", "--poll-interval", "200", "--batch-size", "50", "--cursor-file", "u.cursor"))
+      .toEqual({ network: "mainnet", address: "alice.apt", fromVersion: 5n, limit: 3, pollInterval: 200, batchSize: 50, cursorFile: "u.cursor" });
+  });
+
+  it("reads a range with --to-version, and takes the read options", () => {
+    expect(options("0x1", "--from-version", "5", "--to-version", "head", "--order", "desc"))
+      .toEqual({ network: "mainnet", address: "0x1", fromVersion: 5n, toVersion: "head", order: "desc" });
+    expect(options("0x1", "--api-key", "k", "--archive", "default").apiKey).toBe("k");
+  });
+
+  it.each([
+    [["--chain", "sui", "0x1"], /upgrades is not available with --chain sui: SuiClient has no upgrades yet/],
+    [[], /upgrades needs one address or name/],
+    [["0x1", "0x2"], /upgrades needs one address or name/],
+    [["0x1", "--order", "desc"], /--order needs --to-version/],
+    [["0x1", "--to-version", "9"], /--to-version needs --from-version or --from-time/],
+    [["0x1", "--from-version", "1", "--to-version", "head", "--poll-interval", "5"], /--poll-interval follows live/],
+    [["0x1", "--indexer", "https://i.example"], /Unknown option '--indexer'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(["upgrades", ...args], message);
+  });
+});
+
 describe("parseCommand activity and trace", () => {
   const options = (...argv: string[]) => {
     const parsed = parseCommand(argv);
@@ -1692,6 +1840,7 @@ describe("several nodes", () => {
     ["swaps"],
     ["sales"],
     ["activity", ADDR],
+    ["upgrades", ADDR],
     ["trace", ADDR],
     ["balances", ADDR],
     ["watch", ADDR],
@@ -1744,6 +1893,7 @@ describe("--archive", () => {
     ["swaps"],
     ["sales"],
     ["activity", ADDR],
+    ["upgrades", ADDR],
     ["trace", ADDR],
     ["balances", ADDR],
     ["watch", ADDR],
@@ -1817,6 +1967,7 @@ describe("--stats", () => {
     ["swaps"],
     ["sales"],
     ["activity", "0x1"],
+    ["upgrades", "0x1"],
     ["trace", "0x1"],
     ["balances", "0x1"],
     ["watch", "0x1"],

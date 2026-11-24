@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { StreamdError, parseEvent } from "@streamd/core";
 import type { StreamdEvent, Transfer } from "@streamd/core";
 import { SqliteEventStore, StoreAdapter } from "../src/index.js";
+import type { StoredSale, StoredSwap } from "../src/index.js";
 import { versionKey } from "../src/schema.js";
 
 const U64_MAX = 2n ** 64n - 1n;
@@ -311,5 +312,133 @@ describe("SqliteEventStore transfers", () => {
     store.writeTransfers([tr(2n, 0)], { name: "t", cursor: "c1" });
     expect(transferRows(db).map((r) => r.version)).toEqual([versionKey(2n)]);
     expect(store.readCursor("t")).toBe("c1");
+  });
+});
+
+function sw(version: bigint, eventIndex: number, data: Partial<StoredSwap> = {}): StreamdEvent<StoredSwap> {
+  return {
+    type: "0x1::pool_v3::SwapEventV3",
+    data: { protocol: "hyperion", poolId: "0xp", assetIn: "0xa", amountIn: 5n, assetOut: "0xb", amountOut: 7n, ...data },
+    version,
+    sequenceNumber: 0n,
+    eventIndex,
+  };
+}
+
+function sa(version: bigint, eventIndex: number, data: Partial<StoredSale> = {}): StreamdEvent<StoredSale> {
+  return {
+    type: "0x1::events::ListingFilledEvent",
+    data: { marketplace: "wapal", kind: "listing", token: "0xt", seller: "0xs", buyer: "0xb", price: 100n, ...data },
+    version,
+    sequenceNumber: 0n,
+    eventIndex,
+  };
+}
+
+const tableRows = (db: Database, table: string) =>
+  db.query(`SELECT * FROM ${table} ORDER BY version, event_index`).all() as Record<string, unknown>[];
+
+describe("SqliteEventStore swaps and sales", () => {
+  const U256_MAX = 2n ** 256n - 1n;
+
+  it("stores each swap's fields in columns and the record as JSON, with its cursor, the later write winning", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.writeSwaps([sw(1n, 2, { trader: "0xtr", amountIn: U256_MAX }), sw(2n, 0)], { name: "swaps:s", cursor: "c1" });
+    store.writeSwaps([sw(2n, 0, { amountOut: 9n })]);
+    const [first, second] = tableRows(db, "streamd_swaps");
+    expect(first).toEqual({
+      version: versionKey(1n),
+      event_index: 2,
+      protocol: "hyperion",
+      pool_id: "0xp",
+      trader: "0xtr",
+      asset_in: "0xa",
+      amount_in: U256_MAX.toString(),
+      asset_out: "0xb",
+      amount_out: "7",
+      swap: expect.any(String),
+    });
+    expect(parseEvent(first!.swap as string).data).toMatchObject({ trader: "0xtr", amountIn: U256_MAX.toString() });
+    expect(second).toMatchObject({ trader: null, amount_out: "9" });
+    expect(tableRows(db, "streamd_swaps")).toHaveLength(2);
+    expect(store.readCursor("swaps:s")).toBe("c1");
+  });
+
+  it("stores each sale's fields in columns and the record as JSON, with its cursor", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.writeSales([sa(1n, 0, { collection: "0xc", royalty: 3n, fee: 2n }), sa(2n, 1)], { name: "sales:s", cursor: "c2" });
+    const [first, second] = tableRows(db, "streamd_sales");
+    expect(first).toEqual({
+      version: versionKey(1n),
+      event_index: 0,
+      marketplace: "wapal",
+      kind: "listing",
+      token: "0xt",
+      collection: "0xc",
+      seller: "0xs",
+      buyer: "0xb",
+      price: "100",
+      royalty: "3",
+      fee: "2",
+      sale: expect.any(String),
+    });
+    expect(second).toMatchObject({ collection: null, royalty: null, fee: null });
+    expect(store.readCursor("sales:s")).toBe("c2");
+  });
+
+  it("refuses a malformed swap or sale and writes nothing from that call", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    const swaps: Partial<StoredSwap>[] = [
+      { amountIn: -1n },
+      { amountOut: U256_MAX + 1n },
+      { amountIn: 5 as unknown as bigint },
+      { poolId: "" },
+      { protocol: undefined as unknown as string },
+      { trader: 7 as unknown as string },
+    ];
+    for (const data of swaps) {
+      expect(() => store.writeSwaps([sw(1n, 0), sw(2n, 0, data)], { name: "s", cursor: "c" })).toThrow(StreamdError);
+    }
+    const sales: Partial<StoredSale>[] = [
+      { price: -1n },
+      { royalty: 1 as unknown as bigint },
+      { token: "" },
+      { buyer: undefined as unknown as string },
+      { collection: 7 as unknown as string },
+    ];
+    for (const data of sales) {
+      expect(() => store.writeSales([sa(1n, 0), sa(2n, 0, data)], { name: "s", cursor: "c" })).toThrow(StreamdError);
+    }
+    expect(() => store.writeSwaps([{ ...sw(1n, 0), data: null as unknown as StoredSwap }])).toThrow(StreamdError);
+    expect(() => store.writeSales([{ ...sa(1n, 0), data: null as unknown as StoredSale }])).toThrow(StreamdError);
+    store.writeSwaps([]);
+    expect(tableRows(db, "streamd_swaps")).toEqual([]);
+    expect(tableRows(db, "streamd_sales")).toEqual([]);
+    expect(store.readCursor("s")).toBeUndefined();
+  });
+
+  it("prunes swaps and sales below the edge with the events", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.writeSwaps([sw(1n, 0), sw(3n, 0)]);
+    store.writeSales([sa(2n, 0), sa(4n, 0)]);
+    store.prune({ beforeVersion: 3n });
+    expect(tableRows(db, "streamd_swaps").map((r) => r.version)).toEqual([versionKey(3n)]);
+    expect(tableRows(db, "streamd_sales").map((r) => r.version)).toEqual([versionKey(4n)]);
+  });
+
+  it("adds the tables to a database that has only streamd_transfers", () => {
+    const db = new Database(":memory:");
+    const store = new SqliteEventStore(db);
+    store.writeTransfers([tr(1n, 0)]);
+    db.exec("DROP TABLE streamd_swaps; DROP TABLE streamd_sales;");
+    store.prune({ beforeVersion: 1n });
+    store.writeSales([sa(2n, 0)]);
+    expect(tableRows(db, "streamd_swaps")).toEqual([]);
+    expect(tableRows(db, "streamd_sales")).toHaveLength(1);
+    expect(transferRows(db)).toHaveLength(1);
   });
 });

@@ -44,7 +44,7 @@ TypeScript types:
 - `@streamd/aptos` (`packages/aptos`) - Aptos: `AptosClient`, `FullnodeScanAdapter`,
   `IndexerAccountAdapter`, the network presets, `checkDescriptor`, `listEventHandles`, `ownedBy`,
   `resolveName`, `primaryName`, `sendOnce`, and the
-  `@streamd/aptos/framework` event catalog. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer dependency.
+  `@streamd/aptos/framework` and `@streamd/aptos/protocols` event catalogs. `@aptos-labs/ts-sdk` (>= 1.0.0) is a peer dependency.
 - `@streamd/cli` (`packages/cli`) - the `streamd` executable, built on `@streamd/core` and
   `@streamd/aptos`.
 - `@streamd/codegen` (`packages/codegen`) - the generator behind
@@ -63,9 +63,10 @@ TypeScript types:
 - `@streamd/store-indexeddb` (`packages/store-indexeddb`) - `IndexedDbPageStore`, which keeps
   `CachingAdapter`'s settled pages in the browser's IndexedDB. See
   [History the fullnode has pruned](#history-the-fullnode-has-pruned).
-- `@streamd/receiver` (`packages/receiver`) - receive `streamd forward` webhooks: the signature
-  checked, the events parsed and repeats dropped. See
-  [Forward events to a webhook](#forward-events-to-a-webhook).
+- `@streamd/receiver` (`packages/receiver`) - receive `streamd forward` webhooks and
+  `streamd alert` alerts: the signature checked, the body parsed and repeats dropped. See
+  [Forward events to a webhook](#forward-events-to-a-webhook) and
+  [Alert on thresholds](#alert-on-thresholds).
 - `@streamd/gateway` (`apps/gateway`) - the gateway behind `streamd serve`, and
   `GatewayAdapter`, which reads through one, from the browser-safe `@streamd/gateway/adapter`.
   See [Serve a gateway](#serve-a-gateway).
@@ -1595,8 +1596,52 @@ client.on(Coin_Deposit("0x1::aptos_coin::AptosCoin"), (e) => console.log(e.data.
 const fees = await client.getEvents(FeeStatement, { fromVersion: -1000n, limit: 10 });
 ```
 
+Each module also has its union, as `streamd codegen` writes it: `fungibleAssetEvents`,
+`stakeEvents` and the rest, with `tokenEvents_0x3` and `tokenEvents_0x4` for the two `token`
+modules.
+
 The catalog reflects the framework ABIs it was generated from; legacy `EventHandle` events such
 as `0x1::coin::DepositEvent` are not `#[event]` structs and are not in it.
+
+### Protocol events
+
+`@streamd/aptos/protocols` does the same for the protocol modules that [`swaps`](#dex-swaps) and
+[`positions`](#lending-positions) decode, with a typed descriptor for every `#[event]` struct in
+them, plus each module's union:
+
+| Protocol | Modules |
+| --- | --- |
+| Hyperion | `0x8b4a...e05c::pool_v3` |
+| Thala CLAMM | `0x75b4...5920::pool` |
+| ThalaSwap v2 | `0x7730...b5::pool` |
+| Cellana | `0x4bf5...bd1::liquidity_pool` |
+| Tapp | `0x487e...8a::router` |
+| Aave | `0x39dd...6fb::{borrow_logic, emode_logic, events, liquidation_logic, supply_logic}` |
+| Echelon | `0xc6bc...21ba::lending` |
+
+Names follow codegen's rule over the whole catalog: the Move name where it is unique
+(`SwapEventV3`, `Swapped`, `Supply`, `LiquidateEvent`), `<Module>_<Struct>` where two modules
+share it (`PoolV3_SwapEvent`, `LiquidityPool_SwapEvent`), and `<Module>_<Struct>_<address>` where
+that still collides, as the two Thala `pool` modules do
+(`Pool_SwapEvent_0x75b4890de3e312d9425408c43d9a9752b64ab3562a30e89a55bdc568c645920`). Unions are
+`<module>Events` (`poolV3Events`, `lendingEvents`), with `_<address>` for the two `pool` modules.
+Addresses are written as the ABIs write them.
+
+```ts
+import { SwapEventV3, lendingEvents } from "@streamd/aptos/protocols";
+
+client.on(SwapEventV3, (e) => console.log(e.data.pool_id, e.data.amount_in, e.data.amount_out));
+const echelon = await client.getEvents(lendingEvents, { fromVersion: -10_000n, limit: 20 });
+```
+
+The decoders read some types that are legacy `EventHandle` events, not `#[event]` structs, whose
+modules declare no event structs at all, so they have no descriptor here: LiquidSwap's
+`0x190d...1e12::liquidity_pool::SwapEvent` and `0x163d...ba6e::liquidity_pool::SwapEvent`,
+PancakeSwap's `0xc7ef...50fa::swap::SwapEvent`, ThalaSwap v1's `stable_pool::SwapEvent` and
+`weighted_pool::SwapEvent`, Wapal's `events::{ListingFilled,TokenOfferFilled,CollectionOfferFilled}Event`
+and Tradeport's `listings_v2::BuyEvent`, `listings::BuyEvent` and the `biddings_v2` and `biddings`
+`Accept{Token,Collection}BidEvent`s. So nothing from the [`sales`](#nft-sales) marketplaces is in
+the catalog.
 
 ### Typed view builders
 
@@ -2108,6 +2153,9 @@ const sub = streamd.activity("0x1234...", ({ data }) => console.log(data.transfe
   `{ asset, delta }` per asset over those transfers, positive for a gain, in order of first
   appearance, with zero nets (a transfer to itself) left out. `events` is every event the
   transaction emitted, in `eventIndex` order.
+- **Values.** `withValue: true` adds `value` in USDC to each priced record in `transfers`, as
+  `transfers()` adds it, and to each `balanceChanges` entry of a priced asset, the `delta` at that
+  transaction's price (negative for a loss); see [Values](#values).
 - **Gas.** The fee is burned without a withdraw event, so `balanceChanges` leaves it out:
   for a sent transaction, the APT balance also fell by `gas_used * gas_unit_price` less any
   storage refund. The transaction's `0x1::transaction_fee::FeeStatement` is in `events`.
@@ -2215,7 +2263,7 @@ const path = tracePath(graph, "0x1234...", "0x9abc...");
 
 `swaps(callback, options?)` follows swaps on the main Aptos DEXes as they land, and
 `getSwaps(filter?)` returns them for a past range. Each arrives as an event whose `data` is a
-`Swap { protocol, poolId, trader, assetIn, amountIn, assetOut, amountOut }`, one per pool hop:
+`Swap { protocol, poolId, trader, assetIn, amountIn, assetOut, amountOut, valueIn?, valueOut? }`, one per pool hop:
 
 ```ts
 const sub = streamd.swaps(
@@ -2269,6 +2317,9 @@ const thala = await streamd.getSwaps({ fromVersion: -10_000n, protocol: ["thala-
   them, so the trader can have paid more: Hyperion's router keeps about 1 basis point
   (`fee_sharer::DistributeEvent`), and an aggregator may take its own. On a Thala CLAMM
   exact-out swap, `amountIn` is net of the refund.
+- **Values.** `withValue: true` adds `valueIn` and `valueOut`, `amountIn` and `amountOut` in
+  USDC at the record's version, for the sides whose asset is priced; see [Values](#values). It
+  is the only option that reads by view: one pool view per price source and version in a page.
 - **Routes.** A multi-hop route gives one record per pool hop, in event order, not joined:
   an aggregator may take a fee between hops, so one hop's `amountOut` need not equal the
   next one's `amountIn`.
@@ -2284,7 +2335,7 @@ const thala = await streamd.getSwaps({ fromVersion: -10_000n, protocol: ["thala-
 
 `sales(callback, options?)` follows NFT marketplace sales as they land, and
 `getSales(filter?)` returns them for a past range. Each arrives as an event whose `data` is a
-`Sale { marketplace, kind, token, collection?, seller, buyer, price, royalty?, fee? }`, one per
+`Sale { marketplace, kind, token, collection?, seller, buyer, price, royalty?, fee?, value? }`, one per
 token sold:
 
 ```ts
@@ -2318,6 +2369,9 @@ const wapal = await streamd.getSales({ fromVersion: 7028273582n, toVersion: 7028
   events report only the price, so its records have no `royalty` or `fee`. Neither
   marketplace's events name the coin: Tradeport takes only APT, and every Wapal fill seen paid
   APT, but Wapal's orders are generic over the coin type, so no currency field is reported.
+- **Values.** `withValue: true` adds `value`, `price` in USDC at the record's version, to
+  Tradeport records only, priced as APT; Wapal records never get one, since their coin is
+  unknown. See [Values](#values).
 - **Tokens.** `token` is a token object's address in long form, or a legacy token's id as
   `<creator>::<collection>::<name>::<property_version>`, the forms `Transfer.asset` reports.
   `collection` is the collection object's address, present only when the event names one (Wapal,
@@ -2996,8 +3050,9 @@ const sub = streamd.prices([APT_USD, BTC_USD], ({ data }) => {
 
 ## Values
 
-`withValue: true` on `transfers`, `getTransfers`, `iterateTransfers`, `balances` and `explain`
-prices amounts in native USDC at the version they were read at:
+`withValue: true` on `transfers`, `getTransfers`, `iterateTransfers`, `balances`, `explain`,
+`swaps`, `getSwaps`, `sales`, `getSales`, `activity` and `getActivity` prices amounts in native
+USDC at the version they were read at:
 
 ```ts
 const transfers = await streamd.getTransfers({ fromVersion: -1000n, asset: "0xa", withValue: true });
@@ -3045,6 +3100,11 @@ formatAmount(transfers[0]!.data.value!.amount, 6); // "4.334712" USDC
   pools a value costs a Pyth table read and a block read instead. A failed read fails the
   page or query, as the transfer reads do. Pool views go through the adapter, so
   `ArchiveFallbackAdapter` answers pruned versions.
+- **Records.** Swaps get `valueIn` and `valueOut`, one per side; a Tradeport sale gets
+  `value` for its `price`, as APT (Tradeport takes only APT, and Wapal's coin is unknown, so
+  Wapal sales get none); activity values its transfers as `transfers` does and each balance
+  change at the price of that transaction's valued transfer of the asset. Swaps and sales read
+  one price per source and version within a page, inside a limit of 4 and `requestTimeout`.
 - **Mainnet only.** The table names mainnet pools and feeds; on another network the pool
   views fail and so does the call.
 - **Other chains.** `SuiClient.balances` refuses `withValue`.
@@ -3420,6 +3480,21 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   ```ts
   sui.transfers((t) => console.log(t.data.from, "->", t.data.to, formatAmount(t.data.amount, 9)), { account: me, asset: "0x2::sui::SUI" });
   ```
+- **Transaction explainer:** `sui.explain(digest, { timeout?, signal?, withAssetInfo?, withNames? })`
+  waits for the transaction as `eventsOf` waits, then resolves one `SuiTransactionExplanation`
+  in the shape of Aptos's `TransactionExplanation`: `success` and `vmStatus` (`"success"` or the
+  execution error; a failed transaction resolves rather than rejects), `sender`, `feePayer` (the
+  gas owner, only when it is not the sender), `timestamp`, `entryFunction` (the PTB's one
+  `MoveCall`, none when it has several), `gas` (`computationCost`, `storageCost`,
+  `storageRebate`, `nonRefundableStorageFee` and `unitPrice` in MIST, and `fee`, computation
+  plus storage less the rebate), `transfers` paired from the balance changes exactly as
+  `transfers()` pairs them, `balanceChanges` (net per account and coin type over them, gas
+  left out), and every event. `swaps` and `sales` are always empty, since Sui has no decoders
+  for them yet. `symbol` and `decimals` are read once per coin type unless
+  `withAssetInfo: false`, and `withNames` adds SuiNS `names` for the sender, the sponsor and
+  every counterparty. One `GetTransaction` read, plus the checkpoint reads that place its version, every read
+  through the client's limiter. Digests only: a built transaction is not simulated, and
+  `formatExplanation` stays Aptos's, since it prints APT and Aptos gas.
 - **Balances:** `sui.balances(address, { asset?, onChange? })` keeps an address's coin balances
   current, reading each coin type (SUI when none is named) through the state service every
   `pollInterval`, keyed by coin type in long form, with `value`, `get`, `ready` and `onChange`
@@ -3496,6 +3571,8 @@ through something else, such as a `CachingAdapter` over a `SuiAdapter`, and ever
   `0x3` packages, so it follows that command's rules: long-form type strings, generic events as
   functions of their type arguments, and descriptors for the dynamic-field keys those modules
   declare too (`Item`, `Listing`, `Lock`, `ConfigKey` and the like), which never match an event.
+  Each module with non-generic ones has a union too (`kioskEvents`, `validatorEvents`), which
+  takes in those keys as well.
 
   ```ts
   import { ItemListed, ItemListedDecode, StakingRequestEvent } from "@streamd/sui/framework";
@@ -4085,8 +4162,8 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   `0n` for a store that was never pruned and holds nothing, so relative `fromVersion` and
   `toVersion: "head"` count from what is stored. After a prune neither reports below the
   edge. With no `cursor` or `fromVersion` a fetch starts at the earliest stored event.
-- **Retention.** `store.prune({ beforeVersion })` deletes every event and stored transfer
-  below that version in one transaction and leaves saved cursors alone. A `StoreAdapter` read whose `fromVersion`,
+- **Retention.** `store.prune({ beforeVersion })` deletes every event and stored transfer,
+  swap and sale below that version in one transaction and leaves saved cursors alone. A `StoreAdapter` read whose `fromVersion`,
   `cursor` or `toVersion` is below that edge then fails with a `StreamdNetworkError` (status
   410), as a pruned fullnode does, rather than returning a short history. That includes a
   relative `fromVersion` reaching below it, and a follower on a rare event: its cursor stays
@@ -4105,7 +4182,7 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   writer on another connection never lands between the counts:
 
   ```ts
-  const { events, resourceChanges, transfers, lowestVersion, highestVersion, prunedBefore, byType } =
+  const { events, resourceChanges, transfers, swaps, sales, lowestVersion, highestVersion, prunedBefore, byType } =
     store.stats({ byType: true });
   // byType: [{ type: "0x1::fungible_asset::Deposit", count: 81234n }, ...]
   ```
@@ -4113,7 +4190,8 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   Every count is a `bigint`. `events` counts the rows of `streamd_events` that are events, and
   `resourceChanges` the rows stored as `resource` changes (with an address), so the two never
   overlap; changes an earlier release stored without an address count as events, as the
-  transaction lookups treat them. `transfers` counts `streamd_transfers`, `0n` before it exists.
+  transaction lookups treat them. `transfers`, `swaps` and `sales` count `streamd_transfers`,
+  `streamd_swaps` and `streamd_sales`, each `0n` before it exists.
   `lowestVersion` and `highestVersion` are the lowest and highest version of any stored event or
   change, absent when there are none, and are what is stored rather than what is readable: a row
   written below the edge after a prune shows there, while `StoreAdapter` refuses to read it.
@@ -4148,6 +4226,30 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   written, which ends the subscription as a failed write does. `store.writeTransfers(records,
   { name, cursor })` is there for wiring your own, and `prune` deletes transfers below its edge
   with the events.
+- **Stored swaps and sales.** `storeSwaps(client, store, options)` and
+  `storeSales(client, store, options)` do the same for `AptosClient`'s `swaps()` and `sales()`
+  (or anything with that method), `options` the method's own (`protocol` and `asset`, or
+  `marketplace` and `token`, and the listener options) plus `name`, the cursor saved under
+  `swaps:<name>` or `sales:<name>`:
+
+  ```ts
+  import { storeSales, storeSwaps } from "@streamd/store-sqlite";
+
+  storeSwaps(aptosClient, store, { name: "hyperion", protocol: "hyperion", fromVersion: -10_000n });
+  storeSales(aptosClient, store, { name: "all" });
+  ```
+
+  `streamd_swaps` holds `version`, `event_index`, `protocol`, `pool_id`, `trader` (null when
+  the source names no sender), `asset_in`, `amount_in`, `asset_out`, `amount_out` (amounts as
+  exact decimal text) and `swap`, the whole record as `serializeEvent` writes it, indexed by
+  pool, trader and either asset. `streamd_sales` holds `version`, `event_index`, `marketplace`,
+  `kind`, `token`, `collection`, `seller`, `buyer`, `price`, `royalty` and `fee` (null when the
+  event reports none) and `sale`, indexed by token, collection, seller and buyer. Both are keyed
+  on the record's `(version, eventIndex)`, created beside `streamd_transfers` by the first
+  record write or prune (so an older file gains them then), read back with SQL only, and pruned
+  with the events. A record with an empty required field or an amount that is not a u256
+  `bigint` is refused before anything is written. `store.writeSwaps(records, checkpoint)` and
+  `store.writeSales(records, checkpoint)` are there for wiring your own.
 - **Stored points.** `storePoints(client, store, descriptor, fold, options)` runs
   `client.reduce()` over a `points()` fold and keeps the leaderboard in `streamd_points`, one
   row per `name` and address: `points` (exact decimal text), `version` (zero-padded) and
@@ -4231,7 +4333,8 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   WHERE transaction_hash IS NULL AND account_address IS NULL AND event LIKE '%"transactionHash"%';
   ```
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
-  first use, and `streamd_transfers` on the first transfer write or prune.
+  first use, and `streamd_transfers`, `streamd_swaps` and `streamd_sales` on the first record
+  write or prune.
 
 ### Typed event tables
 
@@ -4255,6 +4358,10 @@ is such a failure, named by table, column and event. `store.writeTables(tables, 
 checkpoint)` writes one batch in a savepoint. `prune` and `stats` leave these tables alone. An
 upgraded module keeps its event structs' fields, so a table stays valid; an enum's new variant
 lands in `data`.
+
+`SqliteDedupStore` keeps the event ids a webhook receiver has handled, for
+`@streamd/receiver`'s `createReceiver`; see
+[Forward events to a webhook](#forward-events-to-a-webhook).
 
 ## Store events in Postgres
 
@@ -4329,7 +4436,7 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   for one scan of it. Like the other `CREATE INDEX IF NOT
   EXISTS` statements each client runs on first use, it takes a brief SHARE lock even when the
   index exists, and the role connecting must own the tables.
-- **Retention.** `await store.prune({ beforeVersion })` deletes every event and stored transfer
+- **Retention.** `await store.prune({ beforeVersion })` deletes every event and stored transfer, swap and sale
   below that version and leaves saved cursors, with the SQLite store's rules: a `PostgresStoreAdapter` read whose
   `fromVersion`, `cursor` or `toVersion` is below the edge fails with a `StreamdNetworkError`
   (status 410), a follower on a rare event fails once the edge passes its last match, a fetch with
@@ -4348,6 +4455,13 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   stay within Postgres's btree index limit, while `transfer` keeps the full strings).
   It is created on the first transfer write or prune, apart from the event tables, and `prune`
   deletes transfers below the edge in its one statement.
+- **Stored swaps and sales.** `await storeSwaps(client, store, options)`,
+  `await storeSales(client, store, options)`, `await store.writeSwaps(records, checkpoint)` and
+  `await store.writeSales(records, checkpoint)` work as on the SQLite store, each record and its
+  cursor one statement. `streamd_swaps` and `streamd_sales` have the SQLite store's columns, with
+  `version` as `numeric`, every amount, price, royalty and fee as `numeric(78, 0)`, and the
+  indexed text columns capped at 2,048 UTF-8 bytes as on `streamd_transfers`. They are created
+  with `streamd_transfers` and pruned in the same statement.
 - **Stored points.** `await storePoints(client, store, descriptor, fold, options)`,
   `await store.writePoints(name, scores, checkpoint)` and `await store.readPoints(name)` work as
   on the SQLite store, resolving once the saved cursor and rows are read. `streamd_points` holds
@@ -4362,7 +4476,7 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   returns, field for field: in a UTF-8 database the two stores holding the same rows give the
   same answer, `byType` in the same order (`COLLATE "C"` for ties). It is one statement, so every
   count reads one snapshot. Like the other reads it creates and migrates the event tables on
-  first use, and it creates `streamd_transfers` when it is missing, as `prune` does. `count(*)`
+  first use, and it creates the record tables when they are missing, as `prune` does. `count(*)`
   in Postgres reads the whole table (a sequential or index-only scan), and these counts are
   exact, never the planner's estimate, so on a large table read them on demand rather than on
   every request.
@@ -4387,6 +4501,9 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   so give unrelated services their own database or schema. Stored pages are trusted as they
   are: a final page is served without asking the node again, so grant write access to
   `streamd_pages` only to the processes doing the caching.
+- **Receiver dedup.** `PostgresDedupStore` is the Postgres counterpart of `SqliteDedupStore`,
+  a `DedupStore` for `@streamd/receiver` that every receiver over the same database shares; see
+  [Forward events to a webhook](#forward-events-to-a-webhook).
 
 ## React hooks
 
@@ -5021,28 +5138,37 @@ or `500`; the response body never says.
 
 The default store, `MemoryDedupStore`, keeps the last `maxEntries` ids (default 100,000) in
 memory and forgets them on restart. Behind more than one instance, or across restarts, pass a
-`store`: any object with `seen(ids)`, answering a boolean per id in order, and `add(ids)`,
-either of which may be async. Ids are `version:eventIndex`, which repeat across networks and
-chains, so when forwarders for more than one network share a receiver or store, give each its
-own receiver with a `namespace` (`"aptos:mainnet"`), which prefixes every id it stores. Over
-`bun:sqlite`:
+durable `store`. `SqliteDedupStore` from `@streamd/store-sqlite` and `PostgresDedupStore` from
+`@streamd/store-postgres` keep the ids in a `streamd_dedup` table, over the database or client
+you supply:
 
 ```ts
 import { Database } from "bun:sqlite";
-import type { DedupStore } from "@streamd/receiver";
+import { SqliteDedupStore } from "@streamd/store-sqlite";
 
-const db = new Database("seen.db");
-db.run("CREATE TABLE IF NOT EXISTS seen (id TEXT PRIMARY KEY)");
-const has = db.query("SELECT 1 FROM seen WHERE id = ?");
-const insert = db.query("INSERT OR IGNORE INTO seen (id) VALUES (?)");
-
-const store: DedupStore = {
-  seen: (ids) => ids.map((id) => has.get(id) !== null),
-  add: db.transaction((ids: readonly string[]) => {
-    for (const id of ids) insert.run(id);
-  }),
-};
+const receive = createReceiver({
+  secret: process.env.STREAMD_WEBHOOK_SECRET!,
+  namespace: "aptos:mainnet",
+  store: new SqliteDedupStore(new Database("seen.db"), { maxEntries: 1_000_000 }),
+  async onEvents(events) {
+    for (const event of events) await save(event);
+  },
+});
 ```
+
+Both remember the last `maxEntries` ids (default 100,000) across the whole table, every receiver
+on it together, forgetting the oldest by when each was first added; re-adding an id held already
+changes nothing. An add and its eviction are one write (a savepoint on SQLite, one statement on
+Postgres), and ids are bound as parameters, never read as SQL. Two Postgres processes adding at
+once may leave the table a row or two over the bound until the next add, never under it, and an
+id holding a NUL character is refused there (answered `500`), since `text` cannot store one. Any
+other object with `seen(ids)`, answering a boolean per id in order, and `add(ids)`, either of
+which may be async, works too.
+
+Ids are `version:eventIndex`, which repeat across networks and chains, so when forwarders for
+more than one network share a receiver or store, give each its own receiver with a `namespace`
+(`"aptos:mainnet"`), which prefixes every id it stores. That prefix is also what keeps receivers
+sharing one `streamd_dedup` table apart, so the stores take no namespace of their own.
 
 The `503` guard covers one process; two instances sharing a store can both handle a resent batch
 that arrives while the first is still running. A handler slower than `--timeout` spends
@@ -5372,6 +5498,37 @@ trailing zeros trimmed (`mad` unscaled, `low` and `high` the band's bounds):
 `id` is the rule and the window start, the same on every redelivery, so a receiver can
 deduplicate on it.
 
+The body's type is `AlertPayload` in `@streamd/core`, and the CLI writes it with
+`serializeAlert`; `parseAlert(body)` reads one back, the integers as `bigint`s, the counts
+(`baseline`, `minBaseline`, `baselineWindows`) as numbers and `event` as `parseEvent` reads it,
+refusing anything else, unknown fields included, with a `StreamdError` naming the field.
+
+**Receive them with `@streamd/receiver`.** `createAlertReceiver` checks each request as
+`createReceiver` does for `forward` (`405`, `415`, `413` past `maxBodyBytes`, `401` for a missing
+or wrong signature, all before anything is parsed), then answers `400` with `parseAlert`'s message
+for a body it refuses, and hands `onAlert` each alert whose `id` its store has not seen:
+
+```ts
+import { createAlertReceiver } from "@streamd/receiver";
+
+const receive = createAlertReceiver({
+  secret: process.env.STREAMD_WEBHOOK_SECRET!,
+  async onAlert(alert) {
+    const why = alert.anomaly ? `${alert.anomaly.side} its band` : `over ${JSON.stringify(alert.threshold)}`;
+    await notify(`${alert.rule}: ${alert.value} ${why}`);
+  },
+});
+
+Bun.serve({ port: 8788, fetch: receive });
+```
+
+The id is recorded only after `onAlert` resolves, in the same `DedupStore` `createReceiver` takes
+(`MemoryDedupStore` by default, or `SqliteDedupStore` and `PostgresDedupStore` for a durable one),
+prefixed `<namespace>/` when `namespace` is set. A failing store or `onAlert` answers `500` and a
+redelivery of an alert still being handled `503`, both of which `streamd alert` retries; `204`
+otherwise, repeats included. `onError` is told what caused a `400` or `500`. `streamd positions
+--to` alerts have another shape and are not read by it.
+
 **The cursor file** holds one JSON object: each rule's cursor beside its open window (start,
 count or sum, and whether it alerted; for an anomaly rule also `history`, the baseline's values
 oldest first, and `partial` on the first window), written atomically after each delivered page and on exit.
@@ -5581,6 +5738,40 @@ keep ranges small on public endpoints or pass `--api-key`. Both marketplaces sto
 near version 7,030,000,000, so sales history needs `--archive`. A name, asset or token the client
 does not accept exits `1` with its message; exit codes are otherwise `transfers`'s. Aptos only:
 `--chain sui` exits `2`, since `SuiClient` has neither method.
+
+### Watch package upgrades for breaking changes
+
+`streamd upgrades <address | name>` prints each [package publish](#package-upgrades) at an
+address as one JSON line, through `AptosClient`'s `upgrades()` or, with `--to-version`,
+`getUpgrades()`, and exits `1` on a publish that breaks callers, so a CI job can fail when a
+dependency changes under it:
+
+```sh
+# fail the job if any publish at the dependency in this range broke its ABI
+streamd upgrades 0xabc... --from-version 8177444976 --to-version head --api-key "$APTOS_API_KEY"
+# follow it, exiting 1 on the first breaking publish
+streamd upgrades 0xabc... --cursor-file upgrades.cursor
+```
+
+Each line is the publish event as `tail` prints events, its `data` a `PackageUpgrade` with the
+event structs, entry functions and views the publish added, changed or removed. A publish is
+breaking when any of the three has an entry in `removed` or `changed`; additions are not. For
+each breaking publish one line goes to stderr, its names JSON-encoded since they are on-chain
+text:
+
+```text
+streamd: breaking upgrade at version 8177445224: {"address":"0x...abc","removed":["0x...abc::pool::swap"],"changed":["0x...abc::pool::quote"]}
+```
+
+`--from-version`, `--from-time`, `--to-version <n \| head>`, `--order`, `--limit`,
+`--cursor-file`, `--poll-interval` and `--batch-size` behave as they do for `transfers`, with the
+same combinations refused, and the read flags apply to the publish scan (the module reads go
+through the node itself, as for `upgrades()`, so `--archive` does not answer them). Over a
+range every publish is printed first, then the command exits `1` if any printed one was
+breaking; `--limit` counts printed publishes, so one past it is not judged. Following, it exits
+`1` right after printing the first breaking publish. The cursor file moves per page, so a rerun
+may report that publish again rather than skip it. Exit codes are otherwise `transfers`'s.
+Aptos only: `--chain sui` exits `2`.
 
 ### Account activity and fund-flow traces
 
@@ -6163,6 +6354,38 @@ CORS preflight `--allow-origin` governs. With no token, the gateway answers only
 `GET /v1/status` lists each topic (descriptor, clients, last id, events held), the open
 stream count and the number of registered webhooks.
 
+**Metrics.** `GET /metrics` answers Prometheus text exposition
+(`text/plain; version=0.0.4; charset=utf-8`) under the same rule as `/v1/status`: the token
+when one is set, as `Authorization: Bearer` (Prometheus's `authorization` scrape setting) or
+`?access_token=`, and otherwise only a loopback `Host`. It sits at `/metrics` rather than under
+`/v1`, since that is Prometheus's default path and the format carries its own version.
+
+```sh
+curl -H "authorization: Bearer $STREAMD_GATEWAY_TOKEN" http://127.0.0.1:8787/metrics
+# # HELP streamd_gateway_topics Descriptors followed.
+# # TYPE streamd_gateway_topics gauge
+# streamd_gateway_topics 1
+# streamd_gateway_streams{transport="sse"} 3
+# streamd_gateway_streams{transport="websocket"} 0
+# streamd_gateway_webhooks{status="active"} 0
+# streamd_gateway_webhooks{status="failed"} 0
+# streamd_gateway_buffered_events 412
+# streamd_gateway_adapter_requests_total{source="node",node="0",method="fetchEvents"} 97
+# ...
+```
+
+| Family | |
+| --- | --- |
+| `streamd_gateway_topics` | descriptors followed |
+| `streamd_gateway_streams{transport}` | open streams, `sse` and `websocket` |
+| `streamd_gateway_webhooks{status}` | registered webhooks, `active` and `failed`; 0 without `--webhooks` |
+| `streamd_gateway_buffered_events` | events held for resuming, across all topics |
+| `streamd_gateway_adapter_*` | `toPrometheus`'s families for each node (`source="node",node="<i>"`, by `--node-url` position) and the archive (`source="archive"`), topic polling and history reads alike, the same calls `--stats` counts |
+
+Nothing is labelled by descriptor, since descriptors are whatever clients ask for and a scraper
+need not see them. With `createGateway`, pass `metrics: () => [{ snapshot, labels }]` from the
+`adapterMetrics` wrapping the adapters you built, and `gateway.metrics()` returns the same text.
+
 **Webhooks.** With `--webhooks <file>`, clients register webhooks through the gateway's API, and
 the gateway POSTs every new event on each one's descriptor to its URL, as `streamd forward`
 does: a JSON array of events per POST, signed in `x-streamd-signature`, retried with backoff
@@ -6233,6 +6456,28 @@ sqlite3 events.db 'SELECT count(*) FROM streamd_events'
 - Exit code 0 on Ctrl-C or SIGTERM, 1 when polling gives up, a write fails, or the file cannot
   be opened.
 
+`--records transfers|swaps|sales` follows records instead of events, the chain client's
+`transfers`, `swaps` or `sales`, through [`storeTransfers`, `storeSwaps` or
+`storeSales`](#store-events-in-sqlite) into `streamd_transfers`, `streamd_swaps` or
+`streamd_sales`:
+
+```sh
+streamd store --db dex.db --records swaps --protocol hyperion
+sqlite3 dex.db 'SELECT protocol, count(*) FROM streamd_swaps GROUP BY protocol'
+```
+
+- Each kind takes the narrowing flags of its own command, checked by the client: `--asset` and
+  `--account` for `transfers`, `--protocol` (repeatable) and `--asset` for `swaps`,
+  `--marketplace` (repeatable) and `--token` for `sales`. A value the client refuses exits 1
+  with its message.
+- The cursor is saved under `<kind>:` and `--name`, or by default the network and the narrowing
+  as JSON (`swaps:mainnet:{"protocol":["hyperion"]}`), so each narrowing resumes on its own.
+- Event types, the descriptor flags (`--handle`, `--field`, `--resource`, `--creation-number`,
+  and `--account` for `swaps` and `sales`), `--sender`, `--function`, `--where` and `--decode`
+  are refused with `--records`. `--chain sui` takes only `transfers`, since `SuiClient` has no
+  swaps or sales. `--from-version`, `--poll-interval`, `--postgres` and the exit codes are as
+  for events.
+
 `--postgres <url>` writes to a Postgres database instead, through
 [`@streamd/store-postgres`](#store-events-in-postgres), with the same cursor names, resume,
 filter and decode flags, and `--chain sui`. Give exactly one of `--db` and `--postgres`.
@@ -6257,6 +6502,38 @@ psql -h db.example -U streamd events -c 'SELECT count(*) FROM streamd_events'
   A stop waits up to 5 seconds for a batch already being written, then up to a second for the
   connection to close.
 
+#### Store maintenance
+
+`store stats`, `store prune` and `store cursors` read and tidy a database `streamd store` writes,
+through the stores' own `stats`, `prune`, `cursors` and `deleteCursor`
+([SQLite](#store-events-in-sqlite), [Postgres](#store-events-in-postgres)). Each takes
+`--db <file>` or `--postgres <url>` exactly as `store` does, the subcommand word first, and
+prints JSON lines with bigints as decimal strings:
+
+```sh
+streamd store stats --db events.db --by-type
+streamd store prune --db events.db --before 7984000000        # a dry run
+streamd store prune --db events.db --before 7984000000 --yes
+streamd store cursors --db events.db
+streamd store cursors --db events.db --delete mainnet:old
+```
+
+- `stats` prints one `StoreStats` object: `events`, `resourceChanges`, `transfers`, `swaps`, `sales`,
+  `lowestVersion` and `highestVersion` (absent when empty), `prunedBefore`, and with `--by-type`
+  `byType: [{ type, count }]`.
+- `prune --before <version>` without `--yes` changes nothing and prints
+  `{ dryRun: true, beforeVersion, prunedBefore, lowestVersion, highestVersion, noop, rows: "not counted" }`:
+  the stores count no version range, so the rows it would delete are not reported. With `--yes`
+  it deletes the events and stored records below the version and prints
+  `{ dryRun: false, beforeVersion, noop, ...stats }`, `prunedBefore` the new edge. `noop` is true
+  when `--before` is at or below the current edge, and then nothing is pruned. Cursors stay.
+- `cursors` prints one `{ name, cursor }` per saved cursor; `--delete <name>` prints
+  `{ name, deleted }` and exits 1 when there was no such cursor. The pruned edge is not a cursor,
+  and deleting it is refused.
+- A SQLite file that does not exist is refused rather than created. Exit code 1 when the
+  database cannot be opened or reached or a read or write fails, 2 on a usage error; the
+  network flags are refused, since nothing reads a chain.
+
 ### Generate event types
 
 `streamd codegen` reads module ABIs from the fullnode and writes a TypeScript file with a type
@@ -6269,6 +6546,25 @@ streamd codegen --out src/events.ts 0x1::fungible_asset 0x1::coin
 
 The generator is `generateEventTypes` in `@streamd/codegen`, which takes a function reading a
 module's ABI, so it runs anywhere, the [Playground](#playground) included.
+
+Each module with non-generic events also gets one [`defineEvents`](#typed-events)
+descriptor over all of them, so one subscription follows the module and narrows on `event.type`:
+
+```ts
+import { fungibleAssetEvents } from "./events.js";
+
+client.on(fungibleAssetEvents, (e) => {
+  if (e.type === "0x1::fungible_asset::Deposit") console.log("in", e.data.store, e.data.amount);
+  if (e.type === "0x1::fungible_asset::Frozen") console.log("frozen", e.data.store, e.data.frozen);
+});
+```
+
+It is named `<module>Events`, the module name camel-cased, so it never meets a struct's name.
+Where two modules in the file share a name, each gets its address appended
+(`tokenEvents_0x3`), and where the name is still taken, an `_`. Generic events are left out,
+since their descriptors are functions of their type arguments, so a module of only generic
+events gets none. With `--chain sui` it covers every non-generic `copy + drop` type the module
+declares.
 
 It also writes a typed `handle` descriptor builder for each legacy `0x1::event::EventHandle<T>`
 field of a resource (a struct with `key`) in the modules it reads, named `<Struct>_<Field>` and
@@ -6593,6 +6889,7 @@ bun run build              # each package into its own dist/
 bun run demo               # live demo against mainnet
 bun run test:integration   # @streamd/aptos and @streamd/sui integration tests, hit mainnet
 bun packages/cli/scripts/framework.ts  # regenerate @streamd/aptos/framework from its ABI snapshots
+bun packages/cli/scripts/protocols.ts  # regenerate @streamd/aptos/protocols (--refresh rereads mainnet)
 bun packages/cli/scripts/sui-framework.ts  # regenerate @streamd/sui/framework (--refresh rereads mainnet)
 ```
 

@@ -222,6 +222,65 @@ describe("activity through the client", () => {
   });
 });
 
+describe("activity withValue", () => {
+  const QUOTE = "0xbae207659db88bea0cbead6da0ed00aac12edcdda169e591cd41c94180b46f3b";
+  const APT_POOL = "0x925660b8618394809f89f8002e2926600c775221f43bf1919782b297a79400d8";
+  const OTHER = "0x1234::meme::Meme";
+  // After the pools were created; 2^60 squared over 2^128 is 1/256 USDC base unit per octa.
+  const V = 3_000_000_000;
+  const HISTORY = [
+    coin(V, 0, "Withdraw", ALICE, "512", ALICE),
+    coin(V, 1, "Deposit", BOB, "512", ALICE),
+    ev(V, 2, "0x1::coin::CoinWithdraw", { coin_type: OTHER, account: BOB, amount: "9" }, ALICE),
+    ev(V, 3, "0x1::coin::CoinDeposit", { coin_type: OTHER, account: ALICE, amount: "9" }, ALICE),
+    coin(V + 1, 0, "Withdraw", BOB, "2560", BOB),
+    coin(V + 1, 1, "Deposit", ALICE, "2560", BOB),
+  ];
+
+  function priced(events: StreamdEvent[]) {
+    const base = adapter(events);
+    const pools: bigint[] = [];
+    const view: EventAdapter["view"] = async (request, version, descriptor) => {
+      if (!request.function.endsWith("::pool_v3::current_tick_and_price")) return base.view!(request, version, descriptor);
+      pools.push(version);
+      return [0, (1n << 60n).toString()];
+    };
+    return { adapter: { ...base, view }, pools };
+  }
+  const value = (amount: bigint) => ({ quote: QUOTE, decimals: 6, amount, price: { numerator: 1n, denominator: 256n }, source: "pool" as const, reference: APT_POOL });
+
+  it("values each transfer and balance change of a priced asset at its version, leaving others bare", async () => {
+    const { adapter: base, pools } = priced(HISTORY);
+    const records = await testClient({ adapter: base }).getActivity(ALICE, { fromVersion: 0n, withValue: true });
+    expect(records.map((r) => [r.data.transfers.map((t) => t.value), r.data.balanceChanges])).toEqual([
+      [
+        [value(2n), undefined],
+        [
+          { asset: COIN, delta: -512n, value: value(-2n) },
+          { asset: OTHER, delta: 9n },
+        ],
+      ],
+      [[value(10n)], [{ asset: COIN, delta: 2560n, value: value(10n) }]],
+    ]);
+    expect(pools).toEqual([BigInt(V), BigInt(V + 1)]);
+  });
+
+  it("values live records the same way, and reads no prices without withValue", async () => {
+    const { adapter: base, pools } = priced(HISTORY);
+    const client = testClient({ adapter: base });
+    const seen: Activity[] = [];
+    const sub = client.activity(ALICE, (r) => void seen.push(r.data), { fromVersion: 0n, withValue: true, pollInterval: 1 });
+    await sub.caughtUp;
+    sub.unsubscribe();
+    expect(seen.map((a) => a.balanceChanges[0]!.value?.amount)).toEqual([-2n, 10n]);
+    pools.length = 0;
+    const bare = await client.getActivity(ALICE, { fromVersion: 0n });
+    expect(bare.flatMap((r) => r.data.balanceChanges).some((c) => c.value !== undefined)).toBe(false);
+    expect(pools).toHaveLength(0);
+    client.destroy();
+  });
+});
+
 describe("activity on a recorded mainnet range", () => {
   // A wallet sending and receiving USDt, recorded through IndexerAccountAdapter routed beside
   // FullnodeScanAdapter. Each entry's sender, hash, event count and deltas were checked against

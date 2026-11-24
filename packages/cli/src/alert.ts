@@ -1,6 +1,6 @@
-import { count, serializeEvent, sum } from "@streamd/core";
+import { count, serializeAlert, sum } from "@streamd/core";
 import type { AptosClient, SaleMarketplace, SwapProtocol } from "@streamd/aptos";
-import type { Fold, StreamdClient, StreamdEvent, Subscription, SubscriptionOptions } from "@streamd/core";
+import type { AlertPayload, Fold, StreamdClient, StreamdEvent, Subscription, SubscriptionOptions } from "@streamd/core";
 import type { AlertRule, AlertSource, Anomaly } from "./alert-rules.js";
 import { band, decimal, outside } from "./anomaly.js";
 import type { Band } from "./anomaly.js";
@@ -250,24 +250,16 @@ function followSource(
   });
 }
 
-function thresholdJson(rule: AlertRule): unknown {
-  const { threshold } = rule;
-  if ("count" in threshold) return { count: `${threshold.count}` };
-  if ("gte" in threshold) return { sum: threshold.sum, gte: `${threshold.gte}` };
-  const { baseline, minBaseline, ...rest } = threshold.anomaly;
-  return { anomaly: { ...rest, baseline: `${baseline}`, minBaseline: `${minBaseline}` } };
-}
-
 /** The JSON body POSTed for an alert; `id` is the same on every redelivery. */
 export function alertBody(rule: AlertRule, fire: Fire, event: StreamdEvent): string {
   const { window, anomaly } = fire;
-  const head = JSON.stringify({
+  const alert: AlertPayload = {
     id: `${rule.name}:${window.start}`,
     rule: rule.name,
-    windowStart: `${window.start}`,
-    windowEnd: `${window.start + rule.window}`,
-    threshold: thresholdJson(rule),
-    value: `${window.value}`,
+    windowStart: window.start,
+    windowEnd: window.start + rule.window,
+    threshold: rule.threshold,
+    value: window.value,
     ...(anomaly !== undefined && {
       anomaly: {
         side: anomaly.side,
@@ -275,11 +267,12 @@ export function alertBody(rule: AlertRule, fire: Fire, event: StreamdEvent): str
         mad: decimal(anomaly.band.mad),
         low: decimal(anomaly.band.low),
         high: decimal(anomaly.band.high),
-        baselineWindows: `${anomaly.baselineWindows}`,
+        baselineWindows: anomaly.baselineWindows,
       },
     }),
-  });
-  return `${head.slice(0, -1)},"event":${serializeEvent(event)}}`;
+    event,
+  };
+  return serializeAlert(alert);
 }
 
 /**
