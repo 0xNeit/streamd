@@ -14,7 +14,7 @@ import type {
   SubscriptionOptions,
   Transfer,
 } from "@streamd/core";
-import type { StoreCheckpoint, SqliteEventStore } from "./store.js";
+import type { StoreCheckpoint, SqliteEventStore, StoredSale, StoredSwap } from "./store.js";
 
 export interface StoreEventsOptions extends SubscriptionOptions {
   /** The name the subscription's cursor is saved under, so a restart resumes from it. */
@@ -29,6 +29,22 @@ export interface TransferClient<O extends SubscriptionOptions = SubscriptionOpti
 /** The client's own `transfers()` options, plus the `name` its cursor is saved under. */
 export type StoreTransfersOptions<O extends SubscriptionOptions = SubscriptionOptions> = O & { name: string };
 
+/** Anything with `AptosClient`'s `swaps()`. */
+export interface SwapClient<O extends SubscriptionOptions = SubscriptionOptions> {
+  swaps(callback: EventCallback<StoredSwap>, options?: O): Subscription;
+}
+
+/** The client's own `swaps()` options, plus the `name` its cursor is saved under. */
+export type StoreSwapsOptions<O extends SubscriptionOptions = SubscriptionOptions> = O & { name: string };
+
+/** Anything with `AptosClient`'s `sales()`. */
+export interface SaleClient<O extends SubscriptionOptions = SubscriptionOptions> {
+  sales(callback: EventCallback<StoredSale>, options?: O): Subscription;
+}
+
+/** The client's own `sales()` options, plus the `name` its cursor is saved under. */
+export type StoreSalesOptions<O extends SubscriptionOptions = SubscriptionOptions> = O & { name: string };
+
 const SAVE_RETRY_MS = 10;
 const CURSOR_SAVE_INTERVAL_MS = 5_000;
 const DISPOSE: typeof Symbol.dispose = (Symbol.dispose ?? Symbol.for("Symbol.dispose")) as typeof Symbol.dispose;
@@ -36,6 +52,8 @@ const ASYNC_DISPOSE: typeof Symbol.asyncDispose = (Symbol.asyncDispose ?? Symbol
 
 // Transfer cursors are saved apart from event cursors of the same name.
 const TRANSFER_CURSOR_PREFIX = "transfers:";
+const SWAP_CURSOR_PREFIX = "swaps:";
+const SALE_CURSOR_PREFIX = "sales:";
 const TABLE_CURSOR_PREFIX = "tables:";
 const POINTS_CURSOR_PREFIX = "points:";
 
@@ -98,6 +116,48 @@ export function storeTransfers<O extends SubscriptionOptions>(
     listener,
     (records, checkpoint) => store.writeTransfers(records as StreamdEvent<Transfer>[], checkpoint),
     (deliver, resolved) => client.transfers((record) => deliver([record]), resolved as O),
+  );
+}
+
+/**
+ * `swaps()` on `client`, writing each record to `streamd_swaps` together
+ * with the subscription's cursor, as `storeTransfers` writes transfers. The
+ * cursor is saved under `swaps:` and `options.name`.
+ */
+export function storeSwaps<O extends SubscriptionOptions>(
+  client: SwapClient<O>,
+  store: SqliteEventStore,
+  options: StoreSwapsOptions<NoInfer<O>>,
+): Subscription {
+  const { name, ...listener } = options;
+  if (typeof name !== "string" || name === "") throw new StreamdError("storeSwaps needs a name to save its cursor under");
+  return sink(
+    store,
+    SWAP_CURSOR_PREFIX + name,
+    listener,
+    (records, checkpoint) => store.writeSwaps(records as StreamdEvent<StoredSwap>[], checkpoint),
+    (deliver, resolved) => client.swaps((record) => deliver([record]), resolved as O),
+  );
+}
+
+/**
+ * `sales()` on `client`, writing each record to `streamd_sales` together
+ * with the subscription's cursor, as `storeTransfers` writes transfers. The
+ * cursor is saved under `sales:` and `options.name`.
+ */
+export function storeSales<O extends SubscriptionOptions>(
+  client: SaleClient<O>,
+  store: SqliteEventStore,
+  options: StoreSalesOptions<NoInfer<O>>,
+): Subscription {
+  const { name, ...listener } = options;
+  if (typeof name !== "string" || name === "") throw new StreamdError("storeSales needs a name to save its cursor under");
+  return sink(
+    store,
+    SALE_CURSOR_PREFIX + name,
+    listener,
+    (records, checkpoint) => store.writeSales(records as StreamdEvent<StoredSale>[], checkpoint),
+    (deliver, resolved) => client.sales((record) => deliver([record]), resolved as O),
   );
 }
 

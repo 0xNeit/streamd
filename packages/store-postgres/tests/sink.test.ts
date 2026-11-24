@@ -2,8 +2,8 @@ import { PGlite } from "./helpers.js";
 import { describe, expect, it } from "bun:test";
 import { MemoryAdapter, StreamdClient, eventId, points } from "@streamd/core";
 import type { EventAdapter, EventCallback, EventDescriptor, PointsState, Reduction, Score, StreamdEvent, Subscription, SubscriptionOptions, Transfer } from "@streamd/core";
-import { PostgresEventStore, PostgresStoreAdapter, storeEvents, storePoints, storeTransfers } from "../src/index.js";
-import type { TransferClient } from "../src/index.js";
+import { PostgresEventStore, PostgresStoreAdapter, storeEvents, storePoints, storeSales, storeSwaps, storeTransfers } from "../src/index.js";
+import type { SaleClient, StoredSale, StoredSwap, SwapClient, TransferClient } from "../src/index.js";
 
 const SWAP = "0x1::dex::Swap";
 const swaps: EventDescriptor = { kind: "module", eventType: SWAP };
@@ -357,6 +357,104 @@ describe("storeTransfers", () => {
     await expect(storeTransfers(client, store, { name: "t", asset: 5 }).then((s) => s.unsubscribe())).resolves.toBeUndefined();
     // @ts-expect-error name is required
     await expect(storeTransfers(client, store, {})).rejects.toThrow("needs a name");
+  });
+});
+
+interface RecordOptions extends SubscriptionOptions {
+  protocol?: string[];
+  token?: string;
+}
+
+function swapRecords(count: number): StreamdEvent<StoredSwap>[] {
+  return Array.from({ length: count }, (_, i) => ({
+    type: SWAP,
+    data: { protocol: "hyperion", poolId: "0xp", assetIn: "0xa", amountIn: BigInt(i + 1), assetOut: "0xb", amountOut: 1n },
+    version: BigInt(i + 1),
+    sequenceNumber: 0n,
+    eventIndex: 1,
+  }));
+}
+
+function saleRecords(count: number): StreamdEvent<StoredSale>[] {
+  return Array.from({ length: count }, (_, i) => ({
+    type: SWAP,
+    data: { marketplace: "wapal", kind: "listing", token: "0xt", seller: "0xs", buyer: "0xb", price: BigInt(i + 1) },
+    version: BigInt(i + 1),
+    sequenceNumber: 0n,
+    eventIndex: 2,
+  }));
+}
+
+/** A chain client's swaps() and sales(), over MemoryAdapters whose events already are records. */
+function recordClient(swapList: StreamdEvent[], saleList: StreamdEvent[]): SwapClient<RecordOptions> & SaleClient<RecordOptions> & { destroy(): void } {
+  const swapsClient = new StreamdClient({ adapter: new MemoryAdapter(swapList) });
+  const salesClient = new StreamdClient({ adapter: new MemoryAdapter(saleList) });
+  const strip = ({ protocol: _p, token: _t, ...rest }: RecordOptions = {}) => rest;
+  return {
+    swaps: (callback, options) => swapsClient.on(swaps, callback as EventCallback, strip(options)),
+    sales: (callback, options) => salesClient.on(swaps, callback as EventCallback, strip(options)),
+    destroy: () => (swapsClient.destroy(), salesClient.destroy()),
+  };
+}
+
+async function keys(db: PGlite, table: string): Promise<string[]> {
+  const { rows } = await db.query<{ version: string; event_index: number }>(
+    `SELECT version::text, event_index FROM ${table} ORDER BY version`,
+  );
+  return rows.map((r) => `${r.version}:${r.event_index}`);
+}
+
+describe("storeSwaps and storeSales", () => {
+  it("resume after a restart with every record stored once, each under its own cursor name", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    const options = { name: "r", batchSize: 2, pollInterval: 5 };
+    const first = recordClient(swapRecords(3), saleRecords(4));
+    const subs = await Promise.all([
+      caughtUp((onCaughtUp) => storeSwaps(first, store, { ...options, protocol: ["hyperion"], onCaughtUp })),
+      caughtUp((onCaughtUp) => storeSales(first, store, { ...options, token: "0xt", onCaughtUp })),
+    ]);
+    for (const sub of subs) sub.unsubscribe();
+    first.destroy();
+    expect(await keys(db, "streamd_swaps")).toEqual(swapRecords(3).map(eventId));
+    expect(await keys(db, "streamd_sales")).toEqual(saleRecords(4).map(eventId));
+    expect(await store.readCursor("swaps:r")).toBe("3");
+    expect(await store.readCursor("sales:r")).toBe("4");
+
+    const second = recordClient(swapRecords(5), saleRecords(6));
+    const seen: string[] = [];
+    const where = (e: StreamdEvent) => (seen.push(eventId(e)), true);
+    const resumed = await Promise.all([
+      caughtUp((onCaughtUp) => storeSwaps(second, store, { ...options, where, onCaughtUp })),
+      caughtUp((onCaughtUp) => storeSales(second, store, { ...options, where, onCaughtUp })),
+    ]);
+    for (const sub of resumed) sub.unsubscribe();
+    second.destroy();
+    expect(seen.sort()).toEqual(["4:1", "5:1", "5:2", "6:2"]);
+    expect(await keys(db, "streamd_swaps")).toEqual(swapRecords(5).map(eventId));
+    expect(await keys(db, "streamd_sales")).toEqual(saleRecords(6).map(eventId));
+  });
+
+  it("ends on a failed write without moving the saved cursor past it, and needs a name", async () => {
+    const db = new PGlite();
+    const store = new PostgresEventStore(db);
+    await store.writeSales([]);
+    await db.exec(`
+      CREATE FUNCTION full_sales() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN IF NEW.version >= 3 THEN RAISE EXCEPTION 'disk full'; END IF; RETURN NEW; END $$;
+      CREATE TRIGGER boom BEFORE INSERT ON streamd_sales FOR EACH ROW EXECUTE FUNCTION full_sales();
+    `);
+    const client = recordClient([], saleRecords(6));
+    const error = await new Promise<Error>((resolve) => {
+      void storeSales(client, store, { name: "s", batchSize: 2, pollInterval: 5, onError: resolve });
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    client.destroy();
+    expect((error.cause as Error).message).toContain("disk full");
+    expect(await keys(db, "streamd_sales")).toEqual(["1:2", "2:2"]);
+    expect(await store.readCursor("sales:s")).toBe("2");
+    // @ts-expect-error name is required
+    await expect(storeSwaps(client, store, {})).rejects.toThrow("needs a name");
   });
 });
 
