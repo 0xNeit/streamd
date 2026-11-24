@@ -31,6 +31,7 @@ import type {
   ServeOptions,
   StoreAdminOptions,
   StoreOptions,
+  StoreRecordsOptions,
   SwapsCommandOptions,
   TailOptions,
   TraceCommandOptions,
@@ -70,7 +71,7 @@ import type { RecordsIO } from "./records.js";
 import { runServe } from "./serve.js";
 import { sqlTables } from "./sql.js";
 import { RequestStats, onStatsSignal } from "./stats.js";
-import { connectPostgres, openDatabase, runStore, runStoreAdmin } from "./store.js";
+import { connectPostgres, openDatabase, runStore, runStoreAdmin, runStoreRecords } from "./store.js";
 import { runTail } from "./tail.js";
 import { runHolders } from "./holders.js";
 import { runPositions } from "./positions.js";
@@ -160,10 +161,13 @@ async function serve(options: ServeOptions): Promise<number> {
   }
 }
 
-async function store(options: StoreOptions): Promise<number> {
+async function store<O extends StoreOptions | StoreRecordsOptions>(
+  options: O,
+  run: (options: O, io: Parameters<typeof runStore>[1]) => Promise<number>,
+): Promise<number> {
   const { client, controller } = await setup(options);
   try {
-    return await runStore(options, {
+    return await run(options, {
       client,
       open: openDatabase,
       connect: connectPostgres,
@@ -641,7 +645,8 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "compare") return compare(parsed.options);
   if (parsed.command === "monitor") return monitor(parsed.options);
   if (parsed.command === "serve") return serve(parsed.options);
-  if (parsed.command === "store") return store(parsed.options);
+  if (parsed.command === "store") return store(parsed.options, runStore);
+  if (parsed.command === "store-records") return store(parsed.options, runStoreRecords);
   if (parsed.command === "store-admin") return storeAdmin(parsed.options);
   if (parsed.command === "alert") return alert(parsed.options);
   if (parsed.command === "check") return check(parsed.options);
