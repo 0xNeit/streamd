@@ -23,6 +23,16 @@
         "types": "./dist/framework.d.cts",
         "default": "./dist/framework.cjs"
       }
+    },
+    "./protocols": {
+      "import": {
+        "types": "./dist/protocols.d.ts",
+        "default": "./dist/protocols.js"
+      },
+      "require": {
+        "types": "./dist/protocols.d.cts",
+        "default": "./dist/protocols.cjs"
+      }
     }
   },
   "main": "./dist/index.cjs",

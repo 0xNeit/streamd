@@ -4,7 +4,7 @@ await $`rm -rf dist`;
 
 for (const [format, name] of [["esm", "[name].js"], ["cjs", "[name].cjs"]] as const) {
   const result = await Bun.build({
-    entrypoints: ["src/index.ts", "src/framework.ts"],
+    entrypoints: ["src/index.ts", "src/framework.ts", "src/protocols.ts"],
     outdir: "dist",
     naming: name,
     format,
