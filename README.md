@@ -4085,8 +4085,8 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   `0n` for a store that was never pruned and holds nothing, so relative `fromVersion` and
   `toVersion: "head"` count from what is stored. After a prune neither reports below the
   edge. With no `cursor` or `fromVersion` a fetch starts at the earliest stored event.
-- **Retention.** `store.prune({ beforeVersion })` deletes every event and stored transfer
-  below that version in one transaction and leaves saved cursors alone. A `StoreAdapter` read whose `fromVersion`,
+- **Retention.** `store.prune({ beforeVersion })` deletes every event and stored transfer,
+  swap and sale below that version in one transaction and leaves saved cursors alone. A `StoreAdapter` read whose `fromVersion`,
   `cursor` or `toVersion` is below that edge then fails with a `StreamdNetworkError` (status
   410), as a pruned fullnode does, rather than returning a short history. That includes a
   relative `fromVersion` reaching below it, and a follower on a rare event: its cursor stays
@@ -4105,7 +4105,7 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   writer on another connection never lands between the counts:
 
   ```ts
-  const { events, resourceChanges, transfers, lowestVersion, highestVersion, prunedBefore, byType } =
+  const { events, resourceChanges, transfers, swaps, sales, lowestVersion, highestVersion, prunedBefore, byType } =
     store.stats({ byType: true });
   // byType: [{ type: "0x1::fungible_asset::Deposit", count: 81234n }, ...]
   ```
@@ -4113,7 +4113,8 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   Every count is a `bigint`. `events` counts the rows of `streamd_events` that are events, and
   `resourceChanges` the rows stored as `resource` changes (with an address), so the two never
   overlap; changes an earlier release stored without an address count as events, as the
-  transaction lookups treat them. `transfers` counts `streamd_transfers`, `0n` before it exists.
+  transaction lookups treat them. `transfers`, `swaps` and `sales` count `streamd_transfers`,
+  `streamd_swaps` and `streamd_sales`, each `0n` before it exists.
   `lowestVersion` and `highestVersion` are the lowest and highest version of any stored event or
   change, absent when there are none, and are what is stored rather than what is readable: a row
   written below the edge after a prune shows there, while `StoreAdapter` refuses to read it.
@@ -4148,6 +4149,30 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   written, which ends the subscription as a failed write does. `store.writeTransfers(records,
   { name, cursor })` is there for wiring your own, and `prune` deletes transfers below its edge
   with the events.
+- **Stored swaps and sales.** `storeSwaps(client, store, options)` and
+  `storeSales(client, store, options)` do the same for `AptosClient`'s `swaps()` and `sales()`
+  (or anything with that method), `options` the method's own (`protocol` and `asset`, or
+  `marketplace` and `token`, and the listener options) plus `name`, the cursor saved under
+  `swaps:<name>` or `sales:<name>`:
+
+  ```ts
+  import { storeSales, storeSwaps } from "@streamd/store-sqlite";
+
+  storeSwaps(aptosClient, store, { name: "hyperion", protocol: "hyperion", fromVersion: -10_000n });
+  storeSales(aptosClient, store, { name: "all" });
+  ```
+
+  `streamd_swaps` holds `version`, `event_index`, `protocol`, `pool_id`, `trader` (null when
+  the source names no sender), `asset_in`, `amount_in`, `asset_out`, `amount_out` (amounts as
+  exact decimal text) and `swap`, the whole record as `serializeEvent` writes it, indexed by
+  pool, trader and either asset. `streamd_sales` holds `version`, `event_index`, `marketplace`,
+  `kind`, `token`, `collection`, `seller`, `buyer`, `price`, `royalty` and `fee` (null when the
+  event reports none) and `sale`, indexed by token, collection, seller and buyer. Both are keyed
+  on the record's `(version, eventIndex)`, created beside `streamd_transfers` by the first
+  record write or prune (so an older file gains them then), read back with SQL only, and pruned
+  with the events. A record with an empty required field or an amount that is not a u256
+  `bigint` is refused before anything is written. `store.writeSwaps(records, checkpoint)` and
+  `store.writeSales(records, checkpoint)` are there for wiring your own.
 - **Stored points.** `storePoints(client, store, descriptor, fold, options)` runs
   `client.reduce()` over a `points()` fold and keeps the leaderboard in `streamd_points`, one
   row per `name` and address: `points` (exact decimal text), `version` (zero-padded) and
@@ -4231,7 +4256,8 @@ const recent = await local.getEvents(descriptor, { fromVersion: -1_000n, toVersi
   WHERE transaction_hash IS NULL AND account_address IS NULL AND event LIKE '%"transactionHash"%';
   ```
 - It passes `checkAdapter`. The schema (`streamd_events`, `streamd_cursors`) is created on
-  first use, and `streamd_transfers` on the first transfer write or prune.
+  first use, and `streamd_transfers`, `streamd_swaps` and `streamd_sales` on the first record
+  write or prune.
 
 ### Typed event tables
 
@@ -4329,7 +4355,7 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   for one scan of it. Like the other `CREATE INDEX IF NOT
   EXISTS` statements each client runs on first use, it takes a brief SHARE lock even when the
   index exists, and the role connecting must own the tables.
-- **Retention.** `await store.prune({ beforeVersion })` deletes every event and stored transfer
+- **Retention.** `await store.prune({ beforeVersion })` deletes every event and stored transfer, swap and sale
   below that version and leaves saved cursors, with the SQLite store's rules: a `PostgresStoreAdapter` read whose
   `fromVersion`, `cursor` or `toVersion` is below the edge fails with a `StreamdNetworkError`
   (status 410), a follower on a rare event fails once the edge passes its last match, a fetch with
@@ -4348,6 +4374,13 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   stay within Postgres's btree index limit, while `transfer` keeps the full strings).
   It is created on the first transfer write or prune, apart from the event tables, and `prune`
   deletes transfers below the edge in its one statement.
+- **Stored swaps and sales.** `await storeSwaps(client, store, options)`,
+  `await storeSales(client, store, options)`, `await store.writeSwaps(records, checkpoint)` and
+  `await store.writeSales(records, checkpoint)` work as on the SQLite store, each record and its
+  cursor one statement. `streamd_swaps` and `streamd_sales` have the SQLite store's columns, with
+  `version` as `numeric`, every amount, price, royalty and fee as `numeric(78, 0)`, and the
+  indexed text columns capped at 2,048 UTF-8 bytes as on `streamd_transfers`. They are created
+  with `streamd_transfers` and pruned in the same statement.
 - **Stored points.** `await storePoints(client, store, descriptor, fold, options)`,
   `await store.writePoints(name, scores, checkpoint)` and `await store.readPoints(name)` work as
   on the SQLite store, resolving once the saved cursor and rows are read. `streamd_points` holds
@@ -4362,7 +4395,7 @@ From the terminal, [`streamd store --postgres <url>`](#store-events) does this f
   returns, field for field: in a UTF-8 database the two stores holding the same rows give the
   same answer, `byType` in the same order (`COLLATE "C"` for ties). It is one statement, so every
   count reads one snapshot. Like the other reads it creates and migrates the event tables on
-  first use, and it creates `streamd_transfers` when it is missing, as `prune` does. `count(*)`
+  first use, and it creates the record tables when they are missing, as `prune` does. `count(*)`
   in Postgres reads the whole table (a sequential or index-only scan), and these counts are
   exact, never the planner's estimate, so on a large table read them on demand rather than on
   every request.
@@ -6267,6 +6300,28 @@ sqlite3 events.db 'SELECT count(*) FROM streamd_events'
 - Exit code 0 on Ctrl-C or SIGTERM, 1 when polling gives up, a write fails, or the file cannot
   be opened.
 
+`--records transfers|swaps|sales` follows records instead of events, the chain client's
+`transfers`, `swaps` or `sales`, through [`storeTransfers`, `storeSwaps` or
+`storeSales`](#store-events-in-sqlite) into `streamd_transfers`, `streamd_swaps` or
+`streamd_sales`:
+
+```sh
+streamd store --db dex.db --records swaps --protocol hyperion
+sqlite3 dex.db 'SELECT protocol, count(*) FROM streamd_swaps GROUP BY protocol'
+```
+
+- Each kind takes the narrowing flags of its own command, checked by the client: `--asset` and
+  `--account` for `transfers`, `--protocol` (repeatable) and `--asset` for `swaps`,
+  `--marketplace` (repeatable) and `--token` for `sales`. A value the client refuses exits 1
+  with its message.
+- The cursor is saved under `<kind>:` and `--name`, or by default the network and the narrowing
+  as JSON (`swaps:mainnet:{"protocol":["hyperion"]}`), so each narrowing resumes on its own.
+- Event types, the descriptor flags (`--handle`, `--field`, `--resource`, `--creation-number`,
+  and `--account` for `swaps` and `sales`), `--sender`, `--function`, `--where` and `--decode`
+  are refused with `--records`. `--chain sui` takes only `transfers`, since `SuiClient` has no
+  swaps or sales. `--from-version`, `--poll-interval`, `--postgres` and the exit codes are as
+  for events.
+
 `--postgres <url>` writes to a Postgres database instead, through
 [`@streamd/store-postgres`](#store-events-in-postgres), with the same cursor names, resume,
 filter and decode flags, and `--chain sui`. Give exactly one of `--db` and `--postgres`.
@@ -6307,13 +6362,13 @@ streamd store cursors --db events.db
 streamd store cursors --db events.db --delete mainnet:old
 ```
 
-- `stats` prints one `StoreStats` object: `events`, `resourceChanges`, `transfers`,
+- `stats` prints one `StoreStats` object: `events`, `resourceChanges`, `transfers`, `swaps`, `sales`,
   `lowestVersion` and `highestVersion` (absent when empty), `prunedBefore`, and with `--by-type`
   `byType: [{ type, count }]`.
 - `prune --before <version>` without `--yes` changes nothing and prints
   `{ dryRun: true, beforeVersion, prunedBefore, lowestVersion, highestVersion, noop, rows: "not counted" }`:
   the stores count no version range, so the rows it would delete are not reported. With `--yes`
-  it deletes the events and transfers below the version and prints
+  it deletes the events and stored records below the version and prints
   `{ dryRun: false, beforeVersion, noop, ...stats }`, `prunedBefore` the new edge. `noop` is true
   when `--before` is at or below the current edge, and then nothing is pruned. Cursors stay.
 - `cursors` prints one `{ name, cursor }` per saved cursor; `--delete <name>` prints
