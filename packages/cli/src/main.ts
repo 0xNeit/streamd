@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { constants as osConstants } from "node:os";
 import { writeFile } from "node:fs/promises";
 import { Aptos } from "@aptos-labs/ts-sdk";
@@ -29,6 +29,7 @@ import type {
   RecordOptions,
   SalesCommandOptions,
   ServeOptions,
+  StoreAdminOptions,
   StoreOptions,
   SwapsCommandOptions,
   TailOptions,
@@ -69,7 +70,7 @@ import type { RecordsIO } from "./records.js";
 import { runServe } from "./serve.js";
 import { sqlTables } from "./sql.js";
 import { RequestStats, onStatsSignal } from "./stats.js";
-import { connectPostgres, openDatabase, runStore } from "./store.js";
+import { connectPostgres, openDatabase, runStore, runStoreAdmin } from "./store.js";
 import { runTail } from "./tail.js";
 import { runHolders } from "./holders.js";
 import { runPositions } from "./positions.js";
@@ -172,6 +173,23 @@ async function store(options: StoreOptions): Promise<number> {
   } finally {
     client.destroy();
   }
+}
+
+async function storeAdmin(options: StoreAdminOptions): Promise<number> {
+  const controller = new AbortController();
+  const out = stdout(controller);
+  const code = await runStoreAdmin(options, {
+    // Upkeep of a file that is not there would only create an empty one.
+    open: (path) => {
+      if (!existsSync(path)) throw new Error("no such file");
+      return openDatabase(path);
+    },
+    connect: connectPostgres,
+    write: out.write,
+    error: (message) => process.stderr.write(`${message}\n`),
+    signal: controller.signal,
+  });
+  return out.exitCode(code);
 }
 
 /** Writes to stdout with backpressure; a closed pipe (EPIPE, as when piped into `head`) aborts quietly. */
@@ -624,6 +642,7 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "monitor") return monitor(parsed.options);
   if (parsed.command === "serve") return serve(parsed.options);
   if (parsed.command === "store") return store(parsed.options);
+  if (parsed.command === "store-admin") return storeAdmin(parsed.options);
   if (parsed.command === "alert") return alert(parsed.options);
   if (parsed.command === "check") return check(parsed.options);
   if (parsed.command === "record") return withCache(parsed.options, (cache) => record(parsed.options, cache));

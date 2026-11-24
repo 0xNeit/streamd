@@ -1,7 +1,7 @@
 import type { EventDescriptor, StreamdClient, Subscription } from "@streamd/core";
 import { PostgresEventStore, storeEvents as storeInPostgres, type PostgresClient, type StoreEventsOptions } from "@streamd/store-postgres";
 import { SqliteEventStore, storeEvents as storeInSqlite, type SqliteDatabase } from "@streamd/store-sqlite";
-import type { StoreOptions } from "./args.js";
+import type { StoreAdminOptions, StoreOptions } from "./args.js";
 import { filterPredicate } from "./filter.js";
 import { message, redactUrl, scrubber } from "./format.js";
 import { isMissingModule } from "./sui.js";
@@ -183,4 +183,84 @@ export async function runStore(options: StoreOptions, io: StoreIO): Promise<numb
   }
   await Promise.race([backend.close(), new Promise((resolve) => setTimeout(resolve, DISCONNECT_TIMEOUT).unref())]);
   return code;
+}
+
+export interface StoreAdminIO {
+  open(path: string): OpenDatabase | Promise<OpenDatabase>;
+  connect(url: string): PostgresConnection | Promise<PostgresConnection>;
+  /** Writes one output line; a returned promise is awaited before the next line. */
+  write(line: string): void | Promise<void>;
+  /** Reports one diagnostic message, without a trailing newline. */
+  error(message: string): void;
+  /** Aborted when stdout closes, which ends the command with exit code 0. */
+  signal: AbortSignal;
+}
+
+/** The store methods upkeep needs; SQLite answers them synchronously, Postgres asynchronously. */
+type MaintainedStore = Pick<SqliteEventStore | PostgresEventStore, "stats" | "prune" | "cursors" | "deleteCursor">;
+
+const line = (record: object) => `${JSON.stringify(record, (_key, v: unknown) => (typeof v === "bigint" ? v.toString() : v))}\n`;
+
+async function maintain(options: StoreAdminOptions, store: MaintainedStore, write: StoreAdminIO["write"]): Promise<number> {
+  if (options.action === "stats") {
+    await write(line(await store.stats({ byType: options.byType === true })));
+    return 0;
+  }
+  if (options.action === "cursors") {
+    if (options.delete === undefined) {
+      for (const saved of await store.cursors()) await write(line(saved));
+      return 0;
+    }
+    const deleted = await store.deleteCursor(options.delete);
+    await write(line({ name: options.delete, deleted }));
+    return deleted ? 0 : 1;
+  }
+  const beforeVersion = options.before!;
+  const { prunedBefore, lowestVersion, highestVersion } = await store.stats();
+  const noop = beforeVersion <= prunedBefore;
+  if (options.yes !== true) {
+    // The stores count no range, so the rows a prune would delete are not reported.
+    await write(line({ dryRun: true, beforeVersion, prunedBefore, lowestVersion, highestVersion, noop, rows: "not counted" }));
+    return 0;
+  }
+  if (!noop) await store.prune({ beforeVersion });
+  await write(line({ dryRun: false, beforeVersion, noop, ...(await store.stats()) }));
+  return 0;
+}
+
+/**
+ * Runs `store stats`, `store prune` or `store cursors` against the SQLite file
+ * or Postgres database and resolves to the exit code: 0 when done or stdout
+ * closed, 1 when the database cannot be opened or reached, a read or write
+ * fails, or `--delete` named no saved cursor. A Postgres URL is never printed as given.
+ */
+export async function runStoreAdmin(options: StoreAdminOptions, io: StoreAdminIO): Promise<number> {
+  const { postgres } = options;
+  const scrub = postgres === undefined ? (text: string) => text : scrubber(postgres);
+  const report = (text: string) => io.error(scrub(text));
+  let store: MaintainedStore;
+  let close: () => unknown;
+  try {
+    if (postgres === undefined) {
+      const db = await io.open(options.db!);
+      store = new SqliteEventStore(db);
+      close = () => db.close?.();
+    } else {
+      const connection = await io.connect(postgres);
+      store = new PostgresEventStore(connection);
+      close = () => connection.close();
+    }
+  } catch (err) {
+    report(`streamd: ${postgres === undefined ? `cannot open ${options.db}` : `cannot connect to ${redactUrl(postgres)}`}: ${message(err)}`);
+    return 1;
+  }
+  try {
+    return await maintain(options, store, io.write);
+  } catch (err) {
+    if (io.signal.aborted) return 0;
+    report(`streamd: ${message(err)}`);
+    return 1;
+  } finally {
+    await Promise.race([close(), new Promise((resolve) => setTimeout(resolve, DISCONNECT_TIMEOUT).unref())]);
+  }
 }

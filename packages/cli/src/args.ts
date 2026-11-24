@@ -101,6 +101,23 @@ export interface StoreOptions extends SourceOptions {
   name?: string;
 }
 
+/** `store stats`, `store prune` or `store cursors`: upkeep of a database `store` writes. */
+export interface StoreAdminOptions {
+  action: "stats" | "prune" | "cursors";
+  /** SQLite file; the parser sets exactly one of this and `postgres`. */
+  db?: string;
+  /** Postgres URL; may carry a password, so never printed as given. */
+  postgres?: string;
+  /** stats: also count events per type. */
+  byType?: true;
+  /** prune: the edge to raise; set exactly when `action` is `prune`. */
+  before?: bigint;
+  /** prune: delete for real; without it the run only reports. */
+  yes?: true;
+  /** cursors: the cursor name to delete instead of listing. */
+  delete?: string;
+}
+
 export interface TxOptions extends Endpoint {
   /** A transaction hash, or a base58 digest for Sui. */
   hash: string;
@@ -377,6 +394,7 @@ export type ParsedCommand =
   | { command: "forward"; options: ForwardOptions }
   | { command: "alert"; options: AlertOptions }
   | { command: "store"; options: StoreOptions }
+  | { command: "store-admin"; options: StoreAdminOptions }
   | { command: "check"; options: CheckOptions }
   | { command: "record"; options: RecordOptions }
   | { command: "query"; options: QueryOptions }
@@ -486,6 +504,19 @@ const STORE_OPTIONS = {
   postgres: { type: "string" },
   name: { type: "string" },
 } as const;
+
+const STORE_ADMIN_OPTIONS = {
+  db: { type: "string" },
+  postgres: { type: "string" },
+  "by-type": { type: "boolean" },
+  before: { type: "string" },
+  yes: { type: "boolean" },
+  delete: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
+/** The flags each maintenance subcommand takes beyond the database. */
+const STORE_ADMIN_FLAGS = { stats: ["by-type"], prune: ["before", "yes"], cursors: ["delete"] } as const;
 
 const COMPARE_OPTIONS = {
   ...DESCRIPTOR_OPTIONS,
@@ -744,6 +775,9 @@ export const USAGE = `Usage:
   streamd store --db <file> [options] <eventType>...
   streamd store --db <file> --account <address> [...]
   streamd store --postgres <url> [options] <eventType>...
+  streamd store stats (--db <file> | --postgres <url>) [--by-type]
+  streamd store prune (--db <file> | --postgres <url>) --before <version> [--yes]
+  streamd store cursors (--db <file> | --postgres <url>) [--delete <name>]
   streamd query (--from-version <n> | --from-time <t>) [--to-version <n>] [options] <eventType>...
   streamd tx <hash | digest>
   streamd explain <hash> [--json] [options]
@@ -781,6 +815,9 @@ time a window of chain time crosses its threshold or leaves its baseline's
 band, saving each rule's position and open window to a cursor file.
 store follows matching events into a SQLite file, or a Postgres database
 with --postgres, resuming from the cursor saved there when run again.
+store stats, prune and cursors read and tidy such a database: its counts and
+version range, deleting history below a version (a dry run without --yes), and
+listing or deleting its saved cursors, each as JSON lines.
 query reads a closed range of history as JSON lines, then exits.
 tx waits for a transaction and prints its events, exiting 1 if it failed.
 explain waits for an Aptos transaction and prints its status, gas, transfers,
@@ -950,6 +987,10 @@ Options:
                          under Bun, pg under Node (npm i pg); the URL is never printed, and
                          PGPASSWORD keeps the password out of it and out of ps
   --name <name>          store: name its cursor is saved under (default: the network and descriptor)
+  --by-type              store stats: also count events per type
+  --before <version>     store prune: delete events and transfers below this version
+  --yes                  store prune: delete for real (default: report what it would do)
+  --delete <name>        store cursors: delete the cursor saved under this name, exit 1 if none
   --to-version <n>       record: end of the range (required); query: default the head;
                          inspect: a version or head (default: head);
                          forward: deliver up to here, then exit 0; transfers, swaps, sales,
@@ -1497,21 +1538,50 @@ function withCache(options: { cache?: string }, cache: string | undefined, sui: 
   options.cache = cache;
 }
 
+/** Exactly one of `--db` and `--postgres`, as `{ db }` or `{ postgres }`. */
+function database(db: string | undefined, postgres: string | undefined): { db: string } | { postgres: string } {
+  if (db === undefined && postgres === undefined) throw new UsageError("store needs --db <file> or --postgres <url>");
+  if (db !== undefined && postgres !== undefined) throw new UsageError("--db and --postgres cannot be used together");
+  if (db === "") throw new UsageError("--db must not be empty");
+  if (db !== undefined) return { db };
+  // The value may carry a password, so the refusal never repeats it.
+  if (!isPostgresUrl(postgres!)) throw new UsageError("--postgres must be a postgres:// or postgresql:// URL");
+  return { postgres: postgres! };
+}
+
+function parseStoreAdmin(action: StoreAdminOptions["action"], args: string[]): ParsedCommand {
+  const { values } = wrap(() => parseArgs({ args, options: STORE_ADMIN_OPTIONS, allowPositionals: false, strict: true }));
+  if (values.help) return { command: "help" };
+  for (const [other, flags] of Object.entries(STORE_ADMIN_FLAGS)) {
+    if (other === action) continue;
+    for (const flag of flags) {
+      if (values[flag] !== undefined) throw new UsageError(`--${flag} is for store ${other}, not store ${action}`);
+    }
+  }
+  const options: StoreAdminOptions = { action, ...database(values.db, values.postgres) };
+  if (values["by-type"]) options.byType = true;
+  if (action === "prune") {
+    if (values.before === undefined) throw new UsageError("store prune needs --before <version>");
+    options.before = version(values.before, "before")!;
+  }
+  if (values.yes) options.yes = true;
+  if (values.delete !== undefined) {
+    if (values.delete === "") throw new UsageError("--delete must not be empty");
+    options.delete = values.delete;
+  }
+  return { command: "store-admin", options };
+}
+
 function parseStore(args: string[]): ParsedCommand {
+  const [first, ...rest] = args;
+  if (first === "stats" || first === "prune" || first === "cursors") return parseStoreAdmin(first, rest);
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: STORE_OPTIONS, allowPositionals: true, strict: true }),
   );
   if (values.help) return { command: "help" };
-  const { db, postgres } = values;
-  if (db === undefined && postgres === undefined) throw new UsageError("store needs --db <file> or --postgres <url>");
-  if (db !== undefined && postgres !== undefined) throw new UsageError("--db and --postgres cannot be used together");
-  if (db === "") throw new UsageError("--db must not be empty");
-  // The value may carry a password, so the refusal never repeats it.
-  if (postgres !== undefined && !isPostgresUrl(postgres)) {
-    throw new UsageError("--postgres must be a postgres:// or postgresql:// URL");
-  }
+  const target = database(values.db, values.postgres);
   if (values.name === "") throw new UsageError("--name must not be empty");
-  const options: StoreOptions = { ...source("store", values, positionals), ...(db !== undefined ? { db } : { postgres }) };
+  const options: StoreOptions = { ...source("store", values, positionals), ...target };
   if (values.name !== undefined) options.name = values.name;
   return { command: "store", options };
 }

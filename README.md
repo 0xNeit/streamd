@@ -6291,6 +6291,38 @@ psql -h db.example -U streamd events -c 'SELECT count(*) FROM streamd_events'
   A stop waits up to 5 seconds for a batch already being written, then up to a second for the
   connection to close.
 
+#### Store maintenance
+
+`store stats`, `store prune` and `store cursors` read and tidy a database `streamd store` writes,
+through the stores' own `stats`, `prune`, `cursors` and `deleteCursor`
+([SQLite](#store-events-in-sqlite), [Postgres](#store-events-in-postgres)). Each takes
+`--db <file>` or `--postgres <url>` exactly as `store` does, the subcommand word first, and
+prints JSON lines with bigints as decimal strings:
+
+```sh
+streamd store stats --db events.db --by-type
+streamd store prune --db events.db --before 7984000000        # a dry run
+streamd store prune --db events.db --before 7984000000 --yes
+streamd store cursors --db events.db
+streamd store cursors --db events.db --delete mainnet:old
+```
+
+- `stats` prints one `StoreStats` object: `events`, `resourceChanges`, `transfers`,
+  `lowestVersion` and `highestVersion` (absent when empty), `prunedBefore`, and with `--by-type`
+  `byType: [{ type, count }]`.
+- `prune --before <version>` without `--yes` changes nothing and prints
+  `{ dryRun: true, beforeVersion, prunedBefore, lowestVersion, highestVersion, noop, rows: "not counted" }`:
+  the stores count no version range, so the rows it would delete are not reported. With `--yes`
+  it deletes the events and transfers below the version and prints
+  `{ dryRun: false, beforeVersion, noop, ...stats }`, `prunedBefore` the new edge. `noop` is true
+  when `--before` is at or below the current edge, and then nothing is pruned. Cursors stay.
+- `cursors` prints one `{ name, cursor }` per saved cursor; `--delete <name>` prints
+  `{ name, deleted }` and exits 1 when there was no such cursor. The pruned edge is not a cursor,
+  and deleting it is refused.
+- A SQLite file that does not exist is refused rather than created. Exit code 1 when the
+  database cannot be opened or reached or a read or write fails, 2 on a usage error; the
+  network flags are refused, since nothing reads a chain.
+
 ### Generate event types
 
 `streamd codegen` reads module ABIs from the fullnode and writes a TypeScript file with a type
