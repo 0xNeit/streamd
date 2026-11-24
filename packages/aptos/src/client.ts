@@ -124,18 +124,19 @@ export class AptosClient extends StreamdClient {
    * (`IndexerAccountAdapter`, routed beside a fullnode for `view`); transfers
    * are built and paired as `transfers()` builds them. `address` may be an
    * Aptos name, resolved once. Under `withNames`, `names` holds the primary
-   * name of the address, the sender and every counterparty. Like
-   * `transfers()`, it is not a listener for `off()` or `listenerCount()`.
+   * name of the address, the sender and every counterparty. `withValue`
+   * values transfers and balance changes in USDC as `transfers()` values
+   * them. Like `transfers()`, it is not a listener for `off()` or `listenerCount()`.
    */
   activity(
     address: string,
     callback: EventCallback<Activity>,
     options: ActivityListenerOptions = {},
   ): Subscription {
-    const { withAssetInfo, ...rest } = options;
+    const { withAssetInfo, withValue, ...rest } = options;
     const [descriptor, who, name] = this.activityOf(address, rest.withNames);
     return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, (source) =>
-      activitySource(source, who, withAssetInfo, this.requestTimeout, name),
+      activitySource(source, who, withAssetInfo, this.requestTimeout, name, withValue ? this.pagePricer(source) : undefined),
     );
   }
 
@@ -144,9 +145,10 @@ export class AptosClient extends StreamdClient {
    * range and options `getEvents` takes; `where` and `limit` apply to the records.
    */
   async getActivity(address: string, filter: ActivityFilter = {}): Promise<StreamdEvent<Activity>[]> {
-    const { withAssetInfo, ...rest } = filter;
+    const { withAssetInfo, withValue, ...rest } = filter;
     const [descriptor, who, name] = this.activityOf(address, rest.withNames);
-    const source = activitySource(this.adapter, who, withAssetInfo, this.requestTimeout, name);
+    const pricer = withValue ? this.pagePricer(this.adapter) : undefined;
+    const source = activitySource(this.adapter, who, withAssetInfo, this.requestTimeout, name, pricer);
     return new EventQuery(source, this.limiter, this.names).getEvents<Activity>(descriptor, rest);
   }
 

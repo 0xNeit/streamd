@@ -6,7 +6,7 @@ import { toSale } from "./sales.js";
 import { toSwap } from "./swaps.js";
 import { simulation } from "./transaction.js";
 import { TRANSFER_DESCRIPTOR, transferSource } from "./transfers.js";
-import { assetPricer, toAssetValue } from "./values.js";
+import { assetPricer } from "./values.js";
 import type { Pricer } from "./values.js";
 import type { AccountBalanceChange, ExplainOptions, GasUsage, Price, TransactionExplanation } from "./types.js";
 
@@ -50,11 +50,10 @@ function balanceChanges(transfers: Transfer[]): AccountBalanceChange[] {
   const accounts = new Set(transfers.flatMap((t) => [t.from, t.to]));
   accounts.delete(undefined);
   return [...accounts].flatMap((account) =>
-    deltas(transfers, account!).map(({ asset, delta }) => {
+    deltas(transfers, account!).map(({ asset, delta, value }) => {
       const info = transfers.find((t) => t.asset === asset && t.symbol !== undefined);
-      const priced = transfers.find((t) => t.asset === asset && t.value !== undefined)?.value;
       const change: AccountBalanceChange = { account: account!, asset, delta, ...(info && { symbol: info.symbol, decimals: info.decimals }) };
-      if (priced !== undefined) change.value = toAssetValue(priced, delta);
+      if (value !== undefined) change.value = value;
       return change;
     }),
   );

@@ -84,6 +84,8 @@ export interface BalanceDelta {
   asset: string;
   /** Positive when the account gained. */
   delta: bigint;
+  /** `delta` in USDC at the price of the transaction's valued transfer of the asset, with `withValue`; negative for a loss. */
+  value?: AssetValue;
 }
 
 /**
@@ -113,6 +115,8 @@ export interface Activity {
 export interface ActivityOptions {
   /** Adds `symbol` and `decimals` to the records in `transfers`, as `TransferOptions.withAssetInfo`. */
   withAssetInfo?: boolean;
+  /** Adds `value` in USDC to the records in `transfers` and to `balanceChanges`, as `TransferOptions.withValue` (default false). */
+  withValue?: boolean;
 }
 
 /** Options for `AptosClient.activity`. */
