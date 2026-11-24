@@ -101,6 +101,23 @@ export interface StoreOptions extends SourceOptions {
   name?: string;
 }
 
+/** `store stats`, `store prune` or `store cursors`: upkeep of a database `store` writes. */
+export interface StoreAdminOptions {
+  action: "stats" | "prune" | "cursors";
+  /** SQLite file; the parser sets exactly one of this and `postgres`. */
+  db?: string;
+  /** Postgres URL; may carry a password, so never printed as given. */
+  postgres?: string;
+  /** stats: also count events per type. */
+  byType?: true;
+  /** prune: the edge to raise; set exactly when `action` is `prune`. */
+  before?: bigint;
+  /** prune: delete for real; without it the run only reports. */
+  yes?: true;
+  /** cursors: the cursor name to delete instead of listing. */
+  delete?: string;
+}
+
 export interface TxOptions extends Endpoint {
   /** A transaction hash, or a base58 digest for Sui. */
   hash: string;
