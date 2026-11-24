@@ -386,6 +386,7 @@ export type ParsedCommand =
   | { command: "swaps"; options: SwapsCommandOptions }
   | { command: "sales"; options: SalesCommandOptions }
   | { command: "activity"; options: ActivityCommandOptions }
+  | { command: "upgrades"; options: UpgradesCommandOptions }
   | { command: "trace"; options: TraceCommandOptions }
   | { command: "holders"; options: HoldersCommandOptions }
   | { command: "positions"; options: PositionsCommandOptions }
@@ -592,6 +593,12 @@ const SALES_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const UPGRADES_OPTIONS = {
+  ...READ_OPTIONS,
+  ...WALK_OPTIONS,
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const ACTIVITY_OPTIONS = {
   ...READ_OPTIONS,
   ...WALK_OPTIONS,
@@ -744,6 +751,7 @@ export const USAGE = `Usage:
   streamd swaps [--protocol <name>]... [--asset <asset>] [--to-version <n | head>] [options]
   streamd sales [--marketplace <name>]... [--token <token>] [--to-version <n | head>] [options]
   streamd activity <address | name> [--to-version <n | head>] [--indexer <url>] [options]
+  streamd upgrades <address | name> [--to-version <n | head>] [options]
   streamd trace <address | name> [--hops <n>] [--format <json|dot>] [--indexer <url>] [options]
   streamd holders <asset> --at <version> [--verify <none|supply|stores>] [--format <json|csv>] [options]
   streamd positions <aave|echelon> [--account <address>]... [--threshold <d>] [--to <url>] [options]
@@ -786,6 +794,10 @@ activity prints each transaction an Aptos account sent or received as a JSON
 line of its direction, transfers, balance changes and events, and trace the
 counterparty graph around it as one JSON line or Graphviz DOT; both read the
 account's transactions from the Indexer and everything else from the fullnode.
+upgrades prints each package publish at an Aptos address as a JSON line of the
+event structs, entry functions and views it added, changed or removed, and
+exits 1 on one that removed or changed any: following, at once; over a range,
+once it is printed.
 holders prints every fungible store holding an Aptos asset at a past version,
 largest first, as JSON lines or CSV, folded back from the Indexer and checked
 against the chain there, then the snapshot's summary as one JSON line on stderr.
@@ -830,7 +842,7 @@ from a funded account, runs the command against it (with STREAMD_NODE_URL,
 STREAMD_FAUCET_URL, STREAMD_PACKAGE_ADDRESS and STREAMD_PUBLISHER_KEY set), then
 prints one JSON line per #[event] struct of the package: whether the run emitted
 it, how often, and the call that first did. It exits 1 if the command failed.
-Every command but handles, inspect, explain, swaps, sales, activity, trace, holders, positions and coverage takes --chain sui
+Every command but handles, inspect, explain, swaps, sales, activity, upgrades, trace, holders, positions and coverage takes --chain sui
 to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
@@ -900,7 +912,7 @@ Options:
                          (legs.*.amount); output and matches are unchanged, but a present
                          field that is not an unsigned integer is an error: query exits 1,
                          tail, forward, store and watch report it and skip the event
-  --limit <n>            tail, transfers, swaps, sales, activity, watch: exit after printing n;
+  --limit <n>            tail, transfers, swaps, sales, activity, upgrades, watch: exit after printing n;
                          balances: after n changes; record, query, inspect: stop after n;
                          compare: page size; monitor: rounds
   --rules <file>         alert: the rules file (required)
@@ -917,7 +929,7 @@ Options:
                          JetStream stream must capture (with nats://)
   --topic <name>         forward: the Kafka topic each batch is produced to, which must exist
                          (with kafka:// or kafkas://)
-  --cursor-file <path>   tail, transfers, swaps, sales, activity (following): save and
+  --cursor-file <path>   tail, transfers, swaps, sales, activity, upgrades (following): save and
                          resume from here; watch: each address's position, as one JSON object;
                          forward: cursor file (default: ${DEFAULT_CURSOR_FILE}); alert: each rule's position
                          and open window (default: ${DEFAULT_ALERT_CURSOR_FILE})
@@ -941,12 +953,12 @@ Options:
   --to-version <n>       record: end of the range (required); query: default the head;
                          inspect: a version or head (default: head);
                          forward: deliver up to here, then exit 0; transfers, swaps, sales,
-                         activity: a version or head, read the range instead of following
+                         activity, upgrades: a version or head, read the range instead of following
                          (needs a start); trace: end of every address's range (default: head)
   --batch-size <n>       forward: most events per POST (default: 25); serve: per webhook POST
-                         (default: each page); transfers, swaps, sales, activity (following):
+                         (default: each page); transfers, swaps, sales, activity, upgrades (following):
                          transactions per page (default: 25)
-  --order <asc|desc>     query; transfers, swaps, sales, activity with --to-version: oldest
+  --order <asc|desc>     query; transfers, swaps, sales, activity, upgrades with --to-version: oldest
                          or newest first (default: asc; desc without --limit buffers the
                          range to reverse it)
   --out <file>           codegen, record: write to this file instead of stdout
@@ -1906,8 +1918,8 @@ function parseSales(args: string[]): ParsedCommand {
   return { command: "sales", options };
 }
 
-/** The one address or name `activity` and `trace` take, and their Indexer; Aptos only. */
-function indexedTarget(command: "activity" | "trace" | "holders", values: { chain?: string; indexer?: string }, positionals: string[]) {
+/** The one address or name `activity`, `trace` and `upgrades` take, and the Indexer of the first two; Aptos only. */
+function indexedTarget(command: "activity" | "trace" | "holders" | "upgrades", values: { chain?: string; indexer?: string }, positionals: string[]) {
   if (chain(values.chain)) {
     throw new UsageError(`${command} is not available with --chain sui: SuiClient has no ${command} yet`);
   }
@@ -1930,6 +1942,16 @@ function parseActivity(args: string[]): ParsedCommand {
   const options: ActivityCommandOptions = recordWalk({ ...target, ...withKey(endpoint(values, false), values["api-key"]) }, values);
   if (values["with-asset-info"]) options.withAssetInfo = true;
   return { command: "activity", options };
+}
+
+function parseUpgrades(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: UPGRADES_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  const { address } = indexedTarget("upgrades", values, positionals);
+  const options: UpgradesCommandOptions = recordWalk({ address, ...withKey(endpoint(values, false), values["api-key"]) }, values);
+  return { command: "upgrades", options };
 }
 
 function parseTrace(args: string[]): ParsedCommand {
@@ -2170,6 +2192,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "swaps") return parseSwaps(rest);
   if (command === "sales") return parseSales(rest);
   if (command === "activity") return parseActivity(rest);
+  if (command === "upgrades") return parseUpgrades(rest);
   if (command === "trace") return parseTrace(rest);
   if (command === "holders") return parseHolders(rest);
   if (command === "positions") return parsePositions(rest);
