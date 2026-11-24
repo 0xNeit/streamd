@@ -241,6 +241,8 @@ export interface Sale {
   royalty?: bigint;
   /** The marketplace's commission inside `price`, when the event reports it (Wapal). */
   fee?: bigint;
+  /** `price` in USDC at the record's version, as APT, with `withValue`; Tradeport records only, since Wapal's coin is unknown. */
+  value?: AssetValue;
 }
 
 export interface SaleOptions {
@@ -248,6 +250,8 @@ export interface SaleOptions {
   marketplace?: SaleMarketplace | readonly SaleMarketplace[];
   /** Only sales of this token: a token object address in any form, or a legacy token id. */
   token?: string;
+  /** Adds `value` in USDC to Tradeport records, priced as `TransferOptions.withValue` prices APT (default false). */
+  withValue?: boolean;
 }
 
 /** Options for `AptosClient.sales`. */

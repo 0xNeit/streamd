@@ -1,9 +1,11 @@
 import { StreamdError } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, MoveEventType, StreamdEvent } from "@streamd/core";
-import { address, amount, namedTypes, object, recordSource } from "./records.js";
+import { address, amount, namedTypes, object, pageSource, recordSource } from "./records.js";
 import type { Fields } from "./records.js";
 import { legacyTokenId, legacyTokenKey, requireAsset } from "./transfers.js";
 import type { Sale, SaleKind, SaleMarketplace } from "./types.js";
+import { pageValuer } from "./values.js";
+import type { Pricer } from "./values.js";
 
 type Decoded = Omit<Sale, "marketplace" | "kind">;
 
@@ -109,11 +111,30 @@ function requireToken(token: unknown): string {
   return key;
 }
 
-/** `adapter` as a source of sale records, keeping only sales of `token` when given. */
-export function saleSource(adapter: EventAdapter, token?: string): EventAdapter {
+/**
+ * `adapter` as a source of sale records, keeping only sales of `token` when
+ * given. `pricer` adds `value` to Tradeport records, read as `pageValuer`
+ * reads them: Tradeport settles only in APT, while Wapal's orders are generic
+ * over a coin no event names, so its records stay unvalued.
+ */
+export function saleSource(adapter: EventAdapter, token?: string, pricer?: Pricer, requestTimeout?: number): EventAdapter {
   const wanted = token === undefined ? undefined : requireToken(token);
-  return recordSource(adapter, (event) => {
+  const keep = (event: StreamdEvent) => {
     const record = toSale(event);
     return record === undefined || wanted === undefined || record.data.token === wanted ? record : undefined;
+  };
+  if (pricer === undefined) return recordSource(adapter, keep);
+  if (typeof adapter.view !== "function") throw new StreamdError("withValue needs an adapter that implements view");
+  const valuer = pageValuer(pricer, requestTimeout);
+  return pageSource(adapter, (events) => {
+    const value = valuer();
+    const records = events.map(keep).filter((e): e is StreamdEvent<Sale> => e !== undefined);
+    return Promise.all(
+      records.map(async (record) => {
+        if (record.data.marketplace !== "tradeport") return record;
+        const worth = await value("0xa", record.data.price, record.version);
+        return worth === undefined ? record : { ...record, data: { ...record.data, value: worth } };
+      }),
+    );
   });
 }

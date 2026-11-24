@@ -212,15 +212,17 @@ export class AptosClient extends StreamdClient {
    * `TokenOfferFilledEvent`, `CollectionOfferFilledEvent`) and Tradeport
    * (`listings_v2::BuyEvent`, `biddings_v2::AcceptTokenBidEvent`,
    * `AcceptCollectionBidEvent`, and the same in its legacy-token modules).
-   * Every field comes from the event, so nothing is read by view.
+   * Every field comes from the event, so nothing is read by view without `withValue`.
    * `marketplace` narrows the scanned types; `token` keeps sales of one
-   * token. Like `swaps()`, it is not a listener for `off()` or `listenerCount()`.
+   * token. `withValue` adds a Tradeport sale's USDC value, its price read as
+   * APT; Wapal sales name no coin and get none. Like `swaps()`, it is not a
+   * listener for `off()` or `listenerCount()`.
    */
   sales(callback: EventCallback<Sale>, options: SaleListenerOptions = {}): Subscription {
-    const { marketplace, token, ...rest } = options;
+    const { marketplace, token, withValue, ...rest } = options;
     const descriptor = saleDescriptor(marketplace);
     return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, (source) =>
-      saleSource(source, token),
+      saleSource(source, token, withValue ? this.pagePricer(source) : undefined, this.requestTimeout),
     );
   }
 
@@ -229,9 +231,10 @@ export class AptosClient extends StreamdClient {
    * `getEvents` takes; `where` and `limit` apply to the records.
    */
   async getSales(filter: SaleFilter = {}): Promise<StreamdEvent<Sale>[]> {
-    const { marketplace, token, ...rest } = filter;
+    const { marketplace, token, withValue, ...rest } = filter;
     const descriptor = saleDescriptor(marketplace);
-    const query = new EventQuery(saleSource(this.adapter, token), this.limiter, this.names);
+    const source = saleSource(this.adapter, token, withValue ? this.pagePricer(this.adapter) : undefined, this.requestTimeout);
+    const query = new EventQuery(source, this.limiter, this.names);
     return query.getEvents<Sale>(descriptor, rest);
   }
 
