@@ -84,6 +84,8 @@ export interface BalanceDelta {
   asset: string;
   /** Positive when the account gained. */
   delta: bigint;
+  /** `delta` in USDC at the price of the transaction's valued transfer of the asset, with `withValue`; negative for a loss. */
+  value?: AssetValue;
 }
 
 /**
@@ -113,6 +115,8 @@ export interface Activity {
 export interface ActivityOptions {
   /** Adds `symbol` and `decimals` to the records in `transfers`, as `TransferOptions.withAssetInfo`. */
   withAssetInfo?: boolean;
+  /** Adds `value` in USDC to the records in `transfers` and to `balanceChanges`, as `TransferOptions.withValue` (default false). */
+  withValue?: boolean;
 }
 
 /** Options for `AptosClient.activity`. */
@@ -157,6 +161,10 @@ export interface Swap {
   /** What the pool paid out, in the same form as `assetIn`. */
   assetOut: string;
   amountOut: bigint;
+  /** `amountIn` in USDC at the record's version, with `withValue`; absent when `assetIn` has no price source. */
+  valueIn?: AssetValue;
+  /** `amountOut` in USDC at the record's version, with `withValue`; absent when `assetOut` has no price source. */
+  valueOut?: AssetValue;
 }
 
 export interface SwapOptions {
@@ -164,6 +172,8 @@ export interface SwapOptions {
   protocol?: SwapProtocol | readonly SwapProtocol[];
   /** Only swaps with this asset on either side, in any form `TransferOptions.asset` takes. */
   asset?: string;
+  /** Adds `valueIn` and `valueOut` in USDC, priced as `TransferOptions.withValue` prices transfers (default false). */
+  withValue?: boolean;
 }
 
 /** Options for `AptosClient.swaps`. */
@@ -235,6 +245,8 @@ export interface Sale {
   royalty?: bigint;
   /** The marketplace's commission inside `price`, when the event reports it (Wapal). */
   fee?: bigint;
+  /** `price` in USDC at the record's version, as APT, with `withValue`; Tradeport records only, since Wapal's coin is unknown. */
+  value?: AssetValue;
 }
 
 export interface SaleOptions {
@@ -242,6 +254,8 @@ export interface SaleOptions {
   marketplace?: SaleMarketplace | readonly SaleMarketplace[];
   /** Only sales of this token: a token object address in any form, or a legacy token id. */
   token?: string;
+  /** Adds `value` in USDC to Tradeport records, priced as `TransferOptions.withValue` prices APT (default false). */
+  withValue?: boolean;
 }
 
 /** Options for `AptosClient.sales`. */

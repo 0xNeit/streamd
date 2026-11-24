@@ -1,8 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { MemoryAdapter, StreamdError, parseEvent } from "@streamd/core";
-import type { StreamdEvent } from "@streamd/core";
+import { MemoryAdapter, StreamdError, StreamdNetworkError, parseEvent } from "@streamd/core";
+import type { AssetValue, EventAdapter, StreamdEvent, ViewRequest } from "@streamd/core";
 import { swapDescriptor, swapSource, toSwap } from "../src/swaps.js";
 import { testClient } from "./helpers.js";
 import type { Swap } from "../src/types.js";
@@ -358,6 +358,83 @@ describe("AptosClient swaps", () => {
     const client = testClient({ adapter: new MemoryAdapter([]) });
     expect(() => client.swaps(() => {}, { protocol: [] })).toThrow(StreamdError);
     expect(() => client.swaps(() => {}, { asset: "0xnot" })).toThrow(StreamdError);
+    client.destroy();
+  });
+});
+
+describe("swaps withValue", () => {
+  const POOL = "::pool_v3::current_tick_and_price";
+  const APT_POOL = "0x925660b8618394809f89f8002e2926600c775221f43bf1919782b297a79400d8";
+  const USDT_POOL = "0xd3894aca06d5f42b27c89e6f448114b3ed6a1ba07f992a58b2126c71dd83c127";
+  // sqrt price 2^60 is 1/256 USDC base unit per octa; 2^64 is USDt at par.
+  const SQRT: Record<string, bigint> = { [APT_POOL]: 1n << 60n, [USDT_POOL]: 1n << 64n };
+  const value = (amount: bigint, numerator: bigint, denominator: bigint, source: AssetValue["source"], reference?: string): AssetValue => ({
+    quote: USDC,
+    decimals: 6,
+    amount,
+    price: { numerator, denominator },
+    source,
+    ...(reference !== undefined && { reference }),
+  });
+
+  function priced(events: StreamdEvent[], fail = false) {
+    const memory = new MemoryAdapter(events);
+    const calls: { pool: string; version: bigint }[] = [];
+    const adapter: EventAdapter = {
+      fetchEvents: (d, o) => memory.fetchEvents(d, o),
+      getHeadVersion: () => memory.getHeadVersion(),
+      view: async (request: ViewRequest, version: bigint) => {
+        if (!request.function.endsWith(POOL)) throw new Error(`unexpected view ${request.function}`);
+        const pool = String(request.functionArguments![0]);
+        calls.push({ pool, version });
+        if (fail) throw new StreamdNetworkError("rate limited", 429);
+        return [0, SQRT[pool]!.toString()];
+      },
+    };
+    return { adapter, calls };
+  }
+
+  it("values each side at the record's version, one pool read per source and version, leaving unpriced sides bare", async () => {
+    const { adapter, calls } = priced(EVENTS);
+    const route = await testClient({ adapter }).getSwaps({ fromVersion: 8049168924n, toVersion: 8049168924n, withValue: true });
+    const [aptIn, usdtIn, usd1In, usdcIn] = route.map((r) => r.data);
+    expect(aptIn!.valueIn).toEqual(value(aptIn!.amountIn / 256n, 1n, 256n, "pool", APT_POOL));
+    expect(aptIn!.valueOut).toEqual(value(aptIn!.amountOut, 1n, 1n, "pool", USDT_POOL));
+    expect(usdtIn!.valueIn).toEqual(value(usdtIn!.amountIn, 1n, 1n, "pool", USDT_POOL));
+    expect(usdtIn!.valueOut).toBeUndefined();
+    expect(usd1In!.valueIn).toBeUndefined();
+    expect(usd1In!.valueOut).toEqual(value(usd1In!.amountOut, 1n, 1n, "par"));
+    expect(usdcIn!.valueOut).toEqual(value(usdcIn!.amountOut / 256n, 1n, 256n, "pool", APT_POOL));
+    expect(calls).toEqual([
+      { pool: APT_POOL, version: 8049168924n },
+      { pool: USDT_POOL, version: 8049168924n },
+    ]);
+  });
+
+  it("values live swaps the same way", async () => {
+    const { adapter } = priced(EVENTS.filter((e) => e.version === 8049170625n));
+    const client = testClient({ adapter });
+    const seen: Swap[] = [];
+    const sub = client.swaps((e) => void seen.push(e.data), { fromVersion: 0n, protocol: "thala-clamm", withValue: true, pollInterval: 5 });
+    await sub.caughtUp;
+    sub.unsubscribe();
+    expect(seen.map((s) => [s.valueIn?.amount, s.valueOut?.amount])).toEqual([[55248600n / 256n, 267897n]]);
+    client.destroy();
+  });
+
+  it("fails the query when a pool read fails", async () => {
+    const { adapter } = priced(EVENTS, true);
+    await expect(testClient({ adapter }).getSwaps({ fromVersion: 0n, withValue: true })).rejects.toThrow("rate limited");
+  });
+
+  it("reads no prices without withValue, and refuses withValue without view", async () => {
+    const { adapter, calls } = priced(EVENTS);
+    const records = await testClient({ adapter }).getSwaps({ fromVersion: 0n });
+    expect(records.some((r) => r.data.valueIn !== undefined || r.data.valueOut !== undefined)).toBe(false);
+    expect(calls).toHaveLength(0);
+    const client = testClient({ adapter: new MemoryAdapter(EVENTS) });
+    await expect(client.getSwaps({ fromVersion: 0n, withValue: true })).rejects.toThrow("implements view");
+    expect(() => client.swaps(() => {}, { withValue: true })).toThrow("implements view");
     client.destroy();
   });
 });

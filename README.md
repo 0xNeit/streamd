@@ -2109,6 +2109,9 @@ const sub = streamd.activity("0x1234...", ({ data }) => console.log(data.transfe
   `{ asset, delta }` per asset over those transfers, positive for a gain, in order of first
   appearance, with zero nets (a transfer to itself) left out. `events` is every event the
   transaction emitted, in `eventIndex` order.
+- **Values.** `withValue: true` adds `value` in USDC to each priced record in `transfers`, as
+  `transfers()` adds it, and to each `balanceChanges` entry of a priced asset, the `delta` at that
+  transaction's price (negative for a loss); see [Values](#values).
 - **Gas.** The fee is burned without a withdraw event, so `balanceChanges` leaves it out:
   for a sent transaction, the APT balance also fell by `gas_used * gas_unit_price` less any
   storage refund. The transaction's `0x1::transaction_fee::FeeStatement` is in `events`.
@@ -2216,7 +2219,7 @@ const path = tracePath(graph, "0x1234...", "0x9abc...");
 
 `swaps(callback, options?)` follows swaps on the main Aptos DEXes as they land, and
 `getSwaps(filter?)` returns them for a past range. Each arrives as an event whose `data` is a
-`Swap { protocol, poolId, trader, assetIn, amountIn, assetOut, amountOut }`, one per pool hop:
+`Swap { protocol, poolId, trader, assetIn, amountIn, assetOut, amountOut, valueIn?, valueOut? }`, one per pool hop:
 
 ```ts
 const sub = streamd.swaps(
@@ -2270,6 +2273,9 @@ const thala = await streamd.getSwaps({ fromVersion: -10_000n, protocol: ["thala-
   them, so the trader can have paid more: Hyperion's router keeps about 1 basis point
   (`fee_sharer::DistributeEvent`), and an aggregator may take its own. On a Thala CLAMM
   exact-out swap, `amountIn` is net of the refund.
+- **Values.** `withValue: true` adds `valueIn` and `valueOut`, `amountIn` and `amountOut` in
+  USDC at the record's version, for the sides whose asset is priced; see [Values](#values). It
+  is the only option that reads by view: one pool view per price source and version in a page.
 - **Routes.** A multi-hop route gives one record per pool hop, in event order, not joined:
   an aggregator may take a fee between hops, so one hop's `amountOut` need not equal the
   next one's `amountIn`.
@@ -2285,7 +2291,7 @@ const thala = await streamd.getSwaps({ fromVersion: -10_000n, protocol: ["thala-
 
 `sales(callback, options?)` follows NFT marketplace sales as they land, and
 `getSales(filter?)` returns them for a past range. Each arrives as an event whose `data` is a
-`Sale { marketplace, kind, token, collection?, seller, buyer, price, royalty?, fee? }`, one per
+`Sale { marketplace, kind, token, collection?, seller, buyer, price, royalty?, fee?, value? }`, one per
 token sold:
 
 ```ts
@@ -2319,6 +2325,9 @@ const wapal = await streamd.getSales({ fromVersion: 7028273582n, toVersion: 7028
   events report only the price, so its records have no `royalty` or `fee`. Neither
   marketplace's events name the coin: Tradeport takes only APT, and every Wapal fill seen paid
   APT, but Wapal's orders are generic over the coin type, so no currency field is reported.
+- **Values.** `withValue: true` adds `value`, `price` in USDC at the record's version, to
+  Tradeport records only, priced as APT; Wapal records never get one, since their coin is
+  unknown. See [Values](#values).
 - **Tokens.** `token` is a token object's address in long form, or a legacy token's id as
   `<creator>::<collection>::<name>::<property_version>`, the forms `Transfer.asset` reports.
   `collection` is the collection object's address, present only when the event names one (Wapal,
@@ -2997,8 +3006,9 @@ const sub = streamd.prices([APT_USD, BTC_USD], ({ data }) => {
 
 ## Values
 
-`withValue: true` on `transfers`, `getTransfers`, `iterateTransfers`, `balances` and `explain`
-prices amounts in native USDC at the version they were read at:
+`withValue: true` on `transfers`, `getTransfers`, `iterateTransfers`, `balances`, `explain`,
+`swaps`, `getSwaps`, `sales`, `getSales`, `activity` and `getActivity` prices amounts in native
+USDC at the version they were read at:
 
 ```ts
 const transfers = await streamd.getTransfers({ fromVersion: -1000n, asset: "0xa", withValue: true });
@@ -3046,6 +3056,11 @@ formatAmount(transfers[0]!.data.value!.amount, 6); // "4.334712" USDC
   pools a value costs a Pyth table read and a block read instead. A failed read fails the
   page or query, as the transfer reads do. Pool views go through the adapter, so
   `ArchiveFallbackAdapter` answers pruned versions.
+- **Records.** Swaps get `valueIn` and `valueOut`, one per side; a Tradeport sale gets
+  `value` for its `price`, as APT (Tradeport takes only APT, and Wapal's coin is unknown, so
+  Wapal sales get none); activity values its transfers as `transfers` does and each balance
+  change at the price of that transaction's valued transfer of the asset. Swaps and sales read
+  one price per source and version within a page, inside a limit of 4 and `requestTimeout`.
 - **Mainnet only.** The table names mainnet pools and feeds; on another network the pool
   views fail and so does the call.
 - **Other chains.** `SuiClient.balances` refuses `withValue`.

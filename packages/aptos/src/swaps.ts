@@ -1,9 +1,11 @@
-import { normalizeAddress } from "@streamd/core";
+import { StreamdError, normalizeAddress } from "@streamd/core";
 import type { EventAdapter, ModuleEventDescriptor, MoveEventType, StreamdEvent } from "@streamd/core";
-import { address, amount, namedTypes, object, recordSource } from "./records.js";
+import { address, amount, namedTypes, object, pageSource, recordSource } from "./records.js";
 import type { Fields } from "./records.js";
 import { assetKey, requireAsset } from "./transfers.js";
 import type { Swap, SwapProtocol } from "./types.js";
+import { pageValuer } from "./values.js";
+import type { Pricer } from "./values.js";
 
 type Decoded = Omit<Swap, "protocol" | "trader">;
 
@@ -187,11 +189,29 @@ export function toSwap(event: StreamdEvent): StreamdEvent<Swap> | undefined {
 /**
  * `adapter` as a source of swap records: each page's swap events become
  * records, in the page's order, keeping those with `asset` on either side.
+ * `pricer` adds `valueIn` and `valueOut`, read as `pageValuer` reads them.
  */
-export function swapSource(adapter: EventAdapter, asset?: string): EventAdapter {
+export function swapSource(adapter: EventAdapter, asset?: string, pricer?: Pricer, requestTimeout?: number): EventAdapter {
   const wanted = asset === undefined ? undefined : requireAsset(asset);
-  return recordSource(adapter, (event) => {
+  const keep = (event: StreamdEvent) => {
     const record = toSwap(event);
     return record === undefined || wanted === undefined || record.data.assetIn === wanted || record.data.assetOut === wanted ? record : undefined;
+  };
+  if (pricer === undefined) return recordSource(adapter, keep);
+  if (typeof adapter.view !== "function") throw new StreamdError("withValue needs an adapter that implements view");
+  const valuer = pageValuer(pricer, requestTimeout);
+  return pageSource(adapter, (events) => {
+    const value = valuer();
+    const records = events.map(keep).filter((e): e is StreamdEvent<Swap> => e !== undefined);
+    return Promise.all(
+      records.map(async (record) => {
+        const { assetIn, amountIn, assetOut, amountOut } = record.data;
+        const [valueIn, valueOut] = await Promise.all([value(assetIn, amountIn, record.version), value(assetOut, amountOut, record.version)]);
+        const data: Swap = { ...record.data };
+        if (valueIn !== undefined) data.valueIn = valueIn;
+        if (valueOut !== undefined) data.valueOut = valueOut;
+        return { ...record, data };
+      }),
+    );
   });
 }

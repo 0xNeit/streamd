@@ -124,18 +124,19 @@ export class AptosClient extends StreamdClient {
    * (`IndexerAccountAdapter`, routed beside a fullnode for `view`); transfers
    * are built and paired as `transfers()` builds them. `address` may be an
    * Aptos name, resolved once. Under `withNames`, `names` holds the primary
-   * name of the address, the sender and every counterparty. Like
-   * `transfers()`, it is not a listener for `off()` or `listenerCount()`.
+   * name of the address, the sender and every counterparty. `withValue`
+   * values transfers and balance changes in USDC as `transfers()` values
+   * them. Like `transfers()`, it is not a listener for `off()` or `listenerCount()`.
    */
   activity(
     address: string,
     callback: EventCallback<Activity>,
     options: ActivityListenerOptions = {},
   ): Subscription {
-    const { withAssetInfo, ...rest } = options;
+    const { withAssetInfo, withValue, ...rest } = options;
     const [descriptor, who, name] = this.activityOf(address, rest.withNames);
     return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, (source) =>
-      activitySource(source, who, withAssetInfo, this.requestTimeout, name),
+      activitySource(source, who, withAssetInfo, this.requestTimeout, name, withValue ? this.pagePricer(source) : undefined),
     );
   }
 
@@ -144,9 +145,10 @@ export class AptosClient extends StreamdClient {
    * range and options `getEvents` takes; `where` and `limit` apply to the records.
    */
   async getActivity(address: string, filter: ActivityFilter = {}): Promise<StreamdEvent<Activity>[]> {
-    const { withAssetInfo, ...rest } = filter;
+    const { withAssetInfo, withValue, ...rest } = filter;
     const [descriptor, who, name] = this.activityOf(address, rest.withNames);
-    const source = activitySource(this.adapter, who, withAssetInfo, this.requestTimeout, name);
+    const pricer = withValue ? this.pagePricer(this.adapter) : undefined;
+    const source = activitySource(this.adapter, who, withAssetInfo, this.requestTimeout, name, pricer);
     return new EventQuery(source, this.limiter, this.names).getEvents<Activity>(descriptor, rest);
   }
 
@@ -181,14 +183,15 @@ export class AptosClient extends StreamdClient {
    * (`pool::SwapEvent`) and Cellana (`liquidity_pool::SwapEvent`). Every
    * field comes from the event, `trader` from the transaction's sender, so
    * nothing is read by view. `protocol` narrows the scanned types; `asset`
-   * keeps swaps with that asset on either side. Like `transfers()`, it is not
-   * a listener for `off()` or `listenerCount()`.
+   * keeps swaps with that asset on either side. `withValue` adds each side's
+   * USDC value at the record's version, read as `transfers()` reads values.
+   * Like `transfers()`, it is not a listener for `off()` or `listenerCount()`.
    */
   swaps(callback: EventCallback<Swap>, options: SwapListenerOptions = {}): Subscription {
-    const { protocol, asset, ...rest } = options;
+    const { protocol, asset, withValue, ...rest } = options;
     const descriptor = swapDescriptor(protocol);
     return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, (source) =>
-      swapSource(source, asset),
+      swapSource(source, asset, withValue ? this.pagePricer(source) : undefined, this.requestTimeout),
     );
   }
 
@@ -197,9 +200,10 @@ export class AptosClient extends StreamdClient {
    * `getEvents` takes; `where` and `limit` apply to the records.
    */
   async getSwaps(filter: SwapFilter = {}): Promise<StreamdEvent<Swap>[]> {
-    const { protocol, asset, ...rest } = filter;
+    const { protocol, asset, withValue, ...rest } = filter;
     const descriptor = swapDescriptor(protocol);
-    const query = new EventQuery(swapSource(this.adapter, asset), this.limiter, this.names);
+    const source = swapSource(this.adapter, asset, withValue ? this.pagePricer(this.adapter) : undefined, this.requestTimeout);
+    const query = new EventQuery(source, this.limiter, this.names);
     return query.getEvents<Swap>(descriptor, rest);
   }
 
@@ -210,15 +214,17 @@ export class AptosClient extends StreamdClient {
    * `TokenOfferFilledEvent`, `CollectionOfferFilledEvent`) and Tradeport
    * (`listings_v2::BuyEvent`, `biddings_v2::AcceptTokenBidEvent`,
    * `AcceptCollectionBidEvent`, and the same in its legacy-token modules).
-   * Every field comes from the event, so nothing is read by view.
+   * Every field comes from the event, so nothing is read by view without `withValue`.
    * `marketplace` narrows the scanned types; `token` keeps sales of one
-   * token. Like `swaps()`, it is not a listener for `off()` or `listenerCount()`.
+   * token. `withValue` adds a Tradeport sale's USDC value, its price read as
+   * APT; Wapal sales name no coin and get none. Like `swaps()`, it is not a
+   * listener for `off()` or `listenerCount()`.
    */
   sales(callback: EventCallback<Sale>, options: SaleListenerOptions = {}): Subscription {
-    const { marketplace, token, ...rest } = options;
+    const { marketplace, token, withValue, ...rest } = options;
     const descriptor = saleDescriptor(marketplace);
     return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, (source) =>
-      saleSource(source, token),
+      saleSource(source, token, withValue ? this.pagePricer(source) : undefined, this.requestTimeout),
     );
   }
 
@@ -227,9 +233,10 @@ export class AptosClient extends StreamdClient {
    * `getEvents` takes; `where` and `limit` apply to the records.
    */
   async getSales(filter: SaleFilter = {}): Promise<StreamdEvent<Sale>[]> {
-    const { marketplace, token, ...rest } = filter;
+    const { marketplace, token, withValue, ...rest } = filter;
     const descriptor = saleDescriptor(marketplace);
-    const query = new EventQuery(saleSource(this.adapter, token), this.limiter, this.names);
+    const source = saleSource(this.adapter, token, withValue ? this.pagePricer(this.adapter) : undefined, this.requestTimeout);
+    const query = new EventQuery(source, this.limiter, this.names);
     return query.getEvents<Sale>(descriptor, rest);
   }
 
