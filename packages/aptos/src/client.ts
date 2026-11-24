@@ -181,14 +181,15 @@ export class AptosClient extends StreamdClient {
    * (`pool::SwapEvent`) and Cellana (`liquidity_pool::SwapEvent`). Every
    * field comes from the event, `trader` from the transaction's sender, so
    * nothing is read by view. `protocol` narrows the scanned types; `asset`
-   * keeps swaps with that asset on either side. Like `transfers()`, it is not
-   * a listener for `off()` or `listenerCount()`.
+   * keeps swaps with that asset on either side. `withValue` adds each side's
+   * USDC value at the record's version, read as `transfers()` reads values.
+   * Like `transfers()`, it is not a listener for `off()` or `listenerCount()`.
    */
   swaps(callback: EventCallback<Swap>, options: SwapListenerOptions = {}): Subscription {
-    const { protocol, asset, ...rest } = options;
+    const { protocol, asset, withValue, ...rest } = options;
     const descriptor = swapDescriptor(protocol);
     return this.subscribe(descriptor, callback as EventCallback, rest, undefined, rest.id, (source) =>
-      swapSource(source, asset),
+      swapSource(source, asset, withValue ? this.pagePricer(source) : undefined, this.requestTimeout),
     );
   }
 
@@ -197,9 +198,10 @@ export class AptosClient extends StreamdClient {
    * `getEvents` takes; `where` and `limit` apply to the records.
    */
   async getSwaps(filter: SwapFilter = {}): Promise<StreamdEvent<Swap>[]> {
-    const { protocol, asset, ...rest } = filter;
+    const { protocol, asset, withValue, ...rest } = filter;
     const descriptor = swapDescriptor(protocol);
-    const query = new EventQuery(swapSource(this.adapter, asset), this.limiter, this.names);
+    const source = swapSource(this.adapter, asset, withValue ? this.pagePricer(this.adapter) : undefined, this.requestTimeout);
+    const query = new EventQuery(source, this.limiter, this.names);
     return query.getEvents<Swap>(descriptor, rest);
   }
 

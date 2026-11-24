@@ -157,6 +157,10 @@ export interface Swap {
   /** What the pool paid out, in the same form as `assetIn`. */
   assetOut: string;
   amountOut: bigint;
+  /** `amountIn` in USDC at the record's version, with `withValue`; absent when `assetIn` has no price source. */
+  valueIn?: AssetValue;
+  /** `amountOut` in USDC at the record's version, with `withValue`; absent when `assetOut` has no price source. */
+  valueOut?: AssetValue;
 }
 
 export interface SwapOptions {
@@ -164,6 +168,8 @@ export interface SwapOptions {
   protocol?: SwapProtocol | readonly SwapProtocol[];
   /** Only swaps with this asset on either side, in any form `TransferOptions.asset` takes. */
   asset?: string;
+  /** Adds `valueIn` and `valueOut` in USDC, priced as `TransferOptions.withValue` prices transfers (default false). */
+  withValue?: boolean;
 }
 
 /** Options for `AptosClient.swaps`. */
