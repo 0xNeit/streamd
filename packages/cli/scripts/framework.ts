@@ -43,7 +43,7 @@ export {
 `;
 
 const SNAPSHOTS = new URL("./framework-abi/", import.meta.url);
-const FROM = 'import { defineEvent } from "@streamd/core";';
+const FROM = 'import { defineEvent, defineEvents } from "@streamd/core";';
 
 /** The catalog source, generated offline from the committed snapshots. */
 export async function generateCatalog(): Promise<string> {
