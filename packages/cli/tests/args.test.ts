@@ -1306,6 +1306,38 @@ describe("parseCommand swaps and sales", () => {
   });
 });
 
+describe("parseCommand upgrades", () => {
+  const options = (...argv: string[]) => {
+    const parsed = parseCommand(["upgrades", ...argv]);
+    if (parsed.command !== "upgrades") throw new Error("expected upgrades");
+    return parsed.options;
+  };
+
+  it("follows one address or name by default, with only the flags given", () => {
+    expect(options("0x1")).toEqual({ network: "mainnet", address: "0x1" });
+    expect(options("alice.apt", "--from-version", "5", "--limit", "3", "--poll-interval", "200", "--batch-size", "50", "--cursor-file", "u.cursor"))
+      .toEqual({ network: "mainnet", address: "alice.apt", fromVersion: 5n, limit: 3, pollInterval: 200, batchSize: 50, cursorFile: "u.cursor" });
+  });
+
+  it("reads a range with --to-version, and takes the read options", () => {
+    expect(options("0x1", "--from-version", "5", "--to-version", "head", "--order", "desc"))
+      .toEqual({ network: "mainnet", address: "0x1", fromVersion: 5n, toVersion: "head", order: "desc" });
+    expect(options("0x1", "--api-key", "k", "--archive", "default").apiKey).toBe("k");
+  });
+
+  it.each([
+    [["--chain", "sui", "0x1"], /upgrades is not available with --chain sui: SuiClient has no upgrades yet/],
+    [[], /upgrades needs one address or name/],
+    [["0x1", "0x2"], /upgrades needs one address or name/],
+    [["0x1", "--order", "desc"], /--order needs --to-version/],
+    [["0x1", "--to-version", "9"], /--to-version needs --from-version or --from-time/],
+    [["0x1", "--from-version", "1", "--to-version", "head", "--poll-interval", "5"], /--poll-interval follows live/],
+    [["0x1", "--indexer", "https://i.example"], /Unknown option '--indexer'/],
+  ])("rejects %j as a usage error", (args, message) => {
+    rejects(["upgrades", ...args], message);
+  });
+});
+
 describe("parseCommand activity and trace", () => {
   const options = (...argv: string[]) => {
     const parsed = parseCommand(argv);
@@ -1692,6 +1724,7 @@ describe("several nodes", () => {
     ["swaps"],
     ["sales"],
     ["activity", ADDR],
+    ["upgrades", ADDR],
     ["trace", ADDR],
     ["balances", ADDR],
     ["watch", ADDR],
@@ -1744,6 +1777,7 @@ describe("--archive", () => {
     ["swaps"],
     ["sales"],
     ["activity", ADDR],
+    ["upgrades", ADDR],
     ["trace", ADDR],
     ["balances", ADDR],
     ["watch", ADDR],
@@ -1817,6 +1851,7 @@ describe("--stats", () => {
     ["swaps"],
     ["sales"],
     ["activity", "0x1"],
+    ["upgrades", "0x1"],
     ["trace", "0x1"],
     ["balances", "0x1"],
     ["watch", "0x1"],

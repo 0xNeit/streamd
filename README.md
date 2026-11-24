@@ -5582,6 +5582,40 @@ near version 7,030,000,000, so sales history needs `--archive`. A name, asset or
 does not accept exits `1` with its message; exit codes are otherwise `transfers`'s. Aptos only:
 `--chain sui` exits `2`, since `SuiClient` has neither method.
 
+### Watch package upgrades for breaking changes
+
+`streamd upgrades <address | name>` prints each [package publish](#package-upgrades) at an
+address as one JSON line, through `AptosClient`'s `upgrades()` or, with `--to-version`,
+`getUpgrades()`, and exits `1` on a publish that breaks callers, so a CI job can fail when a
+dependency changes under it:
+
+```sh
+# fail the job if any publish at the dependency in this range broke its ABI
+streamd upgrades 0xabc... --from-version 8177444976 --to-version head --api-key "$APTOS_API_KEY"
+# follow it, exiting 1 on the first breaking publish
+streamd upgrades 0xabc... --cursor-file upgrades.cursor
+```
+
+Each line is the publish event as `tail` prints events, its `data` a `PackageUpgrade` with the
+event structs, entry functions and views the publish added, changed or removed. A publish is
+breaking when any of the three has an entry in `removed` or `changed`; additions are not. For
+each breaking publish one line goes to stderr, its names JSON-encoded since they are on-chain
+text:
+
+```text
+streamd: breaking upgrade at version 8177445224: {"address":"0x...abc","removed":["0x...abc::pool::swap"],"changed":["0x...abc::pool::quote"]}
+```
+
+`--from-version`, `--from-time`, `--to-version <n \| head>`, `--order`, `--limit`,
+`--cursor-file`, `--poll-interval` and `--batch-size` behave as they do for `transfers`, with the
+same combinations refused, and the read flags apply to the publish scan (the module reads go
+through the node itself, as for `upgrades()`, so `--archive` does not answer them). Over a
+range every publish is printed first, then the command exits `1` if any printed one was
+breaking; `--limit` counts printed publishes, so one past it is not judged. Following, it exits
+`1` right after printing the first breaking publish. The cursor file moves per page, so a rerun
+may report that publish again rather than skip it. Exit codes are otherwise `transfers`'s.
+Aptos only: `--chain sui` exits `2`.
+
 ### Account activity and fund-flow traces
 
 `streamd activity <address>` prints an account's [activity](#account-activity), one JSON line per

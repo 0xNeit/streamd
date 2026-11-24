@@ -35,6 +35,7 @@ import type {
   TraceCommandOptions,
   TransfersOptions,
   TxOptions,
+  UpgradesCommandOptions,
   WatchCommandOptions,
 } from "./args.js";
 import { runAlert } from "./alert.js";
@@ -63,7 +64,7 @@ import { runMonitor, serveMetrics } from "./monitor.js";
 import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
-import { runActivity, runSales, runSwaps } from "./records.js";
+import { runActivity, runSales, runSwaps, runUpgrades } from "./records.js";
 import type { RecordsIO } from "./records.js";
 import { runServe } from "./serve.js";
 import { sqlTables } from "./sql.js";
@@ -293,7 +294,7 @@ async function transfers(options: TransfersOptions): Promise<number> {
   }
 }
 
-async function records<O extends SwapsCommandOptions | SalesCommandOptions>(
+async function records<O extends SwapsCommandOptions | SalesCommandOptions | UpgradesCommandOptions>(
   options: O,
   run: (options: O, io: RecordsIO<AptosClient>) => Promise<number>,
 ): Promise<number> {
@@ -301,7 +302,7 @@ async function records<O extends SwapsCommandOptions | SalesCommandOptions>(
   const out = stdout(controller);
   try {
     // The parser refuses --chain sui, so this is always an AptosClient.
-    if (!(client instanceof AptosClient)) throw new Error("swaps and sales read Aptos only");
+    if (!(client instanceof AptosClient)) throw new Error("swaps, sales and upgrades read Aptos only");
     const code = await run(options, {
       client,
       write: out.write,
@@ -633,6 +634,7 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "swaps") return records(parsed.options, runSwaps);
   if (parsed.command === "sales") return records(parsed.options, runSales);
   if (parsed.command === "activity") return indexed(parsed.options, runActivity);
+  if (parsed.command === "upgrades") return records(parsed.options, runUpgrades);
   if (parsed.command === "trace") return indexed(parsed.options, runTrace);
   if (parsed.command === "holders") return holders(parsed.options);
   if (parsed.command === "positions") return positions(parsed.options);

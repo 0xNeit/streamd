@@ -1,6 +1,6 @@
-import type { AptosClient, SaleMarketplace, SwapProtocol } from "@streamd/aptos";
+import type { AptosClient, PackageUpgrade, SaleMarketplace, SwapProtocol } from "@streamd/aptos";
 import type { EventFilter, StreamdEvent, Subscription, SubscriptionOptions } from "@streamd/core";
-import type { ActivityCommandOptions, RecordWalkOptions, SalesCommandOptions, SwapsCommandOptions } from "./args.js";
+import type { ActivityCommandOptions, RecordWalkOptions, SalesCommandOptions, SwapsCommandOptions, UpgradesCommandOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { formatEvent, message } from "./format.js";
 
@@ -18,6 +18,8 @@ export interface RecordsIO<C> {
 export interface RecordSource<T> {
   follow(callback: (record: StreamdEvent<T>) => Promise<void>, options: SubscriptionOptions): Subscription;
   range(filter: EventFilter): AsyncIterable<StreamdEvent<T>>;
+  /** Names what a record broke, which ends the command with exit code 1 once it is printed. */
+  breaking?(record: StreamdEvent<T>): string | undefined;
 }
 
 const RETRIES = 5;
@@ -26,7 +28,8 @@ const RETRIES = 5;
  * Prints records as JSON lines and resolves to the process exit code:
  * followed until the limit or the signal (0), or read over a closed range
  * with `toVersion` (0 when finished); 1 when reading, a write or the cursor
- * file fails.
+ * file fails, or when a printed record is `breaking` (followed: at once; over
+ * a range: once the range is printed).
  */
 export function runRecords<T>(options: RecordWalkOptions, source: RecordSource<T>, io: RecordsIO<unknown>): Promise<number> {
   return options.toVersion === undefined ? follow(options, source, io) : range(options, options.toVersion, source, io);
@@ -55,9 +58,17 @@ async function range<T>(options: RecordWalkOptions, toVersion: bigint | "head", 
     retries: RETRIES,
     signal: io.signal,
   };
+  let broken = false;
   try {
-    for await (const record of source.range(filter)) await io.write(`${formatEvent(record)}\n`);
-    return 0;
+    for await (const record of source.range(filter)) {
+      await io.write(`${formatEvent(record)}\n`);
+      const why = source.breaking?.(record);
+      if (why !== undefined) {
+        io.error(`streamd: ${why}`);
+        broken = true;
+      }
+    }
+    return broken ? 1 : 0;
   } catch (err) {
     if (io.signal.aborted) return 0;
     io.error(`streamd: ${message(err)}`);
@@ -116,6 +127,11 @@ async function follow<T>(options: RecordWalkOptions, source: RecordSource<T>, io
         return finish(io.signal.aborted ? 0 : 1);
       }
       if (!checkpoint()) return finish(1);
+      const why = source.breaking?.(record);
+      if (why !== undefined) {
+        report(why);
+        return finish(1);
+      }
       if (limit !== undefined && ++printed >= limit) finish(0);
     };
     try {
@@ -180,5 +196,28 @@ export function runActivity(options: ActivityCommandOptions, io: RecordsIO<Pick<
   return runRecords(options, {
     follow: (callback, listener) => client.activity(address, callback, { ...narrowing, ...listener }),
     range: (filter) => fromArray(client.getActivity(address, { ...narrowing, ...filter })),
+  }, io);
+}
+
+/**
+ * What a publish removed or changed, by full name, or `undefined` when it only
+ * added; names are JSON-encoded, since they are on-chain text.
+ */
+export function breakingChanges({ version, data }: StreamdEvent<PackageUpgrade>): string | undefined {
+  const kinds = [data.events, data.entryFunctions, data.views];
+  const removed = kinds.flatMap((kind) => kind.removed.map(({ name }) => name));
+  const changed = kinds.flatMap((kind) => kind.changed.map(({ before }) => before.name));
+  if (removed.length === 0 && changed.length === 0) return undefined;
+  return `breaking upgrade at version ${version}: ${JSON.stringify({ address: data.address, removed, changed })}`;
+}
+
+/** Prints package publishes through `upgrades` or `getUpgrades`, exiting 1 on a breaking one. */
+export function runUpgrades(options: UpgradesCommandOptions, io: RecordsIO<Pick<AptosClient, "upgrades" | "getUpgrades">>): Promise<number> {
+  const { address } = options;
+  const { client } = io;
+  return runRecords(options, {
+    follow: (callback, listener) => client.upgrades(address, callback, listener),
+    range: (filter) => fromArray(client.getUpgrades(address, filter)),
+    breaking: breakingChanges,
   }, io);
 }
