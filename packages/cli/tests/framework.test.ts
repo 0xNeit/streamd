@@ -33,6 +33,22 @@ describe("framework catalog", () => {
     }
   });
 
+  it("types every other 0x1 module that declares events", async () => {
+    const source = await generateCatalog();
+    for (const type of [
+      "0x1::account_abstraction::UpdateDispatchableAuthenticator",
+      "0x1::chunky_dkg::ChunkyDKGStartEvent",
+      "0x1::confidential_asset::Transferred",
+      "0x1::dkg::DKGStartEvent",
+      "0x1::jwks::ObservedJWKsUpdated",
+      "0x1::randomness::RandomnessGeneratedEvent",
+      "0x1::reconfiguration_with_dkg::ForceEndEpochEvent",
+    ]) {
+      expect(source).toContain(`("${type}")`);
+    }
+    expect(source).toContain("export const confidentialAssetEvents = defineEvents({");
+  });
+
   it("gives every export one name, keeping the ones that existed before names were shared", async () => {
     const source = await generateCatalog();
     const consts = [...source.matchAll(/^export const (\w+)/gm)].map((m) => m[1]);

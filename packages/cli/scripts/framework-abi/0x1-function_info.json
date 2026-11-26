@@ -1,0 +1,35 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "function_info",
+  "structs": [
+   {
+    "name": "FunctionInfo",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "module_address",
+      "type": "address"
+     },
+     {
+      "name": "module_name",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "function_name",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

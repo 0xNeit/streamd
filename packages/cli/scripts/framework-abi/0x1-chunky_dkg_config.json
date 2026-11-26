@@ -1,0 +1,97 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "chunky_dkg_config",
+  "structs": [
+   {
+    "name": "ConfigOff",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ConfigV1",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "secrecy_threshold",
+      "type": "0x1::fixed_point64::FixedPoint64"
+     },
+     {
+      "name": "reconstruction_threshold",
+      "type": "0x1::fixed_point64::FixedPoint64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ChunkyDKGConfig",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "variant",
+      "type": "0x1::copyable_any::Any"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ConfigShadowV1",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "secrecy_threshold",
+      "type": "0x1::fixed_point64::FixedPoint64"
+     },
+     {
+      "name": "reconstruction_threshold",
+      "type": "0x1::fixed_point64::FixedPoint64"
+     },
+     {
+      "name": "grace_period_secs",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

@@ -1,0 +1,109 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "chunky_dkg",
+  "structs": [
+   {
+    "name": "ChunkyDKGSessionMetadata",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dealer_epoch",
+      "type": "u64"
+     },
+     {
+      "name": "chunky_dkg_config",
+      "type": "0x1::chunky_dkg_config::ChunkyDKGConfig"
+     },
+     {
+      "name": "dealer_validator_set",
+      "type": "vector<0x1::validator_consensus_info::ValidatorConsensusInfo>"
+     },
+     {
+      "name": "target_validator_set",
+      "type": "vector<0x1::validator_consensus_info::ValidatorConsensusInfo>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ChunkyDKGSessionState",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "metadata",
+      "type": "0x1::chunky_dkg::ChunkyDKGSessionMetadata"
+     },
+     {
+      "name": "start_time_us",
+      "type": "u64"
+     },
+     {
+      "name": "aggregated_subtranscript",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ChunkyDKGStartEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "session_metadata",
+      "type": "0x1::chunky_dkg::ChunkyDKGSessionMetadata"
+     },
+     {
+      "name": "start_time_us",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ChunkyDKGState",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "last_completed",
+      "type": "0x1::option::Option<0x1::chunky_dkg::ChunkyDKGSessionState>"
+     },
+     {
+      "name": "in_progress",
+      "type": "0x1::option::Option<0x1::chunky_dkg::ChunkyDKGSessionState>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

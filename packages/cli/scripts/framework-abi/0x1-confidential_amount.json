@@ -1,0 +1,76 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "confidential_amount",
+  "structs": [
+   {
+    "name": "Amount",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "P",
+      "type": "vector<0x1::ristretto255::RistrettoPoint>"
+     },
+     {
+      "name": "R_sender",
+      "type": "vector<0x1::ristretto255::RistrettoPoint>"
+     },
+     {
+      "name": "R_recip",
+      "type": "vector<0x1::ristretto255::RistrettoPoint>"
+     },
+     {
+      "name": "R_eff_aud",
+      "type": "vector<0x1::ristretto255::RistrettoPoint>"
+     },
+     {
+      "name": "R_volun_auds",
+      "type": "vector<vector<0x1::ristretto255::RistrettoPoint>>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "CompressedAmount",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "compressed_P",
+      "type": "vector<0x1::ristretto255::CompressedRistretto>"
+     },
+     {
+      "name": "compressed_R_sender",
+      "type": "vector<0x1::ristretto255::CompressedRistretto>"
+     },
+     {
+      "name": "compressed_R_recip",
+      "type": "vector<0x1::ristretto255::CompressedRistretto>"
+     },
+     {
+      "name": "compressed_R_eff_aud",
+      "type": "vector<0x1::ristretto255::CompressedRistretto>"
+     },
+     {
+      "name": "compressed_R_volun_auds",
+      "type": "vector<vector<0x1::ristretto255::CompressedRistretto>>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}
