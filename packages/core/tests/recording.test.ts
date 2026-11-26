@@ -282,10 +282,10 @@ describe("replayAdapter", () => {
     await recorder.fetchEvents(moduleDesc, { limit: 2 });
     const replay = replayAdapter(recorder.toJSON());
     const err = (await replay.fetchEvents(moduleDesc, { limit: 3, cursor: "abc" }).catch((e: unknown) => e)) as Error;
-    expect(err.message).toContain(moduleDesc.eventType);
+    expect(err.message).toContain(String(moduleDesc.eventType));
     expect(err.message).toContain('["cursor","abc"]');
     expect(err.message).toContain('["limit",3]');
-    const refused = (await replay.fetchEvents({ kind: "nope" } as unknown as EventDescriptor).catch((e: unknown) => e)) as Error;
+    const refused = (await replay.fetchEvents({ kind: "nope" } as unknown as EventDescriptor, {}).catch((e: unknown) => e)) as Error;
     expect(refused.message).toContain("(a request no recording can hold)");
   });
 
