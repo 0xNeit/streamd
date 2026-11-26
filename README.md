@@ -72,7 +72,7 @@ TypeScript types:
   See [Serve a gateway](#serve-a-gateway).
 - `@streamd/playground` (`apps/playground`) - a browser page to check an event type, watch it
   live and copy its generated types and a snippet. Not published. See [Playground](#playground).
-- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers`, `useReduction`, `useActivity`, `useSwaps`, `useSales`, `usePositions` and `useExplain` hooks. `react` (>= 18) and
+- `@streamd/react` (`packages/react`) - `useEvents`, `useLogs`, `useEventPages`, `useTransactionEvents`, `useSubmitTransaction`, `useTransfers`, `useReduction`, `useActivity`, `useSwaps`, `useSales`, `usePositions`, `useProposals`, `useStakePools`, `useMultisig` and `useExplain` hooks. `react` (>= 18) and
   `@aptos-labs/ts-sdk` are peer dependencies; `useTransactionEvents`, `useSubmitTransaction` and
   `useTransfers` take an `AptosClient`, and the record and position hooks need one. See [React hooks](#react-hooks).
 
@@ -4701,9 +4701,26 @@ function Feed() {
   `withAssetInfo`, `withValue`, `withNames`) change by value, aborting the read it replaces; a
   `null` or `undefined` hash reads nothing. To explain an unsigned transaction, call
   `client.explain` directly.
-- These five need an `AptosClient` (`ActivityClient`, `SwapsClient`, `SalesClient`,
-  `PositionsClient`, `ExplainClient`); given another client they throw a `StreamdError` naming
-  the method.
+- **`useProposals(options?)`**, **`useStakePools(options?)`** and
+  **`useMultisig(address, options?)`** run `client.proposals`, `client.stakePools` and
+  `client.multisig` with `usePositions`' lifecycle and statuses, returning
+  `{ proposals, error, status }` (a `ReadonlyMap` of `Proposal` by id),
+  `{ pools, error, status }` (`StakePool` by long-form address) and
+  `{ state, error, status, preview }` (the `MultisigState`, `undefined` until the start read
+  finishes; a `null` or `undefined` address waits). The monitors update their records in place,
+  so the hooks hand out copies: the whole state when it is ready, then on each change a new map
+  in which only the changed record is a new object, so a memoised row re-renders exactly when its
+  record changed. `preview(seq, options?)` is stable across renders and simulates through the
+  running monitor, rejecting with a `StreamdError` while none runs.
+
+  ```tsx
+  const { proposals } = useProposals({ fromVersion: 8200000000n });
+  const { state, preview } = useMultisig(treasury);
+  const next = state && (await preview(state.lastResolved + 1n));
+  ```
+- These eight need an `AptosClient` (`ActivityClient`, `SwapsClient`, `SalesClient`,
+  `PositionsClient`, `ExplainClient`, `ProposalsClient`, `StakePoolsClient`,
+  `MultisigClient`); given another client they throw a `StreamdError` naming the method.
 - **Keyed by value.** Inline descriptors and options are compared by value (bigints
   included), so a re-render with an equal one keeps the subscription or result. A different
   one resubscribes, starting `events` empty, or refetches, aborting the request it replaces.
