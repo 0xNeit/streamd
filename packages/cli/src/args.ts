@@ -264,6 +264,14 @@ export interface PositionsCommandOptions extends Endpoint {
   secret?: string;
 }
 
+/** `proposals`, `stake-pools` and `multisig`: Aptos only. */
+export type MonitorCommandOptions = Endpoint & {
+  /** Proposals and stake pools fold from it; a multisig reads its state at the version before. */
+  fromVersion?: bigint;
+  /** Change lines to print before exiting; the opening lines are not counted. */
+  limit?: number;
+} & ({ command: "proposals" } | { command: "stake-pools" } | { command: "multisig"; address: string });
+
 /** Named apart from core's `BalancesOptions`, which the runner builds from it. */
 export interface BalancesCommandOptions extends Endpoint {
   /** An address or name; validated and resolved by the chain's client. */
@@ -428,6 +436,7 @@ export type ParsedCommand =
   | { command: "trace"; options: TraceCommandOptions }
   | { command: "holders"; options: HoldersCommandOptions }
   | { command: "positions"; options: PositionsCommandOptions }
+  | { command: "monitor-state"; options: MonitorCommandOptions }
   | { command: "balances"; options: BalancesCommandOptions }
   | { command: "watch"; options: WatchCommandOptions }
   | { command: "inspect"; options: InspectOptions }
@@ -714,6 +723,13 @@ const POSITIONS_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const MONITOR_STATE_OPTIONS = {
+  ...READ_OPTIONS,
+  "from-version": { type: "string" },
+  limit: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const BALANCES_OPTIONS = {
   ...READ_OPTIONS,
   asset: { type: "string", multiple: true },
@@ -825,6 +841,9 @@ export const USAGE = `Usage:
   streamd trace <address | name> [--hops <n>] [--format <json|dot>] [--indexer <url>] [options]
   streamd holders <asset> --at <version> [--verify <none|supply|stores>] [--format <json|csv>] [options]
   streamd positions <aave|echelon> [--account <address>]... [--threshold <d>] [--to <url>] [options]
+  streamd proposals [--from-version <n>] [--limit <n>] [options]
+  streamd stake-pools [--from-version <n>] [--limit <n>] [options]
+  streamd multisig <address> [--from-version <n>] [--limit <n>] [options]
   streamd balances <address | name> [--asset <asset>]... [options]
   streamd watch <address>... [--cursor-file <path>] [options]
   streamd inspect <address> --resource <type> --from-version <n> [--to-version <n | head>] [options]
@@ -877,6 +896,9 @@ against the chain there, then the snapshot's summary as one JSON line on stderr.
 positions prints each Aave or Echelon lending position on Aptos mainnet as a
 JSON line once read, then again each time a read changes it, and with --to
 POSTs a signed alert to a webhook each time one's health crosses --threshold.
+proposals, stake-pools and multisig print an Aptos governance, stake pool or
+multisig monitor's state as JSON lines once it is ready (every proposal, every
+pool, or the account), then one line each time an event changes one.
 balances prints a wallet's balance of each asset once, then a JSON line each
 time one changes, read at the head every --poll-interval.
 watch follows the transactions each address sent, one walk per address, and
@@ -916,7 +938,8 @@ from a funded account, runs the command against it (with STREAMD_NODE_URL,
 STREAMD_FAUCET_URL, STREAMD_PACKAGE_ADDRESS and STREAMD_PUBLISHER_KEY set), then
 prints one JSON line per #[event] struct of the package: whether the run emitted
 it, how often, and the call that first did. It exits 1 if the command failed.
-Every command but handles, inspect, explain, swaps, sales, activity, upgrades, trace, holders, positions and coverage takes --chain sui
+Every command but handles, inspect, explain, swaps, sales, activity, upgrades, trace, holders, positions,
+proposals, stake-pools, multisig and coverage takes --chain sui
 to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
@@ -972,7 +995,8 @@ Options:
                          gets the API key only when there is no --node-url
   --api-key <key>        fullnode API key, sent as a bearer token (or set ${API_KEY_ENV}, used
                          only on mainnet, testnet and devnet without --node-url)
-  --from-version <n>     start at this version instead of the chain head
+  --from-version <n>     start at this version instead of the chain head; proposals,
+                         stake-pools: fold from it (default: the start of history)
   --from-time <t>        tail, forward, alert, query, watch: start here, as 2h, 7d or an ISO date (UTC)
   --poll-interval <ms>   delay between polls (default: 1000); serve: each topic's
   --sender <address>     only events from transactions one of these signed, repeatable
@@ -987,7 +1011,8 @@ Options:
                          field that is not an unsigned integer is an error: query exits 1,
                          tail, forward, store and watch report it and skip the event
   --limit <n>            tail, transfers, swaps, sales, activity, upgrades, watch: exit after printing n;
-                         balances: after n changes; record, query, inspect: stop after n;
+                         balances, proposals, stake-pools, multisig: after n changes;
+                         record, query, inspect: stop after n;
                          compare: page size; monitor: rounds
   --rules <file>         alert: the rules file (required)
   --to <url>             forward, alert: webhook URL (http or https, required); positions:
@@ -2205,6 +2230,31 @@ function parsePositions(args: string[]): ParsedCommand {
   return { command: "positions", options };
 }
 
+function parseMonitorState(command: "proposals" | "stake-pools" | "multisig", args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: MONITOR_STATE_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (chain(values.chain)) throw new UsageError(`${command} is not available with --chain sui: SuiClient has no ${command} monitor yet`);
+  const endpointOptions = withKey(endpoint(values, false), values["api-key"]);
+  let options: MonitorCommandOptions;
+  if (command === "multisig") {
+    if (positionals.length !== 1) throw new UsageError("multisig needs one account address");
+    options = { command, address: checkedAddress(positionals[0]!, false), ...endpointOptions };
+  } else {
+    if (positionals.length > 0) throw new UsageError(`${command} takes no arguments: ${positionals[0]}`);
+    options = { command, ...endpointOptions };
+  }
+  const fromVersion = version(values["from-version"]);
+  if (fromVersion !== undefined) {
+    if (command === "multisig" && fromVersion < 1n) throw new UsageError("--from-version must be at least 1 for multisig");
+    options.fromVersion = fromVersion;
+  }
+  const limit = integer("limit", values.limit, 1, Number.MAX_SAFE_INTEGER);
+  if (limit !== undefined) options.limit = limit;
+  return { command: "monitor-state", options };
+}
+
 const TRANSACTION_HASH = /^0x[0-9a-fA-F]{64}$/;
 // Base58 of 32 bytes; SuiClient checks the exact length.
 const SUI_DIGEST = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -2348,6 +2398,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "trace") return parseTrace(rest);
   if (command === "holders") return parseHolders(rest);
   if (command === "positions") return parsePositions(rest);
+  if (command === "proposals" || command === "stake-pools" || command === "multisig") return parseMonitorState(command, rest);
   if (command === "balances") return parseBalances(rest);
   if (command === "watch") return parseWatch(rest);
   if (command === "inspect") return parseInspect(rest);
