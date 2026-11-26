@@ -29,7 +29,18 @@ const SHARED = new Set(["balances", "eventsOf", "transfers"]);
 
 /** `useStreamdClient`, refusing a client without `method`, which an `AptosClient` has, and a `SuiClient` for the shared ones. */
 export function useClientWith<T extends StreamdClient>(
-  method: "activity" | "balances" | "eventsOf" | "explain" | "positions" | "sales" | "swaps" | "transfers",
+  method:
+    | "activity"
+    | "balances"
+    | "eventsOf"
+    | "explain"
+    | "multisig"
+    | "positions"
+    | "proposals"
+    | "sales"
+    | "stakePools"
+    | "swaps"
+    | "transfers",
   client?: T,
 ): T {
   const resolved = useStreamdClient(client);

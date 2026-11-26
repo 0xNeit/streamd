@@ -7,6 +7,9 @@ export { useEvents } from "./use-events.js";
 export { useExplain } from "./use-explain.js";
 export { useLogs } from "./use-logs.js";
 export { usePositions } from "./use-positions.js";
+export { useProposals } from "./use-proposals.js";
+export { useStakePools } from "./use-stake-pools.js";
+export { useMultisig } from "./use-multisig.js";
 export { useReduction } from "./use-reduction.js";
 export { useSales } from "./use-sales.js";
 export { useSubmitTransaction } from "./use-submit-transaction.js";
@@ -25,6 +28,10 @@ export type { UseEventsOptions, UseEventsResult, UseEventsStatus } from "./use-e
 export type { ExplainClient, UseExplainOptions, UseExplainResult } from "./use-explain.js";
 export type { UseLogsOptions, UseLogsResult } from "./use-logs.js";
 export type { PositionsClient, UsePositionsOptions, UsePositionsResult, UsePositionsStatus } from "./use-positions.js";
+export type { MonitorStatus } from "./monitor.js";
+export type { ProposalsClient, UseProposalsOptions, UseProposalsResult } from "./use-proposals.js";
+export type { StakePoolsClient, UseStakePoolsOptions, UseStakePoolsResult } from "./use-stake-pools.js";
+export type { MultisigClient, UseMultisigOptions, UseMultisigResult } from "./use-multisig.js";
 export type { UseReductionOptions, UseReductionResult, UseReductionStatus } from "./use-reduction.js";
 export type { SalesClient, UseSalesOptions } from "./use-sales.js";
 export type {
