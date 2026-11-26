@@ -1,0 +1,47 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "reconfiguration_with_dkg",
+  "structs": [
+   {
+    "name": "ForceEndEpochEvent",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "epoch",
+        "type": "u64"
+       },
+       {
+        "name": "dkg_incomplete",
+        "type": "bool"
+       },
+       {
+        "name": "chunky_incomplete",
+        "type": "bool"
+       },
+       {
+        "name": "deadline_us",
+        "type": "u64"
+       },
+       {
+        "name": "now_us",
+        "type": "u64"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

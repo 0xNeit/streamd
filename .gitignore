@@ -12,5 +12,7 @@ dist/
 religion/
 .claude/
 .agents/
+.agent/
 CLAUDE.md
 AGENTS.md
+GEMINI.md

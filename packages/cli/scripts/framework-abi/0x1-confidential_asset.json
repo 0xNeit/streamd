@@ -1,0 +1,758 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "confidential_asset",
+  "structs": [
+   {
+    "name": "AllowListingChanged",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "enabled",
+        "type": "bool"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "AssetConfig",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "allowed",
+        "type": "bool"
+       },
+       {
+        "name": "auditor",
+        "type": "0x1::confidential_asset::AuditorConfig"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "AssetSpecificAuditorChanged",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "asset_type",
+        "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+       },
+       {
+        "name": "new",
+        "type": "0x1::confidential_asset::AuditorConfig"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "AuditorConfig",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "ek",
+        "type": "0x1::option::Option<0x1::ristretto255::CompressedRistretto>"
+       },
+       {
+        "name": "epoch",
+        "type": "u64"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "ConfidentialStore",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "pause_incoming",
+        "type": "bool"
+       },
+       {
+        "name": "normalized",
+        "type": "bool"
+       },
+       {
+        "name": "transfers_received",
+        "type": "u64"
+       },
+       {
+        "name": "pending_balance",
+        "type": "0x1::confidential_balance::CompressedBalance<0x1::confidential_balance::Pending>"
+       },
+       {
+        "name": "available_balance",
+        "type": "0x1::confidential_balance::CompressedBalance<0x1::confidential_balance::Available>"
+       },
+       {
+        "name": "ek",
+        "type": "0x1::ristretto255::CompressedRistretto"
+       },
+       {
+        "name": "auditor_hint",
+        "type": "0x1::option::Option<0x1::confidential_asset::EffectiveAuditorHint>"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "ConfidentialityForAssetTypeChanged",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "asset_type",
+        "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+       },
+       {
+        "name": "allowed",
+        "type": "bool"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "Deposited",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "addr",
+        "type": "address"
+       },
+       {
+        "name": "amount",
+        "type": "u64"
+       },
+       {
+        "name": "asset_type",
+        "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+       },
+       {
+        "name": "new_pending_balance",
+        "type": "0x1::confidential_balance::CompressedBalance<0x1::confidential_balance::Pending>"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "EffectiveAuditorConfig",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "is_global",
+        "type": "bool"
+       },
+       {
+        "name": "config",
+        "type": "0x1::confidential_asset::AuditorConfig"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "EffectiveAuditorHint",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "is_global",
+        "type": "bool"
+       },
+       {
+        "name": "epoch",
+        "type": "u64"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "EmergencyPauseChanged",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "paused",
+        "type": "bool"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "GlobalAuditorChanged",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "new",
+        "type": "0x1::confidential_asset::AuditorConfig"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "GlobalConfig",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "allow_list_enabled",
+        "type": "bool"
+       },
+       {
+        "name": "global_auditor",
+        "type": "0x1::confidential_asset::AuditorConfig"
+       },
+       {
+        "name": "extend_ref",
+        "type": "0x1::object::ExtendRef"
+       }
+      ]
+     },
+     {
+      "name": "V2",
+      "fields": [
+       {
+        "name": "allow_list_enabled",
+        "type": "bool"
+       },
+       {
+        "name": "global_auditor",
+        "type": "0x1::confidential_asset::AuditorConfig"
+       },
+       {
+        "name": "extend_ref",
+        "type": "0x1::object::ExtendRef"
+       },
+       {
+        "name": "emergency_paused",
+        "type": "bool"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "IncomingTransfersPauseChanged",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "addr",
+        "type": "address"
+       },
+       {
+        "name": "asset_type",
+        "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+       },
+       {
+        "name": "paused",
+        "type": "bool"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "KeyRotated",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "addr",
+        "type": "address"
+       },
+       {
+        "name": "asset_type",
+        "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+       },
+       {
+        "name": "new_ek",
+        "type": "0x1::ristretto255::CompressedRistretto"
+       },
+       {
+        "name": "new_available_balance",
+        "type": "0x1::confidential_balance::CompressedBalance<0x1::confidential_balance::Available>"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "KeyRotationProof",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "compressed_new_ek",
+        "type": "0x1::ristretto255::CompressedRistretto"
+       },
+       {
+        "name": "compressed_new_R",
+        "type": "vector<0x1::ristretto255::CompressedRistretto>"
+       },
+       {
+        "name": "sigma",
+        "type": "0x1::sigma_protocol_proof::Proof"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "Normalized",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "addr",
+        "type": "address"
+       },
+       {
+        "name": "asset_type",
+        "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+       },
+       {
+        "name": "new_available_balance",
+        "type": "0x1::confidential_balance::CompressedBalance<0x1::confidential_balance::Available>"
+       },
+       {
+        "name": "auditor_hint",
+        "type": "0x1::option::Option<0x1::confidential_asset::EffectiveAuditorHint>"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "Registered",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "addr",
+        "type": "address"
+       },
+       {
+        "name": "asset_type",
+        "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+       },
+       {
+        "name": "ek",
+        "type": "0x1::ristretto255::CompressedRistretto"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "RegistrationProof",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "sigma",
+        "type": "0x1::sigma_protocol_proof::Proof"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "RolledOver",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "addr",
+        "type": "address"
+       },
+       {
+        "name": "asset_type",
+        "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+       },
+       {
+        "name": "new_available_balance",
+        "type": "0x1::confidential_balance::CompressedBalance<0x1::confidential_balance::Available>"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "TransferProof",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "compressed_new_balance",
+        "type": "0x1::confidential_balance::CompressedBalance<0x1::confidential_balance::Available>"
+       },
+       {
+        "name": "compressed_amount",
+        "type": "0x1::confidential_amount::CompressedAmount"
+       },
+       {
+        "name": "compressed_ek_volun_auds",
+        "type": "vector<0x1::ristretto255::CompressedRistretto>"
+       },
+       {
+        "name": "zkrp_new_balance",
+        "type": "0x1::ristretto255_bulletproofs::RangeProof"
+       },
+       {
+        "name": "zkrp_amount",
+        "type": "0x1::ristretto255_bulletproofs::RangeProof"
+       },
+       {
+        "name": "sigma",
+        "type": "0x1::sigma_protocol_proof::Proof"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "Transferred",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "from",
+        "type": "address"
+       },
+       {
+        "name": "to",
+        "type": "address"
+       },
+       {
+        "name": "asset_type",
+        "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+       },
+       {
+        "name": "amount",
+        "type": "0x1::confidential_amount::CompressedAmount"
+       },
+       {
+        "name": "ek_volun_auds",
+        "type": "vector<0x1::ristretto255::CompressedRistretto>"
+       },
+       {
+        "name": "sender_auditor_hint",
+        "type": "0x1::option::Option<0x1::confidential_asset::EffectiveAuditorHint>"
+       },
+       {
+        "name": "new_sender_available_balance",
+        "type": "0x1::confidential_balance::CompressedBalance<0x1::confidential_balance::Available>"
+       },
+       {
+        "name": "new_recip_pending_balance",
+        "type": "0x1::confidential_balance::CompressedBalance<0x1::confidential_balance::Pending>"
+       },
+       {
+        "name": "memo",
+        "type": "vector<u8>"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "WithdrawalProof",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "compressed_new_balance",
+        "type": "0x1::confidential_balance::CompressedBalance<0x1::confidential_balance::Available>"
+       },
+       {
+        "name": "zkrp_new_balance",
+        "type": "0x1::ristretto255_bulletproofs::RangeProof"
+       },
+       {
+        "name": "sigma",
+        "type": "0x1::sigma_protocol_proof::Proof"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "Withdrawn",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": true,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "from",
+        "type": "address"
+       },
+       {
+        "name": "to",
+        "type": "address"
+       },
+       {
+        "name": "amount",
+        "type": "u64"
+       },
+       {
+        "name": "asset_type",
+        "type": "0x1::object::Object<0x1::fungible_asset::Metadata>"
+       },
+       {
+        "name": "new_available_balance",
+        "type": "0x1::confidential_balance::CompressedBalance<0x1::confidential_balance::Available>"
+       },
+       {
+        "name": "auditor_hint",
+        "type": "0x1::option::Option<0x1::confidential_asset::EffectiveAuditorHint>"
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+}

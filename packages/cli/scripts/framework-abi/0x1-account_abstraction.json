@@ -1,0 +1,115 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "account_abstraction",
+  "structs": [
+   {
+    "name": "DerivableDispatchableAuthenticator",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "auth_functions",
+        "type": "0x1::big_ordered_map::BigOrderedMap<0x1::function_info::FunctionInfo, 0x1::account_abstraction::DerivableRegisterValue>"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "DerivableRegisterValue",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "Empty",
+      "fields": []
+     }
+    ]
+   },
+   {
+    "name": "DispatchableAuthenticator",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "copy",
+     "drop",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "auth_functions",
+        "type": "0x1::ordered_map::OrderedMap<0x1::function_info::FunctionInfo, bool>"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "RemoveDispatchableAuthenticator",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account",
+      "type": "address"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UpdateDispatchableAuthenticator",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "account",
+      "type": "address"
+     },
+     {
+      "name": "update",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "auth_function",
+      "type": "0x1::function_info::FunctionInfo"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

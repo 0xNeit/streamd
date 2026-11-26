@@ -1,0 +1,63 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "ristretto255",
+  "structs": [
+   {
+    "name": "CompressedRistretto",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "data",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RistrettoPoint",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "handle",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Scalar",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "data",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

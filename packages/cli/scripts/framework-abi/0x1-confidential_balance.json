@@ -1,0 +1,112 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "confidential_balance",
+  "structs": [
+   {
+    "name": "Available",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Balance",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": []
+     }
+    ],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "P",
+        "type": "vector<0x1::ristretto255::RistrettoPoint>"
+       },
+       {
+        "name": "R",
+        "type": "vector<0x1::ristretto255::RistrettoPoint>"
+       },
+       {
+        "name": "R_aud",
+        "type": "vector<0x1::ristretto255::RistrettoPoint>"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "CompressedBalance",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": true,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [
+     {
+      "constraints": []
+     }
+    ],
+    "fields": [],
+    "variants": [
+     {
+      "name": "V1",
+      "fields": [
+       {
+        "name": "P",
+        "type": "vector<0x1::ristretto255::CompressedRistretto>"
+       },
+       {
+        "name": "R",
+        "type": "vector<0x1::ristretto255::CompressedRistretto>"
+       },
+       {
+        "name": "R_aud",
+        "type": "vector<0x1::ristretto255::CompressedRistretto>"
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "name": "Pending",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

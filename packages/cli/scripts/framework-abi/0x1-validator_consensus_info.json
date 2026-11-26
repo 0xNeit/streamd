@@ -1,0 +1,35 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "validator_consensus_info",
+  "structs": [
+   {
+    "name": "ValidatorConsensusInfo",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "addr",
+      "type": "address"
+     },
+     {
+      "name": "pk_bytes",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "voting_power",
+      "type": "u64"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}

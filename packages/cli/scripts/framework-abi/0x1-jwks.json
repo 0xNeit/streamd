@@ -1,0 +1,372 @@
+{
+ "abi": {
+  "address": "0x1",
+  "name": "jwks",
+  "structs": [
+   {
+    "name": "AllProvidersJWKs",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "entries",
+      "type": "vector<0x1::jwks::ProviderJWKs>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "FederatedJWKs",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "jwks",
+      "type": "0x1::jwks::AllProvidersJWKs"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "JWK",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "variant",
+      "type": "0x1::copyable_any::Any"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "OIDCProvider",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "name",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "config_url",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ObservedJWKs",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "jwks",
+      "type": "0x1::jwks::AllProvidersJWKs"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ObservedJWKsUpdated",
+    "is_native": false,
+    "is_event": true,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "epoch",
+      "type": "u64"
+     },
+     {
+      "name": "jwks",
+      "type": "0x1::jwks::AllProvidersJWKs"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Patch",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "variant",
+      "type": "0x1::copyable_any::Any"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PatchRemoveAll",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "dummy_field",
+      "type": "bool"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PatchRemoveIssuer",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "issuer",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PatchRemoveJWK",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "issuer",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "jwk_id",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PatchUpsertJWK",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "issuer",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "jwk",
+      "type": "0x1::jwks::JWK"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "PatchedJWKs",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "drop",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "jwks",
+      "type": "0x1::jwks::AllProvidersJWKs"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "Patches",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "patches",
+      "type": "vector<0x1::jwks::Patch>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "ProviderJWKs",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "issuer",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "version",
+      "type": "u64"
+     },
+     {
+      "name": "jwks",
+      "type": "vector<0x1::jwks::JWK>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "RSA_JWK",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "kid",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "kty",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "alg",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "e",
+      "type": "0x1::string::String"
+     },
+     {
+      "name": "n",
+      "type": "0x1::string::String"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "SupportedOIDCProviders",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store",
+     "key"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "providers",
+      "type": "vector<0x1::jwks::OIDCProvider>"
+     }
+    ],
+    "variants": []
+   },
+   {
+    "name": "UnsupportedJWK",
+    "is_native": false,
+    "is_event": false,
+    "is_enum": false,
+    "abilities": [
+     "copy",
+     "drop",
+     "store"
+    ],
+    "generic_type_params": [],
+    "fields": [
+     {
+      "name": "id",
+      "type": "vector<u8>"
+     },
+     {
+      "name": "payload",
+      "type": "vector<u8>"
+     }
+    ],
+    "variants": []
+   }
+  ]
+ }
+}
