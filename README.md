@@ -6239,6 +6239,32 @@ With `--cache <file>`, as on [`query`](#query-a-range), settled pages come from 
 has them. The recorder sits above the cache, so the recording holds every call either way and
 replays the same.
 
+#### Replay a recording from the command line
+
+`--replay <file>` on `query`, `tail`, `transfers` and `tx` answers every read from a recording
+(what `record` writes, or any `recordingAdapter` JSON) through `replayAdapter`, with no node:
+
+```sh
+streamd query --replay deposits.json --from-version 7984000000 --to-version 7984000500 \
+  0x1::fungible_asset::Deposit
+streamd tail --replay deposits.json --from-version 7984000000 0x1::fungible_asset::Deposit
+```
+
+- **Matching.** Requests match exactly, so give the flags the recording was made with (`record`
+  prints them). One allowance: a request with no `toVersion`, as `tail` and a followed
+  `transfers` make, also takes the page the same request recorded with one, a prefix of what it
+  asks for. That is what lets `tail` play back a `record` file.
+- **Misses.** A request the recording does not hold fails with a `StreamdError` naming it (the
+  method, the descriptor and the options), which a query does not retry and a subscription stops
+  on at once. So `query`, `tx` and a `transfers` range exit `1` naming it, and `tail` or a
+  followed `transfers` prints everything the recording holds, then exits `1` at the first
+  request past it; `--limit` ends a follow at a count with `0` instead. `record` writes only
+  `fetchEvents` calls, so `tx` and `transfers` (which also read transactions and views) replay
+  only recordings that captured those calls.
+- **Refused.** `--node-url`, `--archive`, `--cache` and `--stats` name or count a source, so they
+  cannot be combined with `--replay` (exit `2`), nor can `--chain sui`, whose transfers read the
+  node past the adapter. An unreadable or malformed file exits `1` with the reason.
+
 ### Compare two nodes
 
 `streamd compare` reads one range from two fullnodes through
