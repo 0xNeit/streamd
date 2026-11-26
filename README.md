@@ -5925,6 +5925,43 @@ Exit codes: `0` on Ctrl-C (or when stdout closes), `1` when the start read fails
 stops after `maxErrors`, a write fails or an alert is not delivered past its retries, and `2`
 for invalid arguments. Aptos only: `--chain sui` exits `2`.
 
+### Follow governance, stake pools and multisig accounts
+
+`streamd proposals`, `streamd stake-pools` and `streamd multisig <address>` follow
+[governance proposals](#governance-proposals), [stake pools](#stake-pools) and one
+[multisig account](#multisig-accounts) through `AptosClient.proposals()`, `stakePools()` and
+`multisig()`: the monitor's whole state once it is ready, then a line each time an event changes
+it.
+
+```sh
+# proposals created or voted on from version 8,200,000,000 on, stopping after three changes
+streamd proposals --from-version 8200000000 --limit 3
+# every stake pool paid from a recent version on
+streamd stake-pools --from-version 8238000000
+# one multisig account, from the head
+streamd multisig 0x5229...
+```
+
+- **Lines.** Each stdout line is one record as the client keeps it, bigints as decimal strings:
+  a `Proposal` for `proposals`, a `StakePool` for `stake-pools`, the `MultisigState` for
+  `multisig`. Maps are written as arrays of their values (a pool's `delegators`, a multisig's
+  `pending`), each value carrying its own key (`address`, `sequenceNumber`). The opening lines
+  are the ready state (every proposal by id, every pool, or the one account); each later line is
+  one `onChange`, the record after that event. A pool's line carries its whole history, so it
+  grows each epoch.
+- **Flags.** `--limit <n>` exits after `n` change lines (the opening lines are not counted).
+  `--from-version <n>` is where `proposals` and `stake-pools` start folding; without it they
+  fold from the start of history, which a module scan of mainnet cannot finish, so give one (or
+  a `--node-url` that serves that far, with `--archive` for the legacy proposal handles). For
+  `multisig` it reads the state at the version before `n` (at least `1`) and folds every change
+  from there; without it the state is read at the head. The read flags are `positions`'s.
+  Following mainnet live through a module scan needs an `--api-key`, since the anonymous limit
+  is soon spent.
+
+Exit codes: `0` on Ctrl-C, at `--limit` or when stdout closes, `1` when the start read fails, the
+monitor stops after `maxErrors` or a write fails, and `2` for invalid arguments. Aptos only:
+`--chain sui` exits `2`.
+
 ### Follow balances
 
 `streamd balances <address>` follows one wallet's [balances](#live-balances) through the chain

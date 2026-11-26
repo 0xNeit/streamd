@@ -2264,3 +2264,37 @@ describe("parseCommand serve", () => {
     ).toEqual({ file: "w.json", allowPrivateTargets: true, retries: 0, timeout: 500, batchSize: 10 });
   });
 });
+
+describe("parseCommand proposals, stake-pools and multisig", () => {
+  const A = `0x${"a".repeat(64)}`;
+  const monitor = (...argv: string[]) => {
+    const parsed = parseCommand(argv);
+    if (parsed.command !== "monitor-state") throw new Error("expected a monitor-state command");
+    return parsed.options;
+  };
+
+  it("takes the start, the limit and the read flags", () => {
+    expect(monitor("proposals")).toEqual({ command: "proposals", network: "mainnet" });
+    expect(monitor("stake-pools", "--from-version", "0", "--limit", "3", "--node-url", "https://n.example/v1", "--api-key", "k", "--stats")).toEqual({
+      command: "stake-pools", network: "mainnet", fromVersion: 0n, limit: 3, nodeUrl: "https://n.example/v1", apiKey: "k", stats: true,
+    });
+    expect(monitor("multisig", "0xa", "--from-version", "9")).toEqual({
+      command: "multisig", network: "mainnet", address: `0x${"0".repeat(63)}a`, fromVersion: 9n,
+    });
+    expect(monitor("multisig", A)).toMatchObject({ address: A });
+  });
+
+  it.each([
+    [["multisig"], /multisig needs one account address/],
+    [["multisig", A, A], /multisig needs one account address/],
+    [["multisig", "alice.apt"], /Not a valid Aptos address/],
+    [["multisig", A, "--from-version", "0"], /--from-version must be at least 1 for multisig/],
+    [["proposals", "x"], /proposals takes no arguments: x/],
+    [["proposals", "--limit", "0"], /--limit must be an integer from 1/],
+    [["stake-pools", "--from-version=-5"], /--from-version must be a non-negative integer/],
+    [["stake-pools", "--chain", "sui"], /stake-pools is not available with --chain sui/],
+    [["proposals", "--pool", A], /Unknown option/],
+  ])("refuses %j", (argv, error) => {
+    expect(() => parseCommand(argv as string[])).toThrow(error);
+  });
+});
