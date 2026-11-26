@@ -2330,3 +2330,27 @@ describe("parseCommand provenance", () => {
     expect(() => parseCommand(argv as string[])).toThrow(error);
   });
 });
+
+describe("parseCommand --replay", () => {
+  const T = "0x1::transaction_fee::FeeStatement";
+  const H = `0x${"ab".repeat(32)}`;
+
+  it("sets replay on query, tail, transfers and tx", () => {
+    for (const argv of [["query", "--from-version", "1", T], ["tail", T], ["transfers"], ["tx", H]]) {
+      const parsed = parseCommand([...argv, "--replay", "rec.json"]);
+      expect((parsed as { options: { replay?: string } }).options.replay).toBe("rec.json");
+    }
+  });
+
+  it.each([
+    [["query", "--from-version", "1", T, "--replay", ""], /--replay must not be empty/],
+    [["query", "--from-version", "1", T, "--replay", "r", "--node-url", "https://n.example/v1"], /--node-url cannot be combined with --replay/],
+    [["query", "--from-version", "1", T, "--replay", "r", "--archive", "default"], /--archive cannot be combined with --replay/],
+    [["query", "--from-version", "1", T, "--replay", "r", "--cache", "c.db"], /--cache cannot be combined with --replay/],
+    [["tail", T, "--replay", "r", "--stats"], /--stats cannot be combined with --replay/],
+    [["transfers", "--replay", "r", "--chain", "sui"], /--replay reads Aptos recordings only/],
+    [["forward", T, "--to", "https://h.example", "--replay", "r"], /Unknown option '--replay'/],
+  ])("refuses %j", (argv, error) => {
+    expect(() => parseCommand(argv as string[])).toThrow(error);
+  });
+});

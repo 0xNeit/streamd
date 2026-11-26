@@ -24,6 +24,8 @@ export interface Endpoint {
   apiKey?: string;
   /** `--stats`: print request counts per source to stderr; only on commands that read through the adapter. */
   stats?: true;
+  /** `--replay`: a recording file every read is answered from, with no node; Aptos only. */
+  replay?: string;
 }
 
 /** Where events come from: shared by `tail` and `forward`. */
@@ -498,6 +500,7 @@ const SOURCE_OPTIONS = {
 const FROM_TIME = { "from-time": { type: "string" } } as const;
 
 const TAIL_OPTIONS = {
+  replay: { type: "string" },
   ...SOURCE_OPTIONS,
   ...FROM_TIME,
   limit: { type: "string" },
@@ -627,6 +630,7 @@ const RECORD_OPTIONS = {
 } as const;
 
 const QUERY_OPTIONS = {
+  replay: { type: "string" },
   ...FROM_TIME,
   ...FILTER_OPTIONS,
   ...DESCRIPTOR_OPTIONS,
@@ -652,6 +656,7 @@ const WALK_OPTIONS = {
 } as const;
 
 const TRANSFERS_OPTIONS = {
+  replay: { type: "string" },
   ...READ_OPTIONS,
   ...WALK_OPTIONS,
   asset: { type: "string" },
@@ -782,6 +787,7 @@ const HANDLES_OPTIONS = {
 } as const;
 
 const TX_OPTIONS = {
+  replay: { type: "string" },
   ...READ_OPTIONS,
   timeout: { type: "string" },
   help: { type: "boolean", short: "h" },
@@ -1086,6 +1092,9 @@ Options:
                          or newest first (default: asc; desc without --limit buffers the
                          range to reverse it)
   --out <file>           codegen, record: write to this file instead of stdout
+  --replay <file>        query, tail, transfers, tx: answer every read from a recording that
+                         record wrote, with no node; a request it does not hold ends the
+                         command with exit 1, naming it
   --cache <file>         query, record: keep settled pages in this SQLite file and read them
                          from it on the next run of the same range (Aptos only)
   --stats                commands that read events (not check, codegen, handles, name or
@@ -1484,6 +1493,7 @@ function parseTail(args: string[]): ParsedCommand {
     }
     options.format = values.format;
   }
+  withReplay(options, values);
   return { command: "tail", options };
 }
 
@@ -1612,6 +1622,17 @@ function isPostgresUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+/** `--replay <file>`: every read from a recording, so the flags that name or count a source are refused. */
+function withReplay(options: Endpoint & { cache?: string }, values: { replay?: string; "node-url"?: string[]; archive?: string; stats?: boolean }): void {
+  const file = values.replay;
+  if (file === undefined) return;
+  if (file === "") throw new UsageError("--replay must not be empty");
+  if (options.chain === "sui") throw new UsageError("--replay reads Aptos recordings only: Sui's transfers read the node past the adapter");
+  const clash = values["node-url"] !== undefined ? "node-url" : values.archive !== undefined ? "archive" : options.cache !== undefined ? "cache" : values.stats ? "stats" : undefined;
+  if (clash !== undefined) throw new UsageError(`--${clash} cannot be combined with --replay, which answers every read from the file`);
+  options.replay = file;
 }
 
 function withCache(options: { cache?: string }, cache: string | undefined, sui: boolean): void {
@@ -1901,6 +1922,7 @@ function parseQuery(args: string[]): ParsedCommand {
   withKey(options, values["api-key"]);
   if (limit !== undefined) options.limit = limit;
   withCache(options, values.cache, sui);
+  withReplay(options, values);
   return { command: "query", options: withFilter(options, values) };
 }
 
@@ -2071,6 +2093,7 @@ function parseTransfers(args: string[]): ParsedCommand {
   if (values.asset !== undefined) options.asset = values.asset;
   if (values.account !== undefined) options.account = values.account;
   if (values["with-asset-info"]) options.withAssetInfo = true;
+  withReplay(options, values);
   return { command: "transfers", options };
 }
 
@@ -2310,6 +2333,7 @@ function parseTx(args: string[]): ParsedCommand {
   const timeout = integer("timeout", values.timeout, 0, MAX_TIMEOUT);
   withKey(options, values["api-key"]);
   if (timeout !== undefined) options.timeout = timeout;
+  withReplay(options, values);
   return { command: "tx", options };
 }
 
