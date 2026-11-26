@@ -348,7 +348,9 @@ export function replayAdapter(recording: Recording | string): EventAdapter {
   function answer<T>(method: RecordedMethod, key: string | undefined): T {
     const id = `${method}:${key}`;
     const list = key === undefined ? undefined : answers.get(id);
-    if (list === undefined) throw new StreamdError(`No recorded ${method} call matches this request`);
+    if (list === undefined) {
+      throw new StreamdError(`No recorded ${method} call matches this request: ${key ?? "(a request no recording can hold)"}`);
+    }
     const i = served.get(id) ?? 0;
     served.set(id, Math.min(i + 1, list.length - 1));
     return list[i] as T;

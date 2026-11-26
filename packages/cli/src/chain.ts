@@ -1,9 +1,10 @@
+import { readFileSync } from "node:fs";
 import { Aptos, AptosConfig, Network, getAptosFullNode } from "@aptos-labs/ts-sdk";
 import type { Client } from "@aptos-labs/ts-sdk";
 import { AptosClient, FullnodeScanAdapter, IndexerAccountAdapter, checkDescriptor, networks, primaryName, resolveName, sendOnce } from "@streamd/aptos";
 import { parseModuleAbi } from "@streamd/codegen";
 import type { ListModules, LoadModule, ModuleAbi } from "@streamd/codegen";
-import { ArchiveFallbackAdapter, CachingAdapter, PoolAdapter, RoutingAdapter, StreamdError, StreamdNetworkError, toStreamdError } from "@streamd/core";
+import { ArchiveFallbackAdapter, CachingAdapter, PoolAdapter, RoutingAdapter, StreamdError, StreamdNetworkError, replayAdapter, toStreamdError } from "@streamd/core";
 import type { CachingAdapterOptions, EventAdapter, ModuleEventDescriptor, StreamdClient } from "@streamd/core";
 import type { Endpoint } from "./args.js";
 import type { TypeChecks } from "./check.js";
@@ -125,6 +126,59 @@ export function resourceReader(
   };
 }
 
+/** Every `toVersion` a recording's `fetchEvents` calls were bounded by. */
+function recordedBounds(text: string): bigint[] {
+  const bounds = new Set<bigint>();
+  const { calls } = JSON.parse(text) as { calls: { method: string; key?: string }[] };
+  for (const { method, key } of calls) {
+    if (method !== "fetchEvents" || key === undefined) continue;
+    const fields = JSON.parse(key.slice(key.indexOf("|") + 1)) as [string, unknown][];
+    const bound = fields.find(([name]) => name === "toVersion")?.[1];
+    if (typeof bound === "string" && /^\d+n$/.test(bound)) bounds.add(BigInt(bound.slice(0, -1)));
+  }
+  return [...bounds];
+}
+
+/** `--replay`: the recording at `path`, read once; a head read it never recorded is a miss like any other. */
+function replaying(path: string): HeadAdapter {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (err) {
+    throw new StreamdError(`cannot read --replay file: ${message(err)}`);
+  }
+  let adapter: EventAdapter;
+  try {
+    adapter = replayAdapter(text);
+  } catch (err) {
+    throw new StreamdError(`--replay file ${path} is not a recording: ${message(err)}`);
+  }
+  // A follow asks for what a bounded query recorded with no bound, so an
+  // unbounded request also takes the page the same request recorded with one:
+  // a prefix of what it asks for, after which the recording ends.
+  const bounds = recordedBounds(text);
+  const exact = adapter.fetchEvents.bind(adapter);
+  adapter.fetchEvents = async (descriptor, options = {}) => {
+    try {
+      return await exact(descriptor, options);
+    } catch (err) {
+      if (options.toVersion !== undefined) throw err;
+      for (const toVersion of bounds) {
+        try {
+          return await exact(descriptor, { ...options, toVersion });
+        } catch {
+          // Not this bound; the first error names the request as it was made.
+        }
+      }
+      throw err;
+    }
+  };
+  adapter.getHeadVersion ??= async () => {
+    throw new StreamdError("No recorded getHeadVersion call matches this request: the recording holds no head read");
+  };
+  return adapter as HeadAdapter;
+}
+
 function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: RequestStats): Chain {
   const one = sendOnce();
   const config = aptosConfig(endpoint, one);
@@ -138,7 +192,7 @@ function aptosChain(endpoint: Endpoint, cache?: CachingAdapterOptions, stats?: R
     new FullnodeScanAdapter(new Aptos(aptosConfig(endpoint, client))),
     ...(endpoint.extraNodeUrls?.map((url) => node(url, client)) ?? []),
   ];
-  let shared: HeadAdapter | undefined;
+  let shared: HeadAdapter | undefined = endpoint.replay === undefined ? undefined : replaying(endpoint.replay);
   // Built once, so every client and adapter() share each node's counts.
   const reads = () => {
     if (shared !== undefined) return shared;
