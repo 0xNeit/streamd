@@ -210,6 +210,13 @@ export interface UpgradesCommandOptions extends RecordWalkOptions {
   address: string;
 }
 
+/** Aptos only; the object is a long-form address, listed through the Indexer. */
+export interface ProvenanceCommandOptions extends RecordWalkOptions {
+  object: string;
+  /** `--indexer`: the Indexer's GraphQL URL (default: the network's). */
+  indexer?: string;
+}
+
 /** Aptos only, read over the Indexer route; the address or name is validated by the client. */
 export interface ActivityCommandOptions extends RecordWalkOptions {
   address: string;
@@ -437,6 +444,7 @@ export type ParsedCommand =
   | { command: "holders"; options: HoldersCommandOptions }
   | { command: "positions"; options: PositionsCommandOptions }
   | { command: "monitor-state"; options: MonitorCommandOptions }
+  | { command: "provenance"; options: ProvenanceCommandOptions }
   | { command: "balances"; options: BalancesCommandOptions }
   | { command: "watch"; options: WatchCommandOptions }
   | { command: "inspect"; options: InspectOptions }
@@ -682,6 +690,13 @@ const ACTIVITY_OPTIONS = {
   help: { type: "boolean", short: "h" },
 } as const;
 
+const PROVENANCE_OPTIONS = {
+  ...READ_OPTIONS,
+  ...WALK_OPTIONS,
+  indexer: { type: "string" },
+  help: { type: "boolean", short: "h" },
+} as const;
+
 const TRACE_OPTIONS = {
   ...READ_OPTIONS,
   indexer: { type: "string" },
@@ -838,6 +853,7 @@ export const USAGE = `Usage:
   streamd sales [--marketplace <name>]... [--token <token>] [--to-version <n | head>] [options]
   streamd activity <address | name> [--to-version <n | head>] [--indexer <url>] [options]
   streamd upgrades <address | name> [--to-version <n | head>] [options]
+  streamd provenance <object> [--to-version <n | head>] [--indexer <url>] [options]
   streamd trace <address | name> [--hops <n>] [--format <json|dot>] [--indexer <url>] [options]
   streamd holders <asset> --at <version> [--verify <none|supply|stores>] [--format <json|csv>] [options]
   streamd positions <aave|echelon> [--account <address>]... [--threshold <d>] [--to <url>] [options]
@@ -890,6 +906,9 @@ upgrades prints each package publish at an Aptos address as a JSON line of the
 event structs, entry functions and views it added, changed or removed, and
 exits 1 on one that removed or changed any: following, at once; over a range,
 once it is printed.
+provenance prints one JSON line per transaction that touched an Aptos object (a
+0x4 token or any 0x1::object): its mint, transfer, mutation and burn actions, the
+resources it changed and the token's properties, listed through the Indexer.
 holders prints every fungible store holding an Aptos asset at a past version,
 largest first, as JSON lines or CSV, folded back from the Indexer and checked
 against the chain there, then the snapshot's summary as one JSON line on stderr.
@@ -938,8 +957,8 @@ from a funded account, runs the command against it (with STREAMD_NODE_URL,
 STREAMD_FAUCET_URL, STREAMD_PACKAGE_ADDRESS and STREAMD_PUBLISHER_KEY set), then
 prints one JSON line per #[event] struct of the package: whether the run emitted
 it, how often, and the call that first did. It exits 1 if the command failed.
-Every command but handles, inspect, explain, swaps, sales, activity, upgrades, trace, holders, positions,
-proposals, stake-pools, multisig and coverage takes --chain sui
+Every command but handles, inspect, explain, swaps, sales, activity, upgrades, provenance, trace, holders,
+positions, proposals, stake-pools, multisig and coverage takes --chain sui
 to read Sui instead of Aptos.
 tail, query, forward, store and watch take --sender, --function and --where, which
 filter after fetching, so --limit counts the events that match; they also take
@@ -2131,6 +2150,24 @@ function parseUpgrades(args: string[]): ParsedCommand {
   return { command: "upgrades", options };
 }
 
+function parseProvenance(args: string[]): ParsedCommand {
+  const { values, positionals } = wrap(() =>
+    parseArgs({ args, options: PROVENANCE_OPTIONS, allowPositionals: true, strict: true }),
+  );
+  if (values.help) return { command: "help" };
+  if (chain(values.chain)) throw new UsageError("provenance is not available with --chain sui: SuiClient has no provenance yet");
+  if (positionals.length !== 1) throw new UsageError("provenance needs one object address");
+  const object = checkedAddress(positionals[0]!, false);
+  if (values.indexer !== undefined && httpUrl(values.indexer) === undefined) {
+    throw new UsageError(`--indexer must be an http or https URL: ${values.indexer}`);
+  }
+  const options: ProvenanceCommandOptions = recordWalk(
+    { object, ...(values.indexer !== undefined && { indexer: values.indexer }), ...withKey(endpoint(values, false), values["api-key"]) },
+    values,
+  );
+  return { command: "provenance", options };
+}
+
 function parseTrace(args: string[]): ParsedCommand {
   const { values, positionals } = wrap(() =>
     parseArgs({ args, options: TRACE_OPTIONS, allowPositionals: true, strict: true }),
@@ -2398,6 +2435,7 @@ export function parseCommand(argv: readonly string[]): ParsedCommand {
   if (command === "trace") return parseTrace(rest);
   if (command === "holders") return parseHolders(rest);
   if (command === "positions") return parsePositions(rest);
+  if (command === "provenance") return parseProvenance(rest);
   if (command === "proposals" || command === "stake-pools" || command === "multisig") return parseMonitorState(command, rest);
   if (command === "balances") return parseBalances(rest);
   if (command === "watch") return parseWatch(rest);

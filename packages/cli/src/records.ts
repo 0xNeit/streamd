@@ -1,6 +1,6 @@
-import type { AptosClient, PackageUpgrade, SaleMarketplace, SwapProtocol } from "@streamd/aptos";
+import type { AptosClient, PackageUpgrade, SaleMarketplace, SwapProtocol, TransactionLister } from "@streamd/aptos";
 import type { EventFilter, StreamdEvent, Subscription, SubscriptionOptions } from "@streamd/core";
-import type { ActivityCommandOptions, RecordWalkOptions, SalesCommandOptions, SwapsCommandOptions, UpgradesCommandOptions } from "./args.js";
+import type { ActivityCommandOptions, ProvenanceCommandOptions, RecordWalkOptions, SalesCommandOptions, SwapsCommandOptions, UpgradesCommandOptions } from "./args.js";
 import { readCursor, writeCursor } from "./cursor-file.js";
 import { formatEvent, message } from "./format.js";
 
@@ -219,5 +219,18 @@ export function runUpgrades(options: UpgradesCommandOptions, io: RecordsIO<Pick<
     follow: (callback, listener) => client.upgrades(address, callback, listener),
     range: (filter) => fromArray(client.getUpgrades(address, filter)),
     breaking: breakingChanges,
+  }, io);
+}
+
+/** Prints an object's history through `provenance` or `getProvenance`, listed by `indexer`. */
+export function runProvenance(
+  options: ProvenanceCommandOptions,
+  io: RecordsIO<Pick<AptosClient, "provenance" | "getProvenance">> & { indexer: TransactionLister },
+): Promise<number> {
+  const { object } = options;
+  const { client, indexer } = io;
+  return runRecords(options, {
+    follow: (callback, listener) => client.provenance(object, callback, { indexer, ...listener }),
+    range: (filter) => fromArray(client.getProvenance(object, { indexer, ...filter })),
   }, io);
 }

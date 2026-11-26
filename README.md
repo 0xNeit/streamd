@@ -5776,6 +5776,36 @@ breaking; `--limit` counts printed publishes, so one past it is not judged. Foll
 may report that publish again rather than skip it. Exit codes are otherwise `transfers`'s.
 Aptos only: `--chain sui` exits `2`.
 
+### Object history
+
+`streamd provenance <object>` prints the [history of one Aptos object](#object-provenance), a
+`0x4` token or any `0x1::object` object, as one JSON line per transaction that touched it:
+followed from the Indexer's processed version through `AptosClient.provenance()`, or over a
+closed range with `--to-version <n | head>` through `getProvenance()`.
+
+```sh
+# a token's whole history, through the archive for versions the fullnode pruned
+streamd provenance 0x5a1f... --from-version 0 --to-version head --archive default
+# its newest five changes, newest first
+streamd provenance 0x5a1f... --from-version 0 --to-version head --order desc --limit 5
+# follow it, resuming across restarts
+streamd provenance 0x5a1f... --cursor-file token.cursor
+```
+
+- **Lines.** Each line is the record as `tail` prints an event: `data` is the `Provenance`
+  (`actions` with `mint`, `transfer`, `mutation` and `burn`, every changed resource under
+  `changes`, the decoded `properties`), bigints as decimal strings.
+- **Flags.** The record walk flags `transfers` takes (`--from-version`, `--from-time`,
+  `--to-version`, `--order`, `--limit`, and for following `--cursor-file`, `--poll-interval`
+  and `--batch-size`), `--indexer <url>` for the Indexer that lists the transactions (the
+  network's by default, given `--api-key` only without `--node-url`, as `activity` builds it),
+  and the read flags; `--archive` answers versions the fullnode pruned. The object is an address
+  (names are refused).
+
+Exit codes: `0` when the range is printed, at `--limit`, on Ctrl-C or when stdout closes, `1`
+when a read, a write or the cursor file fails, and `2` for invalid arguments. Aptos only:
+`--chain sui` exits `2`.
+
 ### Account activity and fund-flow traces
 
 `streamd activity <address>` prints an account's [activity](#account-activity), one JSON line per

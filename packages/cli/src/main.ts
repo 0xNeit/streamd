@@ -21,6 +21,7 @@ import type {
   HoldersCommandOptions,
   MonitorCommandOptions,
   PositionsCommandOptions,
+  ProvenanceCommandOptions,
   HandlesOptions,
   InspectOptions,
   MonitorOptions,
@@ -67,7 +68,7 @@ import { runMonitor, serveMetrics } from "./monitor.js";
 import { runName } from "./name.js";
 import { runQuery } from "./query.js";
 import { runRecord, writeAtomically } from "./record.js";
-import { runActivity, runSales, runSwaps, runUpgrades } from "./records.js";
+import { runActivity, runProvenance, runSales, runSwaps, runUpgrades } from "./records.js";
 import type { RecordsIO } from "./records.js";
 import { runServe } from "./serve.js";
 import { sqlTables } from "./sql.js";
@@ -398,6 +399,33 @@ async function holders(options: HoldersCommandOptions): Promise<number> {
   }
 }
 
+async function provenance(options: ProvenanceCommandOptions): Promise<number> {
+  const { chain, client, controller } = await setup(options);
+  let indexer;
+  try {
+    // The parser refuses --chain sui, so the chain is Aptos's, which has indexer().
+    indexer = chain.indexer!(options.indexer);
+  } catch (err) {
+    client.destroy();
+    process.stderr.write(`streamd: ${message(err)}\n`);
+    return 1;
+  }
+  const out = stdout(controller);
+  try {
+    const code = await runProvenance(options, {
+      // The parser refuses --chain sui, so this is always an AptosClient.
+      client: client as AptosClient,
+      indexer,
+      write: out.write,
+      error: (message) => process.stderr.write(`${message}\n`),
+      signal: controller.signal,
+    });
+    return out.exitCode(code);
+  } finally {
+    client.destroy();
+  }
+}
+
 async function positions(options: PositionsCommandOptions): Promise<number> {
   const { client, controller } = await setup(options);
   const out = stdout(controller);
@@ -685,6 +713,7 @@ async function run(parsed: Exclude<ParsedCommand, { command: "help" }>): Promise
   if (parsed.command === "holders") return holders(parsed.options);
   if (parsed.command === "positions") return positions(parsed.options);
   if (parsed.command === "monitor-state") return monitorState(parsed.options);
+  if (parsed.command === "provenance") return provenance(parsed.options);
   if (parsed.command === "balances") return balances(parsed.options);
   if (parsed.command === "watch") return watch(parsed.options);
   if (parsed.command === "inspect") return inspect(parsed.options);

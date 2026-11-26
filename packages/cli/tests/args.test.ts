@@ -2298,3 +2298,35 @@ describe("parseCommand proposals, stake-pools and multisig", () => {
     expect(() => parseCommand(argv as string[])).toThrow(error);
   });
 });
+
+describe("parseCommand provenance", () => {
+  const O = `0x${"7".repeat(64)}`;
+  const provenance = (...argv: string[]) => {
+    const parsed = parseCommand(["provenance", ...argv]);
+    if (parsed.command !== "provenance") throw new Error("expected a provenance command");
+    return parsed.options;
+  };
+
+  it("takes the object in long form, the walk flags, the indexer and the read flags", () => {
+    expect(provenance("0x7")).toEqual({ network: "mainnet", object: `0x${"0".repeat(63)}7` });
+    expect(provenance(O, "--from-version", "5", "--to-version", "head", "--order", "desc", "--limit", "2", "--indexer", "https://i.example/v1/graphql",
+      "--archive", "default", "--api-key", "k")).toEqual({
+      network: "mainnet", object: O, fromVersion: 5n, toVersion: "head", order: "desc", limit: 2,
+      indexer: "https://i.example/v1/graphql", archive: "default", apiKey: "k",
+    });
+    expect(provenance(O, "--cursor-file", "c.json", "--poll-interval", "100")).toEqual({
+      network: "mainnet", object: O, cursorFile: "c.json", pollInterval: 100,
+    });
+  });
+
+  it.each([
+    [["provenance"], /provenance needs one object address/],
+    [["provenance", O, O], /provenance needs one object address/],
+    [["provenance", "alice.apt"], /Not a valid Aptos address/],
+    [["provenance", O, "--to-version", "9"], /--to-version needs --from-version or --from-time/],
+    [["provenance", O, "--indexer", "ftp://x"], /--indexer must be an http or https URL/],
+    [["provenance", O, "--chain", "sui"], /provenance is not available with --chain sui/],
+  ])("refuses %j", (argv, error) => {
+    expect(() => parseCommand(argv as string[])).toThrow(error);
+  });
+});

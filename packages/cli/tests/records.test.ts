@@ -2,11 +2,11 @@ import { describe, expect, it } from "bun:test";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Activity, PackageUpgrade, Sale, Swap } from "@streamd/aptos";
+import type { Activity, PackageUpgrade, Provenance, Sale, Swap } from "@streamd/aptos";
 import { MemoryAdapter, StreamdClient, StreamdError } from "@streamd/core";
 import type { EventAdapter, EventDescriptor, StreamdEvent } from "@streamd/core";
-import type { ActivityCommandOptions, SalesCommandOptions, SwapsCommandOptions, UpgradesCommandOptions } from "../src/args.js";
-import { breakingChanges, runActivity, runSales, runSwaps, runUpgrades } from "../src/records.js";
+import type { ActivityCommandOptions, ProvenanceCommandOptions, SalesCommandOptions, SwapsCommandOptions, UpgradesCommandOptions } from "../src/args.js";
+import { breakingChanges, runActivity, runProvenance, runSales, runSwaps, runUpgrades } from "../src/records.js";
 import type { RecordsIO } from "../src/records.js";
 
 const SWAP_TYPE = "0x8b4a2c4bb53857c718a04c020b98f8c2e1f99a68b0f57389a8bf5434cd22e05c::pool_v3::SwapEventV3";
@@ -324,5 +324,67 @@ describe("runUpgrades", () => {
     expect(h.versions()).toEqual(["1", "2"]);
     expect(h.seen[0]!.address).toBe("0xabc");
     expect(h.errors).toEqual(['streamd: breaking upgrade at version 2: {"address":"0x1","removed":["0x1::m::gone"],"changed":[]}']);
+  });
+});
+
+const OBJECT = `0x${"7".repeat(64)}`;
+
+function touched(version: number): StreamdEvent<Provenance> {
+  return {
+    type: "0x1::object::ObjectCore",
+    data: {
+      object: OBJECT,
+      success: true,
+      actions: [{ kind: "transfer", from: `0x${"1".repeat(64)}`, to: `0x${"2".repeat(64)}` }],
+      changes: [],
+      properties: [{ key: "level", type: "u64", value: 10n ** 19n }],
+    } as Provenance,
+    version: BigInt(version),
+    sequenceNumber: 0n,
+    eventIndex: 0,
+  };
+}
+
+/** A client whose `provenance` and `getProvenance` read plain events, recording the object and indexer each call was given. */
+function provenance(adapter: EventAdapter) {
+  const descriptor = { kind: "module", eventType: "0x1::object::ObjectCore" } as EventDescriptor;
+  const inner = new StreamdClient({ adapter });
+  const seen: { object: string; options: Record<string, unknown> }[] = [];
+  const lines: string[] = [];
+  const indexer = { getHeadVersion: async () => 0n, listTransactionVersions: async () => ({ versions: [], nextCursor: "", hasMore: false }) };
+  const strip = (object: string, options: Record<string, unknown>) => {
+    seen.push({ object, options });
+    const { indexer: _i, ...rest } = options;
+    return rest;
+  };
+  const client = {
+    provenance: (object: string, callback: never, options: Record<string, unknown> = {}) => inner.on(descriptor, callback, strip(object, options)),
+    getProvenance: async (object: string, filter: Record<string, unknown> = {}) => inner.getEvents(descriptor, strip(object, filter)),
+  };
+  const io = { client: client as never, indexer: indexer as never, write: (l: string) => void lines.push(l), error: () => {}, signal: new AbortController().signal };
+  const run = async (options: Partial<ProvenanceCommandOptions>) => {
+    const code = await runProvenance({ network: "mainnet", object: OBJECT, ...options }, io);
+    inner.destroy();
+    return code;
+  };
+  return { run, seen, lines, indexer };
+}
+
+describe("runProvenance", () => {
+  it("follows the object through the indexer, printing nested bigints as decimal strings", async () => {
+    const h = provenance(new MemoryAdapter([touched(1), touched(2)]));
+    expect(await h.run({ fromVersion: 2n, pollInterval: 1, limit: 1 })).toBe(0);
+    expect(JSON.parse(h.lines[0]!)).toMatchObject({ version: "2", data: { object: OBJECT, properties: [{ key: "level", value: "10000000000000000000" }] } });
+    const { signal: _s, onError: _o, ...given } = h.seen[0]!.options;
+    expect(h.seen[0]!.object).toBe(OBJECT);
+    expect(given).toEqual({ indexer: h.indexer, fromVersion: 2n, pollInterval: 1 });
+  });
+
+  it("reads a range through getProvenance", async () => {
+    const h = provenance(new MemoryAdapter([touched(1), touched(2), touched(3)]));
+    expect(await h.run({ fromVersion: 1n, toVersion: 2n })).toBe(0);
+    expect(h.lines.map((l) => (JSON.parse(l) as { version: string }).version)).toEqual(["1", "2"]);
+    const { signal: _s, ...given } = h.seen[0]!.options;
+    expect(given).toEqual({ indexer: h.indexer, fromVersion: 1n, toVersion: 2n, orderBy: "asc", retries: 5 });
   });
 });
